@@ -1,0 +1,30 @@
+# Windows
+
+Mobile Projects mirrors the native task-state indicators: a spinner while a task is working and a blue dot after it finishes until that task is viewed.
+
+In Mobile Projects, **Auto-register: on/off** locally enables or pauses automatic remote-project registration. **Remove auto projects (N)** removes only projects created by that automation—never chats or folders—and suppresses immediate recreation; it stays visible but disabled at `(0)`. Right-click a suppressed project and choose **Allow auto-registration** to permit it again.
+
+Run `ChatGPT Remote Enabler.exe`, or open PowerShell here and run:
+
+```powershell
+.\Enable-ChatGPTRemote.ps1
+```
+
+The compatibility check runs first. After ChatGPT reopens, select **By connection** in Native views or **Mobile projects** for device-filtered project grouping.
+
+Rollback:
+
+```powershell
+.\Disable-ChatGPTRemote.ps1
+```
+
+Automation controls are also available from PowerShell:
+
+```powershell
+.\CodexRemoteMobileProject\MobileProjectView.ps1 -Action EnableAutoRegistration
+.\CodexRemoteMobileProject\MobileProjectView.ps1 -Action DisableAutoRegistration
+.\CodexRemoteMobileProject\MobileProjectView.ps1 -Action RemoveAutoRegistrations
+```
+
+Node.js 22 or newer is required. The launcher is non-persistent and does not modify WindowsApps, the registry, firewall rules, or services.
+`ChatGPT Remote Enabler.exe` is unsigned and compiled from the included `ChatGPTRemoteLauncher.cs` source.

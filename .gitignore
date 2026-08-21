@@ -1,0 +1,8 @@
+.codexremote-simple-session.json
+.mobile-project-session.json
+host-names.json
+host-peers.json
+rollback/
+release/
+*.log
+*.tmp

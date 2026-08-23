@@ -2,7 +2,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
-const stableRoot = path.resolve(__dirname, "..", "CodexRemoteSimple");
+const stableRoot = __dirname;
 const { connectTarget, discoverTargets, evaluate } = require(path.join(stableRoot, "runtime", "lib", "cdp.js"));
 
 const LEGACY_STATE_PATH = path.join(__dirname, ".mobile-project-session.json");
@@ -76,12 +76,14 @@ async function main() {
       const source = prefix + payload;
       const persistent = await client.call("Page.addScriptToEvaluateOnNewDocument", { source }, 5000);
       const report = await evaluate(client, source, 10000);
-      if (report?.active !== true || report.tasks < 1 || report.projects < 1) {
+      const validCounts = [report?.hosts, report?.projects, report?.tasks]
+        .every((value) => Number.isInteger(value) && value >= 0);
+      if (report?.active !== true || !validCounts) {
         if (typeof persistent?.identifier === "string") await client.call("Page.removeScriptToEvaluateOnNewDocument", { identifier: persistent.identifier }, 5000);
         throw new Error("Mobile project view did not return valid proof");
       }
       fs.mkdirSync(path.dirname(STATE_PATH), { recursive: true });
-      fs.writeFileSync(STATE_PATH, `${JSON.stringify({ identifier: persistent.identifier, port: options.port, version: 27 }, null, 2)}\n`, "utf8");
+      fs.writeFileSync(STATE_PATH, `${JSON.stringify({ identifier: persistent.identifier, port: options.port, version: 34 }, null, 2)}\n`, "utf8");
       try { fs.rmSync(LEGACY_STATE_PATH, { force: true }); } catch {}
       process.stdout.write(`${JSON.stringify({ action: options.action, ok: true, report })}\n`);
       return;

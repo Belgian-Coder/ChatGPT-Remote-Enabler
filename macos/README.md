@@ -6,6 +6,11 @@ In Mobile Projects, **Auto-register: on/off** locally enables or pauses automati
 
 macOS already exposes native ChatGPT remote connections. This package adds the optional Mobile projects view.
 
+Renderer version 34 preserves the original plain folder design and changes
+only its open/closed state, including projects without a native icon template.
+It also retains empty registered projects, working/unread indicators, and the
+startup/modal fixes included in the Windows package.
+
 ```zsh
 chmod 755 ./MobileProjectView-macOS-arm64.sh
 ./MobileProjectView-macOS-arm64.sh enable

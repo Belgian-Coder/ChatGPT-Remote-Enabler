@@ -12,7 +12,7 @@ Why: some Windows builds contain the remote UI but do not expose it, and the nat
 
 Download the archive for your platform from [Releases](https://github.com/belgian-coder/ChatGPT-Remote-Enabler/releases).
 
-**Windows:** extract the archive and run `ChatGPT Remote Enabler.exe`, or run `windows\Enable-ChatGPTRemote.ps1` in PowerShell. Use `Disable-ChatGPTRemote.ps1` to restore the normal app. The launcher is unsigned and built from the included C# source.
+**Windows:** extract the archive to a permanent local folder and run `ChatGPT Remote Enabler.exe`, or run `windows\Enable-ChatGPTRemote.ps1` in PowerShell. Use `Disable-ChatGPTRemote.ps1` to restore the normal app. The launchers are unsigned and built from the included C# source. Optional Start-menu, Desktop, and at-logon setup is documented in [Windows details](windows/README.md).
 
 **macOS Apple Silicon:** extract the archive, then run:
 
@@ -25,7 +25,7 @@ Run `./MobileProjectView-macOS-arm64.sh disable` to roll back. Node.js 22+ is re
 
 ## Auto-register remote projects
 
-Version 27 can automatically register a remote project on a controller the first time that controller sees a chat from its folder. This is opt-in and uses ChatGPT's native create/remove commands. Each client stores only its own setting and managed/suppressed project paths in local app storage—there is no shared catalogue, server, NAS dependency, or central storage.
+Mobile Projects can automatically register a remote project on a controller the first time that controller sees a chat from its folder. This is opt-in and uses ChatGPT's native create/remove commands. Each client stores only its own setting and managed/suppressed project paths in local app storage—there is no shared catalogue, server, NAS dependency, or central storage.
 
 - **Auto-register: on/off** enables or pauses automatic registration on this client. Existing registrations stay intact when switched off.
 - **Remove auto projects (N)** removes only registrations created by this automation on this client. It stays visible but disabled at `(0)`, never deletes chats or source folders, and suppresses immediate recreation.
@@ -49,7 +49,9 @@ macOS equivalents:
 
 The feature can discover a project only after at least one chat from that remote folder becomes visible. It cannot invent never-seen empty folders.
 
-This uses a loopback-only Electron debugging session and private renderer internals, so app updates can break it. It does not bypass account authorization, MFA, workspace policy, or server permissions. Version 28 was live-validated on Windows and macOS.
+Renderer version 34 also keeps empty registered projects visible, mirrors working/unread task state, preserves the original plain project-folder design while switching its open/closed state, handles temporarily empty startup renderers, and avoids leaving a failed automatic-registration dialog open. The current Windows bridge includes compatibility fixes for newer Electron main processes.
+
+This uses a loopback-only Electron debugging session and private renderer internals, so app updates can break it. It does not bypass account authorization, MFA, workspace policy, or server permissions. Version 34 was live-validated on Windows and macOS.
 
 ## Privacy
 

@@ -12,6 +12,25 @@ Run `ChatGPT Remote Enabler.exe`, or open PowerShell here and run:
 
 The compatibility check runs first. After ChatGPT reopens, select **By connection** in Native views or **Mobile projects** for device-filtered project grouping.
 
+For a persistent local shortcut, keep the extracted folder in place and run:
+
+```powershell
+.\CodexRemoteMobileProject\DesktopShortcut.ps1 -Action Install
+```
+
+This creates **ChatGPT Custom** on the Desktop and Start menu. It always runs
+the sibling stable and Mobile Projects bundles, so future clicks load the
+injected view rather than the normal app. To enable the same path after logon,
+open an elevated Windows PowerShell and run:
+
+```powershell
+.\CodexRemoteMobileProject\MobileProjectStartup.ps1 -Action Install -Confirm:$false
+```
+
+Use `Probe` to inspect either installation and `Remove` to roll it back. The
+startup task uses the signed-in account and built-in Windows PowerShell; it
+does not contain a hostname, username, network path, or Store package version.
+
 Rollback:
 
 ```powershell
@@ -26,5 +45,7 @@ Automation controls are also available from PowerShell:
 .\CodexRemoteMobileProject\MobileProjectView.ps1 -Action RemoveAutoRegistrations
 ```
 
-Node.js 22 or newer is required. The launcher is non-persistent and does not modify WindowsApps, the registry, firewall rules, or services.
-`ChatGPT Remote Enabler.exe` is unsigned and compiled from the included `ChatGPTRemoteLauncher.cs` source.
+Node.js 22 or newer is required. The launchers do not modify WindowsApps, the
+registry, firewall rules, or services. `ChatGPT Remote Enabler.exe` and
+`CodexRemoteMobileProject\ChatGPT Custom.exe` are unsigned and compiled from
+their included C# source files.

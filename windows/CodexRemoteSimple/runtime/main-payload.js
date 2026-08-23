@@ -41,25 +41,50 @@
   }
 
   function loadNodeCrypto() {
+    const attempts = [];
+    const accept = (label, candidate) => {
+      if (supportsDeviceKeyCrypto(candidate)) return candidate;
+      const missing = ["createPrivateKey", "createPublicKey", "randomUUID", "sign", "timingSafeEqual"]
+        .filter((name) => typeof candidate?.[name] !== "function");
+      if (typeof candidate?.generateKeyPair !== "function" && typeof candidate?.generateKeyPairSync !== "function") missing.push("generateKeyPair");
+      attempts.push(`${label}:${missing.join(",") || "unavailable"}`);
+      return null;
+    };
+    if (typeof process.getBuiltinModule === "function") {
+      for (const name of ["node:crypto", "crypto"]) {
+        try {
+          const accepted = accept(`getBuiltinModule(${name})`, process.getBuiltinModule(name));
+          if (accepted) return accepted;
+        } catch {
+          attempts.push(`getBuiltinModule(${name}):threw`);
+        }
+      }
+    }
     if (typeof Module.createRequire === "function" && typeof process.execPath === "string") {
       try {
         const candidate = Module.createRequire(process.execPath)("node:crypto");
-        if (supportsDeviceKeyCrypto(candidate)) {
-          return candidate;
-        }
+        const accepted = accept("createRequire", candidate);
+        if (accepted) return accepted;
       } catch {
-        // Fall through to the ordinary builtin lookup below.
+        attempts.push("createRequire:threw");
+      }
+    }
+    if (typeof require === "function") {
+      try {
+        const accepted = accept("require", require("node:crypto"));
+        if (accepted) return accepted;
+      } catch {
+        attempts.push("require:threw");
       }
     }
     try {
       const candidate = builtin("crypto");
-      if (supportsDeviceKeyCrypto(candidate)) {
-        return candidate;
-      }
+      const accepted = accept("builtin", candidate);
+      if (accepted) return accepted;
     } catch {
-      // Report one stable, capability-specific error below.
+      attempts.push("builtin:threw");
     }
-    throw bridgeError("CRYPTO_UNAVAILABLE", "A complete Node crypto module is required for Windows device keys");
+    throw bridgeError("CRYPTO_UNAVAILABLE", `A complete Node crypto module is required for Windows device keys (${attempts.join("; ").slice(0, 240)})`);
   }
 
   const crypto = loadNodeCrypto();

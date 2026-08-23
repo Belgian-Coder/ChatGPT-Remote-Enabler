@@ -257,7 +257,13 @@ async function evaluate(client, expression, timeoutMs, awaitPromise = true) {
     timeoutMs,
   );
   if (result.exceptionDetails) {
-    throw transportError("EVALUATION_FAILED", "Debugger evaluation failed");
+    const detail = String(
+      result.exceptionDetails.exception?.description
+      ?? result.exceptionDetails.exception?.value
+      ?? result.exceptionDetails.text
+      ?? "unknown renderer exception",
+    ).replace(/[\r\n]+/gu, " ").slice(0, 320);
+    throw transportError("EVALUATION_FAILED", `Debugger evaluation failed: ${detail}`);
   }
   if (result.result?.subtype === "error") {
     throw transportError("EVALUATION_FAILED", "Debugger evaluation returned an error");

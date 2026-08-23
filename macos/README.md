@@ -20,13 +20,8 @@ chmod 755 ./MobileProjectView-macOS-arm64.sh
 
 Use `disable-auto-registration` to pause new registrations, or `remove-auto-registrations` to remove only automation-created registrations.
 
-For an update-safe login launcher and Dock shortcut, keep the extracted package at:
-
-```text
-~/Library/Application Support/CodexRemoteFeatures/bundles/CodexRemoteMobileProjectExperimental
-```
-
-Then run:
+For an update-safe login launcher and Dock shortcut, keep the extracted
+package in a permanent local folder, then run from that folder:
 
 ```zsh
 CODEX_STARTUP_DELAY_SECONDS=60 ./MobileProjectView-macOS-arm64.sh install-startup

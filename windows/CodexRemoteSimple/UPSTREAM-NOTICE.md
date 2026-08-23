@@ -17,8 +17,9 @@ and that its renderer injection pattern was adapted from
 
 The runtime in this bundle was taken from
 `naipi11/Codex-Control-other-devices-Windows` tag `v2.3.1`. The included
-`UPSTREAM-LICENSE.txt` applies to that upstream work. The local renderer and
-orchestrator now contain the documented, narrowly scoped second-gate extension
+`UPSTREAM-LICENSE.txt` applies to that upstream work. The local main payload
+adds current-Electron module loading and sanitized bridge errors; the renderer
+and orchestrator contain the documented, narrowly scoped second-gate extension
 described in `UPSTREAM-COMPARISON.md`.
 
 The local PowerShell wrapper, inventory, comparison, focused tests, and

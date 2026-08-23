@@ -60,13 +60,44 @@
         }
       }
     }
-    if (typeof Module.createRequire === "function" && typeof process.execPath === "string") {
+    const moduleCandidates = [Module];
+    if (typeof process.getBuiltinModule === "function") {
+      for (const name of ["node:module", "module"]) {
+        try {
+          const candidate = process.getBuiltinModule(name);
+          if (candidate && !moduleCandidates.includes(candidate)) moduleCandidates.push(candidate);
+        } catch {
+          attempts.push(`getBuiltinModule(${name}):threw`);
+        }
+      }
+    }
+    for (const candidateModule of moduleCandidates) {
+      if (typeof candidateModule?._load === "function") {
+        for (const name of ["node:crypto", "crypto"]) {
+          try {
+            const accepted = accept(`Module._load(${name})`, candidateModule._load(name, null, false));
+            if (accepted) return accepted;
+          } catch {
+            attempts.push(`Module._load(${name}):threw`);
+          }
+        }
+      }
+      if (typeof candidateModule?.createRequire === "function") {
+        try {
+          const loaderPath = path.join(os.tmpdir(), "codex-remote-node-loader.cjs");
+          const accepted = accept("createRequire", candidateModule.createRequire(loaderPath)("node:crypto"));
+          if (accepted) return accepted;
+        } catch {
+          attempts.push("createRequire:threw");
+        }
+      }
+    }
+    if (typeof process.mainModule?.require === "function") {
       try {
-        const candidate = Module.createRequire(process.execPath)("node:crypto");
-        const accepted = accept("createRequire", candidate);
+        const accepted = accept("process.mainModule.require", process.mainModule.require("node:crypto"));
         if (accepted) return accepted;
       } catch {
-        attempts.push("createRequire:threw");
+        attempts.push("process.mainModule.require:threw");
       }
     }
     if (typeof require === "function") {

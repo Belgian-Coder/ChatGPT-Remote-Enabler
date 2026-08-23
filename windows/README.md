@@ -30,6 +30,8 @@ open an elevated Windows PowerShell and run:
 Use `Probe` to inspect either installation and `Remove` to roll it back. The
 startup task uses the signed-in account and built-in Windows PowerShell; it
 does not contain a hostname, username, network path, or Store package version.
+It retries the stable bridge once when a fresh Electron main process
+temporarily exposes only a partial Node crypto module.
 
 Rollback:
 

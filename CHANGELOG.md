@@ -8,6 +8,7 @@
 - Fixed offline-device mapping, startup readiness, and the stuck automatic-registration dialog.
 - Added current Electron main-process compatibility and clearer sanitized bridge errors.
 - Added portable Windows Desktop, Start-menu, and at-logon launch helpers.
+- Added one bounded Windows stable-bridge retry for the observed fresh-process crypto race.
 - Kept all registration state client-local; no shared catalogue or central storage was added.
 
 ## v1.2.2

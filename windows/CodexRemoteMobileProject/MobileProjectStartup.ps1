@@ -91,7 +91,16 @@ switch ($Action) {
         $node = Resolve-NodePath
         Write-StartupLog "$(Get-Date -Format o) [$computerName] startup run begins"
         try {
-            Write-CommandOutput @(& $stableController -Action Enable -Confirm:$false 2>&1)
+            for ($stableAttempt = 1; $stableAttempt -le 2; $stableAttempt++) {
+                try {
+                    Write-CommandOutput @(& $stableController -Action Enable -Confirm:$false 2>&1)
+                    break
+                } catch {
+                    if ($stableAttempt -ge 2) { throw }
+                    Write-StartupLog "$(Get-Date -Format o) [$computerName] stable bridge not ready on attempt $stableAttempt; retrying once"
+                    Start-Sleep -Seconds 2
+                }
+            }
             $deadline = (Get-Date).AddSeconds($MobileReadyTimeoutSeconds)
             $attempt = 0
             while ($true) {

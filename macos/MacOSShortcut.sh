@@ -3,7 +3,8 @@ set -euo pipefail
 
 action="${1:-probe}"
 action="${action:l}"
-launcher="$HOME/Library/Application Support/CodexRemoteFeatures/bundles/CodexRemoteMobileProjectExperimental/MobileProjectView-macOS-arm64.sh"
+script_path="${0:A}"
+launcher="${script_path:h}/MobileProjectView-macOS-arm64.sh"
 source_root="$HOME/Library/Application Support/CodexRemoteFeatures/launchers"
 source_file="$source_root/ChatGPT Mobile Projects.applescript"
 app_root="$HOME/Applications"
@@ -39,10 +40,12 @@ install_shortcut() {
   if [[ -e "$app_path" ]]; then
     mv "$app_path" "$rollback_root/ChatGPT Mobile Projects-$stamp.app"
   fi
-  /bin/cat > "$source_file" <<'APPLESCRIPT'
+  local escaped_launcher
+  escaped_launcher="${launcher//\\/\\\\}"
+  escaped_launcher="${escaped_launcher//\"/\\\"}"
+  /bin/cat > "$source_file" <<APPLESCRIPT
 on run
-    set homePath to POSIX path of (path to home folder)
-    set launcherPath to homePath & "Library/Application Support/CodexRemoteFeatures/bundles/CodexRemoteMobileProjectExperimental/MobileProjectView-macOS-arm64.sh"
+    set launcherPath to "$escaped_launcher"
     try
         set runningCount to do shell script "/usr/bin/pgrep -x ChatGPT | /usr/bin/wc -l | /usr/bin/tr -d ' '"
         if runningCount is not "0" then

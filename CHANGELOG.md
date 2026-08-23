@@ -3,6 +3,7 @@
 ## v1.3.1
 
 - Made fresh Windows launches reliable when current Electron builds initially expose partial Node crypto shims.
+- Made the macOS Dock helper follow the extracted release folder instead of an old fixed bundle path.
 - Includes every renderer v34, startup, shortcut, project-state, status-indicator, offline-device, empty-project, and modal fix from v1.3.0.
 
 ## v1.3.0

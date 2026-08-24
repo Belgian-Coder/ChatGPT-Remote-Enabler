@@ -7,7 +7,7 @@ param(
     [string]$LatestReleaseUrl = $env:CHATGPT_REMOTE_UPDATE_LATEST_URL,
     [string]$InstallRoot = $PSScriptRoot,
     [ValidateRange(0, 720)]
-    [int]$CheckIntervalHours = $(if ($env:CHATGPT_REMOTE_UPDATE_INTERVAL_HOURS) { [int]$env:CHATGPT_REMOTE_UPDATE_INTERVAL_HOURS } else { 24 }),
+    [int]$CheckIntervalHours = $(if ($env:CHATGPT_REMOTE_UPDATE_INTERVAL_HOURS) { [int]$env:CHATGPT_REMOTE_UPDATE_INTERVAL_HOURS } else { 0 }),
     [switch]$AllowInsecureTransport
 )
 

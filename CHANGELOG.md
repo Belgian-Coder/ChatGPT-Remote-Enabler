@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.4.1
+
+- Changed automatic update checks from once per day to every launcher start.
+- Retained persistent and per-launch opt-outs, configurable GitHub endpoints, and optional interval throttling.
+
 ## v1.4.0
 
 - Added native-backed project and chat drag ordering in Mobile Projects v35.

@@ -53,9 +53,9 @@ Renderer version 35 also lets you drag projects within one device and chats with
 
 ## Updates
 
-From v1.4.0, normal and automatic launches check GitHub Releases at most once every 24 hours. A matching archive is installed only after its published SHA-256 and internal manifest pass. Failure keeps the installed version.
+Every normal or automatic launch checks GitHub Releases before enabling the custom view. A matching archive is installed only after its published SHA-256 and internal manifest pass. Failure keeps the installed version.
 
-Opt out persistently with `Update-ChatGPTRemote.ps1 -Action DisableAutoUpdate` on Windows or `/bin/zsh ./Update-ChatGPTRemote.sh disable-auto-update` on macOS. Use `EnableAutoUpdate` / `enable-auto-update` to resume. Forks and mirrors can set `CHATGPT_REMOTE_UPDATE_REPOSITORY=owner/repo`, `CHATGPT_REMOTE_UPDATE_API_BASE`, or the complete `CHATGPT_REMOTE_UPDATE_LATEST_URL`; set `CHATGPT_REMOTE_AUTO_UPDATE=0` for one launch only.
+Opt out persistently with `Update-ChatGPTRemote.ps1 -Action DisableAutoUpdate` on Windows or `/bin/zsh ./Update-ChatGPTRemote.sh disable-auto-update` on macOS. Use `EnableAutoUpdate` / `enable-auto-update` to resume. Forks and mirrors can set `CHATGPT_REMOTE_UPDATE_REPOSITORY=owner/repo`, `CHATGPT_REMOTE_UPDATE_API_BASE`, or the complete `CHATGPT_REMOTE_UPDATE_LATEST_URL`; set `CHATGPT_REMOTE_AUTO_UPDATE=0` for one launch only. An optional positive `CHATGPT_REMOTE_UPDATE_INTERVAL_HOURS` value can throttle checks when desired.
 
 This uses a loopback-only Electron debugging session and private renderer internals, so app updates can break it. It does not bypass account authorization, MFA, workspace policy, or server permissions.
 

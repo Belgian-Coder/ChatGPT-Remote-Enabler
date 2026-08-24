@@ -17,7 +17,7 @@ chmod 755 ./MobileProjectView-macOS-arm64.sh
 
 Use `disable-auto-registration` to pause new registrations, or `remove-auto-registrations` to remove only automation-created registrations.
 
-The launcher checks for a verified GitHub release once every 24 hours. Manage it with:
+The launcher checks for a verified GitHub release on every start. Manage it with:
 
 ```zsh
 /bin/zsh ./Update-ChatGPTRemote.sh probe
@@ -26,7 +26,7 @@ The launcher checks for a verified GitHub release once every 24 hours. Manage it
 /bin/zsh ./Update-ChatGPTRemote.sh update
 ```
 
-Set `CHATGPT_REMOTE_UPDATE_REPOSITORY=owner/repo`, `CHATGPT_REMOTE_UPDATE_API_BASE`, or `CHATGPT_REMOTE_UPDATE_LATEST_URL` for a fork or GitHub mirror. `CHATGPT_REMOTE_AUTO_UPDATE=0` skips one automatic check. Failed downloads or verification keep the installed version.
+Set `CHATGPT_REMOTE_UPDATE_REPOSITORY=owner/repo`, `CHATGPT_REMOTE_UPDATE_API_BASE`, or `CHATGPT_REMOTE_UPDATE_LATEST_URL` for a fork or GitHub mirror. `CHATGPT_REMOTE_AUTO_UPDATE=0` skips one automatic check. Set a positive `CHATGPT_REMOTE_UPDATE_INTERVAL_HOURS` only if you want throttling. Failed downloads or verification keep the installed version.
 
 For an update-safe login launcher and Dock shortcut, keep the extracted
 package in a permanent local folder, then run from that folder:

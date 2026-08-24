@@ -12,7 +12,7 @@ Run `ChatGPT Remote Enabler.exe`, or open PowerShell here and run:
 
 The compatibility check runs first. After ChatGPT reopens, select **By connection** in Native views or **Mobile projects** for device-filtered project grouping.
 
-The launcher checks for a verified GitHub release once every 24 hours. Manage it with:
+The launcher checks for a verified GitHub release on every start. Manage it with:
 
 ```powershell
 .\Update-ChatGPTRemote.ps1 -Action Probe
@@ -21,7 +21,7 @@ The launcher checks for a verified GitHub release once every 24 hours. Manage it
 .\Update-ChatGPTRemote.ps1 -Action Update
 ```
 
-Set `CHATGPT_REMOTE_UPDATE_REPOSITORY=owner/repo`, `CHATGPT_REMOTE_UPDATE_API_BASE`, or `CHATGPT_REMOTE_UPDATE_LATEST_URL` for a fork or GitHub mirror. `CHATGPT_REMOTE_AUTO_UPDATE=0` skips one automatic check. Failed downloads or verification never replace the installed files.
+Set `CHATGPT_REMOTE_UPDATE_REPOSITORY=owner/repo`, `CHATGPT_REMOTE_UPDATE_API_BASE`, or `CHATGPT_REMOTE_UPDATE_LATEST_URL` for a fork or GitHub mirror. `CHATGPT_REMOTE_AUTO_UPDATE=0` skips one automatic check. Set a positive `CHATGPT_REMOTE_UPDATE_INTERVAL_HOURS` only if you want throttling. Failed downloads or verification never replace the installed files.
 
 For a persistent local shortcut, keep the extracted folder in place and run:
 

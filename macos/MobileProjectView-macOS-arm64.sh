@@ -6,6 +6,8 @@ action="${action:l}"
 script_path="${0:A}"
 bundle_root="${script_path:h}"
 injector="$bundle_root/inject.js"
+updater="$bundle_root/Update-ChatGPTRemote.sh"
+update_checked=0
 label="com.local.codex-mobile-project-view"
 launch_agents="$HOME/Library/LaunchAgents"
 plist="$launch_agents/$label.plist"
@@ -63,6 +65,14 @@ debug_endpoint_ready() {
   /usr/bin/curl --silent --fail --max-time 1 "http://127.0.0.1:$port/json" >/dev/null
 }
 
+maybe_auto_update() {
+  (( update_checked )) && return 0
+  update_checked=1
+  if [[ -f "$updater" ]]; then
+    /bin/zsh "$updater" auto || print -u2 "Automatic update was skipped; continuing with the installed version."
+  fi
+}
+
 run_injector() {
   local node_bin="$1"
   local requested_action="$2"
@@ -72,6 +82,7 @@ run_injector() {
 }
 
 enable_view() {
+  maybe_auto_update
   local node_bin
   node_bin="$(resolve_node)"
   if ! debug_endpoint_ready; then

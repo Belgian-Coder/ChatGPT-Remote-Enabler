@@ -18,6 +18,7 @@ $bundleRoot = [IO.Path]::GetFullPath($PSScriptRoot)
 $bundleParent = Split-Path -Parent $bundleRoot
 $stableController = Join-Path $bundleParent 'CodexRemoteSimple\CodexRemoteSimple.ps1'
 $mobileController = Join-Path $bundleRoot 'MobileProjectView.ps1'
+$updateController = Join-Path $bundleParent 'Update-ChatGPTRemote.ps1'
 $logRoot = Join-Path $env:LOCALAPPDATA 'CodexRemoteFeatures'
 $logPath = Join-Path $logRoot 'startup.log'
 $rollbackRoot = Join-Path $bundleRoot 'rollback'
@@ -87,6 +88,10 @@ function Get-TaskSummary {
 
 switch ($Action) {
     'Run' {
+        if (Test-Path -LiteralPath $updateController -PathType Leaf) {
+            try { Write-CommandOutput @(& $updateController -Action Auto 2>&1) }
+            catch { Write-StartupLog "$(Get-Date -Format o) [$computerName] automatic update skipped: $($_.Exception.Message)" }
+        }
         Assert-Controllers
         $node = Resolve-NodePath
         Write-StartupLog "$(Get-Date -Format o) [$computerName] startup run begins"

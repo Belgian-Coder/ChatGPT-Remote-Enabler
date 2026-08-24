@@ -11,7 +11,7 @@
   const AUTO_ENABLED_KEY = "codex-remote-mobile-auto-register-enabled-v1";
   const AUTO_MANAGED_KEY = "codex-remote-mobile-auto-managed-v1";
   const AUTO_SUPPRESSED_KEY = "codex-remote-mobile-auto-suppressed-v1";
-  const VERSION = 34;
+  const VERSION = 35;
   const LOCAL_FOLDER_PATH = Object.freeze({
     closed: "M5.55957 2.14136C6.06503 2.14136 6.55801 2.30207 6.9668 2.59937L7.81836 3.21851C8.04761 3.38513 8.32401 3.47534 8.60742 3.47534H12.1338C13.4545 3.47559 14.5254 4.54621 14.5254 5.86694V11.4666C14.5254 12.7873 13.4545 13.8579 12.1338 13.8582H3.86621C2.54554 13.8579 1.47461 12.7873 1.47461 11.4666V4.53296C1.47486 3.21244 2.54569 2.1416 3.86621 2.14136H5.55957ZM2.52539 7.85718V11.4666C2.52539 12.2074 3.12544 12.8081 3.86621 12.8083H12.1338C12.8746 12.8081 13.4746 12.2074 13.4746 11.4666V7.85718H2.52539ZM3.86621 3.19214C3.12559 3.19238 2.52564 3.79234 2.52539 4.53296V6.8064H13.4746V5.86694C13.4746 5.12611 12.8746 4.52539 12.1338 4.52515H8.60742C8.10203 4.52515 7.60895 4.36534 7.2002 4.06812L6.34863 3.448C6.11937 3.28135 5.84301 3.19214 5.55957 3.19214H3.86621Z",
     open: "M4.75488 2.1416C5.30942 2.14164 5.74594 2.23705 6.11816 2.38965C6.48323 2.53934 6.76728 2.73817 7.00391 2.9043L7.02148 2.91699C7.47057 3.23238 7.8162 3.47463 8.55176 3.47461H11.333C12.7194 3.47484 13.8311 4.61217 13.8311 6L13.875 6.38281H13.8594C14.8729 6.38292 15.5982 7.3629 15.3018 8.33203L14.0068 12.5586C13.7703 13.3297 13.0576 13.8563 12.251 13.8564H3.83984C3.4199 13.8564 3.04144 13.7174 2.73828 13.4883L2.67383 13.4346C1.99907 12.9811 1.55577 12.2065 1.55566 11.3311L0.941406 4.66699C0.941406 3.2792 2.05315 2.1419 3.43945 2.1416H4.75488ZM4.7627 7.42969C4.56039 7.42972 4.3807 7.5625 4.32129 7.75586L3.08594 11.7891C2.96123 12.1965 3.18214 12.6072 3.54883 12.7529C3.63476 12.7768 3.74102 12.7958 3.88184 12.8086H12.251C12.5974 12.8085 12.9033 12.5821 13.0049 12.251L14.2998 8.02539C14.3901 7.72947 14.1688 7.42979 13.8594 7.42969H4.7627ZM3.43945 3.19141C2.64724 3.1917 1.99121 3.84481 1.99121 4.66699L2.49316 10.1201L3.32031 7.44922C3.51452 6.81571 4.10008 6.38284 4.7627 6.38281H12.8252L12.7812 6C12.7812 5.22902 12.2045 4.607 11.4795 4.53223L11.333 4.52441H8.55176C8.05756 4.52442 7.64464 4.44062 7.2666 4.2793C6.91453 4.12896 6.6274 3.92345 6.41797 3.77637L6.40039 3.76367C6.16212 3.59639 5.96404 3.46151 5.71973 3.36133C5.54113 3.28812 5.32754 3.2289 5.05176 3.2041L4.75488 3.19141H3.43945Z",
@@ -31,6 +31,8 @@
     collapsed: new Set(),
     contextPoint: null,
     contextProjectKey: null,
+    drag: null,
+    dragJustEndedAt: 0,
     filter: "all",
     lastAction: null,
     nativeContainer: null,
@@ -38,6 +40,7 @@
     observer: null,
     panel: null,
     pendingNewThreads: new Set(),
+    reorderPending: false,
     scheduledFrame: null,
     view: "mobile",
   };
@@ -390,6 +393,12 @@
       #${PANEL_ID} .crmp-project { display:flex; flex-direction:column; gap:1px; }
       #${PANEL_ID} .crmp-project-head { position:relative!important; display:flex!important; align-items:center; width:100%; min-height:var(--height-token-row,30px); }
       #${PANEL_ID} .crmp-project-toggle { display:grid; flex:1 1 auto; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:6px; min-width:0; height:100%; border:0; padding:5px 8px; color:inherit; background:transparent; text-align:left; cursor:pointer; }
+      #${PANEL_ID} [draggable="true"] { cursor:grab; }
+      #${PANEL_ID} [draggable="true"]:active { cursor:grabbing; }
+      #${PANEL_ID} .crmp-dragging { opacity:.45; }
+      #${PANEL_ID} .crmp-drop-before::before, #${PANEL_ID} .crmp-drop-after::after { position:absolute; z-index:4; right:6px; left:6px; height:2px; border-radius:2px; background:var(--color-accent,#74b9ff); content:""; pointer-events:none; }
+      #${PANEL_ID} .crmp-drop-before::before { top:-1px; }
+      #${PANEL_ID} .crmp-drop-after::after { bottom:-1px; }
       #${PANEL_ID} .crmp-project-action, #${PANEL_ID} .crmp-project-new { position:absolute!important; top:50%; opacity:0; pointer-events:none; transform:translateY(-50%); transition:opacity 100ms ease; }
       #${PANEL_ID} .crmp-project-action { right:3px; }
       #${PANEL_ID} .crmp-project-new { right:29px; font-size:14px; }
@@ -502,6 +511,184 @@
       const metadata = metadataFromNativeProject(item);
       return metadata?.hostId === project.hostId && metadata.label === project.name;
     }) ?? null;
+  }
+
+  function reactProps(element) {
+    const key = element && Object.keys(element).find((name) => name.startsWith("__reactProps$"));
+    return key ? element[key] : null;
+  }
+
+  function nativeThreadRow(reference) {
+    return [...document.querySelectorAll(ROW_SELECTOR)].find((row) => {
+      if (row.closest(`#${PANEL_ID}`)) return false;
+      return row.getAttribute("data-app-action-sidebar-thread-id") === reference.conversationKey
+        && (row.getAttribute("data-app-action-sidebar-thread-host-id") || "local") === reference.hostId;
+    }) ?? null;
+  }
+
+  function reorderElement(reference) {
+    if (reference.kind === "project") {
+      return nativeProjectItem({
+        hostId: reference.hostId,
+        kind: "project",
+        name: reference.name,
+        projectId: reference.projectId,
+      });
+    }
+    return nativeThreadRow(reference);
+  }
+
+  function sortableSnapshot(element) {
+    let itemId = null;
+    const itemLists = [];
+    let fiber = element ? getFiber(element) : null;
+    for (let level = 0; fiber && level < 40; level += 1, fiber = fiber.return) {
+      const props = fiber.memoizedProps;
+      if (!itemId && typeof props?.item === "string") itemId = props.item;
+      if (Array.isArray(props?.items)) itemLists.push(props.items);
+    }
+    const items = itemId ? itemLists.find((candidate) => candidate.includes(itemId)) : null;
+    return itemId && items ? { itemId, items } : null;
+  }
+
+  function nativeKeyboardReorder(element) {
+    for (let node = element, level = 0; node && level < 12; node = node.parentElement, level += 1) {
+      const handler = reactProps(node)?.onKeyDownCapture;
+      if (typeof handler === "function") return handler;
+    }
+    return null;
+  }
+
+  function reorderReference(kind, item, projectKey = null) {
+    return kind === "project"
+      ? { hostId: item.hostId, kind, name: item.name, projectId: item.projectId, projectKey: item.key }
+      : { conversationKey: item.conversationKey, hostId: item.hostId, kind, projectKey };
+  }
+
+  function compatibleReorder(source, target) {
+    if (!source || !target || source.kind !== target.kind) return false;
+    if (source.kind === "project" && source.hostId !== target.hostId) return false;
+    if (source.kind === "task" && (source.hostId !== target.hostId || source.projectKey !== target.projectKey)) return false;
+    const sourceSnapshot = sortableSnapshot(reorderElement(source));
+    const targetSnapshot = sortableSnapshot(reorderElement(target));
+    return Boolean(sourceSnapshot && targetSnapshot && sourceSnapshot.items.includes(targetSnapshot.itemId));
+  }
+
+  function clearDropIndicators() {
+    state.panel?.querySelectorAll(".crmp-dragging,.crmp-drop-before,.crmp-drop-after").forEach((element) => {
+      element.classList.remove("crmp-dragging", "crmp-drop-before", "crmp-drop-after");
+    });
+  }
+
+  function desiredReorderStep(sourceIndex, targetIndex, position) {
+    const destination = position === "before"
+      ? targetIndex - (sourceIndex < targetIndex ? 1 : 0)
+      : targetIndex + (sourceIndex > targetIndex ? 1 : 0);
+    return Math.sign(destination - sourceIndex);
+  }
+
+  function wait(milliseconds) {
+    return new Promise((resolve) => setTimeout(resolve, milliseconds));
+  }
+
+  async function invokeNativeReorder(source, target, position) {
+    state.reorderPending = true;
+    state.lastAction = { commandId: `reorder-${source.kind}`, found: true, invoked: false, pending: true };
+    try {
+      for (let attempt = 0; attempt < 80; attempt += 1) {
+        const sourceElement = reorderElement(source);
+        const targetElement = reorderElement(target);
+        const sourceSnapshot = sortableSnapshot(sourceElement);
+        const targetSnapshot = sortableSnapshot(targetElement);
+        if (!sourceElement || !targetElement || !sourceSnapshot || !targetSnapshot) throw new Error("Native reorder state is unavailable");
+        const sourceIndex = sourceSnapshot.items.indexOf(sourceSnapshot.itemId);
+        const targetIndex = sourceSnapshot.items.indexOf(targetSnapshot.itemId);
+        if (sourceIndex < 0 || targetIndex < 0) throw new Error("Items are not in the same native reorder list");
+        const step = desiredReorderStep(sourceIndex, targetIndex, position);
+        if (step === 0) {
+          state.lastAction = { commandId: `reorder-${source.kind}`, found: true, invoked: true };
+          return true;
+        }
+        const handler = nativeKeyboardReorder(sourceElement);
+        const activationTarget = sourceElement.matches('[role="button"]')
+          ? sourceElement
+          : sourceElement.querySelector('[role="button"]');
+        if (!handler || !activationTarget) throw new Error("Native reorder callback is unavailable");
+        handler({
+          altKey: true,
+          ctrlKey: false,
+          defaultPrevented: false,
+          key: step < 0 ? "ArrowUp" : "ArrowDown",
+          metaKey: false,
+          preventDefault() {},
+          shiftKey: false,
+          stopPropagation() {},
+          target: activationTarget,
+        });
+        let moved = false;
+        for (let retry = 0; retry < 20; retry += 1) {
+          await wait(50);
+          const next = sortableSnapshot(reorderElement(source));
+          if (next && next.items.indexOf(next.itemId) !== sourceIndex) {
+            moved = true;
+            break;
+          }
+        }
+        if (!moved) throw new Error("Native order did not change");
+      }
+      throw new Error("Native reorder exceeded the bounded move limit");
+    } catch (error) {
+      state.lastAction = { commandId: `reorder-${source.kind}`, error: error?.message || String(error), found: true, invoked: false };
+      return false;
+    } finally {
+      state.reorderPending = false;
+      render();
+    }
+  }
+
+  function bindReorder(sourceElement, dropZone, reference) {
+    const canDrag = !state.reorderPending && Boolean(nativeKeyboardReorder(reorderElement(reference)) && sortableSnapshot(reorderElement(reference)));
+    sourceElement.draggable = canDrag;
+    if (!canDrag) return;
+    sourceElement.addEventListener("dragstart", (event) => {
+      if (!event.dataTransfer || state.reorderPending) {
+        event.preventDefault();
+        return;
+      }
+      state.drag = reference;
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("application/x-codex-mobile-reorder", reference.kind);
+      dropZone.classList.add("crmp-dragging");
+    });
+    dropZone.addEventListener("dragover", (event) => {
+      if (!compatibleReorder(state.drag, reference) || state.drag === reference) return;
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+      clearDropIndicators();
+      const position = event.clientY < dropZone.getBoundingClientRect().top + dropZone.getBoundingClientRect().height / 2 ? "before" : "after";
+      dropZone.classList.add(position === "before" ? "crmp-drop-before" : "crmp-drop-after");
+      dropZone.dataset.dropPosition = position;
+    });
+    dropZone.addEventListener("dragleave", (event) => {
+      if (event.relatedTarget instanceof Node && dropZone.contains(event.relatedTarget)) return;
+      dropZone.classList.remove("crmp-drop-before", "crmp-drop-after");
+      delete dropZone.dataset.dropPosition;
+    });
+    dropZone.addEventListener("drop", (event) => {
+      if (!compatibleReorder(state.drag, reference) || state.drag === reference) return;
+      event.preventDefault();
+      const source = state.drag;
+      const position = dropZone.dataset.dropPosition === "before" ? "before" : "after";
+      state.drag = null;
+      state.dragJustEndedAt = performance.now();
+      clearDropIndicators();
+      void invokeNativeReorder(source, reference, position);
+    });
+    sourceElement.addEventListener("dragend", () => {
+      state.drag = null;
+      state.dragJustEndedAt = performance.now();
+      clearDropIndicators();
+    });
   }
 
   function nativeProjectAction(project) {
@@ -1006,9 +1193,11 @@
     suffix.textContent = state.filter === "all" ? project.hostName : (state.collapsed.has(project.key) ? "›" : "⌄");
     toggle.append(folder, name, suffix);
     toggle.addEventListener("click", () => {
+      if (performance.now() - state.dragJustEndedAt < 250) return;
       if (state.collapsed.has(project.key)) state.collapsed.delete(project.key); else state.collapsed.add(project.key);
       render();
     });
+    bindReorder(toggle, head, reorderReference("project", project));
     head.addEventListener("contextmenu", (event) => {
       if (project.kind !== "project") return;
       event.preventDefault();
@@ -1052,7 +1241,9 @@
         taskButton.title = `${task.title}\n${task.cwd || project.cwd || "No project folder"}\n${project.hostName}`;
         taskButton.dataset.appActionSidebarThreadSelected = String(task.selected);
         if (task.selected) taskButton.setAttribute("aria-current", "page");
-        taskButton.addEventListener("click", () => task.originalRow.click());
+        taskButton.addEventListener("click", () => {
+          if (performance.now() - state.dragJustEndedAt >= 250) task.originalRow.click();
+        });
         taskButton.addEventListener("contextmenu", (event) => {
           event.preventDefault();
           task.originalRow.dispatchEvent(new MouseEvent("contextmenu", {
@@ -1063,6 +1254,7 @@
             view: globalThis,
           }));
         });
+        bindReorder(taskButton, taskRow, reorderReference("task", task, project.key));
         taskRow.appendChild(taskButton);
         const statusIndicator = taskStatusIndicator(task);
         if (statusIndicator) taskRow.appendChild(statusIndicator);
@@ -1237,6 +1429,8 @@
       lastAction: state.lastAction,
       nativeArchiveActions: model.tasks.filter((task) => Boolean(nativeThreadAction(task, "archive"))).length,
       nativePinActions: model.tasks.filter((task) => Boolean(nativeThreadAction(task, "pin"))).length,
+      nativeProjectReorderItems: model.projects.filter((project) => Boolean(nativeKeyboardReorder(nativeProjectItem(project)) && sortableSnapshot(nativeProjectItem(project)))).length,
+      nativeTaskReorderItems: model.tasks.filter((task) => Boolean(nativeKeyboardReorder(task.originalRow) && sortableSnapshot(task.originalRow))).length,
       remoteProjectComposerAvailable: Boolean(nativeStartThreadDispatcher()),
       remoteProjectRegistrationAvailable: Boolean(nativeNavigationDispatcher()),
       remoteProjectRemoveActions: model.projects.filter((project) => project.hostId !== "local" && project.projectId && nativeProjectCommands(project).some((command) => command?.id === "remove-project" && command.enabled !== false)).length,

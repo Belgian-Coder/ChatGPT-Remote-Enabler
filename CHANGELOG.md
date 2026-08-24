@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.4.0
+
+- Added native-backed project and chat drag ordering in Mobile Projects v35.
+- Added recoverable Windows and macOS release updaters with automatic daily checks, SHA-256 plus release-manifest verification, and fail-open startup behavior.
+- Added persistent and per-launch opt-outs plus configurable GitHub repository, API base, or complete latest-release URL overrides for forks and mirrors.
+- Kept update state and rollback copies local to each client; no shared catalogue, central storage, GitHub Actions, or CI/CD was added.
+
 ## v1.3.1
 
 - Made fresh Windows launches reliable when current Electron builds initially expose partial Node crypto shims.

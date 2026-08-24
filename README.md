@@ -49,9 +49,15 @@ macOS equivalents:
 
 The feature can discover a project only after at least one chat from that remote folder becomes visible. It cannot invent never-seen empty folders.
 
-Renderer version 34 also keeps empty registered projects visible, mirrors working/unread task state, preserves the original plain project-folder design while switching its open/closed state, handles temporarily empty startup renderers, and avoids leaving a failed automatic-registration dialog open. The current Windows bridge includes compatibility fixes for newer Electron main processes.
+Renderer version 35 also lets you drag projects within one device and chats within their current project. It delegates the saved order to ChatGPT instead of keeping a separate catalogue.
 
-This uses a loopback-only Electron debugging session and private renderer internals, so app updates can break it. It does not bypass account authorization, MFA, workspace policy, or server permissions. Version 34 was live-validated on Windows and macOS.
+## Updates
+
+From v1.4.0, normal and automatic launches check GitHub Releases at most once every 24 hours. A matching archive is installed only after its published SHA-256 and internal manifest pass. Failure keeps the installed version.
+
+Opt out persistently with `Update-ChatGPTRemote.ps1 -Action DisableAutoUpdate` on Windows or `/bin/zsh ./Update-ChatGPTRemote.sh disable-auto-update` on macOS. Use `EnableAutoUpdate` / `enable-auto-update` to resume. Forks and mirrors can set `CHATGPT_REMOTE_UPDATE_REPOSITORY=owner/repo`, `CHATGPT_REMOTE_UPDATE_API_BASE`, or the complete `CHATGPT_REMOTE_UPDATE_LATEST_URL`; set `CHATGPT_REMOTE_AUTO_UPDATE=0` for one launch only.
+
+This uses a loopback-only Electron debugging session and private renderer internals, so app updates can break it. It does not bypass account authorization, MFA, workspace policy, or server permissions.
 
 ## Privacy
 

@@ -1,9 +1,14 @@
 [CmdletBinding()]
-param([switch]$SkipMobileProjects)
+param([switch]$SkipMobileProjects, [switch]$SkipUpdate)
 
 $ErrorActionPreference = 'Stop'
 $stable = Join-Path $PSScriptRoot 'CodexRemoteSimple\CodexRemoteSimple.ps1'
 $mobile = Join-Path $PSScriptRoot 'CodexRemoteMobileProject\MobileProjectView.ps1'
+$updater = Join-Path $PSScriptRoot 'Update-ChatGPTRemote.ps1'
+
+if (-not $SkipUpdate -and (Test-Path -LiteralPath $updater -PathType Leaf)) {
+    try { & $updater -Action Auto | Write-Verbose } catch { Write-Warning "Automatic update skipped: $($_.Exception.Message)" }
+}
 
 & $stable -Action Enable
 if (-not $SkipMobileProjects) {

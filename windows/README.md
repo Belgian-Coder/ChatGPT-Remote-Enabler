@@ -43,14 +43,20 @@ For a persistent local shortcut, keep the extracted folder in place and run:
 
 This creates **ChatGPT Custom** on the Desktop and Start menu. It always runs
 the sibling stable and Mobile Projects bundles, so future clicks load the
-injected view rather than the normal app. It also creates **ChatGPT Custom
-(Proxy)** in the Start menu. When `HTTPS_PROXY` or `HTTP_PROXY` is set,
-that opt-in shortcut uses an HTTP CONNECT tunnel only for the ChatGPT Remote
+injected view rather than the normal app. By default it also creates **ChatGPT
+Custom (Proxy)** in the Start menu. To keep one consolidated shortcut, use
+`-UseProxy`; the primary **ChatGPT Custom** entries then use proxy mode and the
+separate proxy shortcut is removed after a rollback copy is made. When
+`HTTPS_PROXY` or `HTTP_PROXY` is set, proxy mode uses an HTTP CONNECT tunnel only for the ChatGPT Remote
 control WebSocket; other ChatGPT traffic is unchanged. TLS verification stays
 enabled and includes certificates trusted by Windows. Proxy URLs containing
 credentials are rejected. The standard shortcut does not enable this proxy
 mode. If injection fails, the launcher restores ordinary ChatGPT startup
 without the targeted proxy shim.
+
+```powershell
+.\CodexRemoteMobileProject\DesktopShortcut.ps1 -Action Install -UseProxy
+```
 
 For automatic injected startup after sign-in, install a per-user startup
 shortcut. This does not require elevation. Use `-UseProxy` on a VPN or network

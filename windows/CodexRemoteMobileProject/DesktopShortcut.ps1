@@ -3,7 +3,8 @@ param(
     [ValidateSet('Install', 'Remove', 'Probe')]
     [string]$Action = 'Probe',
     [string]$DesktopPath,
-    [string]$StartMenuPath
+    [string]$StartMenuPath,
+    [switch]$UseProxy
 )
 
 $ErrorActionPreference = 'Stop'
@@ -16,14 +17,30 @@ if (-not $DesktopPath) { $DesktopPath = [Environment]::GetFolderPath('Desktop') 
 if (-not $StartMenuPath) { $StartMenuPath = [Environment]::GetFolderPath('Programs') }
 $DesktopPath = [IO.Path]::GetFullPath($DesktopPath)
 $StartMenuPath = [IO.Path]::GetFullPath($StartMenuPath)
-$shortcutTargets = @(
-    [ordered]@{ kind = 'Desktop'; path = Join-Path $DesktopPath 'ChatGPT Custom.lnk'; arguments = ''; description = 'Restart ChatGPT/Codex with the audited remote Mobile projects injection.' },
-    [ordered]@{ kind = 'StartMenu'; path = Join-Path $StartMenuPath 'ChatGPT Custom.lnk'; arguments = ''; description = 'Restart ChatGPT/Codex with the audited remote Mobile projects injection.' },
-    [ordered]@{ kind = 'StartMenuProxy'; path = Join-Path $StartMenuPath 'ChatGPT Custom (Proxy).lnk'; arguments = '--proxy'; description = 'Route the ChatGPT Remote-control WebSocket through the configured HTTPS or HTTP proxy.' }
+$primaryArguments = if ($UseProxy) { '--proxy' } else { '' }
+$primaryDescription = if ($UseProxy) {
+    'Restart ChatGPT/Codex with the audited injection and Remote-control proxy.'
+} else {
+    'Restart ChatGPT/Codex with the audited remote Mobile projects injection.'
+}
+$primaryShortcutTargets = @(
+    [ordered]@{ kind = 'Desktop'; path = Join-Path $DesktopPath 'ChatGPT Custom.lnk'; arguments = $primaryArguments; description = $primaryDescription },
+    [ordered]@{ kind = 'StartMenu'; path = Join-Path $StartMenuPath 'ChatGPT Custom.lnk'; arguments = $primaryArguments; description = $primaryDescription }
 )
+$proxyShortcutTarget = [ordered]@{
+    kind = 'StartMenuProxy'
+    path = Join-Path $StartMenuPath 'ChatGPT Custom (Proxy).lnk'
+    arguments = '--proxy'
+    description = 'Route the ChatGPT Remote-control WebSocket through the configured HTTPS or HTTP proxy.'
+}
+$shortcutTargets = if ($UseProxy) { @($primaryShortcutTargets) } else { @($primaryShortcutTargets) + @($proxyShortcutTarget) }
+$summaryTargets = @($primaryShortcutTargets) + @($proxyShortcutTarget)
 $legacyShortcutTargets = @(
     [ordered]@{ kind = 'LegacyStartMenuProxyTest'; path = Join-Path $StartMenuPath 'ChatGPT Custom (Proxy Test).lnk' }
 )
+if ($UseProxy) {
+    $legacyShortcutTargets += [ordered]@{ kind = 'ConsolidatedStartMenuProxy'; path = $proxyShortcutTarget.path }
+}
 
 function Backup-Shortcut {
     param([string]$Path, [string]$Kind)
@@ -37,7 +54,7 @@ function Backup-Shortcut {
 
 function Get-ShortcutSummary {
     $shell = New-Object -ComObject WScript.Shell
-    $entries = foreach ($target in $shortcutTargets) {
+    $entries = foreach ($target in $summaryTargets) {
         $installed = Test-Path -LiteralPath $target.path -PathType Leaf
         $entry = [ordered]@{ kind = $target.kind; path = $target.path; installed = $installed }
         if ($installed) {
@@ -53,6 +70,7 @@ function Get-ShortcutSummary {
         host = $computerName
         launcherPath = $launcherPath
         launcherPresent = Test-Path -LiteralPath $launcherPath -PathType Leaf
+        requestedProxyMode = [bool]$UseProxy
         shortcuts = @($entries)
         legacyShortcuts = @($legacyShortcutTargets | ForEach-Object {
             [pscustomobject][ordered]@{ kind = $_.kind; path = $_.path; installed = Test-Path -LiteralPath $_.path -PathType Leaf }
@@ -99,7 +117,7 @@ switch ($Action) {
     }
     'Remove' {
         $backups = @()
-        foreach ($target in @($shortcutTargets) + @($legacyShortcutTargets)) {
+        foreach ($target in @($summaryTargets) + @($legacyShortcutTargets)) {
             $backup = Backup-Shortcut -Path $target.path -Kind $target.kind
             if ($backup) { $backups += $backup }
             if ((Test-Path -LiteralPath $target.path -PathType Leaf) -and

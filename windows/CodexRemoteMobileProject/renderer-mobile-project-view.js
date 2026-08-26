@@ -29,7 +29,7 @@
   const REMOTE_INVENTORY_RETRY_MS = 15000;
   const REMOTE_INVENTORY_ACTIVE_TTL_MS = 5000;
   const REMOTE_INVENTORY_IDLE_TTL_MS = 30000;
-  const VERSION = 48;
+  const VERSION = 49;
   const LOCAL_FOLDER_PATH = Object.freeze({
     closed: "M5.55957 2.14136C6.06503 2.14136 6.55801 2.30207 6.9668 2.59937L7.81836 3.21851C8.04761 3.38513 8.32401 3.47534 8.60742 3.47534H12.1338C13.4545 3.47559 14.5254 4.54621 14.5254 5.86694V11.4666C14.5254 12.7873 13.4545 13.8579 12.1338 13.8582H3.86621C2.54554 13.8579 1.47461 12.7873 1.47461 11.4666V4.53296C1.47486 3.21244 2.54569 2.1416 3.86621 2.14136H5.55957ZM2.52539 7.85718V11.4666C2.52539 12.2074 3.12544 12.8081 3.86621 12.8083H12.1338C12.8746 12.8081 13.4746 12.2074 13.4746 11.4666V7.85718H2.52539ZM3.86621 3.19214C3.12559 3.19238 2.52564 3.79234 2.52539 4.53296V6.8064H13.4746V5.86694C13.4746 5.12611 12.8746 4.52539 12.1338 4.52515H8.60742C8.10203 4.52515 7.60895 4.36534 7.2002 4.06812L6.34863 3.448C6.11937 3.28135 5.84301 3.19214 5.55957 3.19214H3.86621Z",
     open: "M4.75488 2.1416C5.30942 2.14164 5.74594 2.23705 6.11816 2.38965C6.48323 2.53934 6.76728 2.73817 7.00391 2.9043L7.02148 2.91699C7.47057 3.23238 7.8162 3.47463 8.55176 3.47461H11.333C12.7194 3.47484 13.8311 4.61217 13.8311 6L13.875 6.38281H13.8594C14.8729 6.38292 15.5982 7.3629 15.3018 8.33203L14.0068 12.5586C13.7703 13.3297 13.0576 13.8563 12.251 13.8564H3.83984C3.4199 13.8564 3.04144 13.7174 2.73828 13.4883L2.67383 13.4346C1.99907 12.9811 1.55577 12.2065 1.55566 11.3311L0.941406 4.66699C0.941406 3.2792 2.05315 2.1419 3.43945 2.1416H4.75488ZM4.7627 7.42969C4.56039 7.42972 4.3807 7.5625 4.32129 7.75586L3.08594 11.7891C2.96123 12.1965 3.18214 12.6072 3.54883 12.7529C3.63476 12.7768 3.74102 12.7958 3.88184 12.8086H12.251C12.5974 12.8085 12.9033 12.5821 13.0049 12.251L14.2998 8.02539C14.3901 7.72947 14.1688 7.42979 13.8594 7.42969H4.7627ZM3.43945 3.19141C2.64724 3.1917 1.99121 3.84481 1.99121 4.66699L2.49316 10.1201L3.32031 7.44922C3.51452 6.81571 4.10008 6.38284 4.7627 6.38281H12.8252L12.7812 6C12.7812 5.22902 12.2045 4.607 11.4795 4.53223L11.333 4.52441H8.55176C8.05756 4.52442 7.64464 4.44062 7.2666 4.2793C6.91453 4.12896 6.6274 3.92345 6.41797 3.77637L6.40039 3.76367C6.16212 3.59639 5.96404 3.46151 5.71973 3.36133C5.54113 3.28812 5.32754 3.2289 5.05176 3.2041L4.75488 3.19141H3.43945Z",
@@ -60,6 +60,7 @@
     dragJustEndedAt: 0,
     disposed: false,
     filter: "all",
+    hostConnectivity: new Map(),
     inventoryHydrationPending: false,
     inventoryHydrationError: null,
     inventoryHydrationMicrotask: false,
@@ -323,7 +324,6 @@
             fetchFromHost: fetchFromHost ?? previousRuntime?.fetchFromHost ?? null,
             requestClient,
           });
-          availability.set(normalizedHostId, true);
         }
       }
       if (hostId === "local" && typeof value.fetchFromHost === "function") {
@@ -755,6 +755,7 @@
       resolveCodexHome.then((codexHome) => runtime.requestClient.sendRequest("fs/readFile", { path: inventoryPath(codexHome) })).then((result) => {
         if (state.disposed) return;
         const parsed = parseRemoteProjectInventory(result);
+        state.hostConnectivity.set(hostId, { available: true, checkedAt: Date.now() });
         const latest = state.remoteProjectInventories.get(hostId);
         if (Number.isFinite(latest?.generatedAt) && latest.generatedAt > parsed.generatedAt && latest.error == null) return;
         state.remoteProjectInventories.set(hostId, {
@@ -788,6 +789,7 @@
         }
       }).catch((error) => {
         if (state.disposed) return;
+        state.hostConnectivity.set(hostId, { available: false, checkedAt: Date.now() });
         state.remoteCodexHomes.delete(hostId);
         const latest = state.remoteProjectInventories.get(hostId);
         if (latest?.sourcePeerCache && freshInventory(hostId)) return;
@@ -1115,6 +1117,9 @@
     }
     const names = hostDiscovery.names;
     const availability = hostDiscovery.availability;
+    for (const [hostId, connectivity] of state.hostConnectivity) {
+      if (typeof connectivity?.available === "boolean") availability.set(hostId, connectivity.available);
+    }
     for (const task of tasks) {
       for (const [id, name] of task.hostNames) {
         if (!names.has(id)) names.set(id, name);
@@ -2793,6 +2798,7 @@
       filter: state.filter,
       hosts: model.hosts.length,
       hostNames: model.hosts.map((host) => host.name),
+      hostAvailability: Object.fromEntries(model.hosts.map((host) => [host.name, { available: host.available, known: host.availabilityKnown }])),
       inventoryHydrationPending: state.inventoryHydrationPending,
       inventoryHydrationError: state.inventoryHydrationError,
       inventoryHydrationPhase: state.inventoryHydrationPhase,

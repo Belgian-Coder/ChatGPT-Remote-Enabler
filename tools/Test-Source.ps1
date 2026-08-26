@@ -49,11 +49,12 @@ if ((Get-FileHash -LiteralPath $windowsMaintenance -Algorithm SHA256).Hash -ne (
 }
 $renderer = Get-Content -LiteralPath $windowsRenderer -Raw
 $requiredContracts = @(
-    'const VERSION = 48;',
+    'const VERSION = 49;',
     'REMOTE_UNREAD_ACK_KEY',
     'freshInventory(hostId)',
     'listAllRuntimeThreads',
     'state.threadInventories',
+    'state.hostConnectivity',
     'navigateToLocalConversation',
     'AUTO_ARCHIVE_ENABLED_KEY',
     'thread/list',
@@ -68,6 +69,9 @@ $requiredContracts = @(
 )
 foreach ($contract in $requiredContracts) {
     if (-not $renderer.Contains($contract)) { throw "Renderer contract is missing: $contract" }
+}
+if ($renderer -match 'availability\.set\(normalizedHostId, true\)') {
+    throw 'A cached request client must not be treated as proof that a host is online.'
 }
 foreach ($forbiddenContract in @('selectNativeConnectionGrouping', 'trim() === "By connection"')) {
     if ($renderer.Contains($forbiddenContract)) { throw "Renderer still mutates native grouping: $forbiddenContract" }
@@ -89,7 +93,7 @@ if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
 [pscustomobject]@{
     JavaScriptFiles = $javascript.Count
     PowerShellFiles = $powershell.Count
-    RendererVersion = 48
+    RendererVersion = 49
     RendererParity = $true
     MaintenanceParity = $true
     MaintenanceSelfTest = $true

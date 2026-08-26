@@ -28,7 +28,7 @@ chmod 755 ./*.sh
 ./MacOSShortcut.sh install
 ```
 
-Install the injected startup on every participating computer. Each device automatically publishes its complete active project/task inventory through ChatGPT Remote's existing authenticated connection. Direct peer reads and local per-device cache files keep clients converged without opening folders or clicking **Show more**; there is no central storage or shared catalogue. Native grouping and folder expansion are never changed.
+Install the injected startup on every participating computer. Each device automatically publishes its complete active project/task inventory through ChatGPT Remote's existing authenticated connection. Direct peer reads and local per-device cache files keep clients converged without opening folders or clicking **Show more**; there is no central storage or shared catalogue. Device dots use fresh direct connectivity—not cached inventory—while Native grouping and folder expansion are never changed.
 
 ## Mobile-project buttons
 

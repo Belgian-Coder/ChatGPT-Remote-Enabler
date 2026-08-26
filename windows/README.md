@@ -10,7 +10,7 @@ Run `ChatGPT Remote Enabler.exe`, or open PowerShell here and run:
 .\Enable-ChatGPTRemote.ps1
 ```
 
-The compatibility check runs first. Renderer v48 preserves the user's
+The compatibility check runs first. Renderer v49 preserves the user's
 **By project**/**By connection** Native views preference and every folder's
 open/closed state. It automatically paginates the authoritative active task
 list and publishes complete active projects, tasks, and working/unread state
@@ -18,6 +18,9 @@ into this device's Codex home. Other devices use direct peer reads plus local
 per-device cache files if a request stalls. No folder opening, **Show more**
 click, shared catalogue, or central storage is required. Empty active projects
 appear while archived/removed projects and stale native rows do not.
+Device dots use fresh direct app-server connectivity. Cached request clients
+and peer inventory can keep projects visible but cannot falsely mark an
+offline device as online.
 Synchronization continues automatically when **Native views** is selected.
 Controllers read their complete registered-project state directly and verify
 new registrations before recording success. Remote chats match projects by

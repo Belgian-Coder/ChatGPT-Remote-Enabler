@@ -10,21 +10,20 @@ Run `ChatGPT Remote Enabler.exe`, or open PowerShell here and run:
 .\Enable-ChatGPTRemote.ps1
 ```
 
-The compatibility check runs first. Mobile projects preserves the user's
-**By project**/**By connection** Native views preference and expands truncated
-task lists exposed by that grouping through Codex's own native callbacks.
-Renderer v47 also publishes this device's active saved projects and its active
-working/unread task states into its Codex home. Controllers running v47 read
-that fresh inventory through ChatGPT Remote and refresh active task indicators
-every five seconds, backing off while idle. Empty active projects appear while archived/removed projects do
-not. Local empty projects come from the authoritative local inventory, so a
-remote-registration sidebar remount cannot hide them.
+The compatibility check runs first. Renderer v48 preserves the user's
+**By project**/**By connection** Native views preference and every folder's
+open/closed state. It automatically paginates the authoritative active task
+list and publishes complete active projects, tasks, and working/unread state
+into this device's Codex home. Other devices use direct peer reads plus local
+per-device cache files if a request stalls. No folder opening, **Show more**
+click, shared catalogue, or central storage is required. Empty active projects
+appear while archived/removed projects and stale native rows do not.
 Synchronization continues automatically when **Native views** is selected.
 Controllers read their complete registered-project state directly and verify
 new registrations before recording success. Remote chats match projects by
 device and normalized path, so they remain under the registered project.
-The currently selected native lists are rehydrated on startup and every 30
-seconds without opening the grouping menu or changing its value. Hovering a
+The inventory refreshes on startup and every 30 seconds without opening the
+grouping menu or changing its value. Hovering a
 Mobile Projects folder opens the exact native project composer when available;
 registered projects retain a native global-composer fallback when their folder
 row is not mounted by the selected grouping.

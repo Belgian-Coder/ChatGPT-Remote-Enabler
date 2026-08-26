@@ -20,18 +20,16 @@
   const REMOTE_UNREAD_ACK_KEY = "codex-remote-mobile-unread-ack-v1";
   const REMOTE_UNREAD_ACK_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
   const LOCAL_REMOTE_PROJECTS_TTL_MS = 15000;
-  const NATIVE_INVENTORY_REFRESH_MS = 30000;
-  const NATIVE_INVENTORY_MAX_ROUNDS = 8;
-  const NATIVE_INVENTORY_ROUND_DELAY_MS = 175;
+  const NATIVE_INVENTORY_REFRESH_MS = 15000;
   const REMOTE_INVENTORY_FILENAME = "remote-project-inventory-v1.json";
   const REMOTE_INVENTORY_MAX_AGE_MS = 180000;
   const REMOTE_INVENTORY_ACTIVE_MS = 5000;
-  const REMOTE_INVENTORY_IDLE_MS = 60000;
+  const REMOTE_INVENTORY_IDLE_MS = 15000;
   const REMOTE_INVENTORY_FUTURE_SKEW_MS = 5 * 60 * 1000;
   const REMOTE_INVENTORY_RETRY_MS = 15000;
   const REMOTE_INVENTORY_ACTIVE_TTL_MS = 5000;
   const REMOTE_INVENTORY_IDLE_TTL_MS = 30000;
-  const VERSION = 47;
+  const VERSION = 48;
   const LOCAL_FOLDER_PATH = Object.freeze({
     closed: "M5.55957 2.14136C6.06503 2.14136 6.55801 2.30207 6.9668 2.59937L7.81836 3.21851C8.04761 3.38513 8.32401 3.47534 8.60742 3.47534H12.1338C13.4545 3.47559 14.5254 4.54621 14.5254 5.86694V11.4666C14.5254 12.7873 13.4545 13.8579 12.1338 13.8582H3.86621C2.54554 13.8579 1.47461 12.7873 1.47461 11.4666V4.53296C1.47486 3.21244 2.54569 2.1416 3.86621 2.14136H5.55957ZM2.52539 7.85718V11.4666C2.52539 12.2074 3.12544 12.8081 3.86621 12.8083H12.1338C12.8746 12.8081 13.4746 12.2074 13.4746 11.4666V7.85718H2.52539ZM3.86621 3.19214C3.12559 3.19238 2.52564 3.79234 2.52539 4.53296V6.8064H13.4746V5.86694C13.4746 5.12611 12.8746 4.52539 12.1338 4.52515H8.60742C8.10203 4.52515 7.60895 4.36534 7.2002 4.06812L6.34863 3.448C6.11937 3.28135 5.84301 3.19214 5.55957 3.19214H3.86621Z",
     open: "M4.75488 2.1416C5.30942 2.14164 5.74594 2.23705 6.11816 2.38965C6.48323 2.53934 6.76728 2.73817 7.00391 2.9043L7.02148 2.91699C7.47057 3.23238 7.8162 3.47463 8.55176 3.47461H11.333C12.7194 3.47484 13.8311 4.61217 13.8311 6L13.875 6.38281H13.8594C14.8729 6.38292 15.5982 7.3629 15.3018 8.33203L14.0068 12.5586C13.7703 13.3297 13.0576 13.8563 12.251 13.8564H3.83984C3.4199 13.8564 3.04144 13.7174 2.73828 13.4883L2.67383 13.4346C1.99907 12.9811 1.55577 12.2065 1.55566 11.3311L0.941406 4.66699C0.941406 3.2792 2.05315 2.1419 3.43945 2.1416H4.75488ZM4.7627 7.42969C4.56039 7.42972 4.3807 7.5625 4.32129 7.75586L3.08594 11.7891C2.96123 12.1965 3.18214 12.6072 3.54883 12.7529C3.63476 12.7768 3.74102 12.7958 3.88184 12.8086H12.251C12.5974 12.8085 12.9033 12.5821 13.0049 12.251L14.2998 8.02539C14.3901 7.72947 14.1688 7.42979 13.8594 7.42969H4.7627ZM3.43945 3.19141C2.64724 3.1917 1.99121 3.84481 1.99121 4.66699L2.49316 10.1201L3.32031 7.44922C3.51452 6.81571 4.10008 6.38284 4.7627 6.38281H12.8252L12.7812 6C12.7812 5.22902 12.2045 4.607 11.4795 4.53223L11.333 4.52441H8.55176C8.05756 4.52442 7.64464 4.44062 7.2666 4.2793C6.91453 4.12896 6.6274 3.92345 6.41797 3.77637L6.40039 3.76367C6.16212 3.59639 5.96404 3.46151 5.71973 3.36133C5.54113 3.28812 5.32754 3.2289 5.05176 3.2041L4.75488 3.19141H3.43945Z",
@@ -72,6 +70,7 @@
     inventoryHydrationTruncated: false,
     lastAction: null,
     localFetchFromHost: null,
+    localCodexHome: null,
     localInventoryPublishedAt: 0,
     localInventoryProjects: [],
     localInventoryPublisherError: null,
@@ -83,11 +82,13 @@
     localRegisteredProjectsFetchedAt: 0,
     localRegisteredProjectsPending: false,
     localRuntime: null,
+    navigationBridge: null,
     nativeContainer: null,
     originalDisplay: "",
     observer: null,
     panel: null,
     pendingNewThreads: new Set(),
+    peerCacheStates: new Map(),
     projectService: null,
     queryClient: null,
     remoteProjectInventories: new Map(),
@@ -96,6 +97,8 @@
     remoteRuntimeScannedAt: 0,
     reorderPending: false,
     scheduledFrame: null,
+    threadInventories: new Map(),
+    threadManagers: new Map(),
     view: "mobile",
   };
 
@@ -132,14 +135,14 @@
   function acknowledgeRemoteUnread(task) {
     if (!task?.conversationKey || task.hostId === "local") return;
     const records = readRecords(REMOTE_UNREAD_ACK_KEY);
-    records[remoteUnreadIdentity(task.hostId, task.conversationKey)] = { acknowledgedAt: Date.now() };
+    records[remoteUnreadIdentity(task.hostId, task.conversationId || task.conversationKey)] = { acknowledgedAt: Date.now() };
     writeRecords(REMOTE_UNREAD_ACK_KEY, records);
   }
 
   function remoteUnreadAcknowledged(task, authoritativeState) {
     if (!task?.conversationKey || task.hostId === "local") return false;
     const records = readRecords(REMOTE_UNREAD_ACK_KEY);
-    const key = remoteUnreadIdentity(task.hostId, task.conversationKey);
+    const key = remoteUnreadIdentity(task.hostId, task.conversationId || task.conversationKey);
     const record = records[key];
     if (!record) return false;
     const acknowledgedAt = Number(record.acknowledgedAt);
@@ -250,9 +253,10 @@
       ? hostContainer.getAttribute("aria-label") || null
       : null;
     const conversationKey = row.getAttribute("data-app-action-sidebar-thread-id") || "";
+    const conversationId = rawConversationId(conversationKey);
     const title = row.getAttribute("data-app-action-sidebar-thread-title") || "Untitled task";
     const selected = row.getAttribute("data-app-action-sidebar-thread-selected") === "true";
-    return { conversationKey, cwd, hostDisplayName, hostId, hostNames, isGrouped, isProjectless, originalRow: row, projectId, projectLabel, selected, statusType, title, unread };
+    return { conversationId, conversationKey, cwd, hostDisplayName, hostId, hostNames, isGrouped, isProjectless, originalRow: row, projectId, projectLabel, selected, statusType, title, unread };
   }
 
   function commonAncestor(elements) {
@@ -280,6 +284,11 @@
       if (typeof value.invalidateQueries === "function" && typeof value.getQueryData === "function") state.queryClient = value;
       if (typeof value.projects?.removeRemote === "function") state.projectService = value.projects;
       if (typeof value.removeRemote === "function" && typeof value.createRemote === "function") state.projectService = value;
+      if (typeof value.navigateToLocalConversation === "function" && typeof value.navigate === "function") state.navigationBridge = value;
+      if (typeof value.getThreadSummaries === "function" && typeof value.activateThreadSummary === "function" && typeof value.getHostId === "function") {
+        const managerHostId = normalizeHostId(value.getHostId());
+        if (typeof managerHostId === "string") state.threadManagers.set(managerHostId, value);
+      }
       const connectionHost = typeof value.host === "string" ? value.host : null;
       const hostId = value.hostId ?? value.host_id ?? value.environmentId ?? value.environment_id ?? connectionHost;
       const displayName = value.displayName ?? value.display_name ?? value.hostDisplayName ?? (connectionHost ? value.name : null);
@@ -342,6 +351,17 @@
           });
         }
       }
+      if (value instanceof Map) {
+        for (const [key, item] of [...value.entries()].slice(0, 1000)) {
+          scan(key, depth + 1);
+          scan(item, depth + 1);
+        }
+        return;
+      }
+      if (value instanceof Set) {
+        for (const item of [...value].slice(0, 1000)) scan(item, depth + 1);
+        return;
+      }
       for (const [key, item] of Object.entries(value).slice(0, 200)) {
         if (["alternate", "child", "return", "sibling", "stateNode"].includes(key)) continue;
         scan(item, depth + 1);
@@ -395,7 +415,7 @@
       if (fiber.sibling) queue.push(fiber.sibling);
     }
     const seen = new WeakSet();
-    let budget = 220000;
+    let budget = 500000;
     const scan = (value, depth = 0) => {
       if (!value || typeof value !== "object" || value.nodeType || value === globalThis || seen.has(value) || depth > 14 || budget-- <= 0) return;
       seen.add(value);
@@ -403,6 +423,11 @@
       if (typeof value.invalidateQueries === "function" && typeof value.getQueryData === "function") state.queryClient = value;
       if (typeof value.projects?.removeRemote === "function") state.projectService = value.projects;
       if (typeof value.removeRemote === "function" && typeof value.createRemote === "function") state.projectService = value;
+      if (typeof value.navigateToLocalConversation === "function" && typeof value.navigate === "function") state.navigationBridge = value;
+      if (typeof value.getThreadSummaries === "function" && typeof value.activateThreadSummary === "function" && typeof value.getHostId === "function") {
+        const managerHostId = normalizeHostId(value.getHostId());
+        if (typeof managerHostId === "string") state.threadManagers.set(managerHostId, value);
+      }
       let keys;
       try { keys = Object.keys(value); } catch { return; }
       try {
@@ -425,6 +450,17 @@
       } catch {}
       if (Array.isArray(value)) {
         for (const item of value.slice(0, 200)) scan(item, depth + 1);
+        return;
+      }
+      if (value instanceof Map) {
+        for (const [key, item] of [...value.entries()].slice(0, 1000)) {
+          scan(key, depth + 1);
+          scan(item, depth + 1);
+        }
+        return;
+      }
+      if (value instanceof Set) {
+        for (const item of [...value].slice(0, 1000)) scan(item, depth + 1);
         return;
       }
       for (const key of keys.slice(0, 400)) {
@@ -451,6 +487,12 @@
     return typeof hostId === "string" && /^(?:remote-control:)?env_/iu.test(hostId)
       ? (hostId.startsWith("remote-control:") ? hostId : `remote-control:${hostId}`)
       : hostId;
+  }
+
+  function rawConversationId(value) {
+    if (typeof value !== "string") return "";
+    const match = value.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/iu);
+    return match?.[1] ?? value;
   }
 
   function projectName(cwd) {
@@ -539,6 +581,24 @@
     return inventory;
   }
 
+  function inventoryMatchesLocal(inventory) {
+    const localThreads = state.threadInventories.get("local");
+    if (localThreads && !localThreads.error && inventory?.threadsAuthoritative === true) {
+      const localIds = new Set((localThreads.threads ?? []).map((thread) => rawConversationId(thread?.id ?? thread?.conversationId ?? "")).filter(Boolean));
+      const remoteIds = new Set((inventory.threads ?? []).map((thread) => rawConversationId(thread?.id ?? "")).filter(Boolean));
+      if (localIds.size > 0 && localIds.size === remoteIds.size && [...localIds].every((id) => remoteIds.has(id))) return true;
+    }
+    const localPaths = new Set(state.localInventoryProjects.map((project) => normalizePath(project.cwd)));
+    const remotePaths = new Set((inventory?.projects ?? []).map((project) => normalizePath(project.cwd)));
+    return localPaths.size > 0 && localPaths.size === remotePaths.size && [...localPaths].every((path) => remotePaths.has(path));
+  }
+
+  function removeGossipedLocalInventoryDuplicates() {
+    for (const [hostId, inventory] of state.remoteProjectInventories) {
+      if (inventory.sourcePeerHostId && inventoryMatchesLocal(inventory)) state.remoteProjectInventories.delete(hostId);
+    }
+  }
+
   function inventoryProjects() {
     const projects = [];
     for (const hostId of state.remoteProjectInventories.keys()) {
@@ -589,6 +649,15 @@
     return `${codexHome.replace(/[\\/]+$/u, "")}${separator}${REMOTE_INVENTORY_FILENAME}`;
   }
 
+  function peerInventorySlug(name) {
+    return String(name || "device").normalize("NFKD").replace(/[^a-z0-9]+/giu, "").toLocaleLowerCase() || "device";
+  }
+
+  function peerInventoryPath(codexHome, name) {
+    const separator = codexHome.includes("\\") ? "\\" : "/";
+    return `${codexHome.replace(/[\\/]+$/u, "")}${separator}remote-project-peer-${peerInventorySlug(name)}-v1.json`;
+  }
+
   function encodeText(value) {
     const bytes = new TextEncoder().encode(value);
     let binary = "";
@@ -604,9 +673,7 @@
     return new TextDecoder().decode(bytes);
   }
 
-  function parseRemoteProjectInventory(result) {
-    if (typeof result?.dataBase64 !== "string") throw new Error("Remote project inventory did not contain file data");
-    const value = JSON.parse(decodeText(result.dataBase64));
+  function parseInventoryPayload(value, includePeers = false) {
     const generatedAt = Date.parse(value?.generatedAt);
     if (value?.schemaVersion !== 1 || !Number.isFinite(generatedAt)) throw new Error("Remote project inventory has an unsupported format");
     if (Date.now() - generatedAt > REMOTE_INVENTORY_MAX_AGE_MS) throw new Error("Remote project inventory is stale");
@@ -629,7 +696,37 @@
       const statusType = metadata.statusType === "loading" ? "loading" : "idle";
       if (unread || statusType === "loading") tasks.set(metadata.conversationKey, { statusType, unread });
     }
-    return { generatedAt, projects: [...projects.values()].sort((left, right) => left.name.localeCompare(right.name)), tasks };
+    const threadsAuthoritative = Array.isArray(value.threads);
+    const threads = (threadsAuthoritative ? value.threads : []).slice(0, 10000).flatMap((thread) => {
+      const id = rawConversationId(thread?.id ?? "");
+      if (!id) return [];
+      return [{
+        cwd: canonicalRemotePath(thread?.cwd),
+        hasUnreadTurn: thread?.hasUnreadTurn === true,
+        id,
+        projectId: typeof thread?.projectId === "string" ? thread.projectId : null,
+        status: typeof thread?.status === "string" ? thread.status : thread?.status?.type,
+        title: typeof thread?.title === "string" ? thread.title : "Untitled task",
+        updatedAt: thread?.updatedAt ?? null,
+        workspaceKind: typeof thread?.workspaceKind === "string" ? thread.workspaceKind : null,
+      }];
+    });
+    const peers = new Map();
+    if (includePeers && value?.peers && typeof value.peers === "object" && !Array.isArray(value.peers)) {
+      for (const [peerHostId, peerValue] of Object.entries(value.peers).slice(0, 20)) {
+        try {
+          const normalizedHostId = normalizeHostId(peerHostId);
+          if (typeof normalizedHostId !== "string" || normalizedHostId === "local") continue;
+          peers.set(normalizedHostId, parseInventoryPayload(peerValue, false));
+        } catch {}
+      }
+    }
+    return { generatedAt, peers, projects: [...projects.values()].sort((left, right) => left.name.localeCompare(right.name)), tasks, threads, threadsAuthoritative };
+  }
+
+  function parseRemoteProjectInventory(result) {
+    if (typeof result?.dataBase64 !== "string") throw new Error("Remote project inventory did not contain file data");
+    return parseInventoryPayload(JSON.parse(decodeText(result.dataBase64)), true);
   }
 
   function scheduleRemoteProjectInventory(runtimes) {
@@ -642,7 +739,7 @@
       }
     }
     for (const [hostId, runtime] of runtimes) {
-      const current = state.remoteProjectInventories.get(hostId) ?? { projects: [], tasks: new Map() };
+      const current = state.remoteProjectInventories.get(hostId) ?? { projects: [], tasks: new Map(), threads: [] };
       const refreshTtl = current.tasks?.size ? REMOTE_INVENTORY_ACTIVE_TTL_MS : REMOTE_INVENTORY_IDLE_TTL_MS;
       if (current.pending || current.retryAt > now || current.fetchedAt && now - current.fetchedAt < refreshTtl) continue;
       if (typeof runtime?.requestClient?.sendRequest !== "function") continue;
@@ -658,6 +755,8 @@
       resolveCodexHome.then((codexHome) => runtime.requestClient.sendRequest("fs/readFile", { path: inventoryPath(codexHome) })).then((result) => {
         if (state.disposed) return;
         const parsed = parseRemoteProjectInventory(result);
+        const latest = state.remoteProjectInventories.get(hostId);
+        if (Number.isFinite(latest?.generatedAt) && latest.generatedAt > parsed.generatedAt && latest.error == null) return;
         state.remoteProjectInventories.set(hostId, {
           error: null,
           fetchedAt: Date.now(),
@@ -666,18 +765,101 @@
           projects: parsed.projects,
           retryAt: 0,
           tasks: parsed.tasks,
+          threads: parsed.threads,
+          threadsAuthoritative: parsed.threadsAuthoritative,
         });
+        for (const [peerHostId, peer] of parsed.peers) {
+          if (peerHostId === hostId) continue;
+          if (inventoryMatchesLocal(peer)) continue;
+          const existing = state.remoteProjectInventories.get(peerHostId);
+          if (Number.isFinite(existing?.generatedAt) && existing.generatedAt >= peer.generatedAt && existing.error == null) continue;
+          state.remoteProjectInventories.set(peerHostId, {
+            error: null,
+            fetchedAt: Date.now(),
+            generatedAt: peer.generatedAt,
+            pending: false,
+            projects: peer.projects,
+            retryAt: existing?.retryAt ?? 0,
+            sourcePeerHostId: hostId,
+            tasks: peer.tasks,
+            threads: peer.threads,
+            threadsAuthoritative: peer.threadsAuthoritative,
+          });
+        }
       }).catch((error) => {
         if (state.disposed) return;
         state.remoteCodexHomes.delete(hostId);
+        const latest = state.remoteProjectInventories.get(hostId);
+        if (latest?.sourcePeerCache && freshInventory(hostId)) return;
         state.remoteProjectInventories.set(hostId, {
           error: error?.message || String(error),
-          fetchedAt: 0,
+          fetchedAt: latest?.fetchedAt ?? 0,
+          generatedAt: latest?.generatedAt,
           pending: false,
-          projects: [],
+          projects: latest?.projects ?? current.projects ?? [],
           retryAt: Date.now() + REMOTE_INVENTORY_RETRY_MS,
-          tasks: new Map(),
+          sourcePeerCache: latest?.sourcePeerCache === true,
+          sourcePeerHostId: latest?.sourcePeerHostId,
+          tasks: latest?.tasks ?? current.tasks ?? new Map(),
+          threads: latest?.threads ?? current.threads ?? [],
+          threadsAuthoritative: latest?.threadsAuthoritative === true || current.threadsAuthoritative === true,
         });
+      }).finally(() => { if (!state.disposed) schedule(); });
+    }
+  }
+
+  function pushLocalInventoryToPeers(dataBase64) {
+    const discovery = discoverHostNames();
+    const runtimes = discoverRemoteRuntimes(discovery.runtimes);
+    for (const [hostId, runtime] of runtimes) {
+      if (typeof runtime?.requestClient?.sendRequest !== "function") continue;
+      const resolveCodexHome = state.remoteCodexHomes.has(hostId)
+        ? Promise.resolve(state.remoteCodexHomes.get(hostId))
+        : runtime.requestClient.sendRequest("config/read", { cwd: null, includeLayers: true }).then((configResult) => {
+          const codexHome = findCodexHome(configResult);
+          if (!codexHome) throw new Error("Remote Codex home was not reported");
+          state.remoteCodexHomes.set(hostId, codexHome);
+          return codexHome;
+        });
+      void resolveCodexHome
+        .then((codexHome) => runtime.requestClient.sendRequest("fs/writeFile", {
+          dataBase64,
+          path: peerInventoryPath(codexHome, config.localDisplayName || "Local"),
+        }))
+        .catch(() => {});
+    }
+  }
+
+  function scheduleLocalPeerCacheInventory(hosts) {
+    const runtime = state.localRuntime;
+    if (!state.localCodexHome || typeof runtime?.requestClient?.sendRequest !== "function") return;
+    const now = Date.now();
+    for (const host of hosts) {
+      if (host.id === "local") continue;
+      const cache = state.peerCacheStates.get(host.id) ?? {};
+      if (cache.pending || cache.fetchedAt && now - cache.fetchedAt < REMOTE_INVENTORY_IDLE_MS) continue;
+      state.peerCacheStates.set(host.id, { ...cache, pending: true });
+      runtime.requestClient.sendRequest("fs/readFile", { path: peerInventoryPath(state.localCodexHome, host.name) }).then((result) => {
+        if (state.disposed) return;
+        const parsed = parseRemoteProjectInventory(result);
+        const existing = state.remoteProjectInventories.get(host.id);
+        if (!Number.isFinite(existing?.generatedAt) || parsed.generatedAt >= existing.generatedAt || existing.error) {
+          state.remoteProjectInventories.set(host.id, {
+            error: null,
+            fetchedAt: Date.now(),
+            generatedAt: parsed.generatedAt,
+            pending: false,
+            projects: parsed.projects,
+            retryAt: existing?.retryAt ?? 0,
+            sourcePeerCache: true,
+            tasks: parsed.tasks,
+            threads: parsed.threads,
+            threadsAuthoritative: parsed.threadsAuthoritative,
+          });
+        }
+        state.peerCacheStates.set(host.id, { error: null, fetchedAt: Date.now(), pending: false });
+      }).catch((error) => {
+        state.peerCacheStates.set(host.id, { error: error?.message || String(error), fetchedAt: Date.now(), pending: false });
       }).finally(() => { if (!state.disposed) schedule(); });
     }
   }
@@ -685,13 +867,38 @@
   function scheduleLocalProjectInventoryPublication() {
     const runtime = state.localRuntime;
     const now = Date.now();
-    if (!runtime || state.disposed || state.localInventoryPublisherPending) return;
+    if (!runtime || state.disposed || state.localInventoryPublisherPending || !state.threadInventories.has("local")) return;
     const tasks = [...document.querySelectorAll(ROW_SELECTOR)]
       .filter((row) => !row.closest(`#${PANEL_ID}`))
       .map(metadataFromRow)
       .filter((task) => task.hostId === "local" && (task.unread || task.statusType === "loading"))
-      .map((task) => ({ conversationKey: task.conversationKey, statusType: task.statusType, unread: task.unread }));
-    const statusSignature = JSON.stringify(tasks);
+      .map((task) => ({ conversationKey: task.conversationId || rawConversationId(task.conversationKey), statusType: task.statusType, unread: task.unread }));
+    const threads = (state.threadInventories.get("local")?.threads ?? []).flatMap((thread) => {
+      const id = rawConversationId(thread?.id ?? thread?.conversationId ?? "");
+      if (!id) return [];
+      return [{
+        cwd: canonicalRemotePath(thread?.cwd),
+        hasUnreadTurn: thread?.hasUnreadTurn === true,
+        id,
+        projectId: typeof thread?.projectId === "string" ? thread.projectId : null,
+        status: typeof thread?.status === "string" ? thread.status : thread?.status?.type,
+        title: typeof thread?.title === "string" && thread.title.trim() ? thread.title.trim() : "Untitled task",
+        updatedAt: thread?.updatedAt ?? null,
+        workspaceKind: typeof thread?.workspaceKind === "string" ? thread.workspaceKind : null,
+      }];
+    });
+    const peers = Object.fromEntries([...state.remoteProjectInventories].flatMap(([hostId]) => {
+      const inventory = freshInventory(hostId);
+      if (!inventory || inventory.threadsAuthoritative !== true) return [];
+      return [[hostId, {
+        generatedAt: new Date(inventory.generatedAt).toISOString(),
+        projects: (inventory.projects ?? []).map((project) => ({ name: project.name, rootPaths: [project.cwd] })),
+        schemaVersion: 1,
+        tasks: [...(inventory.tasks ?? new Map())].map(([conversationKey, task]) => ({ conversationKey, statusType: task.statusType, unread: task.unread })),
+        threads: inventory.threads ?? [],
+      }]];
+    }));
+    const statusSignature = JSON.stringify({ peers, tasks, threads });
     const publishInterval = tasks.length ? REMOTE_INVENTORY_ACTIVE_MS : REMOTE_INVENTORY_IDLE_MS;
     const statusChanged = statusSignature !== state.localInventoryStatusSignature;
     if (!statusChanged && now - state.localInventoryPublishedAt < publishInterval) return;
@@ -702,6 +909,7 @@
     ]).then(([projectsResult, configResult]) => {
       const codexHome = findCodexHome(configResult);
       if (!codexHome) throw new Error("Local Codex home was not reported");
+      state.localCodexHome = codexHome;
       const values = projectsResult?.value && typeof projectsResult.value === "object" && !Array.isArray(projectsResult.value)
         ? Object.values(projectsResult.value)
         : [];
@@ -723,8 +931,10 @@
         label: project.name,
         projectId: project.id,
       })).filter((project) => project.projectId && project.cwd);
-      const payload = JSON.stringify({ generatedAt: new Date().toISOString(), projects, schemaVersion: 1, tasks });
-      return runtime.requestClient.sendRequest("fs/writeFile", { dataBase64: encodeText(payload), path: inventoryPath(codexHome) });
+      const payload = JSON.stringify({ generatedAt: new Date().toISOString(), peers, projects, schemaVersion: 1, tasks, threads });
+      const dataBase64 = encodeText(payload);
+      return runtime.requestClient.sendRequest("fs/writeFile", { dataBase64, path: inventoryPath(codexHome) })
+        .then(() => pushLocalInventoryToPeers(dataBase64));
     }).then(() => {
       if (state.disposed) return;
       state.localInventoryPublishedAt = Date.now();
@@ -787,16 +997,103 @@
     return null;
   }
 
+  function taskFromThread(thread, hostId) {
+    const conversationId = rawConversationId(thread?.id ?? thread?.conversationId ?? "");
+    if (!conversationId) return null;
+    const cwd = canonicalRemotePath(thread?.cwd ?? thread?.workingDirectory ?? thread?.workspace?.cwd);
+    const projectId = typeof thread?.projectId === "string" ? thread.projectId
+      : typeof thread?.project_id === "string" ? thread.project_id
+      : typeof thread?.project?.id === "string" ? thread.project.id
+      : null;
+    const runtimeStatus = typeof thread?.status === "string" ? thread.status : thread?.status?.type;
+    return {
+      conversationId,
+      conversationKey: conversationId,
+      cwd,
+      hostDisplayName: null,
+      hostId,
+      hostNames: new Map(),
+      isGrouped: Boolean(projectId || cwd),
+      isProjectless: thread?.projectless === true || thread?.workspaceKind === "projectless" || !cwd,
+      originalRow: null,
+      projectId,
+      projectLabel: typeof thread?.projectLabel === "string" ? thread.projectLabel : null,
+      selected: false,
+      sourceThread: thread,
+      statusType: /^(?:active|inProgress|running|working)$/iu.test(runtimeStatus || "") ? "loading" : "idle",
+      title: typeof thread?.title === "string" && thread.title.trim() ? thread.title.trim() : "Untitled task",
+      unread: thread?.hasUnreadTurn === true || thread?.unread === true,
+    };
+  }
+
   function collectModel() {
     const rows = [...document.querySelectorAll(ROW_SELECTOR)].filter((row) => !row.closest(`#${PANEL_ID}`));
-    const tasks = rows.map(metadataFromRow).filter((task) => task.conversationKey);
+    const authoritativeIds = new Map();
+    for (const [hostId, inventory] of state.threadInventories) {
+      if (!inventory.error) authoritativeIds.set(hostId, new Set((inventory.threads ?? []).map((thread) => rawConversationId(thread?.id ?? thread?.conversationId ?? "")).filter(Boolean)));
+    }
+    for (const [hostId] of state.remoteProjectInventories) {
+      const inventory = freshInventory(hostId);
+      if (inventory?.threadsAuthoritative === true) authoritativeIds.set(hostId, new Set((inventory.threads ?? []).map((thread) => rawConversationId(thread?.id ?? "")).filter(Boolean)));
+    }
+    const taskMap = new Map();
+    for (const task of rows.map(metadataFromRow).filter((task) => task.conversationId)) {
+      if (authoritativeIds.has(task.hostId) && !authoritativeIds.get(task.hostId).has(task.conversationId)) continue;
+      taskMap.set(`${task.hostId}::${task.conversationId}`, task);
+    }
+    for (const [hostId, inventory] of state.threadInventories) {
+      for (const thread of inventory.threads ?? []) {
+        const task = taskFromThread(thread, hostId);
+        if (!task) continue;
+        const key = `${hostId}::${task.conversationId}`;
+        const nativeTask = taskMap.get(key);
+        if (nativeTask) {
+          nativeTask.cwd ??= task.cwd;
+          nativeTask.projectId ??= task.projectId;
+          nativeTask.projectLabel ??= task.projectLabel;
+          nativeTask.sourceThread = thread;
+          nativeTask.title = nativeTask.title === "Untitled task" ? task.title : nativeTask.title;
+          nativeTask.unread ||= task.unread;
+        } else {
+          taskMap.set(key, task);
+        }
+      }
+    }
+    for (const [hostId] of state.remoteProjectInventories) {
+      const inventory = freshInventory(hostId);
+      for (const thread of inventory?.threads ?? []) {
+        const task = taskFromThread(thread, hostId);
+        if (!task) continue;
+        const key = `${hostId}::${task.conversationId}`;
+        const existing = taskMap.get(key);
+        if (existing) {
+          existing.cwd ??= task.cwd;
+          existing.projectId ??= task.projectId;
+          existing.title = existing.title === "Untitled task" ? task.title : existing.title;
+          existing.unread ||= task.unread;
+        } else {
+          taskMap.set(key, task);
+        }
+      }
+    }
+    const tasks = [...taskMap.values()];
+    const remoteInventoryProjects = inventoryProjects();
+    const authoritativeProjectPaths = new Map();
+    if (state.localInventoryPublishedAt > 0) authoritativeProjectPaths.set("local", new Set(state.localInventoryProjects.map((project) => normalizePath(project.cwd))));
+    for (const project of remoteInventoryProjects) {
+      if (!authoritativeProjectPaths.has(project.hostId)) authoritativeProjectPaths.set(project.hostId, new Set());
+      authoritativeProjectPaths.get(project.hostId).add(normalizePath(project.cwd));
+    }
+    const projectIsAuthoritative = (project) => !authoritativeProjectPaths.has(project.hostId)
+      || Boolean(project.cwd && authoritativeProjectPaths.get(project.hostId).has(normalizePath(project.cwd)));
     const domNativeProjects = [...document.querySelectorAll('[data-sidebar-project-kind][role="listitem"]')]
       .map(metadataFromNativeProject)
-      .filter(Boolean);
+      .filter((project) => project && projectIsAuthoritative(project));
     const hostDiscovery = discoverHostNames();
     const nativeProjects = [...domNativeProjects];
     const nativeProjectIds = new Set(nativeProjects.map((project) => project.projectId));
     for (const project of [...hostDiscovery.registeredProjects.values(), ...state.localRegisteredProjects.values()]) {
+      if (!projectIsAuthoritative(project)) continue;
       if (!nativeProjectIds.has(project.projectId)) nativeProjects.push(project);
       nativeProjectIds.add(project.projectId);
     }
@@ -804,12 +1101,11 @@
       if (!nativeProjectIds.has(project.projectId)) nativeProjects.push(project);
       nativeProjectIds.add(project.projectId);
     }
-    const remoteInventoryProjects = inventoryProjects();
     for (const task of tasks) {
       if (task.hostId === "local") continue;
       const inventory = authoritativeInventory(task.hostId);
       if (!inventory) continue;
-      const authoritativeState = inventory.tasks?.get(task.conversationKey) ?? null;
+      const authoritativeState = inventory.tasks?.get(task.conversationKey) ?? inventory.tasks?.get(task.conversationId) ?? null;
       if (!authoritativeState) {
         remoteUnreadAcknowledged(task, null);
         continue;
@@ -886,9 +1182,9 @@
       groups.push(group);
     }
     for (const task of tasks) {
-      const recent = isRecentTask(task);
       const cwdKey = task.cwd ? normalizePath(task.cwd) : `unknown:${task.conversationKey}`;
-      const matchingProject = !recent && task.cwd ? projectByHostPath.get(`${task.hostId}::${cwdKey}`) : null;
+      const matchingProject = task.cwd ? projectByHostPath.get(`${task.hostId}::${cwdKey}`) : null;
+      const recent = !matchingProject && (authoritativeProjectPaths.has(task.hostId) || isRecentTask(task));
       const projectKey = task.projectId ? `project:${task.projectId}` : `cwd:${cwdKey}`;
       const key = recent ? `${task.hostId}::recent` : matchingProject?.key ?? `${task.hostId}::${projectKey}`;
       let group = groupsByKey.get(key);
@@ -1049,6 +1345,7 @@
           expand: props.onExpandedChange,
           expanded: props.expanded === true,
           itemCount: props.items.length,
+          loadMore: typeof props.onLoadMore === "function" ? props.onLoadMore : null,
           maxItems: Number.isFinite(props.maxItems) ? props.maxItems : Number.POSITIVE_INFINITY,
           navigationListId: typeof props.navigationListId === "string" ? props.navigationListId : null,
         });
@@ -1063,33 +1360,46 @@
       .some((control) => control.navigationListId?.startsWith("codex:connection:"));
   }
 
-  function waitForHydrationRound() {
-    return new Promise((resolve) => setTimeout(resolve, NATIVE_INVENTORY_ROUND_DELAY_MS));
-  }
-
   async function hydrateNativeInventory() {
     if (state.inventoryHydrationPending) return;
     state.inventoryHydrationPending = true;
     state.inventoryHydrationError = null;
-    state.inventoryHydrationPhase = "expanding";
+    state.inventoryHydrationPhase = "listing-threads";
     state.inventoryHydrationTruncated = false;
     try {
-      for (const control of nativeThreadListExpansionControls()) {
-        if (!control.expanded && control.itemCount > control.maxItems) control.expand(true);
-      }
-      let previousRowCount = document.querySelectorAll(ROW_SELECTOR).length;
-      for (let round = 0; round < NATIVE_INVENTORY_MAX_ROUNDS && !state.disposed; round += 1) {
-        const buttons = nativeLoadMoreButtons();
-        if (!buttons.length) break;
-        state.inventoryHydrationPhase = "loading-more";
-        state.inventoryHydrationRounds += 1;
-        for (const loadMore of buttons.slice(0, 12)) invokeNativeElement(loadMore);
-        await waitForHydrationRound();
-        const nextRowCount = document.querySelectorAll(ROW_SELECTOR).length;
-        if (nextRowCount <= previousRowCount && nativeLoadMoreButtons().length >= buttons.length) break;
-        previousRowCount = nextRowCount;
-      }
-      state.inventoryHydrationTruncated = nativeLoadMoreButtons().length > 0;
+      discoverHostNames();
+      const runtimes = new Map();
+      if (state.localRuntime?.requestClient) runtimes.set("local", state.localRuntime);
+      const tasks = [...runtimes].map(async ([hostId, runtime]) => {
+        let timer = null;
+        try {
+          const manager = state.threadManagers.get(hostId);
+          const request = typeof manager?.listAllThreads === "function"
+            ? Promise.resolve(manager.listAllThreads({ archived: false, modelProviders: null })).then((threads) => ({ pages: 1, threads }))
+            : listAllRuntimeThreads(runtime.requestClient, false);
+          const timeout = new Promise((resolve, reject) => {
+            timer = setTimeout(() => reject(new Error("Thread inventory timed out")), 12000);
+          });
+          const result = await Promise.race([request, timeout]);
+          const inventory = { error: null, fetchedAt: Date.now(), hostId, pages: result.pages, threads: Array.isArray(result.threads) ? result.threads : [] };
+          state.threadInventories.set(hostId, inventory);
+          state.inventoryHydrationRounds += inventory.pages;
+          if (hostId === "local") removeGossipedLocalInventoryDuplicates();
+          if (!state.disposed) schedule();
+          return inventory;
+        } catch (error) {
+          const inventory = { error: String(error?.message ?? error).slice(0, 240), fetchedAt: Date.now(), hostId, pages: 0, threads: state.threadInventories.get(hostId)?.threads ?? [] };
+          state.threadInventories.set(hostId, inventory);
+          if (!state.disposed) schedule();
+          return inventory;
+        } finally {
+          if (timer !== null) clearTimeout(timer);
+        }
+      });
+      const results = await Promise.all(tasks);
+      const errors = results.filter((result) => result.error).map((result) => `${result.hostId}: ${result.error}`);
+      state.inventoryHydrationError = errors.length ? errors.join("; ").slice(0, 240) : null;
+      state.inventoryHydrationTruncated = results.some((result) => result.threads.length >= 9800);
     } catch (error) {
       state.inventoryHydrationError = String(error?.message ?? error).slice(0, 240);
     } finally {
@@ -1121,7 +1431,7 @@
     status.className = `crmp-task-status ${working ? "crmp-task-status-loading" : "crmp-task-status-unread"}`;
     status.setAttribute("aria-hidden", "true");
     if (working) {
-      const nativeSpinner = [...task.originalRow.querySelectorAll("svg")]
+      const nativeSpinner = [...(task.originalRow?.querySelectorAll("svg") ?? [])]
         .find((svg) => !svg.closest("button") && svg.classList.contains("icon-xs"));
       if (nativeSpinner) {
         status.appendChild(nativeSpinner.cloneNode(true));
@@ -1165,7 +1475,7 @@
   function nativeThreadRow(reference) {
     return [...document.querySelectorAll(ROW_SELECTOR)].find((row) => {
       if (row.closest(`#${PANEL_ID}`)) return false;
-      return row.getAttribute("data-app-action-sidebar-thread-id") === reference.conversationKey
+      return rawConversationId(row.getAttribute("data-app-action-sidebar-thread-id")) === (reference.conversationId || rawConversationId(reference.conversationKey))
         && normalizeHostId(row.getAttribute("data-app-action-sidebar-thread-host-id") || "local") === reference.hostId;
     }) ?? null;
   }
@@ -1492,7 +1802,7 @@
 
   function nativeThreadAction(task, actionName) {
     const labels = actionName === "pin" ? ["Pin chat", "Unpin chat"] : ["Archive chat"];
-    return [...task.originalRow.querySelectorAll("button[aria-label]")].find((item) => labels.includes(item.getAttribute("aria-label"))) ?? null;
+    return [...(task.originalRow?.querySelectorAll("button[aria-label]") ?? [])].find((item) => labels.includes(item.getAttribute("aria-label"))) ?? null;
   }
 
   function invokeNativeThreadAction(task, actionName) {
@@ -1506,6 +1816,38 @@
       state.lastAction = { actionName, found: true, hostId: task.hostId, invoked: true, task: task.title };
     } catch (error) {
       state.lastAction = { actionName, error: error?.message || String(error), found: true, hostId: task.hostId, invoked: false, task: task.title };
+    }
+  }
+
+  async function openNativeTask(task) {
+    const nativeRow = nativeThreadRow(task) ?? task.originalRow;
+    if (nativeRow?.isConnected) {
+      nativeRow.click();
+      return true;
+    }
+    const conversationId = task.conversationId || rawConversationId(task.conversationKey);
+    const manager = state.threadManagers.get(task.hostId);
+    try {
+      if (task.sourceThread && typeof manager?.upsertConversationFromThread === "function") manager.upsertConversationFromThread(task.sourceThread);
+      manager?.activateThreadSummary?.(conversationId, { addToRecent: false });
+      manager?.ensureRecentConversationId?.(conversationId);
+      if (manager) {
+        try {
+          const hydratedRow = await waitFor(() => nativeThreadRow(task), 3000);
+          hydratedRow.click();
+          return true;
+        } catch {}
+      }
+      const markRead = manager?.markConversationAsRead?.(conversationId);
+      if (markRead?.catch) void markRead.catch(() => {});
+      if (typeof state.navigationBridge?.navigateToLocalConversation !== "function") throw new Error("Native conversation navigation is unavailable");
+      state.navigationBridge.navigateToLocalConversation(conversationId, task.hostId === "local" ? undefined : task.hostId);
+      task.unread = false;
+      state.lastAction = { commandId: "open-thread", conversationId, found: true, hostId: task.hostId, invoked: true };
+      return true;
+    } catch (error) {
+      state.lastAction = { commandId: "open-thread", conversationId, error: error?.message || String(error), found: true, hostId: task.hostId, invoked: false };
+      return false;
     }
   }
 
@@ -1608,9 +1950,8 @@
     return values.length ? Math.max(...values) : Number.NaN;
   }
 
-  async function listAllLocalThreads(archived = false) {
-    const requestClient = state.localRuntime?.requestClient;
-    if (typeof requestClient?.sendRequest !== "function") throw new Error("Local app-server bridge is unavailable");
+  async function listAllRuntimeThreads(requestClient, archived = false) {
+    if (typeof requestClient?.sendRequest !== "function") throw new Error("App-server bridge is unavailable");
     const threads = [];
     const cursors = new Set();
     let cursor = null;
@@ -1622,15 +1963,21 @@
         sortDirection: "desc",
         sortKey: "updated_at",
       });
-      if (state.disposed) return [];
+      if (state.disposed) return { pages: page + 1, threads: [] };
       if (Array.isArray(result?.data)) threads.push(...result.data);
       const nextCursor = typeof result?.nextCursor === "string" && result.nextCursor ? result.nextCursor : null;
-      if (!nextCursor) return threads;
+      if (!nextCursor) return { pages: page + 1, threads };
       if (cursors.has(nextCursor)) throw new Error("thread/list returned a repeated pagination cursor");
       cursors.add(nextCursor);
       cursor = nextCursor;
     }
     throw new Error("thread/list exceeded the bounded page limit");
+  }
+
+  async function listAllLocalThreads(archived = false) {
+    const requestClient = state.localRuntime?.requestClient;
+    if (typeof requestClient?.sendRequest !== "function") throw new Error("Local app-server bridge is unavailable");
+    return (await listAllRuntimeThreads(requestClient, archived)).threads;
   }
 
   function eligibleAutoArchiveThreads(threads) {
@@ -1640,7 +1987,7 @@
       .filter(Boolean));
     const protectedIds = new Set([...document.querySelectorAll(ROW_SELECTOR)]
       .filter((row) => row.getAttribute("data-app-action-sidebar-thread-selected") === "true" || metadataFromRow(row).statusType === "loading")
-      .map((row) => row.getAttribute("data-app-action-sidebar-thread-id"))
+      .map((row) => rawConversationId(row.getAttribute("data-app-action-sidebar-thread-id")))
       .filter(Boolean));
     return threads.filter((thread) => {
       const threadId = typeof thread?.id === "string" ? thread.id : null;
@@ -2205,7 +2552,7 @@
       for (const task of project.tasks) {
         const taskRow = document.createElement("div");
         taskRow.className = "crmp-task-row group";
-        const taskButton = button(`${task.originalRow.className} crmp-task`, task.title);
+        const taskButton = button(`${task.originalRow?.className || ""} crmp-task`, task.title);
         const working = task.statusType === "loading";
         const stateLabel = working ? "working" : task.unread ? "completed, unread" : null;
         if (stateLabel) taskButton.setAttribute("aria-label", `${task.title}, ${stateLabel}`);
@@ -2215,12 +2562,13 @@
         taskButton.addEventListener("click", () => {
           if (performance.now() - state.dragJustEndedAt >= 250) {
             if (task.unread && task.hostId !== "local") acknowledgeRemoteUnread(task);
-            task.originalRow.click();
+            void openNativeTask(task);
             render();
           }
         });
         taskButton.addEventListener("contextmenu", (event) => {
           event.preventDefault();
+          if (!task.originalRow) return;
           task.originalRow.dispatchEvent(new MouseEvent("contextmenu", {
             bubbles: true,
             button: 2,
@@ -2283,6 +2631,7 @@
     fragment.appendChild(modes);
 
     scheduleLocalProjectInventoryPublication();
+    scheduleLocalPeerCacheInventory(model.hosts);
     scheduleLocalRegisteredProjectsRefresh();
     scheduleRemoteProjectInventory(model.remoteRuntimes);
     scheduleAutoRegistration(model);
@@ -2415,6 +2764,17 @@
 
   function probe() {
     const model = collectModel();
+    const expansionControls = nativeThreadListExpansionControls();
+    const tasksByHost = Object.fromEntries(model.hosts.map((host) => [host.name, model.tasks.filter((task) => task.hostId === host.id).length]));
+    const authoritativeThreadsByHost = Object.fromEntries([...state.threadInventories].map(([hostId, inventory]) => [hostId, inventory.threads?.length ?? 0]));
+    const remoteThreadInventories = Object.fromEntries([...state.remoteProjectInventories].map(([hostId, inventory]) => [hostId, {
+      error: inventory.error ?? null,
+      pending: inventory.pending === true,
+      sourcePeerHostId: inventory.sourcePeerHostId ?? null,
+      sourcePeerCache: inventory.sourcePeerCache === true,
+      threads: inventory.threads?.length ?? 0,
+      threadsAuthoritative: inventory.threadsAuthoritative === true,
+    }]));
     const visibleGroups = model.groups.filter((project) => state.filter === "all" || project.hostId === state.filter);
     const visibleProjects = visibleGroups.filter((project) => project.kind === "project");
     const visibleRecents = visibleGroups.filter((project) => project.kind === "recent");
@@ -2437,8 +2797,16 @@
       inventoryHydrationError: state.inventoryHydrationError,
       inventoryHydrationPhase: state.inventoryHydrationPhase,
       inventoryHydrationRounds: state.inventoryHydrationRounds,
-      inventoryHydrationExpansionControls: nativeThreadListExpansionControls().length,
+      inventoryHydrationExpansionControls: expansionControls.length,
+      inventoryHydrationExpansionControlsCollapsed: expansionControls.filter((control) => !control.expanded).length,
+      inventoryHydrationExpansionControlsExpanded: expansionControls.filter((control) => control.expanded).length,
+      inventoryHydrationExpansionSnapshot: 0,
       inventoryHydrationTruncated: state.inventoryHydrationTruncated,
+      authoritativeThreadHosts: state.threadInventories.size,
+      authoritativeThreads: [...state.threadInventories.values()].reduce((total, inventory) => total + (inventory.threads?.length ?? 0), 0),
+      authoritativeThreadErrors: [...state.threadInventories.values()].filter((inventory) => inventory.error).length,
+      authoritativeThreadsByHost,
+      remoteThreadInventories,
       hostInventoryErrors: [...state.remoteProjectInventories.values()].filter((inventory) => inventory.error).length,
       hostInventoryPending: [...state.remoteProjectInventories.values()].filter((inventory) => inventory.pending).length,
       hostInventoryProjects: [...state.remoteProjectInventories.keys()].reduce((count, hostId) => count + (freshInventory(hostId)?.projects?.length ?? 0), 0),
@@ -2474,6 +2842,9 @@
       remoteProjectsWithId: model.projects.filter((project) => project.hostId !== "local" && project.projectId).length,
       unregisteredRemoteProjects: model.projects.filter((project) => project.hostId !== "local" && !project.projectId && Boolean(project.cwd)).length,
       tasks: model.tasks.length,
+      tasksByHost,
+      syntheticTasks: model.tasks.filter((task) => !task.originalRow).length,
+      syntheticNavigableTasks: model.tasks.filter((task) => !task.originalRow && (state.threadManagers.has(task.hostId) || typeof state.navigationBridge?.navigateToLocalConversation === "function")).length,
       unreadTasks: model.tasks.filter((task) => task.unread).length,
       version: VERSION,
       view: state.view,

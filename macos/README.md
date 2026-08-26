@@ -6,18 +6,20 @@ In Mobile Projects, **Auto-register: on/off** locally enables or pauses remote-p
 
 macOS already exposes native ChatGPT remote connections. This package adds the optional Mobile projects view.
 
-Renderer version 47 preserves the original folder states, native-backed drag
-ordering, and the user's **By project**/**By connection** preference while
-expanding truncated task lists exposed by the selected grouping. It also publishes this Mac's active saved projects and active working/unread task states into its
-Codex home. Controllers running v47 read that fresh inventory through ChatGPT
-Remote, including projects with no chats and excluding archived/removed ones.
-Remote task indicators refresh every five seconds.
+Renderer version 48 preserves the original folder states, native-backed drag
+ordering, and the user's **By project**/**By connection** preference. It
+automatically paginates the authoritative active task list and publishes this
+Mac's complete active projects, tasks, and working/unread state into its Codex
+home. Other devices use direct peer reads plus local per-device cache files if
+a request stalls. No folder opening, **Show more** click, shared catalogue, or
+central storage is required. Empty active projects appear while archived or
+removed projects and stale native rows do not.
 Synchronization continues automatically when **Native views** is selected.
 Controllers read their complete registered-project state directly and verify
 new registrations before recording success. Remote chats match projects by
 device and normalized path, so they remain under the registered project.
-The currently selected native lists are rehydrated on startup and every 30
-seconds without opening the grouping menu or changing its value. Hovering a
+The inventory refreshes on startup and every 30 seconds without opening the
+grouping menu or changing its value. Hovering a
 Mobile Projects folder opens the exact native project composer when available;
 registered projects retain a native global-composer fallback when their folder
 row is not mounted by the selected grouping.

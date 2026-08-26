@@ -117,7 +117,9 @@ acquire_lock() {
 download_release_metadata() {
   local node_bin="$1" metadata_path="$2"
   local url="$(release_url)"
-  /usr/bin/curl --fail --location --silent --show-error --max-time 20 \
+  local -a protocol_args=(--proto '=https' --proto-redir '=https')
+  [[ "$url" == http://127.0.0.1:* ]] && protocol_args=(--proto '=http' --proto-redir '=http')
+  /usr/bin/curl "${protocol_args[@]}" --fail --location --silent --show-error --max-time 20 \
     -H 'Accept: application/vnd.github+json' -H 'User-Agent: ChatGPT-Remote-Enabler-Updater' \
     "$url" -o "$metadata_path"
   "$node_bin" -e '
@@ -134,6 +136,30 @@ download_release_metadata() {
     if (!archive || !sums) throw new Error(`Release ${tag} is missing required assets`);
     process.stdout.write([tag, archiveName, archive.browser_download_url, sumsName, sums.browser_download_url].join("\t"));
   ' "$metadata_path" "$platform_name"
+}
+
+installed_integrity_valid() {
+  local manifest="$install_root/RELEASE-MANIFEST.sha256" line hash relative path actual count=0
+  [[ -f "$manifest" && ! -L "$manifest" ]] || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"; hash="${line%% *}"; relative="${line#* \*}"
+    [[ ${#hash} -eq 64 && "$hash" != *[^0-9a-fA-F]* && -n "$relative" && "$relative" != /* && "$relative" != *'../'* && "$relative" != '../'* && "$relative" != *'/..' ]] || return 1
+    path="$install_root/$relative"
+    [[ -f "$path" && ! -L "$path" ]] || return 1
+    actual="$(/usr/bin/shasum -a 256 "$path" | awk '{print $1}')"
+    [[ "${actual:l}" == "${hash:l}" ]] || return 1
+    (( count += 1 ))
+  done < "$manifest"
+  (( count > 0 ))
+}
+
+assert_safe_destination() {
+  local relative="$1" current="$install_root" component
+  [[ -d "$install_root" && ! -L "$install_root" ]] || { print -u2 "Install root must be a real directory, not a symbolic link."; return 1; }
+  for component in ${(s:/:)relative}; do
+    current="$current/$component"
+    [[ ! -L "$current" ]] || { print -u2 "Refusing symbolic-link update destination: $relative"; return 1; }
+  done
 }
 
 version_is_newer() {
@@ -170,8 +196,8 @@ install_release() {
   assert_https_url "$sums_url"
   temporary_root="$(mktemp -d "${TMPDIR:-/tmp}/chatgpt-remote-update.XXXXXX")"
   local archive_path="$temporary_root/$archive_name" sums_path="$temporary_root/$sums_name"
-  /usr/bin/curl --fail --location --silent --show-error --max-time 120 "$archive_url" -o "$archive_path"
-  /usr/bin/curl --fail --location --silent --show-error --max-time 30 "$sums_url" -o "$sums_path"
+  /usr/bin/curl --proto '=https' --proto-redir '=https' --fail --location --silent --show-error --max-time 120 "$archive_url" -o "$archive_path"
+  /usr/bin/curl --proto '=https' --proto-redir '=https' --fail --location --silent --show-error --max-time 30 "$sums_url" -o "$sums_path"
   local expected actual
   expected="$(tr -d '\r' < "$sums_path" | awk -v name="$archive_name" '$2 == name || $2 == "*" name { print $1; exit }')"
   [[ ${#expected} -eq 64 && "$expected" != *[^0-9a-fA-F]* ]] || { print -u2 "Published archive checksum is missing."; return 1; }
@@ -220,14 +246,18 @@ install_release() {
     hashes+=("$hash")
     new_relative_set[$relative]=1
   done < "$manifest"
-  local backup_root="$rollback_root/$(date +%Y%m%d-%H%M%S)-$(local_version)"
+  local safe_local_version="$(local_version)"
+  safe_local_version="${safe_local_version//[^A-Za-z0-9._-]/_}"
+  safe_local_version="${safe_local_version[1,48]}"
+  local backup_root="$rollback_root/$(date +%Y%m%d-%H%M%S)-$safe_local_version"
   mkdir -p "$backup_root"
   typeset -ga copied_relatives=() copied_existed=()
   local destination backup existed
   for relative in "${relatives[@]}"; do
     [[ "$relative" == 'Update-ChatGPTRemote.sh' ]] && continue
+    assert_safe_destination "$relative" || { rollback_copies "$backup_root"; return 1; }
     destination="$install_root/$relative"; backup="$backup_root/$relative"; existed=0
-    if [[ -f "$destination" ]]; then existed=1; mkdir -p "${backup:h}"; cp -p -- "$destination" "$backup" || { rollback_copies "$backup_root"; return 1; }; fi
+    if [[ -f "$destination" ]]; then existed=1; mkdir -p "${backup:h}"; cp -p -- "$destination" "$backup" && cmp -s -- "$destination" "$backup" || { rollback_copies "$backup_root"; return 1; }; fi
     mkdir -p "${destination:h}"
     cp -p -- "$release_root/$relative" "$destination" || { rollback_copies "$backup_root"; return 1; }
     [[ "$relative" == *.sh ]] && chmod 755 "$destination"
@@ -243,21 +273,22 @@ install_release() {
       [[ -f "$destination" && ! -L "$destination" ]] || continue
       old_actual="$(/usr/bin/shasum -a 256 "$destination" | awk '{print $1}')"
       [[ "${old_actual:l}" == "${old_hash:l}" ]] || continue
-      mkdir -p "${backup:h}"; cp -p -- "$destination" "$backup" || { rollback_copies "$backup_root"; return 1; }
+      mkdir -p "${backup:h}"; cp -p -- "$destination" "$backup" && cmp -s -- "$destination" "$backup" || { rollback_copies "$backup_root"; return 1; }
       rm -f -- "$destination" || { rollback_copies "$backup_root"; return 1; }
       copied_relatives+=("$old_relative"); copied_existed+=(1)
     done < "$previous_manifest"
   fi
   relative='Update-ChatGPTRemote.sh'
   if (( ${relatives[(Ie)$relative]} )); then
+    assert_safe_destination "$relative" || { rollback_copies "$backup_root"; return 1; }
     destination="$install_root/$relative"; backup="$backup_root/$relative"; existed=0
-    if [[ -f "$destination" ]]; then existed=1; cp -p -- "$destination" "$backup" || { rollback_copies "$backup_root"; return 1; }; fi
+    if [[ -f "$destination" ]]; then existed=1; cp -p -- "$destination" "$backup" && cmp -s -- "$destination" "$backup" || { rollback_copies "$backup_root"; return 1; }; fi
     cp -p -- "$release_root/$relative" "$destination" || { rollback_copies "$backup_root"; return 1; }
     chmod 755 "$destination"
     copied_relatives+=("$relative"); copied_existed+=("$existed")
   fi
-  relative='RELEASE-MANIFEST.sha256'; destination="$install_root/$relative"; backup="$backup_root/$relative"; existed=0
-  if [[ -f "$destination" ]]; then existed=1; cp -p -- "$destination" "$backup" || { rollback_copies "$backup_root"; return 1; }; fi
+  relative='RELEASE-MANIFEST.sha256'; assert_safe_destination "$relative" || { rollback_copies "$backup_root"; return 1; }; destination="$install_root/$relative"; backup="$backup_root/$relative"; existed=0
+  if [[ -f "$destination" ]]; then existed=1; cp -p -- "$destination" "$backup" && cmp -s -- "$destination" "$backup" || { rollback_copies "$backup_root"; return 1; }; fi
   cp -p -- "$manifest" "$destination" || { rollback_copies "$backup_root"; return 1; }
   copied_relatives+=("$relative"); copied_existed+=("$existed")
   print -r -- "{\"updated\":true,\"version\":\"$tag\",\"files\":${#relatives[@]},\"rollbackPath\":\"$backup_root\"}"
@@ -297,6 +328,7 @@ mkdir -p "$state_root"
 print -r -- "{\"checkedAt\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"repository\":\"$repository\",\"tag\":\"$tag\"}" > "$last_check"
 typeset current="$(local_version)" available=false
 if version_is_newer "$node_bin" "$tag" "$current"; then available=true; fi
+if [[ "$tag" == "$current" ]] && ! installed_integrity_valid; then available=true; fi
 if [[ "$action" == check || "$available" == false ]]; then
   print -r -- "{\"available\":$available,\"latestVersion\":\"$tag\",\"localVersion\":\"$current\",\"updated\":false}"
   exit 0

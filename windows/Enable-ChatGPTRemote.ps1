@@ -10,9 +10,9 @@ if (-not $SkipUpdate -and (Test-Path -LiteralPath $updater -PathType Leaf)) {
     try { & $updater -Action Auto | Write-Verbose } catch { Write-Warning "Automatic update skipped: $($_.Exception.Message)" }
 }
 
-& $stable -Action Enable
+& $stable -Action Enable -Confirm:$false
 if (-not $SkipMobileProjects) {
-    & $mobile -Action Enable
+    & $mobile -Action Enable -Confirm:$false
 }
 
 Write-Host 'ChatGPT Remote is enabled for this special session.' -ForegroundColor Green

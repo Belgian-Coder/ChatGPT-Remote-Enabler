@@ -23,7 +23,7 @@ function appProcessesRunning() {
   }
   if (process.platform === "darwin") {
     const running = [];
-    for (const name of ["ChatGPT", "codex"]) {
+    for (const name of ["ChatGPT", "Codex", "codex"]) {
       const result = childProcess.spawnSync("/usr/bin/pgrep", ["-x", name], { encoding: "utf8", timeout: 5000 });
       if (result.status === 0 && String(result.stdout).trim()) running.push(name);
       else if (result.status !== 1) return { safe: false, reason: "process-check-failed" };
@@ -55,11 +55,14 @@ function optimizeDatabase(DatabaseSync, dbPath, pruneLogs) {
         const ageResult = db.prepare("DELETE FROM logs WHERE ts < ?").run(cutoff);
         removedByAge = Number(ageResult.changes ?? 0);
         const estimated = Number(db.prepare("SELECT COALESCE(SUM(estimated_bytes), 0) AS bytes FROM logs").get().bytes ?? 0);
+        if (!Number.isFinite(estimated) || estimated < 0) throw new Error("Log size estimate is invalid; refusing cap pruning");
         if (estimated > LOG_CAP_BYTES) {
           let accumulated = 0;
           let rows = 0;
           for (const row of db.prepare("SELECT estimated_bytes FROM logs ORDER BY ts, id").iterate()) {
-            accumulated += Math.max(Number(row.estimated_bytes ?? 0), 0);
+            const rowBytes = Number(row.estimated_bytes ?? 0);
+            if (!Number.isFinite(rowBytes) || rowBytes < 0) throw new Error("A log row has an invalid size estimate; refusing cap pruning");
+            accumulated += rowBytes;
             rows += 1;
             if (accumulated >= estimated - LOG_CAP_BYTES) break;
           }

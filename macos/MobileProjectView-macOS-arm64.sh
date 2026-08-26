@@ -49,7 +49,7 @@ resolve_node() {
   local candidate
   for candidate in "${candidates[@]}"; do
     if [[ -n "$candidate" && -x "$candidate" ]] &&
-       "$candidate" -e 'process.exit(typeof WebSocket === "function" ? 0 : 1)' >/dev/null 2>&1; then
+       "$candidate" -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 22 && typeof WebSocket === "function" ? 0 : 1)' >/dev/null 2>&1; then
       print -r -- "$candidate"
       return 0
     fi
@@ -59,11 +59,15 @@ resolve_node() {
 }
 
 computer_name() {
-  /usr/sbin/scutil --get ComputerName 2>/dev/null || hostname -s
+  /usr/sbin/scutil --get LocalHostName 2>/dev/null || hostname -s
 }
 
 debug_endpoint_ready() {
-  /usr/bin/curl --silent --fail --max-time 1 "http://127.0.0.1:$port/json" >/dev/null
+  /usr/bin/curl --silent --fail --max-time 1 "http://127.0.0.1:$port/json" 2>/dev/null | /usr/bin/grep -Fq 'app://-/index.html'
+}
+
+app_is_running() {
+  /usr/bin/pgrep -x "$app_name" >/dev/null 2>&1 || /usr/bin/pgrep -x ChatGPT >/dev/null 2>&1 || /usr/bin/pgrep -x Codex >/dev/null 2>&1
 }
 
 maybe_auto_update() {
@@ -87,6 +91,10 @@ enable_view() {
   local node_bin
   node_bin="$(resolve_node)"
   if ! debug_endpoint_ready; then
+    if app_is_running; then
+      print -u2 "$app_name is already running without the required loopback renderer endpoint. Quit it normally and reopen it with the ChatGPT Custom shortcut; refusing to start a second instance."
+      return 1
+    fi
     "$node_bin" --no-warnings "$maintenance_helper"
     /usr/bin/open -na "$app_name" --args --remote-debugging-address=127.0.0.1 --remote-debugging-port="$port"
     local attempt

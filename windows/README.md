@@ -2,7 +2,7 @@
 
 Mobile Projects mirrors the native task-state indicators: a spinner while a task is working and a blue dot after it finishes until that task is viewed. Opening a remote task acknowledges that completion locally until its owning device reports the next state transition.
 
-In Mobile Projects, **Auto-register: on/off** locally enables or pauses remote-project mirroring. Enabling it only adds registrations and never performs automatic removal. **Remove auto projects (N)** explicitly removes only projects created by that automation—never chats or folders—and suppresses immediate recreation; it stays visible but disabled at `(0)`. Right-click a suppressed project and choose **Allow auto-registration** to permit it again.
+In Mobile Projects, **Auto-register: on/off** locally enables or pauses remote-project mirroring. It adds registrations and removes only automation-created registrations after a fresh, complete direct inventory confirms the source project was removed. It never deletes chats or folders. **Remove auto projects (N)** removes those registrations now and suppresses immediate recreation; it stays visible but disabled at `(0)`. Right-click a suppressed project and choose **Allow auto-registration** to permit it again.
 
 Run `ChatGPT Remote Enabler.exe`, or open PowerShell here and run:
 
@@ -10,7 +10,7 @@ Run `ChatGPT Remote Enabler.exe`, or open PowerShell here and run:
 .\Enable-ChatGPTRemote.ps1
 ```
 
-The compatibility check runs first. Renderer v49 preserves the user's
+The compatibility check runs first. Renderer v50 preserves the user's
 **By project**/**By connection** Native views preference and every folder's
 open/closed state. It automatically paginates the authoritative active task
 list and publishes complete active projects, tasks, and working/unread state
@@ -18,9 +18,11 @@ into this device's Codex home. Other devices use direct peer reads plus local
 per-device cache files if a request stalls. No folder opening, **Show more**
 click, shared catalogue, or central storage is required. Empty active projects
 appear while archived/removed projects and stale native rows do not.
-Device dots use fresh direct app-server connectivity. Cached request clients
-and peer inventory can keep projects visible but cannot falsely mark an
-offline device as online.
+Device dots use current Remote runtime presence plus successful direct probes.
+Cached peer inventory alone cannot mark an offline device as online; an online
+device can remain green while its inventory service retries independently.
+Renderer requests are time-bounded and retry after transient bridge failures;
+cached projects remain visible with an offline dot while the owning device is unavailable.
 Synchronization continues automatically when **Native views** is selected.
 Controllers read their complete registered-project state directly and verify
 new registrations before recording success. Remote chats match projects by

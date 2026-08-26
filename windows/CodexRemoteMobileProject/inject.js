@@ -37,12 +37,20 @@ function delay(milliseconds) {
 }
 
 async function discoverRendererTarget(port, waitMs) {
-  const attempts = Math.max(1, Math.floor(waitMs / 500) + 1);
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+  if (waitMs === 0) {
     const targets = await discoverTargets(port, 5000);
     const target = targets.find((candidate) => candidate?.type === "page" && candidate.url === "app://-/index.html");
     if (target) return target;
-    if (attempt < attempts) await delay(500);
+    throw new Error("Exact Codex renderer target was not found");
+  }
+  const deadline = Date.now() + waitMs;
+  for (;;) {
+    const remaining = Math.max(1, deadline - Date.now());
+    const targets = await discoverTargets(port, Math.min(1000, remaining));
+    const target = targets.find((candidate) => candidate?.type === "page" && candidate.url === "app://-/index.html");
+    if (target) return target;
+    if (Date.now() >= deadline) break;
+    await delay(Math.min(250, Math.max(1, deadline - Date.now())));
   }
   throw new Error(waitMs > 0 ? `Exact Codex renderer target was not found after ${waitMs} ms` : "Exact Codex renderer target was not found");
 }
@@ -75,18 +83,23 @@ async function main() {
       const prefix = `globalThis.__CODEX_REMOTE_MOBILE_CONFIG__ = Object.freeze(${JSON.stringify({ hostDisplayNames, localDisplayName: options.localName, singleRemoteDisplayName })});\n`;
       const source = prefix + payload;
       const persistent = await client.call("Page.addScriptToEvaluateOnNewDocument", { source }, 5000);
-      const report = await evaluate(client, source, 10000);
-      const validCounts = [report?.hosts, report?.projects, report?.tasks]
-        .every((value) => Number.isInteger(value) && value >= 0);
-      if (report?.active !== true || !validCounts) {
-        if (typeof persistent?.identifier === "string") await client.call("Page.removeScriptToEvaluateOnNewDocument", { identifier: persistent.identifier }, 5000);
-        throw new Error("Mobile project view did not return valid proof");
+      if (typeof persistent?.identifier !== "string" || !persistent.identifier) throw new Error("CDP did not return a persistent script identifier");
+      try {
+        const report = await evaluate(client, source, 10000);
+        const validCounts = [report?.hosts, report?.projects, report?.tasks]
+          .every((value) => Number.isInteger(value) && value >= 0);
+        if (report?.active !== true || !validCounts) throw new Error("Mobile project view did not return valid proof");
+        fs.mkdirSync(path.dirname(STATE_PATH), { recursive: true });
+        fs.writeFileSync(STATE_PATH, `${JSON.stringify({ identifier: persistent.identifier, port: options.port, version: 50 }, null, 2)}\n`, "utf8");
+        try { fs.rmSync(LEGACY_STATE_PATH, { force: true }); } catch {}
+        process.stdout.write(`${JSON.stringify({ action: options.action, ok: true, report })}\n`);
+        return;
+      } catch (error) {
+        if (typeof persistent?.identifier === "string") {
+          try { await client.call("Page.removeScriptToEvaluateOnNewDocument", { identifier: persistent.identifier }, 5000); } catch {}
+        }
+        throw error;
       }
-      fs.mkdirSync(path.dirname(STATE_PATH), { recursive: true });
-      fs.writeFileSync(STATE_PATH, `${JSON.stringify({ identifier: persistent.identifier, port: options.port, version: 49 }, null, 2)}\n`, "utf8");
-      try { fs.rmSync(LEGACY_STATE_PATH, { force: true }); } catch {}
-      process.stdout.write(`${JSON.stringify({ action: options.action, ok: true, report })}\n`);
-      return;
     }
     if (options.action === "disable") {
       const report = await evaluate(client, "globalThis.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__?.uninstall?.() ?? { active:false, version:null }", 5000);

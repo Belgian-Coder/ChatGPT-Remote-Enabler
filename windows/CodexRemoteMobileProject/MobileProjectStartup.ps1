@@ -45,16 +45,19 @@ function Write-CommandOutput {
 }
 
 function Resolve-NodePath {
-    if ($NodePath -and (Test-Path -LiteralPath $NodePath -PathType Leaf)) { return $NodePath }
     $command = Get-Command node.exe -ErrorAction SilentlyContinue
-    if ($command) { return $command.Source }
     $candidates = @(
+        $NodePath,
+        $(if ($command) { $command.Source }),
         (Join-Path $env:USERPROFILE '.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe'),
         'C:\Program Files\nodejs\node.exe'
-    )
-    $resolved = $candidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
-    if (-not $resolved) { throw 'Node.js was not found for the interactive user.' }
-    return $resolved
+    ) | Where-Object { $_ } | Select-Object -Unique
+    foreach ($candidate in $candidates) {
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
+        & $candidate -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 22 && typeof WebSocket === "function" ? 0 : 1)' 2>$null
+        if ($LASTEXITCODE -eq 0) { return $candidate }
+    }
+    throw 'Node.js 22 or newer with built-in WebSocket support was not found for the interactive user.'
 }
 
 function Assert-Administrator {
@@ -99,15 +102,24 @@ switch ($Action) {
         Write-StartupLog "$(Get-Date -Format o) [$computerName] startup run begins"
         try {
             Write-CommandOutput @(& $node --no-warnings $maintenanceHelper 2>&1)
-            for ($stableAttempt = 1; $stableAttempt -le 2; $stableAttempt++) {
-                try {
-                    Write-CommandOutput @(& $stableController -Action Enable -UseProxy:$UseProxy -Confirm:$false 2>&1)
-                    break
-                } catch {
-                    if ($stableAttempt -ge 2) { throw }
-                    Write-StartupLog "$(Get-Date -Format o) [$computerName] stable bridge not ready on attempt $stableAttempt; retrying once"
-                    Start-Sleep -Seconds 2
+            $appProcesses = @(Get-CimInstance Win32_Process -Filter "Name='ChatGPT.exe' OR Name='Codex.exe'" -ErrorAction SilentlyContinue)
+            $debugApp = @($appProcesses | Where-Object { $_.CommandLine -match '--remote-debugging-port(?:=|\s)' })
+            if ($appProcesses.Count -gt 0 -and $debugApp.Count -eq 0) {
+                throw 'ChatGPT/Codex is already running without the audited debug endpoint. Close it normally, then use ChatGPT Custom; startup will not terminate an active app.'
+            }
+            if ($debugApp.Count -eq 0) {
+                for ($stableAttempt = 1; $stableAttempt -le 2; $stableAttempt++) {
+                    try {
+                        Write-CommandOutput @(& $stableController -Action Enable -UseProxy:$UseProxy -Confirm:$false 2>&1)
+                        break
+                    } catch {
+                        if ($stableAttempt -ge 2) { throw }
+                        Write-StartupLog "$(Get-Date -Format o) [$computerName] stable bridge not ready on attempt $stableAttempt; retrying once"
+                        Start-Sleep -Seconds 2
+                    }
                 }
+            } else {
+                Write-StartupLog "$(Get-Date -Format o) [$computerName] audited debug session already running; preserving it"
             }
             $deadline = (Get-Date).AddSeconds($MobileReadyTimeoutSeconds)
             $attempt = 0
@@ -148,7 +160,7 @@ switch ($Action) {
         if (-not (Test-Path -LiteralPath $powerShell -PathType Leaf)) {
             throw "Built-in Windows PowerShell was not found: $powerShell"
         }
-        $arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Action Run"
+        $arguments = "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Action Run"
         if ($UseProxy) { $arguments += ' -UseProxy' }
         $taskAction = New-ScheduledTaskAction -Execute $powerShell -Argument $arguments -WorkingDirectory $bundleRoot
         $trigger = New-ScheduledTaskTrigger -AtLogOn -User $TargetUser

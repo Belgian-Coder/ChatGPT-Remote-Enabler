@@ -1,10 +1,11 @@
 [CmdletBinding()]
 param(
     [string]$PreviousInstallRoot = 'C:\ProgramData\CodexRemoteFeatures\releases\ChatGPT-Remote-Enabler-Windows-x64-v1.4.4',
-    [string]$ArtifactsDirectory = (Join-Path $PSScriptRoot '..\dist')
+    [string]$ArtifactsDirectory
 )
 
 $ErrorActionPreference = 'Stop'
+if ([string]::IsNullOrWhiteSpace($ArtifactsDirectory)) { $ArtifactsDirectory = Join-Path $PSScriptRoot '..\dist' }
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $version = (Get-Content -LiteralPath (Join-Path $repositoryRoot 'windows\VERSION') -Raw).Trim()
 $archiveName = "ChatGPT-Remote-Enabler-Windows-x64-$version.zip"

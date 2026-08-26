@@ -5,13 +5,14 @@ param(
     [string]$Repository = $(if ($env:CHATGPT_REMOTE_UPDATE_REPOSITORY) { $env:CHATGPT_REMOTE_UPDATE_REPOSITORY } else { 'Belgian-Coder/ChatGPT-Remote-Enabler' }),
     [string]$ApiBaseUrl = $(if ($env:CHATGPT_REMOTE_UPDATE_API_BASE) { $env:CHATGPT_REMOTE_UPDATE_API_BASE } else { 'https://api.github.com' }),
     [string]$LatestReleaseUrl = $env:CHATGPT_REMOTE_UPDATE_LATEST_URL,
-    [string]$InstallRoot = $PSScriptRoot,
+    [string]$InstallRoot,
     [ValidateRange(0, 720)]
     [int]$CheckIntervalHours = $(if ($env:CHATGPT_REMOTE_UPDATE_INTERVAL_HOURS) { [int]$env:CHATGPT_REMOTE_UPDATE_INTERVAL_HOURS } else { 0 }),
     [switch]$AllowInsecureTransport
 )
 
 $ErrorActionPreference = 'Stop'
+if ([string]::IsNullOrWhiteSpace($InstallRoot)) { $InstallRoot = $PSScriptRoot }
 $platformName = 'Windows-x64'
 $stateRoot = Join-Path $env:LOCALAPPDATA 'ChatGPTRemoteEnabler\update'
 $disabledMarker = Join-Path $stateRoot 'auto-update-disabled'
@@ -72,7 +73,7 @@ function Write-LastCheck {
 function Get-LatestRelease {
     $url = Get-ReleaseUrl
     $headers = @{ Accept = 'application/vnd.github+json'; 'User-Agent' = 'ChatGPT-Remote-Enabler-Updater' }
-    $release = Invoke-RestMethod -Uri $url -Headers $headers -UseBasicParsing
+    $release = Invoke-RestMethod -Uri $url -Headers $headers -UseBasicParsing -TimeoutSec 20
     if ($release.draft -eq $true -or $release.prerelease -eq $true) { throw 'The latest endpoint returned a draft or prerelease.' }
     $tag = [string]$release.tag_name
     if ($tag -notmatch '^v\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$') { throw "Invalid release tag: $tag" }
@@ -111,20 +112,47 @@ function Get-ManifestEntries {
         if ($actual -ne $matches[1]) { throw "Release manifest hash mismatch: $relative" }
         [pscustomobject]@{ relative = $relative; source = $source }
     }
-    return @($entries)
+    $entries = @($entries)
+    if ($entries.Count -eq 0) { throw 'Release manifest is empty.' }
+    return $entries
+}
+
+function Test-InstalledIntegrity {
+    try {
+        [void](Get-ManifestEntries $InstallRoot)
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function Assert-SafeInstallDestination {
+    param([string]$RelativePath)
+    if ((Get-Item -LiteralPath $InstallRoot).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        throw 'Install root must not be a reparse point.'
+    }
+    $current = $InstallRoot
+    foreach ($component in $RelativePath.Split([IO.Path]::DirectorySeparatorChar)) {
+        $current = Join-Path $current $component
+        if ((Test-Path -LiteralPath $current) -and ((Get-Item -LiteralPath $current).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw "Install destination must not traverse a reparse point: $RelativePath"
+        }
+    }
 }
 
 function Install-Release {
     param($Release)
     $temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) ("chatgpt-remote-update-" + [guid]::NewGuid().ToString('N'))
-    $backupRoot = Join-Path $rollbackRoot ((Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + (Get-LocalVersion))
+    $safeLocalVersion = ((Get-LocalVersion) -replace '[^A-Za-z0-9._-]', '_')
+    if ($safeLocalVersion.Length -gt 48) { $safeLocalVersion = $safeLocalVersion.Substring(0, 48) }
+    $backupRoot = Join-Path $rollbackRoot ((Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + $safeLocalVersion)
     $copied = [Collections.Generic.List[object]]::new()
     try {
         New-Item -ItemType Directory -Path $temporaryRoot -Force | Out-Null
         $archivePath = Join-Path $temporaryRoot $Release.archiveName
         $checksumsPath = Join-Path $temporaryRoot $Release.checksumsName
-        Invoke-WebRequest -Uri $Release.archiveUrl -OutFile $archivePath -UseBasicParsing
-        Invoke-WebRequest -Uri $Release.checksumsUrl -OutFile $checksumsPath -UseBasicParsing
+        Invoke-WebRequest -Uri $Release.archiveUrl -OutFile $archivePath -UseBasicParsing -TimeoutSec 120
+        Invoke-WebRequest -Uri $Release.checksumsUrl -OutFile $checksumsPath -UseBasicParsing -TimeoutSec 20
         $escapedName = [regex]::Escape($Release.archiveName)
         $checksumLine = Get-Content -LiteralPath $checksumsPath | Where-Object { $_ -match "^([0-9a-fA-F]{64})\s+(?:\*)?$escapedName$" } | Select-Object -First 1
         if (-not $checksumLine) { throw "Published checksum for $($Release.archiveName) is missing." }
@@ -149,6 +177,7 @@ function Install-Release {
         New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null
         $ordered = @($entries | Sort-Object @{ Expression = { if ($_.relative -ieq 'Update-ChatGPTRemote.ps1') { 1 } else { 0 } } }, relative)
         foreach ($entry in $ordered) {
+            Assert-SafeInstallDestination $entry.relative
             $destination = [IO.Path]::GetFullPath((Join-Path $InstallRoot $entry.relative))
             $installPrefix = $InstallRoot.TrimEnd('\') + '\'
             if (-not $destination.StartsWith($installPrefix, [StringComparison]::OrdinalIgnoreCase)) { throw "Install path escapes its root: $($entry.relative)" }
@@ -164,6 +193,7 @@ function Install-Release {
         }
         foreach ($entry in $previousEntries) {
             if ($newRelativePaths.Contains($entry.relative)) { continue }
+            Assert-SafeInstallDestination $entry.relative
             $destination = [IO.Path]::GetFullPath((Join-Path $InstallRoot $entry.relative))
             $backup = Join-Path $backupRoot $entry.relative
             if (-not (Test-Path -LiteralPath $destination -PathType Leaf)) { continue }
@@ -173,6 +203,7 @@ function Install-Release {
             $copied.Add([pscustomobject]@{ destination = $destination; backup = $backup; existed = $true })
         }
         $manifestDestination = Join-Path $InstallRoot 'RELEASE-MANIFEST.sha256'
+        Assert-SafeInstallDestination 'RELEASE-MANIFEST.sha256'
         $manifestBackup = Join-Path $backupRoot 'RELEASE-MANIFEST.sha256'
         $manifestExisted = Test-Path -LiteralPath $manifestDestination -PathType Leaf
         if ($manifestExisted) { Copy-Item -LiteralPath $manifestDestination -Destination $manifestBackup -Force }
@@ -244,6 +275,7 @@ try {
     Write-LastCheck $release.tag
     $localVersion = Get-LocalVersion
     $available = (ConvertTo-Version $release.tag) -gt (ConvertTo-Version $localVersion)
+    if ($release.tag -eq $localVersion -and -not (Test-InstalledIntegrity)) { $available = $true }
     if ($Action -eq 'Check' -or -not $available) {
         ([ordered]@{ available = $available; latestVersion = $release.tag; localVersion = $localVersion; updated = $false } | ConvertTo-Json)
         return

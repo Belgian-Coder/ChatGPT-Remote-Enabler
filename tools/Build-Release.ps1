@@ -46,7 +46,7 @@ try {
             $relative = $file.FullName.Substring($stageRoot.Length + 1).Replace('\', '/')
             "{0} *{1}" -f (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant(),$relative
         }
-        [IO.File]::WriteAllLines((Join-Path $stageRoot 'RELEASE-MANIFEST.sha256'), $manifestLines, [Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText((Join-Path $stageRoot 'RELEASE-MANIFEST.sha256'), (($manifestLines -join "`n") + "`n"), [Text.UTF8Encoding]::new($false))
 
         $privacyPatterns = @(
             '-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----',
@@ -74,7 +74,7 @@ try {
 
     $sumsPath = Join-Path $OutputDirectory "SHA256SUMS-$version.txt"
     $sumLines = @($archives | ForEach-Object { "$($_.Sha256)  $($_.Name)" })
-    [IO.File]::WriteAllLines($sumsPath, $sumLines, [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($sumsPath, (($sumLines -join "`n") + "`n"), [Text.UTF8Encoding]::new($false))
 
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     foreach ($archive in $archives) {

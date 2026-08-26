@@ -909,7 +909,8 @@
         if (state.disposed) return;
         state.remoteRuntimeCache.delete(hostId);
         state.remoteRuntimeScannedAt = 0;
-        state.hostConnectivity.set(hostId, { available: connectionProven, checkedAt: Date.now() });
+        if (connectionProven) state.hostConnectivity.set(hostId, { available: true, checkedAt: Date.now() });
+        else state.hostConnectivity.delete(hostId);
         state.remoteCodexHomes.delete(hostId);
         const latest = state.remoteProjectInventories.get(hostId);
         if (latest?.sourcePeerCache && freshInventory(hostId)) {

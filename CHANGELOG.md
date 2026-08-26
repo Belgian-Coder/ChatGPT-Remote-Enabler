@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.5.7
+
+- Keep a currently discovered native Remote runtime online when only its inventory service is retrying, while hosts with no runtime remain explicitly offline.
+
 ## v1.5.6
 
 - Fixed stale online dots, reconnect discovery, and remote inventories that could remain pending after a bridge error.

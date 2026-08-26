@@ -29,7 +29,7 @@
   const REMOTE_INVENTORY_RETRY_MS = 15000;
   const REMOTE_INVENTORY_ACTIVE_TTL_MS = 5000;
   const REMOTE_INVENTORY_IDLE_TTL_MS = 30000;
-  const VERSION = 44;
+  const VERSION = 45;
   const LOCAL_FOLDER_PATH = Object.freeze({
     closed: "M5.55957 2.14136C6.06503 2.14136 6.55801 2.30207 6.9668 2.59937L7.81836 3.21851C8.04761 3.38513 8.32401 3.47534 8.60742 3.47534H12.1338C13.4545 3.47559 14.5254 4.54621 14.5254 5.86694V11.4666C14.5254 12.7873 13.4545 13.8579 12.1338 13.8582H3.86621C2.54554 13.8579 1.47461 12.7873 1.47461 11.4666V4.53296C1.47486 3.21244 2.54569 2.1416 3.86621 2.14136H5.55957ZM2.52539 7.85718V11.4666C2.52539 12.2074 3.12544 12.8081 3.86621 12.8083H12.1338C12.8746 12.8081 13.4746 12.2074 13.4746 11.4666V7.85718H2.52539ZM3.86621 3.19214C3.12559 3.19238 2.52564 3.79234 2.52539 4.53296V6.8064H13.4746V5.86694C13.4746 5.12611 12.8746 4.52539 12.1338 4.52515H8.60742C8.10203 4.52515 7.60895 4.36534 7.2002 4.06812L6.34863 3.448C6.11937 3.28135 5.84301 3.19214 5.55957 3.19214H3.86621Z",
     open: "M4.75488 2.1416C5.30942 2.14164 5.74594 2.23705 6.11816 2.38965C6.48323 2.53934 6.76728 2.73817 7.00391 2.9043L7.02148 2.91699C7.47057 3.23238 7.8162 3.47463 8.55176 3.47461H11.333C12.7194 3.47484 13.8311 4.61217 13.8311 6L13.875 6.38281H13.8594C14.8729 6.38292 15.5982 7.3629 15.3018 8.33203L14.0068 12.5586C13.7703 13.3297 13.0576 13.8563 12.251 13.8564H3.83984C3.4199 13.8564 3.04144 13.7174 2.73828 13.4883L2.67383 13.4346C1.99907 12.9811 1.55577 12.2065 1.55566 11.3311L0.941406 4.66699C0.941406 3.2792 2.05315 2.1419 3.43945 2.1416H4.75488ZM4.7627 7.42969C4.56039 7.42972 4.3807 7.5625 4.32129 7.75586L3.08594 11.7891C2.96123 12.1965 3.18214 12.6072 3.54883 12.7529C3.63476 12.7768 3.74102 12.7958 3.88184 12.8086H12.251C12.5974 12.8085 12.9033 12.5821 13.0049 12.251L14.2998 8.02539C14.3901 7.72947 14.1688 7.42979 13.8594 7.42969H4.7627ZM3.43945 3.19141C2.64724 3.1917 1.99121 3.84481 1.99121 4.66699L2.49316 10.1201L3.32031 7.44922C3.51452 6.81571 4.10008 6.38284 4.7627 6.38281H12.8252L12.7812 6C12.7812 5.22902 12.2045 4.607 11.4795 4.53223L11.333 4.52441H8.55176C8.05756 4.52442 7.64464 4.44062 7.2666 4.2793C6.91453 4.12896 6.6274 3.92345 6.41797 3.77637L6.40039 3.76367C6.16212 3.59639 5.96404 3.46151 5.71973 3.36133C5.54113 3.28812 5.32754 3.2289 5.05176 3.2041L4.75488 3.19141H3.43945Z",
@@ -935,7 +935,7 @@
       #${PANEL_ID} .crmp-drop-before::before, #${PANEL_ID} .crmp-drop-after::after { position:absolute; z-index:4; right:6px; left:6px; height:2px; border-radius:2px; background:var(--color-accent,#74b9ff); content:""; pointer-events:none; }
       #${PANEL_ID} .crmp-drop-before::before { top:-1px; }
       #${PANEL_ID} .crmp-drop-after::after { bottom:-1px; }
-      #${PANEL_ID} .crmp-project-action, #${PANEL_ID} .crmp-project-new { position:absolute!important; top:50%; opacity:0; pointer-events:none; transform:translateY(-50%); transition:opacity 100ms ease; }
+      #${PANEL_ID} .crmp-project-action, #${PANEL_ID} .crmp-project-new { position:absolute!important; top:50%; display:flex!important; visibility:visible!important; align-items:center; justify-content:center; opacity:0; pointer-events:none; transform:translateY(-50%); transition:opacity 100ms ease; }
       #${PANEL_ID} .crmp-project-action { right:3px; }
       #${PANEL_ID} .crmp-project-new { right:29px; font-size:14px; }
       #${PANEL_ID} .crmp-project-head:hover .crmp-project-action, #${PANEL_ID} .crmp-project-head:hover .crmp-project-new, #${PANEL_ID} .crmp-project-head:focus-within .crmp-project-action, #${PANEL_ID} .crmp-project-head:focus-within .crmp-project-new, #${PANEL_ID} .crmp-project-action[aria-expanded="true"] { opacity:1; pointer-events:auto; }
@@ -1048,56 +1048,6 @@
       .some((control) => control.navigationListId?.startsWith("codex:connection:"));
   }
 
-  function selectNativeConnectionGrouping() {
-    if (nativeConnectionGroupingActive()) return true;
-    const trigger = document.querySelector('[aria-label="Project sidebar options"][aria-haspopup="menu"]');
-    if (!trigger) return false;
-    let triggerFiber = getFiber(trigger);
-    let menuProvider = null;
-    for (let level = 0; triggerFiber && level < 40; level += 1, triggerFiber = triggerFiber.return) {
-      const props = triggerFiber.memoizedProps;
-      if (typeof props?.onOpenChange === "function" && typeof props.triggerId === "string") {
-        menuProvider = props;
-        break;
-      }
-    }
-    if (!menuProvider) return false;
-
-    const menu = document.querySelector('[role="menu"]');
-    if (!menu) {
-      state.inventoryHydrationPhase = "grouping-open";
-      menuProvider.onOpenChange(true);
-      state.inventoryHydrationPhase = "grouping-wait";
-      return false;
-    }
-    state.inventoryHydrationPhase = "grouping-find";
-    const leaf = menu && [...menu.querySelectorAll("*")]
-      .find((item) => item.children.length === 0 && (item.textContent || "").replace(/\s+/gu, " ").trim() === "By connection");
-    if (!leaf) {
-      menuProvider.onOpenChange(false);
-      return false;
-    }
-    const item = leaf.closest('[role="menuitemradio"]') ?? leaf;
-    if (item.getAttribute("aria-checked") !== "true") {
-      let itemFiber = getFiber(item);
-      let select = null;
-      for (let level = 0; itemFiber && level < 30; level += 1, itemFiber = itemFiber.return) {
-        if (typeof itemFiber.memoizedProps?.onSelect === "function") {
-          select = itemFiber.memoizedProps.onSelect;
-          break;
-        }
-      }
-      if (!select) {
-        menuProvider.onOpenChange(false);
-        return false;
-      }
-      state.inventoryHydrationPhase = "grouping-select";
-      select();
-    }
-    state.inventoryHydrationPhase = "grouping-wait";
-    return false;
-  }
-
   function waitForHydrationRound() {
     return new Promise((resolve) => setTimeout(resolve, NATIVE_INVENTORY_ROUND_DELAY_MS));
   }
@@ -1106,11 +1056,9 @@
     if (state.inventoryHydrationPending) return;
     state.inventoryHydrationPending = true;
     state.inventoryHydrationError = null;
-    state.inventoryHydrationPhase = "grouping";
+    state.inventoryHydrationPhase = "expanding";
     state.inventoryHydrationTruncated = false;
     try {
-      if (!selectNativeConnectionGrouping()) return;
-      state.inventoryHydrationPhase = "expanding";
       for (const control of nativeThreadListExpansionControls()) {
         if (!control.expanded && control.itemCount > control.maxItems) control.expand(true);
       }
@@ -1131,7 +1079,7 @@
       state.inventoryHydrationError = String(error?.message ?? error).slice(0, 240);
     } finally {
       state.inventoryHydrationPending = false;
-      if (state.inventoryHydrationPhase !== "grouping-wait") state.inventoryHydrationPhase = "idle";
+      state.inventoryHydrationPhase = "idle";
       if (!state.disposed) render();
     }
   }
@@ -1376,6 +1324,18 @@
     return nativeProjectItem(project)?.querySelector('button[aria-label^="Project actions for "]') ?? null;
   }
 
+  function nativeProjectNewAction(project) {
+    return nativeProjectItem(project)?.querySelector('button[aria-label^="Start new chat in "]') ?? null;
+  }
+
+  function nativeGlobalNewChatAction() {
+    return [...document.querySelectorAll("button")].find((item) => {
+      if (item.closest(`#${PANEL_ID}`)) return false;
+      const label = item.getAttribute("aria-label") || (item.textContent || "").replace(/\s+/gu, " ").trim();
+      return label === "New chat" && !item.disabled;
+    }) ?? null;
+  }
+
   function nativeProjectButtonTemplate(project, actionName) {
     const prefix = actionName === "new" ? "Start new chat in " : "Project actions for ";
     const own = nativeProjectItem(project)?.querySelector(`button[aria-label^="${prefix}"]`);
@@ -1479,7 +1439,8 @@
 
   function nativeStartThreadDispatcher() {
     const item = document.querySelector('[data-sidebar-project-kind="local"][role="listitem"]')
-      ?? document.querySelector('[data-sidebar-project-kind][role="listitem"]');
+      ?? document.querySelector('[data-sidebar-project-kind][role="listitem"]')
+      ?? document.querySelector(ROW_SELECTOR);
     let fiber = item ? getFiber(item) : null;
     for (let level = 0; fiber && level < 12; level += 1, fiber = fiber.return) {
       const direct = fiber.memoizedState?.next?.next?.memoizedState?.next?.deps?.[0];
@@ -1497,7 +1458,8 @@
 
   function nativeNavigationDispatcher() {
     const item = document.querySelector('[data-sidebar-project-kind="local"][role="listitem"]')
-      ?? document.querySelector('[data-sidebar-project-kind][role="listitem"]');
+      ?? document.querySelector('[data-sidebar-project-kind][role="listitem"]')
+      ?? document.querySelector(ROW_SELECTOR);
     let fiber = item ? getFiber(item) : null;
     for (let level = 0; fiber && level < 12; level += 1, fiber = fiber.return) {
       const direct = fiber.updateQueue?.memoCache?.data?.[1]?.[1];
@@ -1916,19 +1878,32 @@
 
   async function startNativeProjectThread(project) {
     if (state.pendingNewThreads.has(project.key)) return;
-    const callback = project.hostId === "local"
-      ? nativeProjectCallback(project, "onStartNewThread")
-      : (project.projectId ? nativeStartThreadDispatcher() : nativeNavigationDispatcher());
-    if (!callback) {
+    const nativeAction = nativeProjectNewAction(project);
+    if (nativeAction) {
+      invokeNativeElement(nativeAction);
+      state.lastAction = { commandId: "start-new-thread", found: true, hostId: project.hostId, invoked: true, mode: "native-project-button", project: project.name };
+      return;
+    }
+    const localCallback = project.hostId === "local" ? nativeProjectCallback(project, "onStartNewThread") : null;
+    const projectDispatcher = project.projectId ? nativeStartThreadDispatcher() : null;
+    const globalNewChat = project.projectId && typeof state.localFetchFromHost === "function" ? nativeGlobalNewChatAction() : null;
+    const navigationDispatcher = project.hostId !== "local" && !project.projectId ? nativeNavigationDispatcher() : null;
+    if (!localCallback && !projectDispatcher && !globalNewChat && !navigationDispatcher) {
       state.lastAction = { commandId: "start-new-thread", found: false, hostId: project.hostId, project: project.name };
       return;
     }
     state.pendingNewThreads.add(project.key);
     try {
-      if (project.hostId === "local") callback();
-      else if (project.projectId) callback({ projectId: project.projectId, projectKind: "remote" });
-      else await registerRemoteProjectAndOpen(project, callback);
-      state.lastAction = { commandId: "start-new-thread", found: true, hostId: project.hostId, invoked: true, mode: project.hostId !== "local" && !project.projectId ? "registered-remote-project" : "open-composer", project: project.name };
+      if (localCallback) localCallback();
+      else if (projectDispatcher) projectDispatcher({ projectId: project.projectId, projectKind: project.hostId === "local" ? "local" : "remote" });
+      else if (globalNewChat) {
+        invokeNativeElement(globalNewChat);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        await setGlobalStateValue("selected-project", { projectId: project.projectId, type: project.hostId === "local" ? "local" : "remote" });
+        void state.queryClient?.invalidateQueries?.();
+      }
+      else await registerRemoteProjectAndOpen(project, navigationDispatcher);
+      state.lastAction = { commandId: "start-new-thread", found: true, hostId: project.hostId, invoked: true, mode: globalNewChat && !localCallback && !projectDispatcher ? "global-composer-project-selection" : project.hostId !== "local" && !project.projectId ? "registered-remote-project" : "open-composer", project: project.name };
     } catch (error) {
       state.lastAction = { commandId: "start-new-thread", error: error?.message || String(error), found: true, hostId: project.hostId, invoked: false, project: project.name };
     } finally {
@@ -2107,9 +2082,10 @@
       const create = cloneNativeButton(nativeProjectButtonTemplate(project, "new"), "crmp-project-new", "✎");
       create.setAttribute("aria-label", `Start new chat in ${project.name}`);
       create.title = `Start new chat in ${project.name}`;
-      create.disabled = project.hostId === "local"
-        ? !nativeProjectCallback(project, "onStartNewThread")
-        : !project.cwd || state.pendingNewThreads.has(project.key) || !(project.projectId ? nativeStartThreadDispatcher() : nativeNavigationDispatcher());
+      const exactNativeNewAction = nativeProjectNewAction(project);
+      create.disabled = state.pendingNewThreads.has(project.key) || (!exactNativeNewAction && (project.hostId === "local"
+        ? !nativeProjectCallback(project, "onStartNewThread") && !(project.projectId && (nativeStartThreadDispatcher() || (typeof state.localFetchFromHost === "function" && nativeGlobalNewChatAction())))
+        : !project.cwd || !(project.projectId ? nativeStartThreadDispatcher() || (typeof state.localFetchFromHost === "function" && nativeGlobalNewChatAction()) : nativeNavigationDispatcher())));
       bindActivation(create, () => startNativeProjectThread(project));
       head.appendChild(create);
       const actions = cloneNativeButton(nativeProjectButtonTemplate(project, "actions"), "crmp-project-action", "⋯");
@@ -2280,7 +2256,7 @@
     if (unavailableInventoryHosts.length) {
       const status = document.createElement("div");
       status.className = "crmp-inventory-status";
-      status.textContent = `Project sync paused: waiting for a current v44 inventory from ${unavailableInventoryHosts.map((host) => host.name).join(", ")}.`;
+      status.textContent = `Project sync paused: waiting for a current v45 inventory from ${unavailableInventoryHosts.map((host) => host.name).join(", ")}.`;
       fragment.appendChild(status);
     }
     const panelTitle = document.createElement("div");
@@ -2316,17 +2292,6 @@
   function schedule(mutations) {
     if (state.disposed) return;
     if (mutations?.length && mutations.every((mutation) => state.panel?.contains(mutation.target))) return;
-    const inventoryNeedsImmediateHydration = state.inventoryHydrationPhase === "grouping-wait"
-      || !nativeConnectionGroupingActive();
-    if (inventoryNeedsImmediateHydration && !state.inventoryHydrationPending && !state.inventoryHydrationMicrotask) {
-      if (state.inventoryHydrationTimer !== null) clearTimeout(state.inventoryHydrationTimer);
-      state.inventoryHydrationTimer = null;
-      state.inventoryHydrationMicrotask = true;
-      queueMicrotask(() => {
-        state.inventoryHydrationMicrotask = false;
-        if (!state.disposed) void hydrateNativeInventory();
-      });
-    }
     if (state.scheduledFrame !== null) return;
     state.scheduledFrame = requestAnimationFrame(render);
   }
@@ -2394,10 +2359,15 @@
       recentGroups: model.recents.length,
       lastAction: state.lastAction,
       nativeArchiveActions: model.tasks.filter((task) => Boolean(nativeThreadAction(task, "archive"))).length,
+      nativeConnectionGroupingActive: nativeConnectionGroupingActive(),
+      nativeGlobalNewChatAvailable: Boolean(nativeGlobalNewChatAction()),
       nativeLoadMoreActions: nativeLoadMoreButtons().length,
       nativePinActions: model.tasks.filter((task) => Boolean(nativeThreadAction(task, "pin"))).length,
+      nativeProjectNewActions: model.projects.filter((project) => Boolean(nativeProjectNewAction(project))).length,
       nativeProjectReorderItems: model.projects.filter((project) => Boolean(nativeKeyboardReorder(nativeProjectItem(project)) && sortableSnapshot(nativeProjectItem(project)))).length,
       nativeTaskReorderItems: model.tasks.filter((task) => Boolean(nativeKeyboardReorder(task.originalRow) && sortableSnapshot(task.originalRow))).length,
+      mobileProjectNewActions: state.panel?.querySelectorAll(".crmp-project-new").length ?? 0,
+      mobileProjectNewActionsEnabled: state.panel ? [...state.panel.querySelectorAll(".crmp-project-new")].filter((item) => !item.disabled).length : 0,
       remoteProjectComposerAvailable: Boolean(nativeStartThreadDispatcher()),
       remoteProjectRegistrationAvailable: Boolean(nativeNavigationDispatcher()),
       remoteProjectRemoveActions: model.projects.filter((project) => project.hostId !== "local" && project.projectId && nativeProjectCommands(project).some((command) => command?.id === "remove-project" && command.enabled !== false)).length,

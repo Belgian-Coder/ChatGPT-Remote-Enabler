@@ -1,6 +1,6 @@
 # ChatGPT Remote Enabler
 
-Unofficial Windows and macOS helpers for ChatGPT/Codex Remote. Windows exposes hidden native remote controls in affected desktop builds; both platforms add a **Mobile projects** sidebar with device filters, project grouping, drag ordering, empty remote projects, and synchronized working/unread indicators.
+Unofficial Windows and macOS helpers for ChatGPT/Codex Remote. Windows exposes hidden native remote controls in affected desktop builds; both platforms add a **Mobile projects** sidebar with device filters, project grouping, drag ordering, empty remote projects, project-hover new-chat actions, and synchronized working/unread indicators. Mobile Projects preserves the user's Native views grouping preference.
 
 | Native views | Mobile projects |
 |---|---|

@@ -10,11 +10,11 @@ Run `ChatGPT Remote Enabler.exe`, or open PowerShell here and run:
 .\Enable-ChatGPTRemote.ps1
 ```
 
-The compatibility check runs first. Mobile projects selects the complete native
-connection inventory in the background and expands every truncated task list
-through Codex's own native expansion callbacks.
-Renderer v44 also publishes this device's active saved projects and its active
-working/unread task states into its Codex home. Controllers running v44 read
+The compatibility check runs first. Mobile projects preserves the user's
+**By project**/**By connection** Native views preference and expands truncated
+task lists exposed by that grouping through Codex's own native callbacks.
+Renderer v45 also publishes this device's active saved projects and its active
+working/unread task states into its Codex home. Controllers running v45 read
 that fresh inventory through ChatGPT Remote and refresh active task indicators
 every five seconds, backing off while idle. Empty active projects appear while archived/removed projects do
 not.
@@ -22,9 +22,11 @@ Synchronization continues automatically when **Native views** is selected.
 Controllers read their complete registered-project state directly and verify
 new registrations before recording success. Remote chats match projects by
 device and normalized path, so they remain under the registered project.
-The native **By connection** lists are rehydrated on startup, sidebar changes,
-and every 30 seconds. Mutation-driven grouping recovery keeps working when
-Chromium throttles background timers, so older chats keep native actions.
+The currently selected native lists are rehydrated on startup and every 30
+seconds without opening the grouping menu or changing its value. Hovering a
+Mobile Projects folder opens the exact native project composer when available;
+registered projects retain a native global-composer fallback when their folder
+row is not mounted by the selected grouping.
 
 The launcher checks for a verified GitHub release on every start. Manage it with:
 

@@ -40,7 +40,7 @@ if ((Get-FileHash -LiteralPath $windowsRenderer -Algorithm SHA256).Hash -ne (Get
 }
 $renderer = Get-Content -LiteralPath $windowsRenderer -Raw
 $requiredContracts = @(
-    'const VERSION = 44;',
+    'const VERSION = 45;',
     'REMOTE_UNREAD_ACK_KEY',
     'freshInventory(hostId)',
     'NATIVE_INVENTORY_MAX_ROUNDS',
@@ -48,10 +48,16 @@ $requiredContracts = @(
     'thread/list',
     'thread/archive',
     'statusType === "notLoaded"',
-    'state.autoReconciliationTimer'
+    'state.autoReconciliationTimer',
+    'function nativeProjectNewAction',
+    'function nativeGlobalNewChatAction',
+    'mode: "native-project-button"'
 )
 foreach ($contract in $requiredContracts) {
     if (-not $renderer.Contains($contract)) { throw "Renderer contract is missing: $contract" }
+}
+foreach ($forbiddenContract in @('selectNativeConnectionGrouping', 'trim() === "By connection"')) {
+    if ($renderer.Contains($forbiddenContract)) { throw "Renderer still mutates native grouping: $forbiddenContract" }
 }
 
 if (Test-Path -LiteralPath (Join-Path $root '.github\workflows')) {
@@ -67,7 +73,7 @@ if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
 [pscustomobject]@{
     JavaScriptFiles = $javascript.Count
     PowerShellFiles = $powershell.Count
-    RendererVersion = 44
+    RendererVersion = 45
     RendererParity = $true
     StableRendererSelfTest = $true
 } | ConvertTo-Json

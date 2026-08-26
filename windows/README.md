@@ -12,9 +12,13 @@ Run `ChatGPT Remote Enabler.exe`, or open PowerShell here and run:
 
 The compatibility check runs first. Mobile projects selects the complete native
 connection inventory in the background and expands every **Show more** page.
-Renderer v38 also publishes this device's active saved projects into its Codex
-home. Controllers running v38 read that fresh inventory through ChatGPT Remote,
+Renderer v41 also publishes this device's active saved projects into its Codex
+home. Controllers running v41 read that fresh inventory through ChatGPT Remote,
 so empty active projects appear while archived/removed projects do not.
+Synchronization continues automatically when **Native views** is selected.
+Controllers read their complete registered-project state directly and verify
+new registrations before recording success. Remote chats match projects by
+device and normalized path, so they remain under the registered project.
 
 The launcher checks for a verified GitHub release on every start. Manage it with:
 

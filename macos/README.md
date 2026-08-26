@@ -6,11 +6,15 @@ In Mobile Projects, **Auto-register: on/off** locally enables or pauses remote-p
 
 macOS already exposes native ChatGPT remote connections. This package adds the optional Mobile projects view.
 
-Renderer version 38 preserves the original folder states and native-backed drag
+Renderer version 41 preserves the original folder states and native-backed drag
 ordering, selects the complete connection inventory, and expands all native
 **Show more** pages. It also publishes this Mac's active saved projects into its
-Codex home. Controllers running v38 read that fresh inventory through ChatGPT
+Codex home. Controllers running v41 read that fresh inventory through ChatGPT
 Remote, including projects with no chats and excluding archived/removed ones.
+Synchronization continues automatically when **Native views** is selected.
+Controllers read their complete registered-project state directly and verify
+new registrations before recording success. Remote chats match projects by
+device and normalized path, so they remain under the registered project.
 
 Install the injected startup on both the controller and every controlled
 device. Inventories expire after three minutes; missing or stale inventories

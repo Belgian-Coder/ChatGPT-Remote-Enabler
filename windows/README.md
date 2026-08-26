@@ -13,9 +13,11 @@ Run `ChatGPT Remote Enabler.exe`, or open PowerShell here and run:
 The compatibility check runs first. Mobile projects selects the complete native
 connection inventory in the background and expands every truncated task list
 through Codex's own native expansion callbacks.
-Renderer v42 also publishes this device's active saved projects into its Codex
-home. Controllers running v42 read that fresh inventory through ChatGPT Remote,
-so empty active projects appear while archived/removed projects do not.
+Renderer v43 also publishes this device's active saved projects and its active
+working/unread task states into its Codex home. Controllers running v43 read
+that fresh inventory through ChatGPT Remote and refresh task indicators every
+five seconds. Empty active projects appear while archived/removed projects do
+not.
 Synchronization continues automatically when **Native views** is selected.
 Controllers read their complete registered-project state directly and verify
 new registrations before recording success. Remote chats match projects by

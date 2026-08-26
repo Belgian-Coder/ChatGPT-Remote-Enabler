@@ -83,7 +83,7 @@ async function main() {
         throw new Error("Mobile project view did not return valid proof");
       }
       fs.mkdirSync(path.dirname(STATE_PATH), { recursive: true });
-      fs.writeFileSync(STATE_PATH, `${JSON.stringify({ identifier: persistent.identifier, port: options.port, version: 42 }, null, 2)}\n`, "utf8");
+      fs.writeFileSync(STATE_PATH, `${JSON.stringify({ identifier: persistent.identifier, port: options.port, version: 43 }, null, 2)}\n`, "utf8");
       try { fs.rmSync(LEGACY_STATE_PATH, { force: true }); } catch {}
       process.stdout.write(`${JSON.stringify({ action: options.action, ok: true, report })}\n`);
       return;

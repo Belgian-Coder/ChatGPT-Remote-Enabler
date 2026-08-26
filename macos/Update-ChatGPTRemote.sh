@@ -173,7 +173,7 @@ install_release() {
   /usr/bin/curl --fail --location --silent --show-error --max-time 120 "$archive_url" -o "$archive_path"
   /usr/bin/curl --fail --location --silent --show-error --max-time 30 "$sums_url" -o "$sums_path"
   local expected actual
-  expected="$(tr -d '\r' < "$sums_path" | awk -v name="$archive_name" '$2 == name { print $1; exit }')"
+  expected="$(tr -d '\r' < "$sums_path" | awk -v name="$archive_name" '$2 == name || $2 == "*" name { print $1; exit }')"
   [[ ${#expected} -eq 64 && "$expected" != *[^0-9a-fA-F]* ]] || { print -u2 "Published archive checksum is missing."; return 1; }
   actual="$(/usr/bin/shasum -a 256 "$archive_path" | awk '{print $1}')"
   [[ "${actual:l}" == "${expected:l}" ]] || { print -u2 "Downloaded archive failed SHA-256 verification."; return 1; }
@@ -187,9 +187,14 @@ install_release() {
     print -u2 "Neither ditto nor unzip is available to extract the release."
     return 1
   fi
-  local roots=("$extract_root"/*(/N))
-  (( ${#roots[@]} == 1 )) || { print -u2 "Release archive must contain one top-level directory."; return 1; }
-  local release_root="${roots[1]}"
+  local release_root
+  if [[ -f "$extract_root/VERSION" ]]; then
+    release_root="$extract_root"
+  else
+    local roots=("$extract_root"/*(/N))
+    (( ${#roots[@]} == 1 )) || { print -u2 "Release archive must be flat or contain one top-level directory."; return 1; }
+    release_root="${roots[1]}"
+  fi
   local archive_version=""
   [[ -f "$release_root/VERSION" ]] && archive_version="$(<"$release_root/VERSION")"
   archive_version="${archive_version//$'\r'/}"
@@ -198,6 +203,7 @@ install_release() {
   local manifest="$release_root/RELEASE-MANIFEST.sha256"
   [[ -f "$manifest" ]] || { print -u2 "Release manifest is missing."; return 1; }
   local -a relatives hashes
+  local -A new_relative_set
   local line hash relative source
   while IFS= read -r line || [[ -n "$line" ]]; do
     line="${line%$'\r'}"
@@ -212,6 +218,7 @@ install_release() {
     [[ "${actual:l}" == "${hash:l}" ]] || { print -u2 "Release manifest hash mismatch: $relative"; return 1; }
     relatives+=("$relative")
     hashes+=("$hash")
+    new_relative_set[$relative]=1
   done < "$manifest"
   local backup_root="$rollback_root/$(date +%Y%m%d-%H%M%S)-$(local_version)"
   mkdir -p "$backup_root"
@@ -226,6 +233,21 @@ install_release() {
     [[ "$relative" == *.sh ]] && chmod 755 "$destination"
     copied_relatives+=("$relative"); copied_existed+=("$existed")
   done
+  local previous_manifest="$install_root/RELEASE-MANIFEST.sha256" old_hash old_relative old_actual
+  if [[ -f "$previous_manifest" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      line="${line%$'\r'}"; old_hash="${line%% *}"; old_relative="${line#* \*}"
+      [[ ${#old_hash} -eq 64 && "$old_hash" != *[^0-9a-fA-F]* && -n "$old_relative" && "$old_relative" != /* && "$old_relative" != *'../'* && "$old_relative" != '../'* && "$old_relative" != *'/..' ]] || continue
+      [[ -n "${new_relative_set[$old_relative]-}" ]] && continue
+      destination="$install_root/$old_relative"; backup="$backup_root/$old_relative"
+      [[ -f "$destination" && ! -L "$destination" ]] || continue
+      old_actual="$(/usr/bin/shasum -a 256 "$destination" | awk '{print $1}')"
+      [[ "${old_actual:l}" == "${old_hash:l}" ]] || continue
+      mkdir -p "${backup:h}"; cp -p -- "$destination" "$backup" || { rollback_copies "$backup_root"; return 1; }
+      rm -f -- "$destination" || { rollback_copies "$backup_root"; return 1; }
+      copied_relatives+=("$old_relative"); copied_existed+=(1)
+    done < "$previous_manifest"
+  fi
   relative='Update-ChatGPTRemote.sh'
   if (( ${relatives[(Ie)$relative]} )); then
     destination="$install_root/$relative"; backup="$backup_root/$relative"; existed=0

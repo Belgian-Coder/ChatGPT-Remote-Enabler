@@ -4,5 +4,6 @@ host-names.json
 host-peers.json
 rollback/
 release/
+dist/
 *.log
 *.tmp

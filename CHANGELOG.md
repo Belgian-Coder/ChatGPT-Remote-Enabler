@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.5.0
+
+- Added optional, client-local automatic archiving for inactive, unpinned local chats older than seven days. It defaults off and skips selected, working, pinned, and remote chats.
+- Fixed remote unread acknowledgements so opening a remote chat clears its blue dot until the owning device reports a later state transition.
+- Expire and prune cached peer inventories after three minutes, reject future timestamps, and prevent stale data from driving project reconciliation.
+- Expand bounded native **Show more** pages so older chats can enter Mobile Projects and status publication.
+- Publish/read active task state every five seconds while needed, with a 60-second idle heartbeat and cached remote Codex-home discovery to reduce steady-state I/O.
+- Clear reconciliation/archive/hydration timers and guard retired async work during renderer reinjection.
+- Accept flat or rooted update archives and both common SHA-256 checksum formats, clean manifest-removed files with rollback, and add a deterministic local release builder. No GitHub Actions or CI/CD was added.
+
 ## v1.4.4
 
 - Fixed missing remote working and completed-but-unread indicators in Mobile Projects. Each injected device now publishes only its active task states in its existing short-lived peer inventory, and connected clients refresh those states every five seconds without central storage.

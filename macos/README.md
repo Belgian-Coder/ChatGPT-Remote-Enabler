@@ -1,15 +1,15 @@
 # macOS Apple Silicon
 
-Mobile Projects mirrors the native task-state indicators: a spinner while a task is working and a blue dot after it finishes until that task is viewed.
+Mobile Projects mirrors the native task-state indicators: a spinner while a task is working and a blue dot after it finishes until that task is viewed. Opening a remote task acknowledges that completion locally until its owning device reports the next state transition.
 
 In Mobile Projects, **Auto-register: on/off** locally enables or pauses remote-project mirroring. **Remove auto projects (N)** removes only projects created by that automation—never chats or folders—and suppresses immediate recreation; it stays visible but disabled at `(0)`. Right-click a suppressed project and choose **Allow auto-registration** to permit it again.
 
 macOS already exposes native ChatGPT remote connections. This package adds the optional Mobile projects view.
 
-Renderer version 43 preserves the original folder states and native-backed drag
+Renderer version 44 preserves the original folder states and native-backed drag
 ordering, selects the complete connection inventory, and expands truncated task
 lists through Codex's native callbacks. It also publishes this Mac's active saved projects and active working/unread task states into its
-Codex home. Controllers running v43 read that fresh inventory through ChatGPT
+Codex home. Controllers running v44 read that fresh inventory through ChatGPT
 Remote, including projects with no chats and excluding archived/removed ones.
 Remote task indicators refresh every five seconds.
 Synchronization continues automatically when **Native views** is selected.
@@ -29,9 +29,17 @@ chmod 755 ./MobileProjectView-macOS-arm64.sh
 ./MobileProjectView-macOS-arm64.sh enable
 ./MobileProjectView-macOS-arm64.sh probe
 ./MobileProjectView-macOS-arm64.sh enable-auto-registration
+./MobileProjectView-macOS-arm64.sh enable-auto-archive
 ```
 
 Use `disable-auto-registration` to pause mirroring, `reconcile-auto-registrations` to synchronize immediately, or `remove-auto-registrations` to remove only automation-created registrations. Synchronization never deletes chats or source folders.
+
+**Auto-archive >7d** is off by default. `enable-auto-archive` archives only
+unpinned, inactive local chats whose latest activity is older than seven days;
+selected, working, pinned, and remote chats are skipped. Use
+`disable-auto-archive` to stop future runs, `preview-auto-archive` for a
+read-only count, or `run-auto-archive` for an immediate enabled-policy run.
+Archived chats remain restorable in ChatGPT.
 
 The launcher checks for a verified GitHub release on every start. Manage it with:
 

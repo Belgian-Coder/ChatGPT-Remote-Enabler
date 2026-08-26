@@ -1,6 +1,6 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [ValidateSet('Enable', 'Disable', 'Probe', 'EnableAutoRegistration', 'DisableAutoRegistration', 'ReconcileAutoRegistrations', 'RemoveAutoRegistrations')]
+    [ValidateSet('Enable', 'Disable', 'Probe', 'EnableAutoArchive', 'DisableAutoArchive', 'PreviewAutoArchive', 'RunAutoArchive', 'EnableAutoRegistration', 'DisableAutoRegistration', 'ReconcileAutoRegistrations', 'RemoveAutoRegistrations')]
     [string]$Action = 'Probe',
     [string]$NodePath
 )
@@ -35,6 +35,10 @@ if ($Action -eq 'Enable') {
 $nodeAction = switch ($Action) {
     'EnableAutoRegistration' { 'auto-on' }
     'DisableAutoRegistration' { 'auto-off' }
+    'EnableAutoArchive' { 'archive-auto-on' }
+    'DisableAutoArchive' { 'archive-auto-off' }
+    'PreviewAutoArchive' { 'archive-preview' }
+    'RunAutoArchive' { 'archive-run' }
     'ReconcileAutoRegistrations' { 'auto-reconcile' }
     'RemoveAutoRegistrations' { 'auto-remove' }
     default { $Action.ToLowerInvariant() }

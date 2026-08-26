@@ -11,14 +11,25 @@
   const AUTO_ENABLED_KEY = "codex-remote-mobile-auto-register-enabled-v1";
   const AUTO_MANAGED_KEY = "codex-remote-mobile-auto-managed-v1";
   const AUTO_SUPPRESSED_KEY = "codex-remote-mobile-auto-suppressed-v1";
+  const AUTO_ARCHIVE_ENABLED_KEY = "codex-remote-mobile-auto-archive-enabled-v1";
+  const AUTO_ARCHIVE_DAYS = 7;
+  const AUTO_ARCHIVE_INTERVAL_MS = 60 * 60 * 1000;
+  const AUTO_ARCHIVE_RETRY_MS = 5 * 60 * 1000;
+  const REMOTE_UNREAD_ACK_KEY = "codex-remote-mobile-unread-ack-v1";
+  const REMOTE_UNREAD_ACK_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
   const LOCAL_REMOTE_PROJECTS_TTL_MS = 15000;
   const NATIVE_INVENTORY_REFRESH_MS = 30000;
+  const NATIVE_INVENTORY_MAX_ROUNDS = 8;
+  const NATIVE_INVENTORY_ROUND_DELAY_MS = 175;
   const REMOTE_INVENTORY_FILENAME = "remote-project-inventory-v1.json";
   const REMOTE_INVENTORY_MAX_AGE_MS = 180000;
-  const REMOTE_INVENTORY_PUBLISH_MS = 5000;
+  const REMOTE_INVENTORY_ACTIVE_MS = 5000;
+  const REMOTE_INVENTORY_IDLE_MS = 60000;
+  const REMOTE_INVENTORY_FUTURE_SKEW_MS = 5 * 60 * 1000;
   const REMOTE_INVENTORY_RETRY_MS = 15000;
-  const REMOTE_INVENTORY_TTL_MS = 5000;
-  const VERSION = 43;
+  const REMOTE_INVENTORY_ACTIVE_TTL_MS = 5000;
+  const REMOTE_INVENTORY_IDLE_TTL_MS = 30000;
+  const VERSION = 44;
   const LOCAL_FOLDER_PATH = Object.freeze({
     closed: "M5.55957 2.14136C6.06503 2.14136 6.55801 2.30207 6.9668 2.59937L7.81836 3.21851C8.04761 3.38513 8.32401 3.47534 8.60742 3.47534H12.1338C13.4545 3.47559 14.5254 4.54621 14.5254 5.86694V11.4666C14.5254 12.7873 13.4545 13.8579 12.1338 13.8582H3.86621C2.54554 13.8579 1.47461 12.7873 1.47461 11.4666V4.53296C1.47486 3.21244 2.54569 2.1416 3.86621 2.14136H5.55957ZM2.52539 7.85718V11.4666C2.52539 12.2074 3.12544 12.8081 3.86621 12.8083H12.1338C12.8746 12.8081 13.4746 12.2074 13.4746 11.4666V7.85718H2.52539ZM3.86621 3.19214C3.12559 3.19238 2.52564 3.79234 2.52539 4.53296V6.8064H13.4746V5.86694C13.4746 5.12611 12.8746 4.52539 12.1338 4.52515H8.60742C8.10203 4.52515 7.60895 4.36534 7.2002 4.06812L6.34863 3.448C6.11937 3.28135 5.84301 3.19214 5.55957 3.19214H3.86621Z",
     open: "M4.75488 2.1416C5.30942 2.14164 5.74594 2.23705 6.11816 2.38965C6.48323 2.53934 6.76728 2.73817 7.00391 2.9043L7.02148 2.91699C7.47057 3.23238 7.8162 3.47463 8.55176 3.47461H11.333C12.7194 3.47484 13.8311 4.61217 13.8311 6L13.875 6.38281H13.8594C14.8729 6.38292 15.5982 7.3629 15.3018 8.33203L14.0068 12.5586C13.7703 13.3297 13.0576 13.8563 12.251 13.8564H3.83984C3.4199 13.8564 3.04144 13.7174 2.73828 13.4883L2.67383 13.4346C1.99907 12.9811 1.55577 12.2065 1.55566 11.3311L0.941406 4.66699C0.941406 3.2792 2.05315 2.1419 3.43945 2.1416H4.75488ZM4.7627 7.42969C4.56039 7.42972 4.3807 7.5625 4.32129 7.75586L3.08594 11.7891C2.96123 12.1965 3.18214 12.6072 3.54883 12.7529C3.63476 12.7768 3.74102 12.7958 3.88184 12.8086H12.251C12.5974 12.8085 12.9033 12.5821 13.0049 12.251L14.2998 8.02539C14.3901 7.72947 14.1688 7.42979 13.8594 7.42969H4.7627ZM3.43945 3.19141C2.64724 3.1917 1.99121 3.84481 1.99121 4.66699L2.49316 10.1201L3.32031 7.44922C3.51452 6.81571 4.10008 6.38284 4.7627 6.38281H12.8252L12.7812 6C12.7812 5.22902 12.2045 4.607 11.4795 4.53223L11.333 4.52441H8.55176C8.05756 4.52442 7.64464 4.44062 7.2666 4.2793C6.91453 4.12896 6.6274 3.92345 6.41797 3.77637L6.40039 3.76367C6.16212 3.59639 5.96404 3.46151 5.71973 3.36133C5.54113 3.28812 5.32754 3.2289 5.05176 3.2041L4.75488 3.19141H3.43945Z",
@@ -32,6 +43,11 @@
   const state = {
     active: false,
     actionCardKey: null,
+    autoArchiveError: null,
+    autoArchiveLastRunAt: 0,
+    autoArchiveLastResult: null,
+    autoArchivePending: false,
+    autoArchiveTimer: null,
     autoRegistrationFailures: new Map(),
     autoRegistrationPending: null,
     autoRegistrationTimer: null,
@@ -42,6 +58,7 @@
     contextProjectKey: null,
     drag: null,
     dragJustEndedAt: 0,
+    disposed: false,
     filter: "all",
     inventoryHydrationPending: false,
     inventoryHydrationError: null,
@@ -57,6 +74,7 @@
     localInventoryPublisherError: null,
     localInventoryPublisherPending: false,
     localInventoryPublisherTimer: null,
+    localInventoryStatusSignature: "",
     localRegisteredProjects: new Map(),
     localRegisteredProjectsError: null,
     localRegisteredProjectsFetchedAt: 0,
@@ -70,6 +88,7 @@
     projectService: null,
     queryClient: null,
     remoteProjectInventories: new Map(),
+    remoteCodexHomes: new Map(),
     remoteRuntimeCache: new Map(),
     remoteRuntimeScannedAt: 0,
     reorderPending: false,
@@ -82,6 +101,10 @@
       const value = localStorage.getItem(key);
       return value === null ? key === AUTO_ENABLED_KEY : value === "true";
     } catch { return key === AUTO_ENABLED_KEY; }
+  }
+
+  function readOptionalBoolean(key) {
+    try { return localStorage.getItem(key) === "true"; } catch { return false; }
   }
 
   function writeBoolean(key, value) {
@@ -97,6 +120,34 @@
 
   function writeRecords(key, value) {
     try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+  }
+
+  function remoteUnreadIdentity(hostId, conversationKey) {
+    return `${normalizeHostId(hostId)}::${conversationKey}`;
+  }
+
+  function acknowledgeRemoteUnread(task) {
+    if (!task?.conversationKey || task.hostId === "local") return;
+    const records = readRecords(REMOTE_UNREAD_ACK_KEY);
+    records[remoteUnreadIdentity(task.hostId, task.conversationKey)] = { acknowledgedAt: Date.now() };
+    writeRecords(REMOTE_UNREAD_ACK_KEY, records);
+  }
+
+  function remoteUnreadAcknowledged(task, authoritativeState) {
+    if (!task?.conversationKey || task.hostId === "local") return false;
+    const records = readRecords(REMOTE_UNREAD_ACK_KEY);
+    const key = remoteUnreadIdentity(task.hostId, task.conversationKey);
+    const record = records[key];
+    if (!record) return false;
+    const acknowledgedAt = Number(record.acknowledgedAt);
+    const expired = !Number.isFinite(acknowledgedAt) || Date.now() - acknowledgedAt > REMOTE_UNREAD_ACK_MAX_AGE_MS;
+    const transitioned = !authoritativeState || authoritativeState.statusType === "loading" || authoritativeState.unread !== true;
+    if (expired || transitioned) {
+      delete records[key];
+      writeRecords(REMOTE_UNREAD_ACK_KEY, records);
+      return false;
+    }
+    return true;
   }
 
   function projectIdentity(project) {
@@ -477,9 +528,19 @@
     return Boolean(value && (/^[A-Za-z]:[\\/]/u.test(value) || /^\\\\[^\\/]+[\\/][^\\/]+/u.test(value) || /^\//u.test(value)));
   }
 
+  function freshInventory(hostId) {
+    const inventory = state.remoteProjectInventories.get(hostId);
+    if (!inventory?.fetchedAt || !Number.isFinite(inventory.generatedAt)) return null;
+    const now = Date.now();
+    if (now - inventory.fetchedAt > REMOTE_INVENTORY_MAX_AGE_MS || now - inventory.generatedAt > REMOTE_INVENTORY_MAX_AGE_MS) return null;
+    return inventory;
+  }
+
   function inventoryProjects() {
     const projects = [];
-    for (const [hostId, inventory] of state.remoteProjectInventories) {
+    for (const hostId of state.remoteProjectInventories.keys()) {
+      const inventory = freshInventory(hostId);
+      if (!inventory) continue;
       for (const project of inventory.projects ?? []) {
         projects.push({ ...project, hostId });
       }
@@ -488,13 +549,12 @@
   }
 
   function remoteTaskState(hostId, conversationKey) {
-    const inventory = state.remoteProjectInventories.get(hostId);
+    const inventory = freshInventory(hostId);
     return inventory?.tasks?.get(conversationKey) ?? null;
   }
 
   function authoritativeInventory(hostId) {
-    const inventory = state.remoteProjectInventories.get(hostId);
-    return inventory?.fetchedAt ? inventory : null;
+    return freshInventory(hostId);
   }
 
   function inventoryContainsProject(inventory, project) {
@@ -547,7 +607,8 @@
     const generatedAt = Date.parse(value?.generatedAt);
     if (value?.schemaVersion !== 1 || !Number.isFinite(generatedAt)) throw new Error("Remote project inventory has an unsupported format");
     if (Date.now() - generatedAt > REMOTE_INVENTORY_MAX_AGE_MS) throw new Error("Remote project inventory is stale");
-    const entries = Array.isArray(value.projects) ? value.projects : [];
+    if (generatedAt - Date.now() > REMOTE_INVENTORY_FUTURE_SKEW_MS) throw new Error("Remote project inventory timestamp is in the future");
+    const entries = Array.isArray(value.projects) ? value.projects.slice(0, 500) : [];
     const projects = new Map();
     for (const metadata of entries) {
       if (!metadata || typeof metadata !== "object" || !Array.isArray(metadata.rootPaths)) continue;
@@ -559,37 +620,53 @@
       projects.set(normalizePath(cwd), { cwd, name, source: "host-projects" });
     }
     const tasks = new Map();
-    for (const metadata of Array.isArray(value.tasks) ? value.tasks : []) {
+    for (const metadata of Array.isArray(value.tasks) ? value.tasks.slice(0, 2000) : []) {
       if (!metadata || typeof metadata !== "object" || typeof metadata.conversationKey !== "string" || !metadata.conversationKey) continue;
       const unread = metadata.unread === true;
       const statusType = metadata.statusType === "loading" ? "loading" : "idle";
       if (unread || statusType === "loading") tasks.set(metadata.conversationKey, { statusType, unread });
     }
-    return { projects: [...projects.values()].sort((left, right) => left.name.localeCompare(right.name)), tasks };
+    return { generatedAt, projects: [...projects.values()].sort((left, right) => left.name.localeCompare(right.name)), tasks };
   }
 
   function scheduleRemoteProjectInventory(runtimes) {
+    if (state.disposed) return;
     const now = Date.now();
+    for (const [hostId, inventory] of state.remoteProjectInventories) {
+      if (!runtimes.has(hostId) && (!inventory.generatedAt || now - inventory.generatedAt > REMOTE_INVENTORY_MAX_AGE_MS)) {
+        state.remoteProjectInventories.delete(hostId);
+        state.remoteCodexHomes.delete(hostId);
+      }
+    }
     for (const [hostId, runtime] of runtimes) {
       const current = state.remoteProjectInventories.get(hostId) ?? { projects: [], tasks: new Map() };
-      if (current.pending || current.retryAt > now || current.fetchedAt && now - current.fetchedAt < REMOTE_INVENTORY_TTL_MS) continue;
+      const refreshTtl = current.tasks?.size ? REMOTE_INVENTORY_ACTIVE_TTL_MS : REMOTE_INVENTORY_IDLE_TTL_MS;
+      if (current.pending || current.retryAt > now || current.fetchedAt && now - current.fetchedAt < refreshTtl) continue;
       if (typeof runtime?.requestClient?.sendRequest !== "function") continue;
       state.remoteProjectInventories.set(hostId, { ...current, pending: true });
-      runtime.requestClient.sendRequest("config/read", { cwd: null, includeLayers: true }).then((configResult) => {
-        const codexHome = findCodexHome(configResult);
-        if (!codexHome) throw new Error("Remote Codex home was not reported");
-        return runtime.requestClient.sendRequest("fs/readFile", { path: inventoryPath(codexHome) });
-      }).then((result) => {
+      const resolveCodexHome = state.remoteCodexHomes.has(hostId)
+        ? Promise.resolve(state.remoteCodexHomes.get(hostId))
+        : runtime.requestClient.sendRequest("config/read", { cwd: null, includeLayers: true }).then((configResult) => {
+          const codexHome = findCodexHome(configResult);
+          if (!codexHome) throw new Error("Remote Codex home was not reported");
+          state.remoteCodexHomes.set(hostId, codexHome);
+          return codexHome;
+        });
+      resolveCodexHome.then((codexHome) => runtime.requestClient.sendRequest("fs/readFile", { path: inventoryPath(codexHome) })).then((result) => {
+        if (state.disposed) return;
         const parsed = parseRemoteProjectInventory(result);
         state.remoteProjectInventories.set(hostId, {
           error: null,
           fetchedAt: Date.now(),
+          generatedAt: parsed.generatedAt,
           pending: false,
           projects: parsed.projects,
           retryAt: 0,
           tasks: parsed.tasks,
         });
       }).catch((error) => {
+        if (state.disposed) return;
+        state.remoteCodexHomes.delete(hostId);
         state.remoteProjectInventories.set(hostId, {
           error: error?.message || String(error),
           fetchedAt: 0,
@@ -598,14 +675,23 @@
           retryAt: Date.now() + REMOTE_INVENTORY_RETRY_MS,
           tasks: new Map(),
         });
-      }).finally(schedule);
+      }).finally(() => { if (!state.disposed) schedule(); });
     }
   }
 
   function scheduleLocalProjectInventoryPublication() {
     const runtime = state.localRuntime;
     const now = Date.now();
-    if (!runtime || state.localInventoryPublisherPending || now - state.localInventoryPublishedAt < REMOTE_INVENTORY_PUBLISH_MS) return;
+    if (!runtime || state.disposed || state.localInventoryPublisherPending) return;
+    const tasks = [...document.querySelectorAll(ROW_SELECTOR)]
+      .filter((row) => !row.closest(`#${PANEL_ID}`))
+      .map(metadataFromRow)
+      .filter((task) => task.hostId === "local" && (task.unread || task.statusType === "loading"))
+      .map((task) => ({ conversationKey: task.conversationKey, statusType: task.statusType, unread: task.unread }));
+    const statusSignature = JSON.stringify(tasks);
+    const publishInterval = tasks.length ? REMOTE_INVENTORY_ACTIVE_MS : REMOTE_INVENTORY_IDLE_MS;
+    const statusChanged = statusSignature !== state.localInventoryStatusSignature;
+    if (!statusChanged && now - state.localInventoryPublishedAt < publishInterval) return;
     state.localInventoryPublisherPending = true;
     Promise.all([
       runtime.fetchFromHost("get-global-state", { params: { key: "local-projects" } }),
@@ -626,25 +712,25 @@
           rootPaths,
         }];
       });
-      const tasks = [...document.querySelectorAll(ROW_SELECTOR)]
-        .filter((row) => !row.closest(`#${PANEL_ID}`))
-        .map(metadataFromRow)
-        .filter((task) => task.hostId === "local" && (task.unread || task.statusType === "loading"))
-        .map((task) => ({ conversationKey: task.conversationKey, statusType: task.statusType, unread: task.unread }));
       const payload = JSON.stringify({ generatedAt: new Date().toISOString(), projects, schemaVersion: 1, tasks });
       return runtime.requestClient.sendRequest("fs/writeFile", { dataBase64: encodeText(payload), path: inventoryPath(codexHome) });
     }).then(() => {
+      if (state.disposed) return;
       state.localInventoryPublishedAt = Date.now();
+      state.localInventoryStatusSignature = statusSignature;
       state.localInventoryPublisherError = null;
     }).catch((error) => {
+      if (state.disposed) return;
       state.localInventoryPublisherError = error?.message || String(error);
     }).finally(() => {
+      if (state.disposed) return;
       state.localInventoryPublisherPending = false;
       if (state.localInventoryPublisherTimer === null) {
+        const nextInterval = tasks.length ? REMOTE_INVENTORY_ACTIVE_MS : REMOTE_INVENTORY_IDLE_MS;
         state.localInventoryPublisherTimer = setTimeout(() => {
           state.localInventoryPublisherTimer = null;
           schedule();
-        }, REMOTE_INVENTORY_PUBLISH_MS);
+        }, nextInterval);
       }
       schedule();
     });
@@ -706,10 +792,15 @@
     const remoteInventoryProjects = inventoryProjects();
     for (const task of tasks) {
       if (task.hostId === "local") continue;
-      const authoritativeState = remoteTaskState(task.hostId, task.conversationKey);
-      if (!authoritativeState) continue;
+      const inventory = authoritativeInventory(task.hostId);
+      if (!inventory) continue;
+      const authoritativeState = inventory.tasks?.get(task.conversationKey) ?? null;
+      if (!authoritativeState) {
+        remoteUnreadAcknowledged(task, null);
+        continue;
+      }
       task.statusType = authoritativeState.statusType;
-      task.unread = authoritativeState.unread;
+      task.unread = authoritativeState.unread && !remoteUnreadAcknowledged(task, authoritativeState);
     }
     const names = hostDiscovery.names;
     const availability = hostDiscovery.availability;
@@ -825,7 +916,7 @@
       #${PANEL_ID} .crmp-mode { border:0; border-radius:5px; padding:3px 6px; color:var(--color-text-tertiary,#888); background:transparent; font-size:10px; cursor:pointer; }
       #${PANEL_ID} .crmp-mode[aria-pressed="true"] { color:var(--color-text,#eee); background:var(--color-background-primary-hover,rgba(127,127,127,.15)); }
       #${PANEL_ID} .crmp-filters { display:flex; flex-wrap:wrap; gap:6px; padding:2px 0 6px; }
-      #${PANEL_ID} .crmp-auto-controls { display:flex; align-items:center; gap:6px; padding:0 0 4px; }
+      #${PANEL_ID} .crmp-auto-controls { display:flex; align-items:center; flex-wrap:wrap; gap:6px; padding:0 0 4px; }
       #${PANEL_ID} .crmp-inventory-status { padding:2px 4px 6px; color:var(--color-text-tertiary,#888); font-size:11px; line-height:1.35; }
       #${PANEL_ID} .crmp-auto-control { border:1px solid var(--color-border-default,#555); border-radius:6px; padding:3px 7px; color:var(--color-text-tertiary,#888); background:transparent; font-size:10px; cursor:pointer; }
       #${PANEL_ID} .crmp-auto-control[aria-pressed="true"] { color:var(--color-text,#eee); background:var(--color-background-primary-hover,rgba(127,127,127,.15)); }
@@ -917,12 +1008,7 @@
 
   function invokeNativeElement(element) {
     if (!(element instanceof Element)) return false;
-    for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
-      const event = type.startsWith("pointer")
-        ? new PointerEvent(type, { bubbles: true, button: 0, pointerType: "mouse" })
-        : new MouseEvent(type, { bubbles: true, button: 0 });
-      element.dispatchEvent(event);
-    }
+    element.click();
     return true;
   }
 
@@ -1012,7 +1098,11 @@
     return false;
   }
 
-  function hydrateNativeInventory() {
+  function waitForHydrationRound() {
+    return new Promise((resolve) => setTimeout(resolve, NATIVE_INVENTORY_ROUND_DELAY_MS));
+  }
+
+  async function hydrateNativeInventory() {
     if (state.inventoryHydrationPending) return;
     state.inventoryHydrationPending = true;
     state.inventoryHydrationError = null;
@@ -1024,13 +1114,25 @@
       for (const control of nativeThreadListExpansionControls()) {
         if (!control.expanded && control.itemCount > control.maxItems) control.expand(true);
       }
+      let previousRowCount = document.querySelectorAll(ROW_SELECTOR).length;
+      for (let round = 0; round < NATIVE_INVENTORY_MAX_ROUNDS && !state.disposed; round += 1) {
+        const buttons = nativeLoadMoreButtons();
+        if (!buttons.length) break;
+        state.inventoryHydrationPhase = "loading-more";
+        state.inventoryHydrationRounds += 1;
+        for (const loadMore of buttons.slice(0, 12)) invokeNativeElement(loadMore);
+        await waitForHydrationRound();
+        const nextRowCount = document.querySelectorAll(ROW_SELECTOR).length;
+        if (nextRowCount <= previousRowCount && nativeLoadMoreButtons().length >= buttons.length) break;
+        previousRowCount = nextRowCount;
+      }
       state.inventoryHydrationTruncated = nativeLoadMoreButtons().length > 0;
     } catch (error) {
       state.inventoryHydrationError = String(error?.message ?? error).slice(0, 240);
     } finally {
       state.inventoryHydrationPending = false;
       if (state.inventoryHydrationPhase !== "grouping-wait") state.inventoryHydrationPhase = "idle";
-      render();
+      if (!state.disposed) render();
     }
   }
 
@@ -1038,14 +1140,14 @@
     if (state.inventoryHydrationPending || state.inventoryHydrationTimer !== null || !document.querySelector('[aria-label="Project sidebar options"]')) return;
     if (!state.inventoryHydrationStarted) {
       state.inventoryHydrationStarted = true;
-      hydrateNativeInventory();
+      void hydrateNativeInventory();
       return;
     }
     const delay = NATIVE_INVENTORY_REFRESH_MS;
     state.inventoryHydrationStarted = true;
     state.inventoryHydrationTimer = setTimeout(() => {
       state.inventoryHydrationTimer = null;
-      hydrateNativeInventory();
+      void hydrateNativeInventory();
     }, delay);
   }
 
@@ -1520,6 +1622,134 @@
     if (result?.success === false) throw new Error(`Failed to update ${key}`);
   }
 
+  function threadActivityTime(thread) {
+    const values = [thread?.updatedAt, thread?.recencyAt, thread?.createdAt].map((value) => {
+      if (typeof value === "number") return value < 100000000000 ? value * 1000 : value;
+      if (typeof value === "string") return Date.parse(value);
+      return Number.NaN;
+    }).filter(Number.isFinite);
+    return values.length ? Math.max(...values) : Number.NaN;
+  }
+
+  async function listAllLocalThreads() {
+    const requestClient = state.localRuntime?.requestClient;
+    if (typeof requestClient?.sendRequest !== "function") throw new Error("Local app-server bridge is unavailable");
+    const threads = [];
+    const cursors = new Set();
+    let cursor = null;
+    for (let page = 0; page < 200; page += 1) {
+      const result = await requestClient.sendRequest("thread/list", {
+        archived: false,
+        cursor,
+        limit: 49,
+        sortDirection: "desc",
+        sortKey: "updated_at",
+      });
+      if (state.disposed) return [];
+      if (Array.isArray(result?.data)) threads.push(...result.data);
+      const nextCursor = typeof result?.nextCursor === "string" && result.nextCursor ? result.nextCursor : null;
+      if (!nextCursor) return threads;
+      if (cursors.has(nextCursor)) throw new Error("thread/list returned a repeated pagination cursor");
+      cursors.add(nextCursor);
+      cursor = nextCursor;
+    }
+    throw new Error("thread/list exceeded the bounded page limit");
+  }
+
+  function eligibleAutoArchiveThreads(threads) {
+    const cutoff = Date.now() - AUTO_ARCHIVE_DAYS * 24 * 60 * 60 * 1000;
+    const parentsWithActiveChildren = new Set(threads
+      .map((thread) => typeof thread?.parentThreadId === "string" ? thread.parentThreadId : null)
+      .filter(Boolean));
+    const protectedIds = new Set([...document.querySelectorAll(ROW_SELECTOR)]
+      .filter((row) => row.getAttribute("data-app-action-sidebar-thread-selected") === "true" || metadataFromRow(row).statusType === "loading")
+      .map((row) => row.getAttribute("data-app-action-sidebar-thread-id"))
+      .filter(Boolean));
+    return threads.filter((thread) => {
+      const threadId = typeof thread?.id === "string" ? thread.id : null;
+      const statusType = typeof thread?.status === "string" ? thread.status : thread?.status?.type;
+      const activityAt = threadActivityTime(thread);
+      return Boolean(threadId)
+        && !parentsWithActiveChildren.has(threadId)
+        && !protectedIds.has(threadId)
+        && thread.isPinned !== true
+        && thread.pinned !== true
+        && statusType === "notLoaded"
+        && Number.isFinite(activityAt)
+        && activityAt < cutoff;
+    });
+  }
+
+  async function previewAutoArchive() {
+    const threads = await listAllLocalThreads();
+    return { eligible: eligibleAutoArchiveThreads(threads).length, scanned: threads.length };
+  }
+
+  async function runAutoArchiveNow() {
+    if (state.autoArchivePending || state.disposed) return state.autoArchiveLastResult ?? { archived: 0, eligible: 0 };
+    if (!readOptionalBoolean(AUTO_ARCHIVE_ENABLED_KEY)) return { archived: 0, eligible: 0, skipped: "auto-archive-disabled" };
+    const requestClient = state.localRuntime?.requestClient;
+    if (typeof requestClient?.sendRequest !== "function") {
+      state.autoArchiveError = "Local app-server bridge is unavailable";
+      return { archived: 0, eligible: 0, error: state.autoArchiveError };
+    }
+    state.autoArchivePending = true;
+    state.autoArchiveError = null;
+    const failures = [];
+    let archived = 0;
+    try {
+      const threads = await listAllLocalThreads();
+      const candidates = eligibleAutoArchiveThreads(threads);
+      for (const thread of candidates) {
+        if (state.disposed || !readOptionalBoolean(AUTO_ARCHIVE_ENABLED_KEY)) break;
+        try {
+          await requestClient.sendRequest("thread/archive", { threadId: thread.id });
+          archived += 1;
+        } catch (error) {
+          failures.push({ id: thread.id, error: String(error?.message ?? error).slice(0, 160) });
+        }
+      }
+      state.autoArchiveLastRunAt = Date.now();
+      state.autoArchiveLastResult = { archived, eligible: candidates.length, failed: failures.length, scanned: threads.length };
+      state.autoArchiveError = failures.length ? `${failures.length} eligible chat(s) could not be archived` : null;
+      state.lastAction = { commandId: "auto-archive-old-chats", found: true, invoked: true, ...state.autoArchiveLastResult };
+      void state.queryClient?.invalidateQueries?.();
+      return state.autoArchiveLastResult;
+    } catch (error) {
+      state.autoArchiveError = String(error?.message ?? error).slice(0, 240);
+      state.autoArchiveLastResult = { archived, eligible: 0, error: state.autoArchiveError };
+      state.lastAction = { commandId: "auto-archive-old-chats", error: state.autoArchiveError, found: true, invoked: false };
+      return state.autoArchiveLastResult;
+    } finally {
+      state.autoArchivePending = false;
+      if (!state.disposed) {
+        scheduleAutoArchive(state.autoArchiveError ? AUTO_ARCHIVE_RETRY_MS : AUTO_ARCHIVE_INTERVAL_MS);
+        schedule();
+      }
+    }
+  }
+
+  function scheduleAutoArchive(delay = null) {
+    if (state.disposed || !readOptionalBoolean(AUTO_ARCHIVE_ENABLED_KEY) || state.autoArchivePending || state.autoArchiveTimer !== null) return;
+    const elapsed = Date.now() - state.autoArchiveLastRunAt;
+    const dueIn = delay ?? (state.autoArchiveLastRunAt ? Math.max(1000, AUTO_ARCHIVE_INTERVAL_MS - elapsed) : 10000);
+    state.autoArchiveTimer = setTimeout(() => {
+      state.autoArchiveTimer = null;
+      if (!state.disposed && readOptionalBoolean(AUTO_ARCHIVE_ENABLED_KEY)) void runAutoArchiveNow();
+    }, dueIn);
+  }
+
+  function setAutoArchive(enabled) {
+    writeBoolean(AUTO_ARCHIVE_ENABLED_KEY, enabled === true);
+    if (enabled !== true && state.autoArchiveTimer !== null) {
+      clearTimeout(state.autoArchiveTimer);
+      state.autoArchiveTimer = null;
+    }
+    state.lastAction = { commandId: "set-auto-archive", invoked: true, enabled: enabled === true };
+    if (enabled === true) scheduleAutoArchive(1000);
+    return render();
+  }
+
   function staleMirroredProjects(model) {
     return model.projects.filter((project) => {
       if (project.hostId === "local" || !project.projectId) return false;
@@ -1568,11 +1798,11 @@
   }
 
   function scheduleAutoReconciliation(model) {
-    if (!readBoolean(AUTO_ENABLED_KEY) || state.autoReconciliationTimer !== null || state.autoReconciliationPending) return;
+    if (state.disposed || !readBoolean(AUTO_ENABLED_KEY) || state.autoReconciliationTimer !== null || state.autoReconciliationPending) return;
     if (!staleMirroredProjects(model).length) return;
     state.autoReconciliationTimer = setTimeout(() => {
       state.autoReconciliationTimer = null;
-      void reconcileAutoRegisteredProjects();
+      if (!state.disposed) void reconcileAutoRegisteredProjects();
     }, 500);
   }
 
@@ -1598,12 +1828,13 @@
   }
 
   function scheduleAutoRegistration(model) {
-    if (state.autoRegistrationTimer !== null) return;
+    if (state.disposed || state.autoRegistrationTimer !== null) return;
     const candidate = autoRegistrationCandidate(model);
     if (!candidate || !nativeNavigationDispatcher()) return;
     const identity = projectIdentity(candidate);
     state.autoRegistrationTimer = setTimeout(() => {
       state.autoRegistrationTimer = null;
+      if (state.disposed) return;
       const current = autoRegistrationCandidate(collectModel());
       if (current && projectIdentity(current) === identity) void autoRegisterProject(current);
       else schedule();
@@ -1906,7 +2137,11 @@
         taskButton.dataset.appActionSidebarThreadSelected = String(task.selected);
         if (task.selected) taskButton.setAttribute("aria-current", "page");
         taskButton.addEventListener("click", () => {
-          if (performance.now() - state.dragJustEndedAt >= 250) task.originalRow.click();
+          if (performance.now() - state.dragJustEndedAt >= 250) {
+            if (task.unread && task.hostId !== "local") acknowledgeRemoteUnread(task);
+            task.originalRow.click();
+            render();
+          }
         });
         taskButton.addEventListener("contextmenu", (event) => {
           event.preventDefault();
@@ -1976,6 +2211,7 @@
     scheduleRemoteProjectInventory(model.remoteRuntimes);
     scheduleAutoReconciliation(model);
     scheduleAutoRegistration(model);
+    scheduleAutoArchive();
     scheduleNativeInventoryHydration();
 
     if (state.view === "native") {
@@ -2023,12 +2259,28 @@
       }
     });
     autoControls.appendChild(removeManaged);
+    const autoArchiveEnabled = readOptionalBoolean(AUTO_ARCHIVE_ENABLED_KEY);
+    const autoArchive = button("crmp-auto-control", autoArchiveEnabled ? "Auto-archive >7d: on" : "Auto-archive >7d: off");
+    autoArchive.setAttribute("aria-pressed", String(autoArchiveEnabled));
+    autoArchive.title = autoArchiveEnabled
+      ? "Archive inactive, unpinned local chats after seven days without activity; click to disable"
+      : "Optionally archive inactive, unpinned local chats after seven days without activity";
+    autoArchive.addEventListener("click", () => {
+      if (autoArchiveEnabled) {
+        setAutoArchive(false);
+        return;
+      }
+      if (globalThis.confirm("Enable automatic archiving on this device? Inactive, unpinned local chats not updated for more than seven days will move to Archived chats. Working, selected, pinned, and remote chats are skipped.")) {
+        setAutoArchive(true);
+      }
+    });
+    autoControls.appendChild(autoArchive);
     fragment.appendChild(autoControls);
     const unavailableInventoryHosts = model.hosts.filter((host) => host.id !== "local" && state.remoteProjectInventories.get(host.id)?.error);
     if (unavailableInventoryHosts.length) {
       const status = document.createElement("div");
       status.className = "crmp-inventory-status";
-      status.textContent = `Project sync paused: waiting for a current v41 inventory from ${unavailableInventoryHosts.map((host) => host.name).join(", ")}.`;
+      status.textContent = `Project sync paused: waiting for a current v44 inventory from ${unavailableInventoryHosts.map((host) => host.name).join(", ")}.`;
       fragment.appendChild(status);
     }
     const panelTitle = document.createElement("div");
@@ -2062,6 +2314,7 @@
   }
 
   function schedule(mutations) {
+    if (state.disposed) return;
     if (mutations?.length && mutations.every((mutation) => state.panel?.contains(mutation.target))) return;
     const inventoryNeedsImmediateHydration = state.inventoryHydrationPhase === "grouping-wait"
       || !nativeConnectionGroupingActive();
@@ -2071,7 +2324,7 @@
       state.inventoryHydrationMicrotask = true;
       queueMicrotask(() => {
         state.inventoryHydrationMicrotask = false;
-        hydrateNativeInventory();
+        if (!state.disposed) void hydrateNativeInventory();
       });
     }
     if (state.scheduledFrame !== null) return;
@@ -2103,6 +2356,10 @@
     const visibleRecents = visibleGroups.filter((project) => project.kind === "recent");
     return {
       active: state.active,
+      autoArchiveEnabled: readOptionalBoolean(AUTO_ARCHIVE_ENABLED_KEY),
+      autoArchiveError: state.autoArchiveError,
+      autoArchiveLastResult: state.autoArchiveLastResult,
+      autoArchivePending: state.autoArchivePending,
       autoManagedProjects: Object.keys(readRecords(AUTO_MANAGED_KEY)).length,
       autoRegistrationFailures: state.autoRegistrationFailures.size,
       autoRegistrationEnabled: readBoolean(AUTO_ENABLED_KEY),
@@ -2120,8 +2377,8 @@
       inventoryHydrationTruncated: state.inventoryHydrationTruncated,
       hostInventoryErrors: [...state.remoteProjectInventories.values()].filter((inventory) => inventory.error).length,
       hostInventoryPending: [...state.remoteProjectInventories.values()].filter((inventory) => inventory.pending).length,
-      hostInventoryProjects: [...state.remoteProjectInventories.values()].reduce((count, inventory) => count + (inventory.projects?.length ?? 0), 0),
-      hostInventoryTaskStates: [...state.remoteProjectInventories.values()].reduce((count, inventory) => count + (inventory.tasks?.size ?? 0), 0),
+      hostInventoryProjects: [...state.remoteProjectInventories.keys()].reduce((count, hostId) => count + (freshInventory(hostId)?.projects?.length ?? 0), 0),
+      hostInventoryTaskStates: [...state.remoteProjectInventories.keys()].reduce((count, hostId) => count + (freshInventory(hostId)?.tasks?.size ?? 0), 0),
       projects: model.projects.length,
       localInventoryPublished: state.localInventoryPublishedAt > 0,
       localInventoryPublisherError: state.localInventoryPublisherError,
@@ -2162,6 +2419,7 @@
     state.panel ??= document.createElement("div");
     state.panel.id = PANEL_ID;
     state.active = true;
+    state.disposed = false;
     document.addEventListener("pointerdown", dismissOverlays);
     document.addEventListener("keydown", dismissOnEscape);
     if (!state.observer) {
@@ -2197,6 +2455,7 @@
   }
 
   function uninstall() {
+    state.disposed = true;
     document.removeEventListener("pointerdown", dismissOverlays);
     document.removeEventListener("keydown", dismissOnEscape);
     state.observer?.disconnect();
@@ -2205,6 +2464,10 @@
     state.scheduledFrame = null;
     if (state.autoRegistrationTimer !== null) clearTimeout(state.autoRegistrationTimer);
     state.autoRegistrationTimer = null;
+    if (state.autoReconciliationTimer !== null) clearTimeout(state.autoReconciliationTimer);
+    state.autoReconciliationTimer = null;
+    if (state.autoArchiveTimer !== null) clearTimeout(state.autoArchiveTimer);
+    state.autoArchiveTimer = null;
     if (state.localInventoryPublisherTimer !== null) clearTimeout(state.localInventoryPublisherTimer);
     state.localInventoryPublisherTimer = null;
     if (state.inventoryHydrationTimer !== null) clearTimeout(state.inventoryHydrationTimer);
@@ -2219,7 +2482,7 @@
     return probe();
   }
 
-  const api = Object.freeze({ install, probe, reconcileAutoRegisteredProjects, removeAllAutoRegistered, setAutoRegistration, setFilter, setView, uninstall, version: VERSION });
+  const api = Object.freeze({ install, previewAutoArchive, probe, reconcileAutoRegisteredProjects, removeAllAutoRegistered, runAutoArchiveNow, setAutoArchive, setAutoRegistration, setFilter, setView, uninstall, version: VERSION });
   Object.defineProperty(globalThis, API_SLOT, { configurable: true, enumerable: false, value: api });
   return install();
 })();

@@ -157,9 +157,13 @@ case "$action" in
   probe) run_injector "$(resolve_node)" probe ;;
   enable-auto-registration) run_injector "$(resolve_node)" auto-on ;;
   disable-auto-registration) run_injector "$(resolve_node)" auto-off ;;
+  enable-auto-archive) run_injector "$(resolve_node)" archive-auto-on ;;
+  disable-auto-archive) run_injector "$(resolve_node)" archive-auto-off ;;
+  preview-auto-archive) run_injector "$(resolve_node)" archive-preview ;;
+  run-auto-archive) run_injector "$(resolve_node)" archive-run ;;
   reconcile-auto-registrations) run_injector "$(resolve_node)" auto-reconcile ;;
   remove-auto-registrations) run_injector "$(resolve_node)" auto-remove ;;
   install-startup) install_startup ;;
   remove-startup) remove_startup ;;
-  *) print -u2 "Usage: $0 {enable|startup|disable|probe|enable-auto-registration|disable-auto-registration|reconcile-auto-registrations|remove-auto-registrations|install-startup|remove-startup}"; exit 2 ;;
+  *) print -u2 "Usage: $0 {enable|startup|disable|probe|enable-auto-registration|disable-auto-registration|enable-auto-archive|disable-auto-archive|preview-auto-archive|run-auto-archive|reconcile-auto-registrations|remove-auto-registrations|install-startup|remove-startup}"; exit 2 ;;
 esac

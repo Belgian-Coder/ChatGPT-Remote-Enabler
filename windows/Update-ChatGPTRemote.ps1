@@ -126,19 +126,26 @@ function Install-Release {
         Invoke-WebRequest -Uri $Release.archiveUrl -OutFile $archivePath -UseBasicParsing
         Invoke-WebRequest -Uri $Release.checksumsUrl -OutFile $checksumsPath -UseBasicParsing
         $escapedName = [regex]::Escape($Release.archiveName)
-        $checksumLine = Get-Content -LiteralPath $checksumsPath | Where-Object { $_ -match "^([0-9a-fA-F]{64})  $escapedName$" } | Select-Object -First 1
+        $checksumLine = Get-Content -LiteralPath $checksumsPath | Where-Object { $_ -match "^([0-9a-fA-F]{64})\s+(?:\*)?$escapedName$" } | Select-Object -First 1
         if (-not $checksumLine) { throw "Published checksum for $($Release.archiveName) is missing." }
         $expectedArchiveHash = ([regex]::Match($checksumLine, '^[0-9a-fA-F]{64}')).Value
         $actualArchiveHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash
         if ($actualArchiveHash -ne $expectedArchiveHash) { throw 'Downloaded release archive failed SHA-256 verification.' }
         $extractRoot = Join-Path $temporaryRoot 'extract'
         Expand-Archive -LiteralPath $archivePath -DestinationPath $extractRoot
-        $releaseRoots = @(Get-ChildItem -LiteralPath $extractRoot -Directory)
-        if ($releaseRoots.Count -ne 1) { throw 'Release archive must contain exactly one top-level directory.' }
-        $releaseRoot = $releaseRoots[0].FullName
+        $releaseRoot = if (Test-Path -LiteralPath (Join-Path $extractRoot 'VERSION') -PathType Leaf) {
+            $extractRoot
+        } else {
+            $releaseRoots = @(Get-ChildItem -LiteralPath $extractRoot -Directory)
+            if ($releaseRoots.Count -ne 1) { throw 'Release archive must be flat or contain exactly one top-level directory.' }
+            $releaseRoots[0].FullName
+        }
         $archiveVersion = (Get-Content -LiteralPath (Join-Path $releaseRoot 'VERSION') -Raw).Trim()
         if ($archiveVersion -ne $Release.tag) { throw "Archive version $archiveVersion does not match release $($Release.tag)." }
         $entries = Get-ManifestEntries $releaseRoot
+        $previousEntries = try { @(Get-ManifestEntries $InstallRoot) } catch { @() }
+        $newRelativePaths = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+        foreach ($entry in $entries) { [void]$newRelativePaths.Add($entry.relative) }
         New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null
         $ordered = @($entries | Sort-Object @{ Expression = { if ($_.relative -ieq 'Update-ChatGPTRemote.ps1') { 1 } else { 0 } } }, relative)
         foreach ($entry in $ordered) {
@@ -154,6 +161,16 @@ function Install-Release {
             New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
             Copy-Item -LiteralPath $entry.source -Destination $destination -Force
             $copied.Add([pscustomobject]@{ destination = $destination; backup = $backup; existed = $existed })
+        }
+        foreach ($entry in $previousEntries) {
+            if ($newRelativePaths.Contains($entry.relative)) { continue }
+            $destination = [IO.Path]::GetFullPath((Join-Path $InstallRoot $entry.relative))
+            $backup = Join-Path $backupRoot $entry.relative
+            if (-not (Test-Path -LiteralPath $destination -PathType Leaf)) { continue }
+            New-Item -ItemType Directory -Path (Split-Path -Parent $backup) -Force | Out-Null
+            Copy-Item -LiteralPath $destination -Destination $backup -Force
+            Remove-Item -LiteralPath $destination -Force
+            $copied.Add([pscustomobject]@{ destination = $destination; backup = $backup; existed = $true })
         }
         $manifestDestination = Join-Path $InstallRoot 'RELEASE-MANIFEST.sha256'
         $manifestBackup = Join-Path $backupRoot 'RELEASE-MANIFEST.sha256'

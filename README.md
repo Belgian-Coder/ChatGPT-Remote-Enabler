@@ -1,8 +1,6 @@
 # ChatGPT Remote Enabler
 
-Unofficial Windows and macOS helpers for ChatGPT/Codex Remote. Windows enables hidden native remote-device controls in affected desktop builds; both platforms can add a **Mobile projects** sidebar that groups chats by project and device, shows working/unread indicators, and can keep remote projects visible after their last chat is removed.
-
-Why: some Windows builds contain the remote UI but do not expose it, and the native connection view flattens project organization. [OpenAI's Remote documentation](https://learn.chatgpt.com/docs/remote-connections) covers Mac and Windows and notes that availability depends on rollout and workspace settings.
+Unofficial Windows and macOS helpers for ChatGPT/Codex Remote. Windows exposes hidden native remote controls in affected desktop builds; both platforms add a **Mobile projects** sidebar with device filters, project grouping, drag ordering, empty remote projects, and synchronized working/unread indicators.
 
 | Native views | Mobile projects |
 |---|---|
@@ -10,93 +8,57 @@ Why: some Windows builds contain the remote UI but do not expose it, and the nat
 
 ## Install
 
-Download the archive for your platform from [Releases](https://github.com/belgian-coder/ChatGPT-Remote-Enabler/releases).
+Download your platform archive from [Releases](https://github.com/belgian-coder/ChatGPT-Remote-Enabler/releases) and extract it to a permanent local folder.
 
-**Windows:** extract the archive to a permanent local folder and run `ChatGPT Remote Enabler.exe`, or run `windows\Enable-ChatGPTRemote.ps1` in PowerShell. Use `Disable-ChatGPTRemote.ps1` to restore the normal app. The launchers are unsigned and built from the included C# source. Optional Start-menu, Desktop, and at-logon setup is documented in [Windows details](windows/README.md).
-
-**macOS Apple Silicon:** extract the archive, then run:
-
-```zsh
-chmod 755 ./MobileProjectView-macOS-arm64.sh
-./MobileProjectView-macOS-arm64.sh enable
-```
-
-Run `./MobileProjectView-macOS-arm64.sh disable` to roll back. Node.js 22+ is required. macOS already supplies the native remote capability; its package only adds Mobile projects.
-
-## Automatic injected startup
-
-Keep the extracted package in a permanent local folder so the startup entry
-continues to point at files that can be updated in place.
-
-**Windows:** from the extracted `windows` folder, install a per-user startup
-shortcut. Use `-UseProxy` when Remote needs the configured `HTTPS_PROXY` or
-`HTTP_PROXY`; omit it for a direct connection.
+**Windows:** run `ChatGPT Remote Enabler.exe`. Install the injected Desktop/Start-menu and sign-in shortcuts with:
 
 ```powershell
-.\CodexRemoteMobileProject\StartupShortcut.ps1 -Action Install -UseProxy
-.\CodexRemoteMobileProject\StartupShortcut.ps1 -Action Probe
+.\CodexRemoteMobileProject\DesktopShortcut.ps1 -Action Install
+.\CodexRemoteMobileProject\StartupShortcut.ps1 -Action Install
 ```
 
-The shortcut runs after interactive sign-in, launches the current `ChatGPT
-Custom.exe`, injects both the stable Remote bridge and Mobile projects, and
-does not require administrator rights. Remove it with `-Action Remove`.
+If the device requires a configured HTTP(S) proxy, add `-UseProxy` while installing those same shortcuts. No separate proxy shortcut is created.
 
-**macOS Apple Silicon:** install the per-user LaunchAgent from the extracted
-`macos` folder:
+**macOS Apple Silicon:**
 
 ```zsh
-chmod 755 ./MobileProjectView-macOS-arm64.sh
-CODEX_STARTUP_DELAY_SECONDS=60 ./MobileProjectView-macOS-arm64.sh install-startup
+chmod 755 ./*.sh
+./MobileProjectView-macOS-arm64.sh enable
+./MobileProjectView-macOS-arm64.sh install-startup
+./MacOSShortcut.sh install
 ```
 
-The LaunchAgent starts the app and injects Mobile projects after login. Remove
-it with `./MobileProjectView-macOS-arm64.sh remove-startup`.
+Install the injected startup on every participating computer. Each device keeps and publishes its own short-lived project/status inventory through ChatGPT Remote's existing authenticated connection; there is no central storage or shared catalogue.
 
-## Auto-register remote projects
+## Mobile-project buttons
 
-Renderer v43 mirrors the active saved-project list from each injected device, including while **Native views** is selected. Every device publishes its own current local-project metadata and active working/unread task states to `remote-project-inventory-v1.json` inside that device's Codex home. A connected controller reads the fresh file through ChatGPT Remote's existing authenticated filesystem channel, refreshes task indicators every five seconds, registers active projects (including projects with no chats), verifies the controller registration was persisted, and removes controller registrations that the host no longer lists. The controller reads its complete registered-project state directly rather than relying on currently rendered rows. It rehydrates Codex's native **By connection** lists on startup, sidebar changes, and every 30 seconds through their own expansion callbacks so older remote chats remain available with native navigation and actions. Grouping recovery follows native sidebar mutations and does not depend on background timers completing. Remote chats are grouped into the matching project by device and normalized path. Historical trusted paths and archived/removed projects are not inventory sources.
+- **Auto-register: on/off** mirrors active remote projects on this client, including empty projects.
+- **Remove auto projects (N)** removes only registrations created by that automation. It never deletes chats or folders.
+- **Auto-archive >7d: on/off** optionally archives this device's inactive, unpinned local chats after seven days without activity. It skips selected, working, pinned, and remote chats and defaults to off. Archived chats remain available under **Archived chats**; any separate permanent-cleanup policy is independent.
+- A suppressed project's **Allow auto-registration** action permits automatic registration again.
 
-Install the injected startup on **the controller and every device being controlled**. Publication and refresh are automatic after sign-in; no shared server, NAS, or network share is required. Inventories older than three minutes are rejected, and a controller makes no automatic project changes when a connected host has not published a current v43 inventory.
-
-- **Auto-register: on/off** enables or pauses automatic registration on this client. Existing registrations stay intact when switched off.
-- **Remove auto projects (N)** removes only registrations created by this automation on this client. It stays visible but disabled at `(0)`, never deletes chats or source folders, and suppresses immediate recreation.
-- **Allow auto-registration** appears in a suppressed project's right-click menu. It clears that local suppression so the project can be registered again.
-- While auto-registration is on, controller registrations for a connected device mirror that device's active inventory; registrations absent from the fresh host inventory are removed without deleting chats or source folders.
-
-Windows PowerShell equivalents:
+PowerShell and macOS command equivalents:
 
 ```powershell
 .\CodexRemoteMobileProject\MobileProjectView.ps1 -Action EnableAutoRegistration
-.\CodexRemoteMobileProject\MobileProjectView.ps1 -Action DisableAutoRegistration
-.\CodexRemoteMobileProject\MobileProjectView.ps1 -Action ReconcileAutoRegistrations
-.\CodexRemoteMobileProject\MobileProjectView.ps1 -Action RemoveAutoRegistrations
+.\CodexRemoteMobileProject\MobileProjectView.ps1 -Action EnableAutoArchive
+.\CodexRemoteMobileProject\MobileProjectView.ps1 -Action DisableAutoArchive
+.\CodexRemoteMobileProject\MobileProjectView.ps1 -Action PreviewAutoArchive
+.\CodexRemoteMobileProject\MobileProjectView.ps1 -Action RunAutoArchive
 ```
-
-macOS equivalents:
 
 ```zsh
 ./MobileProjectView-macOS-arm64.sh enable-auto-registration
-./MobileProjectView-macOS-arm64.sh disable-auto-registration
-./MobileProjectView-macOS-arm64.sh reconcile-auto-registrations
-./MobileProjectView-macOS-arm64.sh remove-auto-registrations
+./MobileProjectView-macOS-arm64.sh enable-auto-archive
+./MobileProjectView-macOS-arm64.sh disable-auto-archive
+./MobileProjectView-macOS-arm64.sh preview-auto-archive
+./MobileProjectView-macOS-arm64.sh run-auto-archive
 ```
 
-The renderer still switches its hidden task inventory to **By connection** and
-expands native **Show more** pages for complete chat discovery. Saved-project
-discovery is separate and comes only from the fresh host-published inventory.
+## Updates and rollback
 
-You can also drag projects within one device and chats within their current project. The saved order is delegated to ChatGPT instead of kept in a separate catalogue.
+Every launcher start checks GitHub Releases and installs only a platform archive whose published SHA-256 and internal manifest pass. Disable automatic updates with `Update-ChatGPTRemote.ps1 -Action DisableAutoUpdate` or `./Update-ChatGPTRemote.sh disable-auto-update`. Forks and mirrors can set `CHATGPT_REMOTE_UPDATE_REPOSITORY`, `CHATGPT_REMOTE_UPDATE_API_BASE`, or `CHATGPT_REMOTE_UPDATE_LATEST_URL`.
 
-## Updates
+Restore normal Windows ChatGPT with `Disable-ChatGPTRemote.ps1`; on macOS run `./MobileProjectView-macOS-arm64.sh disable`. See [Windows details](windows/README.md) and [macOS details](macos/README.md).
 
-Every normal or automatic launch checks GitHub Releases before enabling the custom view. A matching archive is installed only after its published SHA-256 and internal manifest pass. Failure keeps the installed version.
-
-Opt out persistently with `Update-ChatGPTRemote.ps1 -Action DisableAutoUpdate` on Windows or `/bin/zsh ./Update-ChatGPTRemote.sh disable-auto-update` on macOS. Use `EnableAutoUpdate` / `enable-auto-update` to resume. Forks and mirrors can set `CHATGPT_REMOTE_UPDATE_REPOSITORY=owner/repo`, `CHATGPT_REMOTE_UPDATE_API_BASE`, or the complete `CHATGPT_REMOTE_UPDATE_LATEST_URL`; set `CHATGPT_REMOTE_AUTO_UPDATE=0` for one launch only. An optional positive `CHATGPT_REMOTE_UPDATE_INTERVAL_HOURS` value can throttle checks when desired.
-
-This uses a loopback-only Electron debugging session and private renderer internals, so app updates can break it. It does not bypass account authorization, MFA, workspace policy, or server permissions.
-
-## Privacy
-
-Repository examples and screenshots use synthetic device, project, and chat names. Do not publish real hostnames, usernames, environment IDs, network addresses, local paths, or validation-machine names in issues, commits, release notes, screenshots, or packages.
-
-See [Windows details](windows/README.md), [macOS details](macos/README.md), and [upstream attribution](windows/CodexRemoteSimple/UPSTREAM-NOTICE.md).
+This project uses loopback Electron debugging and private renderer internals. It does not bypass account authorization, MFA, workspace policy, or server permissions. Examples, screenshots, packages, commits, and release notes must not contain real hostnames, usernames, environment IDs, network addresses, or private paths.

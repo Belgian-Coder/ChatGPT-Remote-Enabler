@@ -1,6 +1,6 @@
 # Windows
 
-Mobile Projects mirrors the native task-state indicators: a spinner while a task is working and a blue dot after it finishes until that task is viewed.
+Mobile Projects mirrors the native task-state indicators: a spinner while a task is working and a blue dot after it finishes until that task is viewed. Opening a remote task acknowledges that completion locally until its owning device reports the next state transition.
 
 In Mobile Projects, **Auto-register: on/off** locally enables or pauses remote-project mirroring. **Remove auto projects (N)** removes only projects created by that automation—never chats or folders—and suppresses immediate recreation; it stays visible but disabled at `(0)`. Right-click a suppressed project and choose **Allow auto-registration** to permit it again.
 
@@ -13,10 +13,10 @@ Run `ChatGPT Remote Enabler.exe`, or open PowerShell here and run:
 The compatibility check runs first. Mobile projects selects the complete native
 connection inventory in the background and expands every truncated task list
 through Codex's own native expansion callbacks.
-Renderer v43 also publishes this device's active saved projects and its active
-working/unread task states into its Codex home. Controllers running v43 read
-that fresh inventory through ChatGPT Remote and refresh task indicators every
-five seconds. Empty active projects appear while archived/removed projects do
+Renderer v44 also publishes this device's active saved projects and its active
+working/unread task states into its Codex home. Controllers running v44 read
+that fresh inventory through ChatGPT Remote and refresh active task indicators
+every five seconds, backing off while idle. Empty active projects appear while archived/removed projects do
 not.
 Synchronization continues automatically when **Native views** is selected.
 Controllers read their complete registered-project state directly and verify
@@ -104,7 +104,18 @@ Automation controls are also available from PowerShell:
 .\CodexRemoteMobileProject\MobileProjectView.ps1 -Action EnableAutoRegistration
 .\CodexRemoteMobileProject\MobileProjectView.ps1 -Action DisableAutoRegistration
 .\CodexRemoteMobileProject\MobileProjectView.ps1 -Action RemoveAutoRegistrations
+.\CodexRemoteMobileProject\MobileProjectView.ps1 -Action EnableAutoArchive
+.\CodexRemoteMobileProject\MobileProjectView.ps1 -Action DisableAutoArchive
+.\CodexRemoteMobileProject\MobileProjectView.ps1 -Action PreviewAutoArchive
+.\CodexRemoteMobileProject\MobileProjectView.ps1 -Action RunAutoArchive
 ```
+
+**Auto-archive >7d** is off by default. When enabled, it uses the local Codex
+app-server to archive only unpinned, inactive local chats whose latest activity
+is older than seven days. Selected, working, pinned, and remote chats are
+skipped. This reversible archive step is separate from any later permanent
+storage-maintenance or purge policy. `PreviewAutoArchive` reports the complete
+scanned and eligible counts without archiving anything.
 
 Node.js 22 or newer is required. The launchers do not modify WindowsApps, the
 registry, firewall rules, or services. `ChatGPT Remote Enabler.exe` and

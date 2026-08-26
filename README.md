@@ -32,7 +32,7 @@ Install the injected startup on every participating computer. Each device keeps 
 
 ## Mobile-project buttons
 
-- **Auto-register: on/off** mirrors active remote projects on this client, including empty projects.
+- **Auto-register: on/off** mirrors active remote projects on this client, including empty projects. Enabling it only adds registrations; removal is always explicit.
 - **Remove auto projects (N)** removes only registrations created by that automation. It never deletes chats or folders.
 - **Auto-cleanup: on/off** optionally archives this device's inactive, unpinned local chats after seven days, then permanently deletes them after a tracked seven-day recovery window in **Archived chats**. It skips selected, working, pinned, remote, and insufficiently dated chats and defaults to off. Disabling it clears the timers, so re-enabling grants a new recovery window.
 - A suppressed project's **Allow auto-registration** action permits automatic registration again.

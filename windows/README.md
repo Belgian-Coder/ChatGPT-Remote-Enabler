@@ -2,7 +2,7 @@
 
 Mobile Projects mirrors the native task-state indicators: a spinner while a task is working and a blue dot after it finishes until that task is viewed. Opening a remote task acknowledges that completion locally until its owning device reports the next state transition.
 
-In Mobile Projects, **Auto-register: on/off** locally enables or pauses remote-project mirroring. **Remove auto projects (N)** removes only projects created by that automation—never chats or folders—and suppresses immediate recreation; it stays visible but disabled at `(0)`. Right-click a suppressed project and choose **Allow auto-registration** to permit it again.
+In Mobile Projects, **Auto-register: on/off** locally enables or pauses remote-project mirroring. Enabling it only adds registrations and never performs automatic removal. **Remove auto projects (N)** explicitly removes only projects created by that automation—never chats or folders—and suppresses immediate recreation; it stays visible but disabled at `(0)`. Right-click a suppressed project and choose **Allow auto-registration** to permit it again.
 
 Run `ChatGPT Remote Enabler.exe`, or open PowerShell here and run:
 
@@ -13,11 +13,12 @@ Run `ChatGPT Remote Enabler.exe`, or open PowerShell here and run:
 The compatibility check runs first. Mobile projects preserves the user's
 **By project**/**By connection** Native views preference and expands truncated
 task lists exposed by that grouping through Codex's own native callbacks.
-Renderer v46 also publishes this device's active saved projects and its active
-working/unread task states into its Codex home. Controllers running v46 read
+Renderer v47 also publishes this device's active saved projects and its active
+working/unread task states into its Codex home. Controllers running v47 read
 that fresh inventory through ChatGPT Remote and refresh active task indicators
 every five seconds, backing off while idle. Empty active projects appear while archived/removed projects do
-not.
+not. Local empty projects come from the authoritative local inventory, so a
+remote-registration sidebar remount cannot hide them.
 Synchronization continues automatically when **Native views** is selected.
 Controllers read their complete registered-project state directly and verify
 new registrations before recording success. Remote chats match projects by

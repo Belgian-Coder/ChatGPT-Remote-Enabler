@@ -2,14 +2,14 @@
 
 Mobile Projects mirrors the native task-state indicators: a spinner while a task is working and a blue dot after it finishes until that task is viewed. Opening a remote task acknowledges that completion locally until its owning device reports the next state transition.
 
-In Mobile Projects, **Auto-register: on/off** locally enables or pauses remote-project mirroring. **Remove auto projects (N)** removes only projects created by that automation—never chats or folders—and suppresses immediate recreation; it stays visible but disabled at `(0)`. Right-click a suppressed project and choose **Allow auto-registration** to permit it again.
+In Mobile Projects, **Auto-register: on/off** locally enables or pauses remote-project mirroring. Enabling it only adds registrations and never performs automatic removal. **Remove auto projects (N)** explicitly removes only projects created by that automation—never chats or folders—and suppresses immediate recreation; it stays visible but disabled at `(0)`. Right-click a suppressed project and choose **Allow auto-registration** to permit it again.
 
 macOS already exposes native ChatGPT remote connections. This package adds the optional Mobile projects view.
 
-Renderer version 46 preserves the original folder states, native-backed drag
+Renderer version 47 preserves the original folder states, native-backed drag
 ordering, and the user's **By project**/**By connection** preference while
 expanding truncated task lists exposed by the selected grouping. It also publishes this Mac's active saved projects and active working/unread task states into its
-Codex home. Controllers running v46 read that fresh inventory through ChatGPT
+Codex home. Controllers running v47 read that fresh inventory through ChatGPT
 Remote, including projects with no chats and excluding archived/removed ones.
 Remote task indicators refresh every five seconds.
 Synchronization continues automatically when **Native views** is selected.

@@ -49,7 +49,7 @@ if ((Get-FileHash -LiteralPath $windowsMaintenance -Algorithm SHA256).Hash -ne (
 }
 $renderer = Get-Content -LiteralPath $windowsRenderer -Raw
 $requiredContracts = @(
-    'const VERSION = 46;',
+    'const VERSION = 47;',
     'REMOTE_UNREAD_ACK_KEY',
     'freshInventory(hostId)',
     'NATIVE_INVENTORY_MAX_ROUNDS',
@@ -87,7 +87,7 @@ if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
 [pscustomobject]@{
     JavaScriptFiles = $javascript.Count
     PowerShellFiles = $powershell.Count
-    RendererVersion = 46
+    RendererVersion = 47
     RendererParity = $true
     MaintenanceParity = $true
     MaintenanceSelfTest = $true

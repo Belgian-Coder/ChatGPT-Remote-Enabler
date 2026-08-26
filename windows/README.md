@@ -13,8 +13,8 @@ Run `ChatGPT Remote Enabler.exe`, or open PowerShell here and run:
 The compatibility check runs first. Mobile projects preserves the user's
 **By project**/**By connection** Native views preference and expands truncated
 task lists exposed by that grouping through Codex's own native callbacks.
-Renderer v45 also publishes this device's active saved projects and its active
-working/unread task states into its Codex home. Controllers running v45 read
+Renderer v46 also publishes this device's active saved projects and its active
+working/unread task states into its Codex home. Controllers running v46 read
 that fresh inventory through ChatGPT Remote and refresh active task indicators
 every five seconds, backing off while idle. Empty active projects appear while archived/removed projects do
 not.
@@ -106,18 +106,23 @@ Automation controls are also available from PowerShell:
 .\CodexRemoteMobileProject\MobileProjectView.ps1 -Action EnableAutoRegistration
 .\CodexRemoteMobileProject\MobileProjectView.ps1 -Action DisableAutoRegistration
 .\CodexRemoteMobileProject\MobileProjectView.ps1 -Action RemoveAutoRegistrations
-.\CodexRemoteMobileProject\MobileProjectView.ps1 -Action EnableAutoArchive
-.\CodexRemoteMobileProject\MobileProjectView.ps1 -Action DisableAutoArchive
-.\CodexRemoteMobileProject\MobileProjectView.ps1 -Action PreviewAutoArchive
-.\CodexRemoteMobileProject\MobileProjectView.ps1 -Action RunAutoArchive
+.\CodexRemoteMobileProject\MobileProjectView.ps1 -Action EnableAutoMaintenance
+.\CodexRemoteMobileProject\MobileProjectView.ps1 -Action DisableAutoMaintenance
+.\CodexRemoteMobileProject\MobileProjectView.ps1 -Action PreviewAutoMaintenance
+.\CodexRemoteMobileProject\MobileProjectView.ps1 -Action RunAutoMaintenance
 ```
 
-**Auto-archive >7d** is off by default. When enabled, it uses the local Codex
-app-server to archive only unpinned, inactive local chats whose latest activity
-is older than seven days. Selected, working, pinned, and remote chats are
-skipped. This reversible archive step is separate from any later permanent
-storage-maintenance or purge policy. `PreviewAutoArchive` reports the complete
-scanned and eligible counts without archiving anything.
+**Auto-cleanup** is off by default. When enabled, it uses the local Codex
+app-server to archive unpinned, inactive local chats after seven days and to
+permanently delete them after a tracked seven-day recovery window in Archived
+chats. Existing archived chats receive a new seven-day window when first seen.
+Disabling cleanup clears its timers. Selected, working, pinned, remote, and
+insufficiently dated chats are skipped.
+`PreviewAutoMaintenance` reports archive/delete eligibility without changing
+anything. Before launching ChatGPT, the packaged launcher also prunes diagnostic
+logs older than seven days (96 MiB cap), checkpoints WAL files, optimizes, and
+vacuums materially fragmented SQLite databases. It skips physical maintenance
+when any ChatGPT/Codex process is already running.
 
 Node.js 22 or newer is required. The launchers do not modify WindowsApps, the
 registry, firewall rules, or services. `ChatGPT Remote Enabler.exe` and

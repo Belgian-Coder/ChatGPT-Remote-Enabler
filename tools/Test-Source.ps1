@@ -11,6 +11,8 @@ $javascript = @(
     'windows\CodexRemoteSimple\runtime\orchestrator.js',
     'macos\renderer-mobile-project-view.js',
     'macos\inject.js'
+    'windows\CodexRemoteMobileProject\maintenance.js'
+    'macos\maintenance.js'
 )
 foreach ($relative in $javascript) {
     & $node --check (Join-Path $root $relative)
@@ -22,9 +24,11 @@ $powershell = @(
     'windows\CodexRemoteMobileProject\MobileProjectView.ps1',
     'windows\CodexRemoteMobileProject\DesktopShortcut.ps1',
     'windows\CodexRemoteMobileProject\StartupShortcut.ps1',
+    'windows\CodexRemoteMobileProject\MobileProjectStartup.ps1',
     'tools\Build-Release.ps1',
     'tools\Test-Source.ps1',
     'tools\Test-WindowsUpdaterCompatibility.ps1'
+    'tools\Test-Maintenance.ps1'
 )
 foreach ($relative in $powershell) {
     $tokens = $null
@@ -38,15 +42,22 @@ $macRenderer = Join-Path $root 'macos\renderer-mobile-project-view.js'
 if ((Get-FileHash -LiteralPath $windowsRenderer -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $macRenderer -Algorithm SHA256).Hash) {
     throw 'Windows and macOS renderer sources differ.'
 }
+$windowsMaintenance = Join-Path $root 'windows\CodexRemoteMobileProject\maintenance.js'
+$macMaintenance = Join-Path $root 'macos\maintenance.js'
+if ((Get-FileHash -LiteralPath $windowsMaintenance -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $macMaintenance -Algorithm SHA256).Hash) {
+    throw 'Windows and macOS maintenance sources differ.'
+}
 $renderer = Get-Content -LiteralPath $windowsRenderer -Raw
 $requiredContracts = @(
-    'const VERSION = 45;',
+    'const VERSION = 46;',
     'REMOTE_UNREAD_ACK_KEY',
     'freshInventory(hostId)',
     'NATIVE_INVENTORY_MAX_ROUNDS',
     'AUTO_ARCHIVE_ENABLED_KEY',
     'thread/list',
     'thread/archive',
+    'thread/delete',
+    'AUTO_DELETE_AFTER_ARCHIVE_DAYS',
     'statusType === "notLoaded"',
     'state.autoReconciliationTimer',
     'function nativeProjectNewAction',
@@ -67,13 +78,18 @@ if (Test-Path -LiteralPath (Join-Path $root '.github\workflows')) {
 & $node (Join-Path $root 'windows\CodexRemoteSimple\tests\RendererOverrides.SelfTest.js')
 if ($LASTEXITCODE -ne 0) { throw 'Stable renderer self-test failed.' }
 
+& (Join-Path $root 'tools\Test-Maintenance.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Maintenance self-test failed.' }
+
 git -C $root diff --check
 if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
 
 [pscustomobject]@{
     JavaScriptFiles = $javascript.Count
     PowerShellFiles = $powershell.Count
-    RendererVersion = 45
+    RendererVersion = 46
     RendererParity = $true
+    MaintenanceParity = $true
+    MaintenanceSelfTest = $true
     StableRendererSelfTest = $true
 } | ConvertTo-Json

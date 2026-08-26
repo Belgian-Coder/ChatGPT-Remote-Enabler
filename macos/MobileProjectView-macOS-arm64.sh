@@ -6,6 +6,7 @@ action="${action:l}"
 script_path="${0:A}"
 bundle_root="${script_path:h}"
 injector="$bundle_root/inject.js"
+maintenance_helper="$bundle_root/maintenance.js"
 updater="$bundle_root/Update-ChatGPTRemote.sh"
 update_checked=0
 label="com.local.codex-mobile-project-view"
@@ -86,6 +87,7 @@ enable_view() {
   local node_bin
   node_bin="$(resolve_node)"
   if ! debug_endpoint_ready; then
+    "$node_bin" --no-warnings "$maintenance_helper"
     /usr/bin/open -na "$app_name" --args --remote-debugging-address=127.0.0.1 --remote-debugging-port="$port"
     local attempt
     for attempt in {1..60}; do
@@ -161,9 +163,13 @@ case "$action" in
   disable-auto-archive) run_injector "$(resolve_node)" archive-auto-off ;;
   preview-auto-archive) run_injector "$(resolve_node)" archive-preview ;;
   run-auto-archive) run_injector "$(resolve_node)" archive-run ;;
+  enable-auto-maintenance) run_injector "$(resolve_node)" maintenance-auto-on ;;
+  disable-auto-maintenance) run_injector "$(resolve_node)" maintenance-auto-off ;;
+  preview-auto-maintenance) run_injector "$(resolve_node)" maintenance-preview ;;
+  run-auto-maintenance) run_injector "$(resolve_node)" maintenance-run ;;
   reconcile-auto-registrations) run_injector "$(resolve_node)" auto-reconcile ;;
   remove-auto-registrations) run_injector "$(resolve_node)" auto-remove ;;
   install-startup) install_startup ;;
   remove-startup) remove_startup ;;
-  *) print -u2 "Usage: $0 {enable|startup|disable|probe|enable-auto-registration|disable-auto-registration|enable-auto-archive|disable-auto-archive|preview-auto-archive|run-auto-archive|reconcile-auto-registrations|remove-auto-registrations|install-startup|remove-startup}"; exit 2 ;;
+  *) print -u2 "Usage: $0 {enable|startup|disable|probe|enable-auto-registration|disable-auto-registration|enable-auto-maintenance|disable-auto-maintenance|preview-auto-maintenance|run-auto-maintenance|reconcile-auto-registrations|remove-auto-registrations|install-startup|remove-startup}"; exit 2 ;;
 esac

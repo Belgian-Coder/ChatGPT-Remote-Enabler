@@ -6,10 +6,10 @@ In Mobile Projects, **Auto-register: on/off** locally enables or pauses remote-p
 
 macOS already exposes native ChatGPT remote connections. This package adds the optional Mobile projects view.
 
-Renderer version 45 preserves the original folder states, native-backed drag
+Renderer version 46 preserves the original folder states, native-backed drag
 ordering, and the user's **By project**/**By connection** preference while
 expanding truncated task lists exposed by the selected grouping. It also publishes this Mac's active saved projects and active working/unread task states into its
-Codex home. Controllers running v45 read that fresh inventory through ChatGPT
+Codex home. Controllers running v46 read that fresh inventory through ChatGPT
 Remote, including projects with no chats and excluding archived/removed ones.
 Remote task indicators refresh every five seconds.
 Synchronization continues automatically when **Native views** is selected.
@@ -31,17 +31,23 @@ chmod 755 ./MobileProjectView-macOS-arm64.sh
 ./MobileProjectView-macOS-arm64.sh enable
 ./MobileProjectView-macOS-arm64.sh probe
 ./MobileProjectView-macOS-arm64.sh enable-auto-registration
-./MobileProjectView-macOS-arm64.sh enable-auto-archive
+./MobileProjectView-macOS-arm64.sh enable-auto-maintenance
 ```
 
 Use `disable-auto-registration` to pause mirroring, `reconcile-auto-registrations` to synchronize immediately, or `remove-auto-registrations` to remove only automation-created registrations. Synchronization never deletes chats or source folders.
 
-**Auto-archive >7d** is off by default. `enable-auto-archive` archives only
-unpinned, inactive local chats whose latest activity is older than seven days;
-selected, working, pinned, and remote chats are skipped. Use
-`disable-auto-archive` to stop future runs, `preview-auto-archive` for a
-read-only count, or `run-auto-archive` for an immediate enabled-policy run.
-Archived chats remain restorable in ChatGPT.
+**Auto-cleanup** is off by default. `enable-auto-maintenance` archives unpinned,
+inactive local chats after seven days, then permanently deletes them after a
+tracked seven-day recovery window in Archived chats. Existing archived chats
+receive a new seven-day window when first seen; disabling cleanup clears the
+timers. Selected, working, pinned, remote, and insufficiently dated chats are
+skipped. Use `disable-auto-maintenance`, `preview-auto-maintenance`, or
+`run-auto-maintenance` to control it.
+
+Before starting ChatGPT, the packaged launcher prunes diagnostic logs older than
+seven days (96 MiB cap), checkpoints WAL files, optimizes, and vacuums materially
+fragmented SQLite databases. It skips physical maintenance while ChatGPT/Codex
+is running.
 
 The launcher checks for a verified GitHub release on every start. Manage it with:
 

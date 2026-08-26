@@ -19,13 +19,14 @@ $bundleRoot = [IO.Path]::GetFullPath($PSScriptRoot)
 $bundleParent = Split-Path -Parent $bundleRoot
 $stableController = Join-Path $bundleParent 'CodexRemoteSimple\CodexRemoteSimple.ps1'
 $mobileController = Join-Path $bundleRoot 'MobileProjectView.ps1'
+$maintenanceHelper = Join-Path $bundleRoot 'maintenance.js'
 $updateController = Join-Path $bundleParent 'Update-ChatGPTRemote.ps1'
 $logRoot = Join-Path $env:LOCALAPPDATA 'CodexRemoteFeatures'
 $logPath = Join-Path $logRoot 'startup.log'
 $rollbackRoot = Join-Path $bundleRoot 'rollback'
 
 function Assert-Controllers {
-    foreach ($path in @($stableController, $mobileController)) {
+    foreach ($path in @($stableController, $mobileController, $maintenanceHelper)) {
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
             throw "Required controller is missing: $path"
         }
@@ -97,6 +98,7 @@ switch ($Action) {
         $node = Resolve-NodePath
         Write-StartupLog "$(Get-Date -Format o) [$computerName] startup run begins"
         try {
+            Write-CommandOutput @(& $node --no-warnings $maintenanceHelper 2>&1)
             for ($stableAttempt = 1; $stableAttempt -le 2; $stableAttempt++) {
                 try {
                     Write-CommandOutput @(& $stableController -Action Enable -UseProxy:$UseProxy -Confirm:$false 2>&1)

@@ -20,7 +20,7 @@ function parseArgs(argv) {
   const targetWaitMs = values["target-wait-ms"] === undefined ? 0 : Number(values["target-wait-ms"]);
   if (!Number.isSafeInteger(port) || port < 1024 || port > 65535) throw new Error("Invalid renderer port");
   if (!Number.isSafeInteger(targetWaitMs) || targetWaitMs < 0 || targetWaitMs > 30_000) throw new Error("Invalid target wait");
-  if (!["archive-auto-off", "archive-auto-on", "archive-preview", "archive-run", "auto-off", "auto-on", "auto-reconcile", "auto-remove", "enable", "disable", "probe"].includes(values.action)) throw new Error("Invalid action");
+  if (!["archive-auto-off", "archive-auto-on", "archive-preview", "archive-run", "maintenance-auto-off", "maintenance-auto-on", "maintenance-preview", "maintenance-run", "auto-off", "auto-on", "auto-reconcile", "auto-remove", "enable", "disable", "probe"].includes(values.action)) throw new Error("Invalid action");
   return { action: values.action, localName: values["local-name"] || "Local", port, singleRemoteName: values["single-remote-name"] || null, targetWaitMs };
 }
 
@@ -83,7 +83,7 @@ async function main() {
         throw new Error("Mobile project view did not return valid proof");
       }
       fs.mkdirSync(path.dirname(STATE_PATH), { recursive: true });
-      fs.writeFileSync(STATE_PATH, `${JSON.stringify({ identifier: persistent.identifier, port: options.port, version: 45 }, null, 2)}\n`, "utf8");
+      fs.writeFileSync(STATE_PATH, `${JSON.stringify({ identifier: persistent.identifier, port: options.port, version: 46 }, null, 2)}\n`, "utf8");
       try { fs.rmSync(LEGACY_STATE_PATH, { force: true }); } catch {}
       process.stdout.write(`${JSON.stringify({ action: options.action, ok: true, report })}\n`);
       return;
@@ -107,20 +107,20 @@ async function main() {
       process.stdout.write(`${JSON.stringify({ action: options.action, ok: true, report })}\n`);
       return;
     }
-    if (options.action === "archive-auto-on" || options.action === "archive-auto-off") {
-      const enabled = options.action === "archive-auto-on";
-      const report = await evaluate(client, `globalThis.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__?.setAutoArchive?.(${JSON.stringify(enabled)}) ?? { active:false, version:null }`, 5000);
+    if (["archive-auto-on", "archive-auto-off", "maintenance-auto-on", "maintenance-auto-off"].includes(options.action)) {
+      const enabled = options.action.endsWith("-on");
+      const report = await evaluate(client, `globalThis.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__?.setAutoMaintenance?.(${JSON.stringify(enabled)}) ?? globalThis.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__?.setAutoArchive?.(${JSON.stringify(enabled)}) ?? { active:false, version:null }`, 5000);
       process.stdout.write(`${JSON.stringify({ action: options.action, ok: true, report })}\n`);
       return;
     }
-    if (options.action === "archive-run") {
-      const result = await evaluate(client, "globalThis.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__?.runAutoArchiveNow?.() ?? { archived:0, eligible:0 }", 120000);
+    if (options.action === "archive-run" || options.action === "maintenance-run") {
+      const result = await evaluate(client, "globalThis.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__?.runAutoMaintenanceNow?.() ?? globalThis.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__?.runAutoArchiveNow?.() ?? { archived:0, deleted:0, eligible:0 }", 120000);
       const report = await evaluate(client, "globalThis.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__?.probe?.() ?? { active:false, version:null }", 5000);
       process.stdout.write(`${JSON.stringify({ action: options.action, ok: true, report, result })}\n`);
       return;
     }
-    if (options.action === "archive-preview") {
-      const result = await evaluate(client, "globalThis.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__?.previewAutoArchive?.() ?? { eligible:0, scanned:0 }", 120000);
+    if (options.action === "archive-preview" || options.action === "maintenance-preview") {
+      const result = await evaluate(client, "globalThis.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__?.previewAutoMaintenance?.() ?? globalThis.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__?.previewAutoArchive?.() ?? { archiveEligible:0, deleteEligible:0, eligible:0, scanned:0 }", 120000);
       const report = await evaluate(client, "globalThis.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__?.probe?.() ?? { active:false, version:null }", 5000);
       process.stdout.write(`${JSON.stringify({ action: options.action, ok: true, report, result })}\n`);
       return;

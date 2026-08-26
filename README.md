@@ -34,30 +34,32 @@ Install the injected startup on every participating computer. Each device keeps 
 
 - **Auto-register: on/off** mirrors active remote projects on this client, including empty projects.
 - **Remove auto projects (N)** removes only registrations created by that automation. It never deletes chats or folders.
-- **Auto-archive >7d: on/off** optionally archives this device's inactive, unpinned local chats after seven days without activity. It skips selected, working, pinned, and remote chats and defaults to off. Archived chats remain available under **Archived chats**; any separate permanent-cleanup policy is independent.
+- **Auto-cleanup: on/off** optionally archives this device's inactive, unpinned local chats after seven days, then permanently deletes them after a tracked seven-day recovery window in **Archived chats**. It skips selected, working, pinned, remote, and insufficiently dated chats and defaults to off. Disabling it clears the timers, so re-enabling grants a new recovery window.
 - A suppressed project's **Allow auto-registration** action permits automatic registration again.
 
 PowerShell and macOS command equivalents:
 
 ```powershell
 .\CodexRemoteMobileProject\MobileProjectView.ps1 -Action EnableAutoRegistration
-.\CodexRemoteMobileProject\MobileProjectView.ps1 -Action EnableAutoArchive
-.\CodexRemoteMobileProject\MobileProjectView.ps1 -Action DisableAutoArchive
-.\CodexRemoteMobileProject\MobileProjectView.ps1 -Action PreviewAutoArchive
-.\CodexRemoteMobileProject\MobileProjectView.ps1 -Action RunAutoArchive
+.\CodexRemoteMobileProject\MobileProjectView.ps1 -Action EnableAutoMaintenance
+.\CodexRemoteMobileProject\MobileProjectView.ps1 -Action DisableAutoMaintenance
+.\CodexRemoteMobileProject\MobileProjectView.ps1 -Action PreviewAutoMaintenance
+.\CodexRemoteMobileProject\MobileProjectView.ps1 -Action RunAutoMaintenance
 ```
 
 ```zsh
 ./MobileProjectView-macOS-arm64.sh enable-auto-registration
-./MobileProjectView-macOS-arm64.sh enable-auto-archive
-./MobileProjectView-macOS-arm64.sh disable-auto-archive
-./MobileProjectView-macOS-arm64.sh preview-auto-archive
-./MobileProjectView-macOS-arm64.sh run-auto-archive
+./MobileProjectView-macOS-arm64.sh enable-auto-maintenance
+./MobileProjectView-macOS-arm64.sh disable-auto-maintenance
+./MobileProjectView-macOS-arm64.sh preview-auto-maintenance
+./MobileProjectView-macOS-arm64.sh run-auto-maintenance
 ```
 
 ## Updates and rollback
 
 Every launcher start checks GitHub Releases and installs only a platform archive whose published SHA-256 and internal manifest pass. Disable automatic updates with `Update-ChatGPTRemote.ps1 -Action DisableAutoUpdate` or `./Update-ChatGPTRemote.sh disable-auto-update`. Forks and mirrors can set `CHATGPT_REMOTE_UPDATE_REPOSITORY`, `CHATGPT_REMOTE_UPDATE_API_BASE`, or `CHATGPT_REMOTE_UPDATE_LATEST_URL`.
+
+Before starting ChatGPT, the packaged launcher prunes diagnostic logs older than seven days (96 MiB cap), checkpoints WAL files, runs SQLite optimization, and vacuums materially fragmented databases. It always skips this physical maintenance when ChatGPT/Codex is already running.
 
 Restore normal Windows ChatGPT with `Disable-ChatGPTRemote.ps1`; on macOS run `./MobileProjectView-macOS-arm64.sh disable`. See [Windows details](windows/README.md) and [macOS details](macos/README.md).
 

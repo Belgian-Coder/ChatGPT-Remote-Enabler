@@ -27,20 +27,12 @@ $primaryShortcutTargets = @(
     [ordered]@{ kind = 'Desktop'; path = Join-Path $DesktopPath 'ChatGPT Custom.lnk'; arguments = $primaryArguments; description = $primaryDescription },
     [ordered]@{ kind = 'StartMenu'; path = Join-Path $StartMenuPath 'ChatGPT Custom.lnk'; arguments = $primaryArguments; description = $primaryDescription }
 )
-$proxyShortcutTarget = [ordered]@{
-    kind = 'StartMenuProxy'
-    path = Join-Path $StartMenuPath 'ChatGPT Custom (Proxy).lnk'
-    arguments = '--proxy'
-    description = 'Route the ChatGPT Remote-control WebSocket through the configured HTTPS or HTTP proxy.'
-}
-$shortcutTargets = if ($UseProxy) { @($primaryShortcutTargets) } else { @($primaryShortcutTargets) + @($proxyShortcutTarget) }
-$summaryTargets = @($primaryShortcutTargets) + @($proxyShortcutTarget)
+$shortcutTargets = @($primaryShortcutTargets)
+$summaryTargets = @($primaryShortcutTargets)
 $legacyShortcutTargets = @(
-    [ordered]@{ kind = 'LegacyStartMenuProxyTest'; path = Join-Path $StartMenuPath 'ChatGPT Custom (Proxy Test).lnk' }
+    [ordered]@{ kind = 'LegacyStartMenuProxyTest'; path = Join-Path $StartMenuPath 'ChatGPT Custom (Proxy Test).lnk' },
+    [ordered]@{ kind = 'LegacyStartMenuProxy'; path = Join-Path $StartMenuPath 'ChatGPT Custom (Proxy).lnk' }
 )
-if ($UseProxy) {
-    $legacyShortcutTargets += [ordered]@{ kind = 'ConsolidatedStartMenuProxy'; path = $proxyShortcutTarget.path }
-}
 
 function Backup-Shortcut {
     param([string]$Path, [string]$Kind)

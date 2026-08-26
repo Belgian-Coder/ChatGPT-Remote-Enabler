@@ -17,8 +17,12 @@ if (-not $StartMenuPath) { $StartMenuPath = [Environment]::GetFolderPath('Progra
 $DesktopPath = [IO.Path]::GetFullPath($DesktopPath)
 $StartMenuPath = [IO.Path]::GetFullPath($StartMenuPath)
 $shortcutTargets = @(
-    [ordered]@{ kind = 'Desktop'; path = Join-Path $DesktopPath 'ChatGPT Custom.lnk' },
-    [ordered]@{ kind = 'StartMenu'; path = Join-Path $StartMenuPath 'ChatGPT Custom.lnk' }
+    [ordered]@{ kind = 'Desktop'; path = Join-Path $DesktopPath 'ChatGPT Custom.lnk'; arguments = ''; description = 'Restart ChatGPT/Codex with the audited remote Mobile projects injection.' },
+    [ordered]@{ kind = 'StartMenu'; path = Join-Path $StartMenuPath 'ChatGPT Custom.lnk'; arguments = ''; description = 'Restart ChatGPT/Codex with the audited remote Mobile projects injection.' },
+    [ordered]@{ kind = 'StartMenuProxy'; path = Join-Path $StartMenuPath 'ChatGPT Custom (Proxy).lnk'; arguments = '--proxy'; description = 'Route the ChatGPT Remote-control WebSocket through the configured HTTPS or HTTP proxy.' }
+)
+$legacyShortcutTargets = @(
+    [ordered]@{ kind = 'LegacyStartMenuProxyTest'; path = Join-Path $StartMenuPath 'ChatGPT Custom (Proxy Test).lnk' }
 )
 
 function Backup-Shortcut {
@@ -50,6 +54,9 @@ function Get-ShortcutSummary {
         launcherPath = $launcherPath
         launcherPresent = Test-Path -LiteralPath $launcherPath -PathType Leaf
         shortcuts = @($entries)
+        legacyShortcuts = @($legacyShortcutTargets | ForEach-Object {
+            [pscustomobject][ordered]@{ kind = $_.kind; path = $_.path; installed = Test-Path -LiteralPath $_.path -PathType Leaf }
+        })
     }
 }
 
@@ -59,6 +66,14 @@ switch ($Action) {
             throw "Launcher is missing: $launcherPath"
         }
         $backups = @()
+        foreach ($legacy in $legacyShortcutTargets) {
+            $backup = Backup-Shortcut -Path $legacy.path -Kind $legacy.kind
+            if ($backup) { $backups += $backup }
+            if ((Test-Path -LiteralPath $legacy.path -PathType Leaf) -and
+                $PSCmdlet.ShouldProcess($legacy.path, 'remove obsolete ChatGPT Custom shortcut')) {
+                Remove-Item -LiteralPath $legacy.path -Force
+            }
+        }
         foreach ($target in $shortcutTargets) {
             $parent = Split-Path -Parent $target.path
             if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
@@ -70,8 +85,9 @@ switch ($Action) {
                 $shell = New-Object -ComObject WScript.Shell
                 $shortcut = $shell.CreateShortcut($target.path)
                 $shortcut.TargetPath = $launcherPath
+                $shortcut.Arguments = $target.arguments
                 $shortcut.WorkingDirectory = $bundleRoot
-                $shortcut.Description = 'Restart ChatGPT/Codex with the audited remote Mobile projects injection.'
+                $shortcut.Description = $target.description
                 $shortcut.IconLocation = "$launcherPath,0"
                 $shortcut.WindowStyle = 1
                 $shortcut.Save()
@@ -83,7 +99,7 @@ switch ($Action) {
     }
     'Remove' {
         $backups = @()
-        foreach ($target in $shortcutTargets) {
+        foreach ($target in @($shortcutTargets) + @($legacyShortcutTargets)) {
             $backup = Backup-Shortcut -Path $target.path -Kind $target.kind
             if ($backup) { $backups += $backup }
             if ((Test-Path -LiteralPath $target.path -PathType Leaf) -and

@@ -6,7 +6,12 @@ In Mobile Projects, **Auto-register: on/off** locally enables or pauses automati
 
 macOS already exposes native ChatGPT remote connections. This package adds the optional Mobile projects view.
 
-Renderer version 35 preserves the original folder states and adds native-backed drag ordering for projects and chats.
+Renderer version 36 preserves the original folder states and native-backed drag
+ordering, automatically selects the complete connection inventory, expands all
+native **Show more** pages, and registers every remote project path the host
+exposes. Registered projects remain visible when they have no current chat. A
+folder never exposed by Remote as a saved project or chat path cannot be
+inferred safely.
 
 ```zsh
 chmod 755 ./MobileProjectView-macOS-arm64.sh
@@ -27,6 +32,8 @@ The launcher checks for a verified GitHub release on every start. Manage it with
 ```
 
 Set `CHATGPT_REMOTE_UPDATE_REPOSITORY=owner/repo`, `CHATGPT_REMOTE_UPDATE_API_BASE`, or `CHATGPT_REMOTE_UPDATE_LATEST_URL` for a fork or GitHub mirror. `CHATGPT_REMOTE_AUTO_UPDATE=0` skips one automatic check. Set a positive `CHATGPT_REMOTE_UPDATE_INTERVAL_HOURS` only if you want throttling. Failed downloads or verification keep the installed version.
+
+## Automatic injected startup
 
 For an update-safe login launcher and Dock shortcut, keep the extracted
 package in a permanent local folder, then run from that folder:

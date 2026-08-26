@@ -10,7 +10,10 @@ Run `ChatGPT Remote Enabler.exe`, or open PowerShell here and run:
 .\Enable-ChatGPTRemote.ps1
 ```
 
-The compatibility check runs first. After ChatGPT reopens, select **By connection** in Native views or **Mobile projects** for device-filtered project grouping.
+The compatibility check runs first. Mobile projects then selects the complete
+native connection inventory in the background, expands every **Show more**
+page, and automatically registers discovered remote project folders. No manual
+native grouping change is required.
 
 The launcher checks for a verified GitHub release on every start. Manage it with:
 
@@ -31,18 +34,45 @@ For a persistent local shortcut, keep the extracted folder in place and run:
 
 This creates **ChatGPT Custom** on the Desktop and Start menu. It always runs
 the sibling stable and Mobile Projects bundles, so future clicks load the
-injected view rather than the normal app. To enable the same path after logon,
-open an elevated Windows PowerShell and run:
+injected view rather than the normal app. It also creates **ChatGPT Custom
+(Proxy)** in the Start menu. When `HTTPS_PROXY` or `HTTP_PROXY` is set,
+that opt-in shortcut uses an HTTP CONNECT tunnel only for the ChatGPT Remote
+control WebSocket; other ChatGPT traffic is unchanged. TLS verification stays
+enabled and includes certificates trusted by Windows. Proxy URLs containing
+credentials are rejected. The standard shortcut does not enable this proxy
+mode. If injection fails, the launcher restores ordinary ChatGPT startup
+without the targeted proxy shim.
+
+For automatic injected startup after sign-in, install a per-user startup
+shortcut. This does not require elevation. Use `-UseProxy` on a VPN or network
+where Remote requires the configured proxy; omit it for direct networking.
 
 ```powershell
-.\CodexRemoteMobileProject\MobileProjectStartup.ps1 -Action Install -Confirm:$false
+.\CodexRemoteMobileProject\StartupShortcut.ps1 -Action Install -UseProxy
+.\CodexRemoteMobileProject\StartupShortcut.ps1 -Action Probe
 ```
 
-Use `Probe` to inspect either installation and `Remove` to roll it back. The
-startup task uses the signed-in account and built-in Windows PowerShell; it
-does not contain a hostname, username, network path, or Store package version.
-It retries the stable bridge once when needed, and the bridge supports the
-Node module-loading routes used by current Electron main processes.
+The installer replaces a disabled legacy startup shortcut after preserving a
+rollback copy. Use `-Action Remove` to remove the active shortcut. The target is
+the versioned `ChatGPT Custom.exe` in this folder, so verified in-place updates
+are used at the next sign-in.
+
+An elevated scheduled-task alternative remains available and now supports the
+same proxy mode:
+
+```powershell
+.\CodexRemoteMobileProject\MobileProjectStartup.ps1 -Action Install -UseProxy -Confirm:$false
+```
+
+The task and shortcut both use the signed-in account and built-in Windows
+PowerShell. They retry the stable bridge once when needed. Windows GUI startup
+occurs at interactive sign-in, not before a user session exists.
+
+After Remote first reports **Connected**, projects and chats can take several
+seconds to populate. Renderer v36 automatically switches its hidden source to
+**By connection**, expands all native pages, and registers each discovered
+remote folder. Registered projects remain visible without a current chat. A
+folder never supplied by Remote as a project or chat path cannot be guessed.
 
 Rollback:
 

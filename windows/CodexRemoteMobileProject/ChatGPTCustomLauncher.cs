@@ -8,13 +8,20 @@ using System.Threading;
 [assembly: AssemblyDescription("Starts ChatGPT with the audited remote Mobile projects injection")]
 [assembly: AssemblyCompany("Community")]
 [assembly: AssemblyProduct("ChatGPT Custom")]
-[assembly: AssemblyVersion("1.1.0.0")]
+[assembly: AssemblyVersion("1.3.0.0")]
 
 internal static class ChatGPTCustomLauncher
 {
     [STAThread]
-    private static int Main()
+    private static int Main(string[] args)
     {
+        bool useProxy = args.Length == 1 &&
+            string.Equals(args[0], "--proxy", StringComparison.OrdinalIgnoreCase);
+        if (args.Length > 1 || (args.Length == 1 && !useProxy))
+        {
+            return 13;
+        }
+
         string root = AppDomain.CurrentDomain.BaseDirectory;
         string startup = Path.Combine(root, "MobileProjectStartup.ps1");
         if (!File.Exists(startup))
@@ -40,7 +47,8 @@ internal static class ChatGPTCustomLauncher
             var start = new ProcessStartInfo
             {
                 FileName = executable,
-                Arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File \"" + startup + "\" -Action Run",
+                Arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File \"" + startup +
+                    "\" -Action Run" + (useProxy ? " -UseProxy" : ""),
                 WorkingDirectory = root,
                 UseShellExecute = false,
                 CreateNoWindow = true,

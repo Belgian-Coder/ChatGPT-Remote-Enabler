@@ -11,6 +11,11 @@
   const STORE_FILENAME = "remote-control-device-keys.windows.json";
   const INJECT_OPTIONS_SLOT = "__CODEX_CLEANROOM_MAIN_OPTIONS__";
   const STATE_SYMBOL = Symbol.for("codex.cleanroom.device-key-bridge.state.v1");
+  const PROXY_STATE_SYMBOL = Symbol.for("codex.cleanroom.remote-control-proxy.state.v1");
+  const REMOTE_CONTROL_PATH_PREFIXES = Object.freeze([
+    "/backend-api/wham/remote/control/",
+    "/backend-api/codex/remote/control/",
+  ]);
 
   function builtin(name) {
     if (typeof process.getBuiltinModule === "function") {
@@ -26,6 +31,9 @@
   const path = builtin("path");
   const os = builtin("os");
   const childProcess = builtin("child_process");
+  const https = builtin("https");
+  const net = builtin("net");
+  const tls = builtin("tls");
   const Module = builtin("module");
 
   function supportsDeviceKeyCrypto(candidate) {
@@ -124,6 +132,206 @@
     const error = new Error(message);
     error.code = code;
     return error;
+  }
+
+  function parseProxyUrl(value) {
+    if (typeof value !== "string" || value.trim().length === 0) {
+      throw bridgeError("PROXY_URL_INVALID", "Proxy URL must be a non-empty string");
+    }
+    let parsed;
+    try {
+      parsed = new URL(value.trim());
+    } catch {
+      throw bridgeError("PROXY_URL_INVALID", "Proxy URL must be absolute");
+    }
+    if (!new Set(["http:", "https:"]).has(parsed.protocol) || parsed.hostname.length === 0) {
+      throw bridgeError("PROXY_URL_INVALID", "Proxy URL must use http or https");
+    }
+    if (parsed.username.length > 0 || parsed.password.length > 0) {
+      throw bridgeError("PROXY_CREDENTIALS_FORBIDDEN", "Proxy URL credentials are not accepted");
+    }
+    if ((parsed.pathname !== "" && parsed.pathname !== "/") || parsed.search.length > 0 || parsed.hash.length > 0) {
+      throw bridgeError("PROXY_URL_INVALID", "Proxy URL may contain only scheme, host, and port");
+    }
+    return parsed;
+  }
+
+  function proxyPort(parsed) {
+    if (parsed.port.length > 0) return Number(parsed.port);
+    return parsed.protocol === "https:" ? 443 : 80;
+  }
+
+  function targetAuthority(hostname, port) {
+    const host = String(hostname).replace(/^\[|\]$/gu, "");
+    return `${net.isIP(host) === 6 ? `[${host}]` : host}:${port}`;
+  }
+
+  function trustedRootCertificates() {
+    if (typeof tls.getCACertificates !== "function") return undefined;
+    const certificates = [];
+    for (const type of ["default", "system"]) {
+      try {
+        certificates.push(...tls.getCACertificates(type));
+      } catch {
+        // Older embedded Node versions may not expose every certificate store.
+      }
+    }
+    return certificates.length > 0 ? [...new Set(certificates)] : undefined;
+  }
+
+  function createHttpConnectAgent(proxyUrl) {
+    const proxy = parseProxyUrl(proxyUrl);
+    const trustedCa = trustedRootCertificates();
+    const agent = new https.Agent({ keepAlive: true });
+
+    agent.createConnection = function createProxyTunnel(options, callback) {
+      let settled = false;
+      let proxySocket;
+      const done = (error, socket) => {
+        if (settled) return;
+        settled = true;
+        callback(error, socket);
+      };
+      const targetHost = String(options.servername ?? options.hostname ?? options.host ?? "").replace(/^\[|\]$/gu, "");
+      const targetPort = Number(options.port ?? 443);
+      if (targetHost.length === 0 || !Number.isInteger(targetPort) || targetPort < 1 || targetPort > 65535) {
+        queueMicrotask(() => done(bridgeError("PROXY_TARGET_INVALID", "Remote-control proxy target is invalid")));
+        return undefined;
+      }
+
+      const proxyConnectOptions = { host: proxy.hostname, port: proxyPort(proxy) };
+      try {
+        proxySocket = proxy.protocol === "https:"
+          ? tls.connect({ ...proxyConnectOptions, ...(trustedCa ? { ca: trustedCa } : {}), servername: proxy.hostname })
+          : net.connect(proxyConnectOptions);
+      } catch {
+        queueMicrotask(() => done(bridgeError("PROXY_CONNECT_FAILED", "Proxy connection could not be created")));
+        return undefined;
+      }
+
+      const fail = (code, message) => {
+        proxySocket?.destroy();
+        done(bridgeError(code, message));
+      };
+      const onProxyError = () => fail("PROXY_CONNECT_FAILED", "Proxy connection failed");
+      proxySocket.once("error", onProxyError);
+      proxySocket.setTimeout(10_000, () => fail("PROXY_CONNECT_TIMEOUT", "Proxy CONNECT timed out"));
+
+      const connectedEvent = proxy.protocol === "https:" ? "secureConnect" : "connect";
+      proxySocket.once(connectedEvent, () => {
+        const authority = targetAuthority(targetHost, targetPort);
+        proxySocket.write([
+          `CONNECT ${authority} HTTP/1.1`,
+          `Host: ${authority}`,
+          "Proxy-Connection: Keep-Alive",
+          "Connection: Keep-Alive",
+          "",
+          "",
+        ].join("\r\n"));
+      });
+
+      let response = Buffer.alloc(0);
+      const onData = (chunk) => {
+        response = Buffer.concat([response, chunk]);
+        if (response.length > 16 * 1024) {
+          fail("PROXY_RESPONSE_INVALID", "Proxy CONNECT response headers were too large");
+          return;
+        }
+        const end = response.indexOf("\r\n\r\n");
+        if (end < 0) return;
+
+        proxySocket.removeListener("data", onData);
+        proxySocket.removeListener("error", onProxyError);
+        proxySocket.setTimeout(0);
+        const statusLine = response.subarray(0, end).toString("latin1").split("\r\n", 1)[0] ?? "";
+        const match = /^HTTP\/1\.[01]\s+(\d{3})(?:\s|$)/u.exec(statusLine);
+        if (!match || Number(match[1]) !== 200) {
+          fail("PROXY_CONNECT_REJECTED", `Proxy CONNECT was rejected with status ${match?.[1] ?? "unknown"}`);
+          return;
+        }
+
+        const remainder = response.subarray(end + 4);
+        if (remainder.length > 0) proxySocket.unshift(remainder);
+        const tlsOptions = {
+          socket: proxySocket,
+          servername: options.servername ?? targetHost,
+        };
+        for (const name of [
+          "ALPNProtocols",
+          "ca",
+          "cert",
+          "checkServerIdentity",
+          "ciphers",
+          "clientCertEngine",
+          "crl",
+          "dhparam",
+          "ecdhCurve",
+          "honorCipherOrder",
+          "key",
+          "maxVersion",
+          "minDHSize",
+          "minVersion",
+          "passphrase",
+          "pfx",
+          "rejectUnauthorized",
+          "secureContext",
+          "secureOptions",
+          "secureProtocol",
+          "session",
+          "sigalgs",
+        ]) {
+          if (Object.prototype.hasOwnProperty.call(options, name)) {
+            tlsOptions[name] = options[name];
+          }
+        }
+        if (!Object.prototype.hasOwnProperty.call(options, "ca") && trustedCa) {
+          tlsOptions.ca = trustedCa;
+        }
+        let secureSocket;
+        try {
+          secureSocket = tls.connect(tlsOptions);
+        } catch {
+          fail("PROXY_TLS_FAILED", "TLS over the proxy tunnel could not be created");
+          return;
+        }
+        const onTlsError = () => {
+          secureSocket.destroy();
+          done(bridgeError("PROXY_TLS_FAILED", "TLS verification over the proxy tunnel failed"));
+        };
+        secureSocket.once("error", onTlsError);
+        secureSocket.once("secureConnect", () => {
+          secureSocket.removeListener("error", onTlsError);
+          done(null, secureSocket);
+        });
+      };
+      proxySocket.on("data", onData);
+      return undefined;
+    };
+    return agent;
+  }
+
+  function isRemoteControlRequest(options) {
+    if (options == null || typeof options !== "object" || options instanceof URL) return false;
+    const hostname = String(options.hostname ?? options.host ?? "").replace(/^\[|\]$/gu, "").toLowerCase();
+    const pathValue = String(options.path ?? options.pathname ?? "");
+    return hostname === "chatgpt.com" && REMOTE_CONTROL_PATH_PREFIXES.some((prefix) => pathValue.startsWith(prefix));
+  }
+
+  function installRemoteControlProxyShim(proxyUrl) {
+    if (globalThis[PROXY_STATE_SYMBOL]) {
+      return { installed: true, reused: true, scope: "chatgpt-remote-control" };
+    }
+    const agent = createHttpConnectAgent(proxyUrl);
+    const originalRequest = https.request;
+    https.request = function cleanroomRemoteControlProxyRequest(options) {
+      const args = Array.from(arguments);
+      if (isRemoteControlRequest(options)) {
+        args[0] = { ...options, agent };
+      }
+      return Reflect.apply(originalRequest, this, args);
+    };
+    globalThis[PROXY_STATE_SYMBOL] = { agent, originalRequest };
+    return { installed: true, reused: false, scope: "chatgpt-remote-control" };
   }
 
   function isPlainObject(value) {
@@ -781,6 +989,9 @@
     const addon = makeAddon(service);
     const originalLoad = Module._load;
     const platformShim = options.spoofPlatform === false ? { installed: false, reason: "disabled" } : installPlatformStackShim();
+    const proxyShim = options.proxyUrl == null
+      ? { installed: false, reason: "disabled" }
+      : installRemoteControlProxyShim(options.proxyUrl);
     if (options.interceptModules !== false) {
       Module._load = function cleanroomAddonLoad(request, parent, isMain) {
         if (normalizedBasename(request) === TARGET_ADDON_BASENAME) {
@@ -796,18 +1007,22 @@
       installed: true,
       moduleInterception: options.interceptModules === false ? "disabled" : "installed",
       platformShim,
+      proxyShim,
       protectionClass: PROTECTION_CLASS,
       status: "installed",
       store: "CODEX_HOME",
     };
-    globalThis[STATE_SYMBOL] = { addon, originalLoad, report, service };
+    globalThis[STATE_SYMBOL] = { addon, originalLoad, proxyShim, report, service };
     const inspectorClose = options.scheduleInspectorClose === false ? { scheduled: false, reason: "disabled" } : scheduleInspectorClose(options.inspectorCloseDelayMs);
     return { ...report, inspectorClose, reused: false };
   }
 
   const api = Object.freeze({
     DeviceKeyService,
+    createHttpConnectAgent,
     installMainBridge,
+    installRemoteControlProxyShim,
+    isRemoteControlRequest,
     normalizedBasename,
     parseStoreText,
     resolveCodexHome,

@@ -7,7 +7,8 @@ param(
     [int]$DelaySeconds = 30,
     [ValidateRange(5, 120)]
     [int]$MobileReadyTimeoutSeconds = 45,
-    [string]$NodePath
+    [string]$NodePath,
+    [switch]$UseProxy
 )
 
 $ErrorActionPreference = 'Stop'
@@ -98,7 +99,7 @@ switch ($Action) {
         try {
             for ($stableAttempt = 1; $stableAttempt -le 2; $stableAttempt++) {
                 try {
-                    Write-CommandOutput @(& $stableController -Action Enable -Confirm:$false 2>&1)
+                    Write-CommandOutput @(& $stableController -Action Enable -UseProxy:$UseProxy -Confirm:$false 2>&1)
                     break
                 } catch {
                     if ($stableAttempt -ge 2) { throw }
@@ -146,6 +147,7 @@ switch ($Action) {
             throw "Built-in Windows PowerShell was not found: $powerShell"
         }
         $arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Action Run"
+        if ($UseProxy) { $arguments += ' -UseProxy' }
         $taskAction = New-ScheduledTaskAction -Execute $powerShell -Argument $arguments -WorkingDirectory $bundleRoot
         $trigger = New-ScheduledTaskTrigger -AtLogOn -User $TargetUser
         if ($DelaySeconds -gt 0) { $trigger.Delay = "PT${DelaySeconds}S" }

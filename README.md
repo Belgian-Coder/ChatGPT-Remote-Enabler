@@ -2,7 +2,7 @@
 
 Unofficial Windows and macOS helpers for ChatGPT/Codex Remote. Windows enables hidden native remote-device controls in affected desktop builds; both platforms can add a **Mobile projects** sidebar that groups chats by project and device, shows working/unread indicators, and can keep remote projects visible after their last chat is removed.
 
-Why: some Windows builds contain the remote UI but do not expose it, and the native connection view flattens project organization. [OpenAI's Remote documentation](https://learn.chatgpt.com/docs/remote) covers Mac and Windows and notes that availability depends on rollout and workspace settings.
+Why: some Windows builds contain the remote UI but do not expose it, and the native connection view flattens project organization. [OpenAI's Remote documentation](https://learn.chatgpt.com/docs/remote-connections) covers Mac and Windows and notes that availability depends on rollout and workspace settings.
 
 | Native views | Mobile projects |
 |---|---|
@@ -23,9 +23,38 @@ chmod 755 ./MobileProjectView-macOS-arm64.sh
 
 Run `./MobileProjectView-macOS-arm64.sh disable` to roll back. Node.js 22+ is required. macOS already supplies the native remote capability; its package only adds Mobile projects.
 
+## Automatic injected startup
+
+Keep the extracted package in a permanent local folder so the startup entry
+continues to point at files that can be updated in place.
+
+**Windows:** from the extracted `windows` folder, install a per-user startup
+shortcut. Use `-UseProxy` when Remote needs the configured `HTTPS_PROXY` or
+`HTTP_PROXY`; omit it for a direct connection.
+
+```powershell
+.\CodexRemoteMobileProject\StartupShortcut.ps1 -Action Install -UseProxy
+.\CodexRemoteMobileProject\StartupShortcut.ps1 -Action Probe
+```
+
+The shortcut runs after interactive sign-in, launches the current `ChatGPT
+Custom.exe`, injects both the stable Remote bridge and Mobile projects, and
+does not require administrator rights. Remove it with `-Action Remove`.
+
+**macOS Apple Silicon:** install the per-user LaunchAgent from the extracted
+`macos` folder:
+
+```zsh
+chmod 755 ./MobileProjectView-macOS-arm64.sh
+CODEX_STARTUP_DELAY_SECONDS=60 ./MobileProjectView-macOS-arm64.sh install-startup
+```
+
+The LaunchAgent starts the app and injects Mobile projects after login. Remove
+it with `./MobileProjectView-macOS-arm64.sh remove-startup`.
+
 ## Auto-register remote projects
 
-Mobile Projects can automatically register a remote project on a controller the first time that controller sees a chat from its folder. This is opt-in and uses ChatGPT's native create/remove commands. Each client stores only its own setting and managed/suppressed project paths in local app storage—there is no shared catalogue, server, NAS dependency, or central storage.
+Mobile Projects automatically loads every page exposed by the native connection view and registers a remote project on a controller the first time that controller sees a chat from its folder. Automatic registration is enabled by default on fresh installs and uses ChatGPT's native create/remove commands. Each client stores only its own setting and managed/suppressed project paths in local app storage—there is no shared catalogue, server, NAS dependency, or central storage.
 
 - **Auto-register: on/off** enables or pauses automatic registration on this client. Existing registrations stay intact when switched off.
 - **Remove auto projects (N)** removes only registrations created by this automation on this client. It stays visible but disabled at `(0)`, never deletes chats or source folders, and suppresses immediate recreation.
@@ -47,7 +76,10 @@ macOS equivalents:
 ./MobileProjectView-macOS-arm64.sh remove-auto-registrations
 ```
 
-The feature can discover a project only after at least one chat from that remote folder becomes visible. It cannot invent never-seen empty folders.
+The renderer switches its hidden source inventory to **By connection**, expands
+all native **Show more** pages, and retains every registered project even after
+its last loaded chat disappears. A folder that the Remote protocol has never
+exposed as either a saved project or a chat path cannot be inferred safely.
 
 Renderer version 35 also lets you drag projects within one device and chats within their current project. It delegates the saved order to ChatGPT instead of keeping a separate catalogue.
 

@@ -39,7 +39,7 @@ function parseArguments(argv) {
       throw cliError("ARGUMENT_UNKNOWN", `Unexpected argument: ${token}`);
     }
     const name = token.slice(2);
-    if (!["mode", "renderer-port", "main-port", "timeout-ms", "main-payload"].includes(name) || values.has(name)) {
+    if (!["mode", "renderer-port", "main-port", "timeout-ms", "main-payload", "proxy-url"].includes(name) || values.has(name)) {
       throw cliError("ARGUMENT_UNKNOWN", `Unknown or duplicate option: ${token}`);
     }
     const value = argv[index + 1];
@@ -58,6 +58,9 @@ function parseArguments(argv) {
   }
   if (mode === "probe" && values.has("main-payload")) {
     throw cliError("ARGUMENT_MODE_CONFLICT", "probe mode forbids payload options");
+  }
+  if (mode !== "full" && values.has("proxy-url")) {
+    throw cliError("ARGUMENT_MODE_CONFLICT", "proxy-url is only valid in full mode");
   }
   const requiredOptions = mode === "full"
     ? ["renderer-port", "main-port", "timeout-ms", "main-payload"]
@@ -82,6 +85,7 @@ function parseArguments(argv) {
     }
     if (mode === "full") {
       parsed.mainPayload = path.resolve(values.get("main-payload"));
+      if (values.has("proxy-url")) parsed.proxyUrl = values.get("proxy-url");
     }
   }
   return parsed;
@@ -181,12 +185,13 @@ function readPayload(payloadPath) {
   }
 }
 
-function injectionExpression(source) {
+function injectionExpression(source, runtimeOptions = {}) {
   const options = {
     inject: true,
     inspectorCloseDelayMs: 500,
     scheduleInspectorClose: true,
   };
+  if (runtimeOptions.proxyUrl != null) options.proxyUrl = runtimeOptions.proxyUrl;
   return [
     "(() => {",
     `  globalThis[${JSON.stringify(MAIN_OPTIONS_SLOT)}] = ${JSON.stringify(options)};`,
@@ -244,7 +249,7 @@ async function installMainPayload(options, source, deadline) {
   let report;
   try {
     await client.call("Runtime.enable", {}, remaining(deadline));
-    report = await evaluate(client, injectionExpression(source), remaining(deadline), false);
+    report = await evaluate(client, injectionExpression(source, options), remaining(deadline), false);
   } finally {
     client.close();
   }
@@ -482,7 +487,7 @@ async function main(argv = process.argv.slice(2)) {
     if (options.help) {
       process.stdout.write(`${JSON.stringify({
         ok: true,
-        usage: "node orchestrator.js [--mode full|renderer|probe] --renderer-port PORT --timeout-ms MS [--main-port PORT --main-payload FILE]",
+        usage: "node orchestrator.js [--mode full|renderer|probe] --renderer-port PORT --timeout-ms MS [--main-port PORT --main-payload FILE] [--proxy-url URL]",
       })}\n`);
       return 0;
     }

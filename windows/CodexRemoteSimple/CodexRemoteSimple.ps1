@@ -5,6 +5,8 @@ param(
 
     [string]$NodePath,
 
+    [switch]$UseProxy,
+
     [ValidateRange(5, 60)]
     [int]$TimeoutSeconds = 20
 )
@@ -15,6 +17,42 @@ $ErrorActionPreference = 'Stop'
 $script:BundleRoot = [IO.Path]::GetFullPath($PSScriptRoot)
 $script:RuntimeRoot = Join-Path $script:BundleRoot 'runtime'
 $script:StatePath = Join-Path $script:BundleRoot '.codexremote-simple-session.json'
+$script:PackageActivationLauncher = Join-Path $script:RuntimeRoot 'PackageActivationLauncher.exe'
+$script:LaunchLogPath = Join-Path $env:LOCALAPPDATA 'CodexRemoteFeatures\launch.log'
+
+function Resolve-CrsProxyServer {
+    $value = $null
+    foreach ($name in @('HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy')) {
+        $candidate = [Environment]::GetEnvironmentVariable($name, 'Process')
+        if ([string]::IsNullOrWhiteSpace($candidate)) {
+            $candidate = [Environment]::GetEnvironmentVariable($name, 'User')
+        }
+        if (-not [string]::IsNullOrWhiteSpace($candidate)) {
+            $value = $candidate.Trim()
+            break
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        throw 'Proxy mode was requested, but HTTPS_PROXY or HTTP_PROXY is not configured.'
+    }
+
+    $uri = $null
+    if (-not [Uri]::TryCreate($value, [UriKind]::Absolute, [ref]$uri) -or
+        $uri.Scheme -notin @('http', 'https') -or
+        [string]::IsNullOrWhiteSpace($uri.Host)) {
+        throw 'The configured proxy must be an absolute http:// or https:// URL.'
+    }
+    if (-not [string]::IsNullOrEmpty($uri.UserInfo)) {
+        throw 'Proxy URLs containing credentials are not accepted because launch arguments are visible to other local processes.'
+    }
+    if ($uri.AbsolutePath -notin @('', '/') -or
+        -not [string]::IsNullOrEmpty($uri.Query) -or
+        -not [string]::IsNullOrEmpty($uri.Fragment)) {
+        throw 'The configured proxy URL may contain only a scheme, host, and optional port.'
+    }
+
+    return $uri.GetLeftPart([UriPartial]::Authority)
+}
 
 function Get-CrsPackage {
     $packages = @(Get-AppxPackage -Name 'OpenAI.Codex' -ErrorAction Stop)
@@ -33,9 +71,22 @@ function Get-CrsPackage {
         }
     }
 
+    $manifest = Get-AppxPackageManifest -Package $package -ErrorAction Stop
+    $applications = @(
+        $manifest.Package.Applications.Application | Where-Object {
+            ([string]$_.Executable).Replace('/', '\') -ieq 'app\ChatGPT.exe'
+        }
+    )
+    if ($applications.Count -ne 1 -or [string]::IsNullOrWhiteSpace([string]$applications[0].Id)) {
+        throw "Expected exactly one package application for app\ChatGPT.exe; found $($applications.Count)."
+    }
+    $applicationId = [string]$applications[0].Id
+
     [pscustomobject][ordered]@{
         FullName = [string]$package.PackageFullName
         FamilyName = [string]$package.PackageFamilyName
+        ApplicationId = $applicationId
+        AppUserModelId = "$([string]$package.PackageFamilyName)!$applicationId"
         Version = [string]$package.Version
         InstallRoot = $installRoot
         ExecutablePath = $executable
@@ -165,10 +216,135 @@ function Stop-CrsCodex {
     }
 }
 
-function Start-CrsOrdinaryCodex {
-    param($Package)
+function Wait-CrsPortOpen {
+    param([int]$Port, [int]$TimeoutMilliseconds = 8000)
 
-    Start-Process -FilePath $Package.ExecutablePath | Out-Null
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+    do {
+        if (Test-CrsPortOpen -Port $Port) { return $true }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+    return $false
+}
+
+function Write-CrsLaunchDiagnostic {
+    param(
+        [string]$Method,
+        [bool]$Succeeded,
+        [AllowEmptyString()][string]$PrimaryError,
+        [AllowEmptyString()][string]$FallbackError
+    )
+
+    try {
+        $parent = Split-Path -Parent $script:LaunchLogPath
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+        $entry = [ordered]@{
+            timestampUtc = [DateTime]::UtcNow.ToString('o')
+            method = $Method
+            succeeded = $Succeeded
+            primaryError = $PrimaryError
+            fallbackError = $FallbackError
+        }
+        Add-Content -LiteralPath $script:LaunchLogPath -Value ($entry | ConvertTo-Json -Compress) -Encoding UTF8
+    } catch {
+        Write-Verbose "Launch diagnostic logging failed: $($_.Exception.Message)"
+    }
+}
+
+function Start-CrsPackagedCodex {
+    param(
+        $Package,
+        [string[]]$ArgumentList = @(),
+        [int]$ExpectedPort = 0,
+        [ValidateRange(1000, 30000)]
+        [int]$PortTimeoutMilliseconds = 8000
+    )
+
+    foreach ($argument in @($ArgumentList)) {
+        if ($null -eq $argument -or $argument -match '[\x00\r\n"]') {
+            throw 'A Codex launch argument contains unsupported characters.'
+        }
+    }
+    $argumentString = @($ArgumentList) -join ' '
+    $primaryError = ''
+
+    try {
+        if (-not (Test-Path -LiteralPath $script:PackageActivationLauncher -PathType Leaf)) {
+            throw "The package activation launcher is missing: $script:PackageActivationLauncher"
+        }
+        $output = @(& $script:PackageActivationLauncher $Package.AppUserModelId $argumentString 2>&1)
+        $exitCode = $LASTEXITCODE
+        [uint32]$activatedProcessId = 0
+        if ($exitCode -ne 0 -or $output.Count -ne 1 -or
+            -not [uint32]::TryParse(([string]$output[0]).Trim(), [ref]$activatedProcessId) -or
+            $activatedProcessId -eq 0) {
+            throw "Package activation failed with exit code ${exitCode}: $($output -join ' ')"
+        }
+        if ($ExpectedPort -gt 0 -and -not (Wait-CrsPortOpen -Port $ExpectedPort -TimeoutMilliseconds $PortTimeoutMilliseconds)) {
+            Stop-CrsCodex -ExecutablePath $Package.ExecutablePath
+            throw "Package activation returned process $activatedProcessId, but loopback port $ExpectedPort did not open."
+        }
+        Write-CrsLaunchDiagnostic -Method 'ApplicationActivationManager' -Succeeded $true -PrimaryError '' -FallbackError ''
+        return [pscustomobject][ordered]@{
+            Method = 'ApplicationActivationManager'
+            ProcessId = [uint32]$activatedProcessId
+        }
+    } catch {
+        $primaryError = $_.Exception.Message
+    }
+
+    try {
+        $fallbackParameters = @{
+            PackageFamilyName = $Package.FamilyName
+            AppId = $Package.ApplicationId
+            Command = $Package.ExecutablePath
+            ErrorAction = 'Stop'
+        }
+        if (-not [string]::IsNullOrEmpty($argumentString)) {
+            $fallbackParameters.Args = $argumentString
+        }
+        Invoke-CommandInDesktopPackage @fallbackParameters | Out-Null
+        if ($ExpectedPort -gt 0 -and -not (Wait-CrsPortOpen -Port $ExpectedPort -TimeoutMilliseconds $PortTimeoutMilliseconds)) {
+            Stop-CrsCodex -ExecutablePath $Package.ExecutablePath
+            throw "The package-context fallback started, but loopback port $ExpectedPort did not open."
+        }
+        Write-CrsLaunchDiagnostic -Method 'Invoke-CommandInDesktopPackage' -Succeeded $true -PrimaryError $primaryError -FallbackError ''
+        return [pscustomobject][ordered]@{
+            Method = 'Invoke-CommandInDesktopPackage'
+            ProcessId = $null
+        }
+    } catch {
+        $fallbackError = $_.Exception.Message
+        Write-CrsLaunchDiagnostic -Method 'None' -Succeeded $false -PrimaryError $primaryError -FallbackError $fallbackError
+        throw "Both packaged Codex launch methods failed. Package activation: $primaryError Fallback: $fallbackError"
+    }
+}
+
+function Start-CrsOrdinaryCodex {
+    param(
+        $Package,
+        [string[]]$ArgumentList = @()
+    )
+
+    try {
+        [void](Start-CrsPackagedCodex -Package $Package -ArgumentList $ArgumentList)
+        return
+    } catch {
+        $packagedLaunchError = $_.Exception.Message
+    }
+
+    try {
+        $explorer = Join-Path $env:SystemRoot 'explorer.exe'
+        if (-not (Test-Path -LiteralPath $explorer -PathType Leaf)) {
+            throw "Windows Explorer is missing: $explorer"
+        }
+        Start-Process -FilePath $explorer -ArgumentList "shell:AppsFolder\$($Package.AppUserModelId)" | Out-Null
+        Write-CrsLaunchDiagnostic -Method 'ShellAppsFolderRecovery' -Succeeded $true -PrimaryError $packagedLaunchError -FallbackError ''
+    } catch {
+        $shellLaunchError = $_.Exception.Message
+        Write-CrsLaunchDiagnostic -Method 'None' -Succeeded $false -PrimaryError $packagedLaunchError -FallbackError $shellLaunchError
+        throw "Packaged launch and normal shell recovery both failed. Packaged launch: $packagedLaunchError Shell recovery: $shellLaunchError"
+    }
 }
 
 function Read-CrsState {
@@ -199,7 +375,7 @@ function Read-CrsState {
 }
 
 function Write-CrsState {
-    param($Package, [int]$RendererPort, [int]$MainPort, $Probe)
+    param($Package, [int]$RendererPort, [int]$MainPort, $Probe, $Launch, [bool]$ProxyMode)
 
     $state = [pscustomobject][ordered]@{
         schemaVersion = 1
@@ -208,6 +384,9 @@ function Write-CrsState {
         executablePath = $Package.ExecutablePath
         rendererPort = $RendererPort
         mainPort = $MainPort
+        launchMethod = [string]$Launch.Method
+        launchProcessId = $Launch.ProcessId
+        proxyMode = $ProxyMode
         appAsarSha256 = [string]$Probe.appAsarSha256
         startedAtUtc = [DateTime]::UtcNow.ToString('o')
     }
@@ -216,7 +395,7 @@ function Write-CrsState {
 }
 
 function Invoke-CrsBridge {
-    param($Node, [int]$RendererPort, [int]$MainPort)
+    param($Node, [int]$RendererPort, [int]$MainPort, [string]$ProxyServer)
 
     $orchestrator = Join-Path $script:RuntimeRoot 'orchestrator.js'
     $mainPayload = Join-Path $script:RuntimeRoot 'main-payload.js'
@@ -228,6 +407,9 @@ function Invoke-CrsBridge {
         '--timeout-ms', [string]($TimeoutSeconds * 1000),
         '--main-payload', $mainPayload
     )
+    if (-not [string]::IsNullOrWhiteSpace($ProxyServer)) {
+        $arguments += @('--proxy-url', $ProxyServer)
+    }
     $output = @(& $Node.Path @arguments 2>&1)
     if ($LASTEXITCODE -ne 0 -or $output.Count -ne 1) {
         throw "Runtime bridge failed: $($output -join ' ')"
@@ -304,8 +486,15 @@ switch ($Action) {
     'Enable' {
         $existing = Invoke-CrsProbeExisting -Node $node -State $state
         if ($null -ne $existing -and $existing.ok -and $existing.renderer.probe.proof) {
-            Write-Host 'The local Control other devices bridge is already active.' -ForegroundColor Green
-            break
+            $activeProxyMode = $false
+            if ($null -ne $state -and $null -ne $state.PSObject.Properties['proxyMode']) {
+                $activeProxyMode = [bool]$state.proxyMode
+            }
+            if ($activeProxyMode -eq [bool]$UseProxy) {
+                Write-Host 'The local Control other devices bridge is already active in the requested proxy mode.' -ForegroundColor Green
+                break
+            }
+            Write-Host 'The requested proxy mode differs from the active session; ChatGPT will be relaunched.' -ForegroundColor Yellow
         }
         if (-not $PSCmdlet.ShouldProcess('the current OpenAI Codex session', 'Close it, relaunch with loopback debug ports, and inject the audited compatibility bridge')) {
             break
@@ -316,14 +505,19 @@ switch ($Action) {
         Stop-CrsCodex -ExecutablePath $package.ExecutablePath
 
         try {
+            $proxyServer = $null
+            if ($UseProxy) {
+                $proxyServer = Resolve-CrsProxyServer
+                Write-Host 'Experimental proxy mode is enabled only for the Remote-control WebSocket.' -ForegroundColor Yellow
+            }
             $arguments = @(
                 '--remote-debugging-address=127.0.0.1',
                 "--remote-debugging-port=$rendererPort",
                 "--inspect=127.0.0.1:$mainPort"
             )
-            Start-Process -FilePath $package.ExecutablePath -ArgumentList $arguments | Out-Null
-            $bridge = Invoke-CrsBridge -Node $node -RendererPort $rendererPort -MainPort $mainPort
-            Write-CrsState -Package $package -RendererPort $rendererPort -MainPort $mainPort -Probe $compatibility
+            $launch = Start-CrsPackagedCodex -Package $package -ArgumentList $arguments -ExpectedPort $rendererPort
+            $bridge = Invoke-CrsBridge -Node $node -RendererPort $rendererPort -MainPort $mainPort -ProxyServer $(if ($UseProxy) { $proxyServer } else { $null })
+            Write-CrsState -Package $package -RendererPort $rendererPort -MainPort $mainPort -Probe $compatibility -Launch $launch -ProxyMode ([bool]$UseProxy)
             Write-Host 'Control other devices and macOS-style connection grouping are active for this Codex session.' -ForegroundColor Green
             Write-Host 'Open Settings > Connections > Control other devices.'
             Write-Host 'In the sidebar, open Project sidebar options and choose By connection when desired.'

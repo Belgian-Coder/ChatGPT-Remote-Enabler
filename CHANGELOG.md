@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Added a Windows opt-in HTTP CONNECT agent scoped to ChatGPT Remote-control WebSockets, with Windows trusted-root support and no disabled TLS checks.
+- Added automatic renderer v36 inventory hydration on Windows and macOS: select the native connection source, expand every available page, and register all discovered remote project paths by default on fresh installs.
+- Added a non-administrator Windows startup-shortcut manager, proxy-capable scheduled startup, legacy-startup cleanup, and complete Windows/macOS injected-startup procedures.
+- Added packaged Windows activation with a package-context fallback and ordinary ChatGPT recovery when injection cannot be enabled.
+
 ## v1.4.1
 
 - Changed automatic update checks from once per day to every launcher start.

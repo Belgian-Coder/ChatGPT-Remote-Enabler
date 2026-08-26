@@ -11,7 +11,12 @@
   const AUTO_ENABLED_KEY = "codex-remote-mobile-auto-register-enabled-v1";
   const AUTO_MANAGED_KEY = "codex-remote-mobile-auto-managed-v1";
   const AUTO_SUPPRESSED_KEY = "codex-remote-mobile-auto-suppressed-v1";
-  const VERSION = 36;
+  const REMOTE_INVENTORY_FILENAME = "remote-project-inventory-v1.json";
+  const REMOTE_INVENTORY_MAX_AGE_MS = 180000;
+  const REMOTE_INVENTORY_PUBLISH_MS = 60000;
+  const REMOTE_INVENTORY_RETRY_MS = 15000;
+  const REMOTE_INVENTORY_TTL_MS = 60000;
+  const VERSION = 38;
   const LOCAL_FOLDER_PATH = Object.freeze({
     closed: "M5.55957 2.14136C6.06503 2.14136 6.55801 2.30207 6.9668 2.59937L7.81836 3.21851C8.04761 3.38513 8.32401 3.47534 8.60742 3.47534H12.1338C13.4545 3.47559 14.5254 4.54621 14.5254 5.86694V11.4666C14.5254 12.7873 13.4545 13.8579 12.1338 13.8582H3.86621C2.54554 13.8579 1.47461 12.7873 1.47461 11.4666V4.53296C1.47486 3.21244 2.54569 2.1416 3.86621 2.14136H5.55957ZM2.52539 7.85718V11.4666C2.52539 12.2074 3.12544 12.8081 3.86621 12.8083H12.1338C12.8746 12.8081 13.4746 12.2074 13.4746 11.4666V7.85718H2.52539ZM3.86621 3.19214C3.12559 3.19238 2.52564 3.79234 2.52539 4.53296V6.8064H13.4746V5.86694C13.4746 5.12611 12.8746 4.52539 12.1338 4.52515H8.60742C8.10203 4.52515 7.60895 4.36534 7.2002 4.06812L6.34863 3.448C6.11937 3.28135 5.84301 3.19214 5.55957 3.19214H3.86621Z",
     open: "M4.75488 2.1416C5.30942 2.14164 5.74594 2.23705 6.11816 2.38965C6.48323 2.53934 6.76728 2.73817 7.00391 2.9043L7.02148 2.91699C7.47057 3.23238 7.8162 3.47463 8.55176 3.47461H11.333C12.7194 3.47484 13.8311 4.61217 13.8311 6L13.875 6.38281H13.8594C14.8729 6.38292 15.5982 7.3629 15.3018 8.33203L14.0068 12.5586C13.7703 13.3297 13.0576 13.8563 12.251 13.8564H3.83984C3.4199 13.8564 3.04144 13.7174 2.73828 13.4883L2.67383 13.4346C1.99907 12.9811 1.55577 12.2065 1.55566 11.3311L0.941406 4.66699C0.941406 3.2792 2.05315 2.1419 3.43945 2.1416H4.75488ZM4.7627 7.42969C4.56039 7.42972 4.3807 7.5625 4.32129 7.75586L3.08594 11.7891C2.96123 12.1965 3.18214 12.6072 3.54883 12.7529C3.63476 12.7768 3.74102 12.7958 3.88184 12.8086H12.251C12.5974 12.8085 12.9033 12.5821 13.0049 12.251L14.2998 8.02539C14.3901 7.72947 14.1688 7.42979 13.8594 7.42969H4.7627ZM3.43945 3.19141C2.64724 3.1917 1.99121 3.84481 1.99121 4.66699L2.49316 10.1201L3.32031 7.44922C3.51452 6.81571 4.10008 6.38284 4.7627 6.38281H12.8252L12.7812 6C12.7812 5.22902 12.2045 4.607 11.4795 4.53223L11.333 4.52441H8.55176C8.05756 4.52442 7.64464 4.44062 7.2666 4.2793C6.91453 4.12896 6.6274 3.92345 6.41797 3.77637L6.40039 3.76367C6.16212 3.59639 5.96404 3.46151 5.71973 3.36133C5.54113 3.28812 5.32754 3.2289 5.05176 3.2041L4.75488 3.19141H3.43945Z",
@@ -28,6 +33,8 @@
     autoRegistrationFailures: new Map(),
     autoRegistrationPending: null,
     autoRegistrationTimer: null,
+    autoReconciliationPending: false,
+    autoReconciliationTimer: null,
     collapsed: new Set(),
     contextPoint: null,
     contextProjectKey: null,
@@ -39,11 +46,22 @@
     inventoryHydrationStarted: false,
     inventoryHydrationTruncated: false,
     lastAction: null,
+    localFetchFromHost: null,
+    localInventoryPublishedAt: 0,
+    localInventoryPublisherError: null,
+    localInventoryPublisherPending: false,
+    localInventoryPublisherTimer: null,
+    localRuntime: null,
     nativeContainer: null,
     originalDisplay: "",
     observer: null,
     panel: null,
     pendingNewThreads: new Set(),
+    projectService: null,
+    queryClient: null,
+    remoteProjectInventories: new Map(),
+    remoteRuntimeCache: new Map(),
+    remoteRuntimeScannedAt: 0,
     reorderPending: false,
     scheduledFrame: null,
     view: "mobile",
@@ -73,14 +91,29 @@
 
   function projectIdentity(project) {
     return project?.hostId && project.hostId !== "local" && project.cwd
-      ? `${project.hostId}::${normalizePath(project.cwd)}`
+      ? `${normalizeHostId(project.hostId)}::${normalizePath(project.cwd)}`
       : null;
+  }
+
+  function projectIdentityAliases(project) {
+    const identity = projectIdentity(project);
+    if (!identity) return [];
+    const legacyPath = project.cwd.replace(/[\\/]+$/u, "").toLocaleLowerCase();
+    const normalizedHostId = normalizeHostId(project.hostId);
+    const shortHostId = normalizedHostId.replace(/^remote-control:/u, "");
+    return [...new Set([
+      identity,
+      `${normalizedHostId}::${legacyPath}`,
+      `${shortHostId}::${normalizePath(project.cwd)}`,
+      `${shortHostId}::${legacyPath}`,
+    ])];
   }
 
   function setRecord(storageKey, project, enabled) {
     const identity = projectIdentity(project);
     if (!identity) return false;
     const records = readRecords(storageKey);
+    for (const alias of projectIdentityAliases(project)) delete records[alias];
     if (enabled) {
       records[identity] = {
         cwd: project.cwd,
@@ -96,8 +129,8 @@
   }
 
   function hasRecord(storageKey, project) {
-    const identity = projectIdentity(project);
-    return Boolean(identity && readRecords(storageKey)[identity]);
+    const records = readRecords(storageKey);
+    return projectIdentityAliases(project).some((identity) => Boolean(records[identity]));
   }
 
   function getFiber(element) {
@@ -147,7 +180,7 @@
         }
       }
     }
-    const hostId = row.getAttribute("data-app-action-sidebar-thread-host-id") || "local";
+    const hostId = normalizeHostId(row.getAttribute("data-app-action-sidebar-thread-host-id") || "local");
     const hostContainer = row.closest('[role="listitem"][aria-label]');
     const hostDisplayName = hostContainer && !hostContainer.hasAttribute("data-sidebar-project-kind")
       ? hostContainer.getAttribute("aria-label") || null
@@ -172,11 +205,17 @@
     const availability = new Map();
     const availabilitySeenAt = new Map();
     const authoritativeNames = new Map();
+    const registeredProjects = new Map();
+    const runtimes = new Map();
     const seen = new WeakSet();
     let budget = 24000;
     const scan = (value, depth = 0) => {
       if (!value || typeof value !== "object" || depth > 9 || seen.has(value) || value.nodeType || budget-- <= 0) return;
       seen.add(value);
+      if (typeof value.queryClient?.invalidateQueries === "function") state.queryClient = value.queryClient;
+      if (typeof value.invalidateQueries === "function" && typeof value.getQueryData === "function") state.queryClient = value;
+      if (typeof value.projects?.removeRemote === "function") state.projectService = value.projects;
+      if (typeof value.removeRemote === "function" && typeof value.createRemote === "function") state.projectService = value;
       const connectionHost = typeof value.host === "string" ? value.host : null;
       const hostId = value.hostId ?? value.host_id ?? value.environmentId ?? value.environment_id ?? connectionHost;
       const displayName = value.displayName ?? value.display_name ?? value.hostDisplayName ?? (connectionHost ? value.name : null);
@@ -199,6 +238,44 @@
             availability.set(normalizedHostId, explicitAvailability);
             availabilitySeenAt.set(normalizedHostId, seenAt);
           }
+        }
+      }
+      if (typeof hostId === "string" && /^(?:remote-control:)?env_/iu.test(hostId)) {
+        const normalizedHostId = hostId.startsWith("remote-control:") ? hostId : `remote-control:${hostId}`;
+        const requestClient = typeof value.sendRequest === "function" ? value : value.requestClient;
+        const fetchFromHost = typeof value.fetchFromHost === "function" ? value.fetchFromHost.bind(value) : null;
+        if (typeof requestClient?.sendRequest === "function") {
+          const previousRuntime = runtimes.get(normalizedHostId);
+          runtimes.set(normalizedHostId, {
+            fetchFromHost: fetchFromHost ?? previousRuntime?.fetchFromHost ?? null,
+            requestClient,
+          });
+          availability.set(normalizedHostId, true);
+        }
+      }
+      if (hostId === "local" && typeof value.fetchFromHost === "function") {
+        const localRequestClient = typeof value.sendRequest === "function" ? value : value.requestClient;
+        state.localFetchFromHost = value.fetchFromHost.bind(value);
+        if (typeof localRequestClient?.sendRequest === "function") {
+          state.localRuntime = { fetchFromHost: state.localFetchFromHost, requestClient: localRequestClient };
+        }
+      }
+      if (Array.isArray(value.remoteProjects)) {
+        for (const project of value.remoteProjects) {
+          const projectHostId = typeof project?.hostId === "string" && project.hostId
+            ? (project.hostId.startsWith("remote-control:") ? project.hostId : `remote-control:${project.hostId}`)
+            : null;
+          const projectId = typeof project?.id === "string" && project.id ? project.id : null;
+          const cwd = typeof project?.remotePath === "string" && project.remotePath.trim() ? project.remotePath : null;
+          if (!projectHostId || !projectId || !cwd) continue;
+          registeredProjects.set(projectId, {
+            cwd,
+            hostDisplayName: null,
+            hostId: projectHostId,
+            item: null,
+            label: typeof project.label === "string" && project.label.trim() ? project.label.trim() : projectName(cwd),
+            projectId,
+          });
         }
       }
       for (const [key, item] of Object.entries(value).slice(0, 200)) {
@@ -231,11 +308,85 @@
         }
       }
     }
-    return { names, availability };
+    return { names, availability, registeredProjects, runtimes };
+  }
+
+  function discoverRemoteRuntimes(fallback) {
+    const now = Date.now();
+    if (now - state.remoteRuntimeScannedAt < 30000 && state.remoteRuntimeCache.size) return state.remoteRuntimeCache;
+    const runtimes = new Map(fallback);
+    const anchor = document.querySelector(ROW_SELECTOR)
+      ?? document.querySelector('[data-sidebar-project-kind][role="listitem"]');
+    let root = anchor ? getFiber(anchor) : null;
+    while (root?.return) root = root.return;
+    const fibers = [];
+    const seenFibers = new Set();
+    const queue = root ? [root] : [];
+    while (queue.length && fibers.length < 20000) {
+      const fiber = queue.shift();
+      if (!fiber || seenFibers.has(fiber)) continue;
+      seenFibers.add(fiber);
+      fibers.push(fiber);
+      if (fiber.child) queue.push(fiber.child);
+      if (fiber.sibling) queue.push(fiber.sibling);
+    }
+    const seen = new WeakSet();
+    let budget = 220000;
+    const scan = (value, depth = 0) => {
+      if (!value || typeof value !== "object" || value.nodeType || value === globalThis || seen.has(value) || depth > 14 || budget-- <= 0) return;
+      seen.add(value);
+      if (typeof value.queryClient?.invalidateQueries === "function") state.queryClient = value.queryClient;
+      if (typeof value.invalidateQueries === "function" && typeof value.getQueryData === "function") state.queryClient = value;
+      if (typeof value.projects?.removeRemote === "function") state.projectService = value.projects;
+      if (typeof value.removeRemote === "function" && typeof value.createRemote === "function") state.projectService = value;
+      let keys;
+      try { keys = Object.keys(value); } catch { return; }
+      try {
+        const hostId = typeof value.hostId === "string" ? value.hostId : null;
+        const requestClient = typeof value.sendRequest === "function" ? value : value.requestClient;
+        const fetchFromHost = typeof value.fetchFromHost === "function" ? value.fetchFromHost.bind(value) : null;
+        if (hostId && /^(?:remote-control:)?env_/iu.test(hostId) && typeof requestClient?.sendRequest === "function") {
+          const normalizedHostId = hostId.startsWith("remote-control:") ? hostId : `remote-control:${hostId}`;
+          const previousRuntime = runtimes.get(normalizedHostId);
+          runtimes.set(normalizedHostId, {
+            fetchFromHost: fetchFromHost ?? previousRuntime?.fetchFromHost ?? null,
+            requestClient,
+          });
+        }
+        if (hostId === "local" && fetchFromHost) {
+          const localRequestClient = typeof value.sendRequest === "function" ? value : value.requestClient;
+          state.localFetchFromHost = fetchFromHost;
+          if (typeof localRequestClient?.sendRequest === "function") state.localRuntime = { fetchFromHost, requestClient: localRequestClient };
+        }
+      } catch {}
+      if (Array.isArray(value)) {
+        for (const item of value.slice(0, 200)) scan(item, depth + 1);
+        return;
+      }
+      for (const key of keys.slice(0, 400)) {
+        if (["alternate", "child", "return", "sibling", "stateNode", "_owner"].includes(key)) continue;
+        try { scan(value[key], depth + 1); } catch {}
+      }
+    };
+    for (const fiber of fibers) {
+      scan(fiber.memoizedProps);
+      scan(fiber.memoizedState);
+      scan(fiber.updateQueue);
+      if (budget <= 0) break;
+    }
+    state.remoteRuntimeCache = runtimes;
+    state.remoteRuntimeScannedAt = now;
+    return runtimes;
   }
 
   function normalizePath(value) {
-    return value.replace(/[\\/]+$/u, "").toLocaleLowerCase();
+    return (canonicalRemotePath(value) ?? value).replace(/\\/gu, "/").replace(/\/+$/u, "").toLocaleLowerCase();
+  }
+
+  function normalizeHostId(hostId) {
+    return typeof hostId === "string" && /^(?:remote-control:)?env_/iu.test(hostId)
+      ? (hostId.startsWith("remote-control:") ? hostId : `remote-control:${hostId}`)
+      : hostId;
   }
 
   function projectName(cwd) {
@@ -246,6 +397,170 @@
 
   function isDatedCodexScratchPath(cwd) {
     return typeof cwd === "string" && /[\\/]Documents[\\/]Codex[\\/]\d{4}-\d{2}-\d{2}[\\/][^\\/]+[\\/]*$/iu.test(cwd);
+  }
+
+  function canonicalRemotePath(cwd) {
+    if (typeof cwd !== "string") return null;
+    const value = cwd.trim().replace(/^\\\\\?\\UNC\\/iu, "\\\\").replace(/^\\\\\?\\/u, "").replace(/[\\/]+$/u, "");
+    return value || null;
+  }
+
+  function isRemoteProjectInventoryPath(cwd) {
+    const value = canonicalRemotePath(cwd);
+    return Boolean(value && (/^[A-Za-z]:[\\/]/u.test(value) || /^\\\\[^\\/]+[\\/][^\\/]+/u.test(value) || /^\//u.test(value)));
+  }
+
+  function inventoryProjects() {
+    const projects = [];
+    for (const [hostId, inventory] of state.remoteProjectInventories) {
+      for (const project of inventory.projects ?? []) {
+        projects.push({ ...project, hostId });
+      }
+    }
+    return projects;
+  }
+
+  function authoritativeInventory(hostId) {
+    const inventory = state.remoteProjectInventories.get(hostId);
+    return inventory?.fetchedAt ? inventory : null;
+  }
+
+  function inventoryContainsProject(inventory, project) {
+    if (!inventory || !project?.cwd) return false;
+    const path = normalizePath(project.cwd);
+    return inventory.projects.some((candidate) => normalizePath(candidate.cwd) === path);
+  }
+
+  function findCodexHome(value) {
+    const candidates = [];
+    const seen = new WeakSet();
+    const scan = (item, depth = 0) => {
+      if (typeof item === "string") {
+        const trimmed = item.trim();
+        if (/[\\/]\.codex$/iu.test(trimmed)) candidates.unshift(trimmed);
+        else if (/[\\/]\.codex[\\/]config\.toml$/iu.test(trimmed)) candidates.push(trimmed.replace(/[\\/]config\.toml$/iu, ""));
+        return;
+      }
+      if (!item || typeof item !== "object" || depth > 10 || seen.has(item)) return;
+      seen.add(item);
+      for (const child of Array.isArray(item) ? item : Object.values(item)) scan(child, depth + 1);
+    };
+    scan(value);
+    return candidates.find((candidate) => /^(?:[A-Za-z]:[\\/]|\/)/u.test(candidate)) ?? null;
+  }
+
+  function inventoryPath(codexHome) {
+    const separator = codexHome.includes("\\") ? "\\" : "/";
+    return `${codexHome.replace(/[\\/]+$/u, "")}${separator}${REMOTE_INVENTORY_FILENAME}`;
+  }
+
+  function encodeText(value) {
+    const bytes = new TextEncoder().encode(value);
+    let binary = "";
+    for (let offset = 0; offset < bytes.length; offset += 8192) {
+      binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
+    }
+    return btoa(binary);
+  }
+
+  function decodeText(value) {
+    const binary = atob(value);
+    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    return new TextDecoder().decode(bytes);
+  }
+
+  function parseRemoteProjectInventory(result) {
+    if (typeof result?.dataBase64 !== "string") throw new Error("Remote project inventory did not contain file data");
+    const value = JSON.parse(decodeText(result.dataBase64));
+    const generatedAt = Date.parse(value?.generatedAt);
+    if (value?.schemaVersion !== 1 || !Number.isFinite(generatedAt)) throw new Error("Remote project inventory has an unsupported format");
+    if (Date.now() - generatedAt > REMOTE_INVENTORY_MAX_AGE_MS) throw new Error("Remote project inventory is stale");
+    const entries = Array.isArray(value.projects) ? value.projects : [];
+    const projects = new Map();
+    for (const metadata of entries) {
+      if (!metadata || typeof metadata !== "object" || !Array.isArray(metadata.rootPaths)) continue;
+      const cwd = canonicalRemotePath(metadata.rootPaths[0]);
+      if (!isRemoteProjectInventoryPath(cwd)) continue;
+      const name = typeof metadata.name === "string" && metadata.name.trim()
+        ? metadata.name.trim()
+        : projectName(cwd);
+      projects.set(normalizePath(cwd), { cwd, name, source: "host-projects" });
+    }
+    return [...projects.values()].sort((left, right) => left.name.localeCompare(right.name));
+  }
+
+  function scheduleRemoteProjectInventory(runtimes) {
+    const now = Date.now();
+    for (const [hostId, runtime] of runtimes) {
+      const current = state.remoteProjectInventories.get(hostId) ?? { projects: [] };
+      if (current.pending || current.retryAt > now || current.fetchedAt && now - current.fetchedAt < REMOTE_INVENTORY_TTL_MS) continue;
+      if (typeof runtime?.requestClient?.sendRequest !== "function") continue;
+      state.remoteProjectInventories.set(hostId, { ...current, pending: true });
+      runtime.requestClient.sendRequest("config/read", { cwd: null, includeLayers: true }).then((configResult) => {
+        const codexHome = findCodexHome(configResult);
+        if (!codexHome) throw new Error("Remote Codex home was not reported");
+        return runtime.requestClient.sendRequest("fs/readFile", { path: inventoryPath(codexHome) });
+      }).then((result) => {
+        state.remoteProjectInventories.set(hostId, {
+          error: null,
+          fetchedAt: Date.now(),
+          pending: false,
+          projects: parseRemoteProjectInventory(result),
+          retryAt: 0,
+        });
+      }).catch((error) => {
+        state.remoteProjectInventories.set(hostId, {
+          error: error?.message || String(error),
+          fetchedAt: 0,
+          pending: false,
+          projects: [],
+          retryAt: Date.now() + REMOTE_INVENTORY_RETRY_MS,
+        });
+      }).finally(schedule);
+    }
+  }
+
+  function scheduleLocalProjectInventoryPublication() {
+    const runtime = state.localRuntime;
+    const now = Date.now();
+    if (!runtime || state.localInventoryPublisherPending || now - state.localInventoryPublishedAt < REMOTE_INVENTORY_PUBLISH_MS) return;
+    state.localInventoryPublisherPending = true;
+    Promise.all([
+      runtime.fetchFromHost("get-global-state", { params: { key: "local-projects" } }),
+      runtime.requestClient.sendRequest("config/read", { cwd: null, includeLayers: true }),
+    ]).then(([projectsResult, configResult]) => {
+      const codexHome = findCodexHome(configResult);
+      if (!codexHome) throw new Error("Local Codex home was not reported");
+      const values = projectsResult?.value && typeof projectsResult.value === "object" && !Array.isArray(projectsResult.value)
+        ? Object.values(projectsResult.value)
+        : [];
+      const projects = values.flatMap((project) => {
+        if (!project || typeof project !== "object" || !Array.isArray(project.rootPaths) || !project.rootPaths.length) return [];
+        const rootPaths = project.rootPaths.map(canonicalRemotePath).filter(Boolean);
+        if (!rootPaths.length) return [];
+        return [{
+          id: typeof project.id === "string" ? project.id : null,
+          name: typeof project.name === "string" && project.name.trim() ? project.name.trim() : projectName(rootPaths[0]),
+          rootPaths,
+        }];
+      });
+      const payload = JSON.stringify({ generatedAt: new Date().toISOString(), projects, schemaVersion: 1 });
+      return runtime.requestClient.sendRequest("fs/writeFile", { dataBase64: encodeText(payload), path: inventoryPath(codexHome) });
+    }).then(() => {
+      state.localInventoryPublishedAt = Date.now();
+      state.localInventoryPublisherError = null;
+    }).catch((error) => {
+      state.localInventoryPublisherError = error?.message || String(error);
+    }).finally(() => {
+      state.localInventoryPublisherPending = false;
+      if (state.localInventoryPublisherTimer === null) {
+        state.localInventoryPublisherTimer = setTimeout(() => {
+          state.localInventoryPublisherTimer = null;
+          schedule();
+        }, REMOTE_INVENTORY_PUBLISH_MS);
+      }
+      schedule();
+    });
   }
 
   function isRecentTask(task) {
@@ -274,7 +589,7 @@
       if (!group || !["local", "remote"].includes(group.projectKind)) continue;
       if (typeof group.projectId !== "string" || !group.projectId) continue;
       const hostId = group.projectKind === "remote" && typeof group.hostId === "string" && group.hostId
-        ? group.hostId
+        ? normalizeHostId(group.hostId)
         : "local";
       const label = typeof group.label === "string" && group.label.trim()
         ? group.label.trim()
@@ -291,10 +606,16 @@
   function collectModel() {
     const rows = [...document.querySelectorAll(ROW_SELECTOR)].filter((row) => !row.closest(`#${PANEL_ID}`));
     const tasks = rows.map(metadataFromRow).filter((task) => task.conversationKey);
-    const nativeProjects = [...document.querySelectorAll('[data-sidebar-project-kind][role="listitem"]')]
+    const domNativeProjects = [...document.querySelectorAll('[data-sidebar-project-kind][role="listitem"]')]
       .map(metadataFromNativeProject)
       .filter(Boolean);
     const hostDiscovery = discoverHostNames();
+    const nativeProjects = [...domNativeProjects];
+    const nativeProjectIds = new Set(nativeProjects.map((project) => project.projectId));
+    for (const project of hostDiscovery.registeredProjects.values()) {
+      if (!nativeProjectIds.has(project.projectId)) nativeProjects.push(project);
+    }
+    const remoteInventoryProjects = inventoryProjects();
     const names = hostDiscovery.names;
     const availability = hostDiscovery.availability;
     for (const task of tasks) {
@@ -306,12 +627,12 @@
     for (const project of nativeProjects) {
       if (project.hostDisplayName && project.hostId !== "local") names.set(project.hostId, project.hostDisplayName);
     }
-    const remoteHostIds = [...new Set([...tasks, ...nativeProjects].map((item) => item.hostId).filter((hostId) => hostId !== "local"))];
+    const remoteHostIds = [...new Set([...tasks, ...nativeProjects, ...remoteInventoryProjects].map((item) => item.hostId).filter((hostId) => hostId !== "local"))];
     const singleRemoteHostId = remoteHostIds.length === 1 ? remoteHostIds[0] : null;
 
     const hosts = [];
     const seenHosts = new Set();
-    for (const item of [...tasks, ...nativeProjects]) {
+    for (const item of [...tasks, ...nativeProjects, ...remoteInventoryProjects]) {
       if (!seenHosts.has(item.hostId)) {
         seenHosts.add(item.hostId);
         hosts.push({
@@ -341,6 +662,25 @@
       };
       groupsByKey.set(key, group);
       if (project.cwd) nativeByHostPath.set(`${project.hostId}::${normalizePath(project.cwd)}`, group);
+      groups.push(group);
+    }
+    for (const project of remoteInventoryProjects) {
+      const pathKey = `${project.hostId}::${normalizePath(project.cwd)}`;
+      if (nativeByHostPath.has(pathKey)) continue;
+      const key = `${project.hostId}::cwd:${normalizePath(project.cwd)}`;
+      if (groupsByKey.has(key)) continue;
+      const group = {
+        cwd: project.cwd,
+        hostId: project.hostId,
+        hostName: hostName(project.hostId, names, singleRemoteHostId),
+        key,
+        kind: "project",
+        name: project.name,
+        projectId: null,
+        source: project.source,
+        tasks: [],
+      };
+      groupsByKey.set(key, group);
       groups.push(group);
     }
     for (const task of tasks) {
@@ -373,6 +713,7 @@
       projects: groups.filter((group) => group.kind === "project"),
       recents: groups.filter((group) => group.kind === "recent"),
       nativeProjectItems: nativeProjects.map((project) => project.item),
+      remoteRuntimes: discoverRemoteRuntimes(hostDiscovery.runtimes),
       rows,
       tasks,
     };
@@ -389,6 +730,7 @@
       #${PANEL_ID} .crmp-mode[aria-pressed="true"] { color:var(--color-text,#eee); background:var(--color-background-primary-hover,rgba(127,127,127,.15)); }
       #${PANEL_ID} .crmp-filters { display:flex; flex-wrap:wrap; gap:6px; padding:2px 0 6px; }
       #${PANEL_ID} .crmp-auto-controls { display:flex; align-items:center; gap:6px; padding:0 0 4px; }
+      #${PANEL_ID} .crmp-inventory-status { padding:2px 4px 6px; color:var(--color-text-tertiary,#888); font-size:11px; line-height:1.35; }
       #${PANEL_ID} .crmp-auto-control { border:1px solid var(--color-border-default,#555); border-radius:6px; padding:3px 7px; color:var(--color-text-tertiary,#888); background:transparent; font-size:10px; cursor:pointer; }
       #${PANEL_ID} .crmp-auto-control[aria-pressed="true"] { color:var(--color-text,#eee); background:var(--color-background-primary-hover,rgba(127,127,127,.15)); }
       #${PANEL_ID} .crmp-auto-control:disabled { cursor:not-allowed; opacity:.5; }
@@ -588,7 +930,7 @@
     return [...document.querySelectorAll(ROW_SELECTOR)].find((row) => {
       if (row.closest(`#${PANEL_ID}`)) return false;
       return row.getAttribute("data-app-action-sidebar-thread-id") === reference.conversationKey
-        && (row.getAttribute("data-app-action-sidebar-thread-host-id") || "local") === reference.hostId;
+        && normalizeHostId(row.getAttribute("data-app-action-sidebar-thread-host-id") || "local") === reference.hostId;
     }) ?? null;
   }
 
@@ -980,22 +1322,86 @@
   }
 
   function autoRegistrationCandidate(model) {
-    if (!readBoolean(AUTO_ENABLED_KEY) || state.autoRegistrationPending || remoteProjectDialog()) return null;
+    if (!readBoolean(AUTO_ENABLED_KEY) || state.autoRegistrationPending || state.autoReconciliationPending || remoteProjectDialog()) return null;
     const now = Date.now();
     return model.projects.find((project) => {
       const identity = projectIdentity(project);
       const retryAfter = identity ? state.autoRegistrationFailures.get(identity) : null;
       const host = model.hosts.find((item) => item.id === project.hostId);
+      const inventory = authoritativeInventory(project.hostId);
       return project.hostId !== "local"
         && host?.availabilityKnown === true
         && host.available === true
+        && inventoryContainsProject(inventory, project)
         && !project.projectId
         && Boolean(project.cwd)
-        && project.tasks.length > 0
+        && (project.tasks.length > 0 || project.source === "host-projects")
         && !hasRecord(AUTO_MANAGED_KEY, project)
         && !hasRecord(AUTO_SUPPRESSED_KEY, project)
         && (!retryAfter || retryAfter <= now);
     }) ?? null;
+  }
+
+  async function setGlobalStateValue(key, value) {
+    if (typeof state.localFetchFromHost !== "function") throw new Error("Local project-state bridge is unavailable");
+    const result = await state.localFetchFromHost("set-global-state", { params: { key, value } });
+    if (result?.success === false) throw new Error(`Failed to update ${key}`);
+  }
+
+  function staleMirroredProjects(model) {
+    return model.projects.filter((project) => {
+      if (project.hostId === "local" || !project.projectId) return false;
+      const inventory = authoritativeInventory(project.hostId);
+      return inventory && !inventoryContainsProject(inventory, project);
+    });
+  }
+
+  async function reconcileAutoRegisteredProjects() {
+    if (state.autoReconciliationPending || state.autoRegistrationPending || typeof state.localFetchFromHost !== "function") return { removed: 0 };
+    state.autoReconciliationPending = true;
+    try {
+      const model = collectModel();
+      const staleProjects = staleMirroredProjects(model);
+      const staleIds = new Set(staleProjects.map((project) => project.projectId));
+      if (staleIds.size) {
+        const remoteProjectsResult = await state.localFetchFromHost("get-global-state", { params: { key: "remote-projects" } });
+        const remoteProjects = Array.isArray(remoteProjectsResult?.value) ? remoteProjectsResult.value : [];
+        await setGlobalStateValue("remote-projects", remoteProjects.filter((project) => !staleIds.has(project?.id)));
+        for (const key of ["project-order", "pinned-project-ids"]) {
+          const result = await state.localFetchFromHost("get-global-state", { params: { key } });
+          if (Array.isArray(result?.value)) await setGlobalStateValue(key, result.value.filter((id) => !staleIds.has(id)));
+        }
+        const selectedResult = await state.localFetchFromHost("get-global-state", { params: { key: "selected-project" } });
+        if (selectedResult?.value?.type === "remote" && staleIds.has(selectedResult.value.projectId)) {
+          await setGlobalStateValue("selected-project", null);
+        }
+        await state.queryClient?.invalidateQueries?.();
+      }
+
+      const managed = readRecords(AUTO_MANAGED_KEY);
+      for (const [identity, record] of Object.entries(managed)) {
+        const inventory = authoritativeInventory(normalizeHostId(record.hostId));
+        if (inventory && !inventoryContainsProject(inventory, record)) delete managed[identity];
+      }
+      writeRecords(AUTO_MANAGED_KEY, managed);
+      state.lastAction = { commandId: "reconcile-auto-projects", found: true, invoked: true, removed: staleIds.size };
+      return { removed: staleIds.size };
+    } catch (error) {
+      state.lastAction = { commandId: "reconcile-auto-projects", error: error?.message || String(error), found: true, invoked: false };
+      return { error: error?.message || String(error), removed: 0 };
+    } finally {
+      state.autoReconciliationPending = false;
+      schedule();
+    }
+  }
+
+  function scheduleAutoReconciliation(model) {
+    if (!readBoolean(AUTO_ENABLED_KEY) || state.autoReconciliationTimer !== null || state.autoReconciliationPending) return;
+    if (!staleMirroredProjects(model).length) return;
+    state.autoReconciliationTimer = setTimeout(() => {
+      state.autoReconciliationTimer = null;
+      void reconcileAutoRegisteredProjects();
+    }, 500);
   }
 
   async function autoRegisterProject(project) {
@@ -1064,22 +1470,42 @@
 
   async function removeAllAutoRegistered() {
     const managed = readRecords(AUTO_MANAGED_KEY);
-    const projects = collectModel().projects.filter((project) => {
-      const identity = projectIdentity(project);
-      return project.hostId !== "local" && project.projectId && Boolean(identity && managed[identity]);
-    });
     let removed = 0;
-    for (const project of projects) {
-      if (invokeNativeProjectCommand(project, "remove-project")) removed += 1;
-      await new Promise((resolve) => setTimeout(resolve, 250));
+    if (typeof state.localFetchFromHost === "function" && Object.keys(managed).length) {
+      const result = await state.localFetchFromHost("get-global-state", { params: { key: "remote-projects" } });
+      const remoteProjects = Array.isArray(result?.value) ? result.value : [];
+      const removedIds = new Set();
+      const kept = remoteProjects.filter((project) => {
+        const candidate = { cwd: project?.remotePath, hostId: normalizeHostId(project?.hostId), name: project?.label };
+        const remove = hasRecord(AUTO_MANAGED_KEY, candidate);
+        if (remove && typeof project?.id === "string") removedIds.add(project.id);
+        return !remove;
+      });
+      if (removedIds.size) {
+        await setGlobalStateValue("remote-projects", kept);
+        for (const key of ["project-order", "pinned-project-ids"]) {
+          const current = await state.localFetchFromHost("get-global-state", { params: { key } });
+          if (Array.isArray(current?.value)) await setGlobalStateValue(key, current.value.filter((id) => !removedIds.has(id)));
+        }
+        const selected = await state.localFetchFromHost("get-global-state", { params: { key: "selected-project" } });
+        if (selected?.value?.type === "remote" && removedIds.has(selected.value.projectId)) await setGlobalStateValue("selected-project", null);
+        await state.queryClient?.invalidateQueries?.();
+        removed = removedIds.size;
+      }
+    } else {
+      const projects = collectModel().projects.filter((project) => {
+        return project.hostId !== "local" && project.projectId && hasRecord(AUTO_MANAGED_KEY, project);
+      });
+      for (const project of projects) {
+        if (invokeNativeProjectCommand(project, "remove-project")) removed += 1;
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
     }
-    const remainingManaged = readRecords(AUTO_MANAGED_KEY);
-    for (const [identity, record] of Object.entries(remainingManaged)) {
+    for (const record of Object.values(managed)) {
       const placeholder = { cwd: record.cwd, hostId: record.hostId, name: record.name };
       setRecord(AUTO_SUPPRESSED_KEY, placeholder, true);
-      delete remainingManaged[identity];
     }
-    writeRecords(AUTO_MANAGED_KEY, remainingManaged);
+    writeRecords(AUTO_MANAGED_KEY, {});
     state.lastAction = { commandId: "remove-all-auto-registered", found: true, invoked: true, removed };
     render();
     return { removed };
@@ -1403,7 +1829,7 @@
     const autoEnabled = readBoolean(AUTO_ENABLED_KEY);
     const autoToggle = button("crmp-auto-control", autoEnabled ? "Auto-register: on" : "Auto-register: off");
     autoToggle.setAttribute("aria-pressed", String(autoEnabled));
-    autoToggle.title = "Locally remember remote projects after their first loaded chat";
+    autoToggle.title = "Mirror active projects published by connected injected devices";
     autoToggle.addEventListener("click", () => setAutoRegistration(!autoEnabled));
     autoControls.appendChild(autoToggle);
     const managedCount = Object.keys(readRecords(AUTO_MANAGED_KEY)).length;
@@ -1419,6 +1845,13 @@
     });
     autoControls.appendChild(removeManaged);
     fragment.appendChild(autoControls);
+    const unavailableInventoryHosts = model.hosts.filter((host) => host.id !== "local" && state.remoteProjectInventories.get(host.id)?.error);
+    if (unavailableInventoryHosts.length) {
+      const status = document.createElement("div");
+      status.className = "crmp-inventory-status";
+      status.textContent = `Project sync paused: waiting for a current v38 inventory from ${unavailableInventoryHosts.map((host) => host.name).join(", ")}.`;
+      fragment.appendChild(status);
+    }
     const panelTitle = document.createElement("div");
     panelTitle.className = "crmp-title";
     panelTitle.textContent = "Projects";
@@ -1446,6 +1879,9 @@
     if (contextProject) document.body.appendChild(projectContextMenu(contextProject));
     positionProjectCard();
     positionProjectContextMenu();
+    scheduleLocalProjectInventoryPublication();
+    scheduleRemoteProjectInventory(model.remoteRuntimes);
+    scheduleAutoReconciliation(model);
     scheduleAutoRegistration(model);
     scheduleNativeInventoryHydration();
     return probe();
@@ -1486,6 +1922,7 @@
       autoRegistrationFailures: state.autoRegistrationFailures.size,
       autoRegistrationEnabled: readBoolean(AUTO_ENABLED_KEY),
       autoRegistrationPending: state.autoRegistrationPending,
+      autoReconciliationPending: state.autoReconciliationPending,
       autoSuppressedProjects: Object.keys(readRecords(AUTO_SUPPRESSED_KEY)).length,
       filter: state.filter,
       hosts: model.hosts.length,
@@ -1493,7 +1930,17 @@
       inventoryHydrationPending: state.inventoryHydrationPending,
       inventoryHydrationRounds: state.inventoryHydrationRounds,
       inventoryHydrationTruncated: state.inventoryHydrationTruncated,
+      hostInventoryErrors: [...state.remoteProjectInventories.values()].filter((inventory) => inventory.error).length,
+      hostInventoryPending: [...state.remoteProjectInventories.values()].filter((inventory) => inventory.pending).length,
+      hostInventoryProjects: [...state.remoteProjectInventories.values()].reduce((count, inventory) => count + (inventory.projects?.length ?? 0), 0),
       projects: model.projects.length,
+      localInventoryPublished: state.localInventoryPublishedAt > 0,
+      localInventoryPublisherError: state.localInventoryPublisherError,
+      localInventoryPublisherPending: state.localInventoryPublisherPending,
+      localStateBridgeAvailable: typeof state.localFetchFromHost === "function",
+      projectServiceAvailable: typeof state.projectService?.removeRemote === "function",
+      queryClientAvailable: typeof state.queryClient?.invalidateQueries === "function",
+      staleMirroredProjects: staleMirroredProjects(model).length,
       emptyProjects: model.projects.filter((project) => project.tasks.length === 0).length,
       recentGroups: model.recents.length,
       lastAction: state.lastAction,
@@ -1506,7 +1953,7 @@
       remoteProjectRegistrationAvailable: Boolean(nativeNavigationDispatcher()),
       remoteProjectRemoveActions: model.projects.filter((project) => project.hostId !== "local" && project.projectId && nativeProjectCommands(project).some((command) => command?.id === "remove-project" && command.enabled !== false)).length,
       remoteProjectsWithId: model.projects.filter((project) => project.hostId !== "local" && project.projectId).length,
-      unregisteredRemoteProjects: model.projects.filter((project) => project.hostId !== "local" && !project.projectId && project.tasks.length > 0).length,
+      unregisteredRemoteProjects: model.projects.filter((project) => project.hostId !== "local" && !project.projectId && Boolean(project.cwd)).length,
       tasks: model.tasks.length,
       unreadTasks: model.tasks.filter((task) => task.unread).length,
       version: VERSION,
@@ -1566,6 +2013,8 @@
     state.scheduledFrame = null;
     if (state.autoRegistrationTimer !== null) clearTimeout(state.autoRegistrationTimer);
     state.autoRegistrationTimer = null;
+    if (state.localInventoryPublisherTimer !== null) clearTimeout(state.localInventoryPublisherTimer);
+    state.localInventoryPublisherTimer = null;
     if (state.nativeContainer?.isConnected) state.nativeContainer.style.display = state.originalDisplay;
     state.nativeContainer = null;
     state.panel?.remove();
@@ -1576,7 +2025,7 @@
     return probe();
   }
 
-  const api = Object.freeze({ install, probe, removeAllAutoRegistered, setAutoRegistration, setFilter, setView, uninstall, version: VERSION });
+  const api = Object.freeze({ install, probe, reconcileAutoRegisteredProjects, removeAllAutoRegistered, setAutoRegistration, setFilter, setView, uninstall, version: VERSION });
   Object.defineProperty(globalThis, API_SLOT, { configurable: true, enumerable: false, value: api });
   return install();
 })();

@@ -2,16 +2,19 @@
 
 Mobile Projects mirrors the native task-state indicators: a spinner while a task is working and a blue dot after it finishes until that task is viewed.
 
-In Mobile Projects, **Auto-register: on/off** locally enables or pauses automatic remote-project registration. **Remove auto projects (N)** removes only projects created by that automation—never chats or folders—and suppresses immediate recreation; it stays visible but disabled at `(0)`. Right-click a suppressed project and choose **Allow auto-registration** to permit it again.
+In Mobile Projects, **Auto-register: on/off** locally enables or pauses remote-project mirroring. **Remove auto projects (N)** removes only projects created by that automation—never chats or folders—and suppresses immediate recreation; it stays visible but disabled at `(0)`. Right-click a suppressed project and choose **Allow auto-registration** to permit it again.
 
 macOS already exposes native ChatGPT remote connections. This package adds the optional Mobile projects view.
 
-Renderer version 36 preserves the original folder states and native-backed drag
-ordering, automatically selects the complete connection inventory, expands all
-native **Show more** pages, and registers every remote project path the host
-exposes. Registered projects remain visible when they have no current chat. A
-folder never exposed by Remote as a saved project or chat path cannot be
-inferred safely.
+Renderer version 38 preserves the original folder states and native-backed drag
+ordering, selects the complete connection inventory, and expands all native
+**Show more** pages. It also publishes this Mac's active saved projects into its
+Codex home. Controllers running v38 read that fresh inventory through ChatGPT
+Remote, including projects with no chats and excluding archived/removed ones.
+
+Install the injected startup on both the controller and every controlled
+device. Inventories expire after three minutes; missing or stale inventories
+pause automatic project changes instead of falling back to historical paths.
 
 ```zsh
 chmod 755 ./MobileProjectView-macOS-arm64.sh
@@ -20,7 +23,7 @@ chmod 755 ./MobileProjectView-macOS-arm64.sh
 ./MobileProjectView-macOS-arm64.sh enable-auto-registration
 ```
 
-Use `disable-auto-registration` to pause new registrations, or `remove-auto-registrations` to remove only automation-created registrations.
+Use `disable-auto-registration` to pause mirroring, `reconcile-auto-registrations` to synchronize immediately, or `remove-auto-registrations` to remove only automation-created registrations. Synchronization never deletes chats or source folders.
 
 The launcher checks for a verified GitHub release on every start. Manage it with:
 

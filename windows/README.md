@@ -2,7 +2,7 @@
 
 Mobile Projects mirrors the native task-state indicators: a spinner while a task is working and a blue dot after it finishes until that task is viewed.
 
-In Mobile Projects, **Auto-register: on/off** locally enables or pauses automatic remote-project registration. **Remove auto projects (N)** removes only projects created by that automation—never chats or folders—and suppresses immediate recreation; it stays visible but disabled at `(0)`. Right-click a suppressed project and choose **Allow auto-registration** to permit it again.
+In Mobile Projects, **Auto-register: on/off** locally enables or pauses remote-project mirroring. **Remove auto projects (N)** removes only projects created by that automation—never chats or folders—and suppresses immediate recreation; it stays visible but disabled at `(0)`. Right-click a suppressed project and choose **Allow auto-registration** to permit it again.
 
 Run `ChatGPT Remote Enabler.exe`, or open PowerShell here and run:
 
@@ -10,10 +10,11 @@ Run `ChatGPT Remote Enabler.exe`, or open PowerShell here and run:
 .\Enable-ChatGPTRemote.ps1
 ```
 
-The compatibility check runs first. Mobile projects then selects the complete
-native connection inventory in the background, expands every **Show more**
-page, and automatically registers discovered remote project folders. No manual
-native grouping change is required.
+The compatibility check runs first. Mobile projects selects the complete native
+connection inventory in the background and expands every **Show more** page.
+Renderer v38 also publishes this device's active saved projects into its Codex
+home. Controllers running v38 read that fresh inventory through ChatGPT Remote,
+so empty active projects appear while archived/removed projects do not.
 
 The launcher checks for a verified GitHub release on every start. Manage it with:
 
@@ -68,11 +69,12 @@ The task and shortcut both use the signed-in account and built-in Windows
 PowerShell. They retry the stable bridge once when needed. Windows GUI startup
 occurs at interactive sign-in, not before a user session exists.
 
+Install the injected startup on both the controller and every controlled device.
 After Remote first reports **Connected**, projects and chats can take several
-seconds to populate. Renderer v36 automatically switches its hidden source to
-**By connection**, expands all native pages, and registers each discovered
-remote folder. Registered projects remain visible without a current chat. A
-folder never supplied by Remote as a project or chat path cannot be guessed.
+seconds to populate. A fresh host inventory expires after three minutes; when
+it is missing or stale, automatic project changes pause instead of using path
+history. With mirroring enabled, controller registrations absent from the
+host's active list are removed without deleting chats or folders.
 
 Rollback:
 

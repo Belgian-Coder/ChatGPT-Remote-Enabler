@@ -54,17 +54,21 @@ it with `./MobileProjectView-macOS-arm64.sh remove-startup`.
 
 ## Auto-register remote projects
 
-Mobile Projects automatically loads every page exposed by the native connection view and registers a remote project on a controller the first time that controller sees a chat from its folder. Automatic registration is enabled by default on fresh installs and uses ChatGPT's native create/remove commands. Each client stores only its own setting and managed/suppressed project paths in local app storage—there is no shared catalogue, server, NAS dependency, or central storage.
+Renderer v38 mirrors the active saved-project list from each injected device. Every device publishes its own current local-project metadata to `remote-project-inventory-v1.json` inside that device's Codex home. A connected controller reads the fresh file through ChatGPT Remote's existing authenticated filesystem channel, registers active projects (including projects with no chats), and removes controller registrations that the host no longer lists. Historical trusted paths and archived/removed projects are not inventory sources.
+
+Install the injected startup on **the controller and every device being controlled**. Publication and refresh are automatic after sign-in; no shared server, NAS, or network share is required. Inventories older than three minutes are rejected, and a controller makes no automatic project changes when a connected host has not published a current v38 inventory.
 
 - **Auto-register: on/off** enables or pauses automatic registration on this client. Existing registrations stay intact when switched off.
 - **Remove auto projects (N)** removes only registrations created by this automation on this client. It stays visible but disabled at `(0)`, never deletes chats or source folders, and suppresses immediate recreation.
 - **Allow auto-registration** appears in a suppressed project's right-click menu. It clears that local suppression so the project can be registered again.
+- While auto-registration is on, controller registrations for a connected device mirror that device's active inventory; registrations absent from the fresh host inventory are removed without deleting chats or source folders.
 
 Windows PowerShell equivalents:
 
 ```powershell
 .\CodexRemoteMobileProject\MobileProjectView.ps1 -Action EnableAutoRegistration
 .\CodexRemoteMobileProject\MobileProjectView.ps1 -Action DisableAutoRegistration
+.\CodexRemoteMobileProject\MobileProjectView.ps1 -Action ReconcileAutoRegistrations
 .\CodexRemoteMobileProject\MobileProjectView.ps1 -Action RemoveAutoRegistrations
 ```
 
@@ -73,15 +77,15 @@ macOS equivalents:
 ```zsh
 ./MobileProjectView-macOS-arm64.sh enable-auto-registration
 ./MobileProjectView-macOS-arm64.sh disable-auto-registration
+./MobileProjectView-macOS-arm64.sh reconcile-auto-registrations
 ./MobileProjectView-macOS-arm64.sh remove-auto-registrations
 ```
 
-The renderer switches its hidden source inventory to **By connection**, expands
-all native **Show more** pages, and retains every registered project even after
-its last loaded chat disappears. A folder that the Remote protocol has never
-exposed as either a saved project or a chat path cannot be inferred safely.
+The renderer still switches its hidden task inventory to **By connection** and
+expands native **Show more** pages for complete chat discovery. Saved-project
+discovery is separate and comes only from the fresh host-published inventory.
 
-Renderer version 35 also lets you drag projects within one device and chats within their current project. It delegates the saved order to ChatGPT instead of keeping a separate catalogue.
+You can also drag projects within one device and chats within their current project. The saved order is delegated to ChatGPT instead of kept in a separate catalogue.
 
 ## Updates
 

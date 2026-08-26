@@ -20,7 +20,7 @@ function parseArgs(argv) {
   const targetWaitMs = values["target-wait-ms"] === undefined ? 0 : Number(values["target-wait-ms"]);
   if (!Number.isSafeInteger(port) || port < 1024 || port > 65535) throw new Error("Invalid renderer port");
   if (!Number.isSafeInteger(targetWaitMs) || targetWaitMs < 0 || targetWaitMs > 30_000) throw new Error("Invalid target wait");
-  if (!["auto-off", "auto-on", "auto-remove", "enable", "disable", "probe"].includes(values.action)) throw new Error("Invalid action");
+  if (!["auto-off", "auto-on", "auto-reconcile", "auto-remove", "enable", "disable", "probe"].includes(values.action)) throw new Error("Invalid action");
   return { action: values.action, localName: values["local-name"] || "Local", port, singleRemoteName: values["single-remote-name"] || null, targetWaitMs };
 }
 
@@ -83,7 +83,7 @@ async function main() {
         throw new Error("Mobile project view did not return valid proof");
       }
       fs.mkdirSync(path.dirname(STATE_PATH), { recursive: true });
-      fs.writeFileSync(STATE_PATH, `${JSON.stringify({ identifier: persistent.identifier, port: options.port, version: 36 }, null, 2)}\n`, "utf8");
+      fs.writeFileSync(STATE_PATH, `${JSON.stringify({ identifier: persistent.identifier, port: options.port, version: 38 }, null, 2)}\n`, "utf8");
       try { fs.rmSync(LEGACY_STATE_PATH, { force: true }); } catch {}
       process.stdout.write(`${JSON.stringify({ action: options.action, ok: true, report })}\n`);
       return;
@@ -109,6 +109,12 @@ async function main() {
     }
     if (options.action === "auto-remove") {
       const result = await evaluate(client, "globalThis.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__?.removeAllAutoRegistered?.() ?? { removed:0 }", 30000);
+      const report = await evaluate(client, "globalThis.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__?.probe?.() ?? { active:false, version:null }", 5000);
+      process.stdout.write(`${JSON.stringify({ action: options.action, ok: true, report, result })}\n`);
+      return;
+    }
+    if (options.action === "auto-reconcile") {
+      const result = await evaluate(client, "globalThis.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__?.reconcileAutoRegisteredProjects?.() ?? { removed:0 }", 30000);
       const report = await evaluate(client, "globalThis.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__?.probe?.() ?? { active:false, version:null }", 5000);
       process.stdout.write(`${JSON.stringify({ action: options.action, ok: true, report, result })}\n`);
       return;

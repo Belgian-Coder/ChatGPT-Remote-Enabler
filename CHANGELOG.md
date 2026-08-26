@@ -3,7 +3,8 @@
 ## Unreleased
 
 - Added a Windows opt-in HTTP CONNECT agent scoped to ChatGPT Remote-control WebSockets, with Windows trusted-root support and no disabled TLS checks.
-- Added automatic renderer v36 inventory hydration on Windows and macOS: select the native connection source, expand every available page, and register all discovered remote project paths by default on fresh installs.
+- Added renderer v38 active-project mirroring on Windows and macOS. Each injected host publishes a short-lived local inventory that controllers read through the existing Remote channel, including empty active projects while excluding archived projects and historical trusted paths.
+- Added automatic reconciliation, stale-inventory fail-closed behavior, and direct cleanup of automation-created registrations without deleting chats or source folders.
 - Added a non-administrator Windows startup-shortcut manager, proxy-capable scheduled startup, legacy-startup cleanup, and complete Windows/macOS injected-startup procedures.
 - Added packaged Windows activation with a package-context fallback and ordinary ChatGPT recovery when injection cannot be enabled.
 

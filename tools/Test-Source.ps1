@@ -49,7 +49,7 @@ if ((Get-FileHash -LiteralPath $windowsMaintenance -Algorithm SHA256).Hash -ne (
 }
 $renderer = Get-Content -LiteralPath $windowsRenderer -Raw
 $requiredContracts = @(
-    'const VERSION = 54;',
+    'const VERSION = 55;',
     'codex-remote-mobile-verified-thread-ids-v2',
     'THREAD_VISIBILITY_CONTRACT_VERSION',
     'VERIFIED_THREAD_IDS_FUTURE_SKEW_MS',
@@ -114,6 +114,9 @@ if ($LASTEXITCODE -ne 0) { throw 'Title provenance self-test failed.' }
 & $node (Join-Path $root 'windows\CodexRemoteMobileProject\tests\ThreadVisibility.SelfTest.js')
 if ($LASTEXITCODE -ne 0) { throw 'Thread visibility self-test failed.' }
 
+& $node (Join-Path $root 'windows\CodexRemoteMobileProject\tests\TaskStatus.SelfTest.js')
+if ($LASTEXITCODE -ne 0) { throw 'Task status self-test failed.' }
+
 & (Join-Path $root 'tools\Test-Maintenance.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Maintenance self-test failed.' }
 
@@ -123,11 +126,12 @@ if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
 [pscustomobject]@{
     JavaScriptFiles = $javascript.Count
     PowerShellFiles = $powershell.Count
-    RendererVersion = 54
+    RendererVersion = 55
     RendererParity = $true
     MaintenanceParity = $true
     MaintenanceSelfTest = $true
     StableRendererSelfTest = $true
     TitleProvenanceSelfTest = $true
     ThreadVisibilitySelfTest = $true
+    TaskStatusSelfTest = $true
 } | ConvertTo-Json

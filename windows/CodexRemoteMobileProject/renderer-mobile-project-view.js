@@ -32,6 +32,7 @@
   const REMOTE_INVENTORY_RETRY_MS = 15000;
   const REMOTE_INVENTORY_ACTIVE_TTL_MS = 5000;
   const REMOTE_INVENTORY_IDLE_TTL_MS = 30000;
+  const REMOTE_TASK_STATUS_MAX_AGE_MS = 30000;
   const REQUEST_TIMEOUT_MS = 12000;
   const MAX_THREAD_LIST_PAGES = 2000;
   const THREAD_VISIBILITY_CONTRACT_VERSION = 53;
@@ -50,7 +51,7 @@
     "unknown",
   ]);
   const PUBLISHER_VERSION = 53;
-  const VERSION = 54;
+  const VERSION = 55;
   const TRUSTED_TITLE_SOURCES = new Set([
     "app-server-displayName",
     "app-server-entry-title",
@@ -265,6 +266,16 @@
 
   function normalizeTaskStatus(value) {
     return /^(?:active|generating|in[_-]?progress|loading|pending|queued|running|working)$/iu.test(value || "") ? "loading" : "idle";
+  }
+
+  function publishedTaskMetadata(task, thread) {
+    const runtimeStatus = typeof thread?.status === "string" ? thread.status : thread?.status?.type;
+    const unreadKnown = typeof thread?.hasUnreadTurn === "boolean" || typeof thread?.unread === "boolean";
+    return {
+      conversationKey: task.conversationId || rawConversationId(task.conversationKey),
+      statusType: typeof runtimeStatus === "string" && runtimeStatus ? normalizeTaskStatus(runtimeStatus) : task.statusType,
+      unread: unreadKnown ? thread?.hasUnreadTurn === true || thread?.unread === true : task.unread,
+    };
   }
 
   function normalizedTitle(value) {
@@ -857,6 +868,21 @@
     return inventory?.tasks?.get(conversationKey) ?? null;
   }
 
+  function remoteTaskStatusIsFresh(inventory, taskState, now = Date.now()) {
+    if (!taskState?.statusType || taskState.statusKnown === false) return false;
+    if (taskState.statusType !== "loading") return true;
+    return Number.isFinite(inventory?.generatedAt)
+      && now - inventory.generatedAt >= -REMOTE_INVENTORY_FUTURE_SKEW_MS
+      && now - inventory.generatedAt <= REMOTE_TASK_STATUS_MAX_AGE_MS;
+  }
+
+  function applyRemoteTaskState(task, inventory, now = Date.now()) {
+    const taskState = inventory?.tasks?.get(task.conversationKey) ?? inventory?.tasks?.get(task.conversationId) ?? null;
+    if (!task.threadStatusKnown && remoteTaskStatusIsFresh(inventory, taskState, now)) task.statusType = taskState.statusType;
+    if (taskState?.unreadKnown !== false && taskState) task.unread = taskState.unread;
+    return taskState;
+  }
+
   function authoritativeInventory(hostId) {
     const inventory = freshInventory(hostId);
     return inventory?.projectsAuthoritative === false ? null : inventory;
@@ -1219,11 +1245,15 @@
     const now = Date.now();
     const currentThreadInventory = state.threadInventories.get("local");
     if (!runtime || state.disposed || state.localInventoryPublisherPending || !currentThreadInventory || currentThreadInventory.error) return;
+    const localThreadsById = new Map((currentThreadInventory.threads ?? []).flatMap((thread) => {
+      const id = rawConversationId(thread?.id ?? thread?.conversationId ?? "");
+      return id ? [[id, thread]] : [];
+    }));
     const tasks = [...document.querySelectorAll(ROW_SELECTOR)]
       .filter((row) => !row.closest(`#${PANEL_ID}`))
       .map(metadataFromRow)
       .filter((task) => task.hostId === "local")
-      .map((task) => ({ conversationKey: task.conversationId || rawConversationId(task.conversationKey), statusType: task.statusType, unread: task.unread }));
+      .map((task) => publishedTaskMetadata(task, localThreadsById.get(task.conversationId)));
     const threads = (state.threadInventories.get("local")?.threads ?? []).flatMap((thread) => {
       const id = rawConversationId(thread?.id ?? thread?.conversationId ?? "");
       if (!id) return [];
@@ -1386,6 +1416,8 @@
       projectLabel: typeof thread?.projectLabel === "string" ? thread.projectLabel : null,
       selected: false,
       sourceThread: thread,
+      directStatusKnown: false,
+      threadStatusKnown: statusKnown,
       statusKnown,
       statusType: normalizeTaskStatus(runtimeStatus),
       title: titleRecord.title ?? "Untitled task",
@@ -1434,6 +1466,7 @@
       for (const thread of inventory.threads ?? []) {
         const task = taskFromThread(thread, hostId);
         if (!task) continue;
+        task.directStatusKnown = task.statusKnown;
         const key = `${hostId}::${task.conversationId}`;
         const nativeTask = taskMap.get(key);
         if (nativeTask) {
@@ -1442,7 +1475,11 @@
           if (task.projectLabel) nativeTask.projectLabel = task.projectLabel;
           nativeTask.sourceThread = thread;
           mergeTaskTitle(nativeTask, task);
-          if (task.statusKnown) nativeTask.statusType = task.statusType;
+          if (task.statusKnown) {
+            nativeTask.directStatusKnown = true;
+            nativeTask.threadStatusKnown = true;
+            nativeTask.statusType = task.statusType;
+          }
           if (task.unreadKnown) nativeTask.unread = task.unread;
         } else {
           taskMap.set(key, task);
@@ -1455,6 +1492,11 @@
       for (const thread of inventory?.threads ?? []) {
         const task = taskFromThread(thread, hostId);
         if (!task) continue;
+        if (task.statusType === "loading" && !remoteTaskStatusIsFresh(inventory, { statusKnown: true, statusType: "loading" })) {
+          task.statusKnown = false;
+          task.threadStatusKnown = false;
+          task.statusType = "idle";
+        }
         if (authoritativeIds.has(hostId) && !authoritativeIds.get(hostId).has(task.conversationId)) continue;
         const key = `${hostId}::${task.conversationId}`;
         const existing = taskMap.get(key);
@@ -1463,7 +1505,10 @@
           if (task.projectId) existing.projectId = task.projectId;
           existing.sourceThread = thread;
           mergeTaskTitle(existing, task);
-          if (task.statusKnown) existing.statusType = task.statusType;
+          if (task.statusKnown && !existing.directStatusKnown) {
+            existing.statusType = task.statusType;
+            existing.threadStatusKnown = true;
+          }
           if (task.unreadKnown) existing.unread = task.unread;
         } else {
           taskMap.set(key, task);
@@ -1514,9 +1559,7 @@
         task.unread = task.unread && !remoteUnreadAcknowledged(task, null);
         continue;
       }
-      const authoritativeState = inventory.tasks?.get(task.conversationKey) ?? inventory.tasks?.get(task.conversationId) ?? null;
-      if (authoritativeState?.statusKnown !== false && authoritativeState?.statusType) task.statusType = authoritativeState.statusType;
-      if (authoritativeState?.unreadKnown !== false && authoritativeState) task.unread = authoritativeState.unread;
+      const authoritativeState = applyRemoteTaskState(task, inventory);
       task.unread = task.unread && !remoteUnreadAcknowledged(task, authoritativeState);
     }
     const names = hostDiscovery.names;

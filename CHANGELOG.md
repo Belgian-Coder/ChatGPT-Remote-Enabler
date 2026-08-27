@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.5.12
+
+- Stop completed remote chats from retaining a working spinner: direct app-server thread status now outranks remote thread snapshots, and remote thread status outranks DOM-derived task state.
+- Publish app-server status instead of stale native DOM status when both describe the same local chat, and expire orphaned remote loading snapshots after 30 seconds. Windows and macOS use renderer v55.
+
 ## v1.5.11
 
 - Let every fresh authoritative v53+ peer task list replace the local verified-ID fallback, so a remotely archived conversation disappears on the next inventory refresh instead of lingering as a visible but non-openable row.

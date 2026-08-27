@@ -49,13 +49,19 @@ if ((Get-FileHash -LiteralPath $windowsMaintenance -Algorithm SHA256).Hash -ne (
 }
 $renderer = Get-Content -LiteralPath $windowsRenderer -Raw
 $requiredContracts = @(
-    'const VERSION = 52;',
-    'VERIFIED_THREAD_IDS_KEY',
+    'const VERSION = 53;',
+    'codex-remote-mobile-verified-thread-ids-v2',
+    'THREAD_VISIBILITY_CONTRACT_VERSION',
+    'VERIFIED_THREAD_IDS_FUTURE_SKEW_MS',
     'loadVerifiedThreadIds();',
     'rememberVerifiedThreadIds(hostId, inventory.threads)',
+    'pruneVerifiedThreadIds();',
+    'preferredThreadInventory',
+    'scopedThreadsAreFresh',
+    'serializePeerInventory',
+    'taskIsAuthoritative',
     'threadScope: "user-visible"',
-    'if (!authoritativeIds.has(task.hostId) && !task.selected) continue;',
-    'USER_VISIBLE_THREAD_SOURCE_KINDS = Object.freeze(["cli", "vscode", "appServer"])',
+    'USER_VISIBLE_THREAD_SOURCE_KINDS = Object.freeze(["cli", "vscode"])',
     'includeInternalSources ? MAINTENANCE_THREAD_SOURCE_KINDS : USER_VISIBLE_THREAD_SOURCE_KINDS',
     'listAllRuntimeThreads(requestClient, archived, deadline, true)',
     'threadIds.has(threadId)',
@@ -102,6 +108,12 @@ if (Test-Path -LiteralPath (Join-Path $root '.github\workflows')) {
 & $node (Join-Path $root 'windows\CodexRemoteSimple\tests\RendererOverrides.SelfTest.js')
 if ($LASTEXITCODE -ne 0) { throw 'Stable renderer self-test failed.' }
 
+& $node (Join-Path $root 'windows\CodexRemoteMobileProject\tests\TitleProvenance.SelfTest.js')
+if ($LASTEXITCODE -ne 0) { throw 'Title provenance self-test failed.' }
+
+& $node (Join-Path $root 'windows\CodexRemoteMobileProject\tests\ThreadVisibility.SelfTest.js')
+if ($LASTEXITCODE -ne 0) { throw 'Thread visibility self-test failed.' }
+
 & (Join-Path $root 'tools\Test-Maintenance.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Maintenance self-test failed.' }
 
@@ -111,9 +123,11 @@ if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
 [pscustomobject]@{
     JavaScriptFiles = $javascript.Count
     PowerShellFiles = $powershell.Count
-    RendererVersion = 50
+    RendererVersion = 53
     RendererParity = $true
     MaintenanceParity = $true
     MaintenanceSelfTest = $true
     StableRendererSelfTest = $true
+    TitleProvenanceSelfTest = $true
+    ThreadVisibilitySelfTest = $true
 } | ConvertTo-Json

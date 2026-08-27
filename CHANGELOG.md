@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.5.10
+
+- Publish only authoritative native or persisted chat titles with explicit provenance; previews and first-message text can no longer become shared titles.
+- Harden user-facing thread filtering across startup, empty results, refresh failures, peer caches, and gossip. Verified ID expiry is enforced continuously, future or pre-v53 caches are rejected, selected internal rows no longer bypass filtering, scoped authority requires a v53 publisher, and its original freshness timestamp survives peer relays.
+- Follow the app-server's interactive `cli`/`vscode` source contract while retaining internal sources only for maintenance safety checks. Windows and macOS use renderer v53 with behavioral title and visibility tests.
+
 ## v1.5.9
 
 - Prevent internal task rows from flashing during startup, reinjection, and inventory refresh by retaining only verified user-facing thread IDs, refusing unverified non-selected rows, and marking peer inventories with their filtered thread scope.

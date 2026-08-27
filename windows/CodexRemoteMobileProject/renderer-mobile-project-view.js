@@ -34,9 +34,11 @@
   const REMOTE_INVENTORY_IDLE_TTL_MS = 30000;
   const REQUEST_TIMEOUT_MS = 12000;
   const MAX_THREAD_LIST_PAGES = 2000;
-  const VERIFIED_THREAD_IDS_KEY = "codex-remote-mobile-verified-thread-ids-v1";
+  const THREAD_VISIBILITY_CONTRACT_VERSION = 53;
+  const VERIFIED_THREAD_IDS_KEY = "codex-remote-mobile-verified-thread-ids-v2";
   const VERIFIED_THREAD_IDS_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
-  const USER_VISIBLE_THREAD_SOURCE_KINDS = Object.freeze(["cli", "vscode", "appServer"]);
+  const VERIFIED_THREAD_IDS_FUTURE_SKEW_MS = 5 * 60 * 1000;
+  const USER_VISIBLE_THREAD_SOURCE_KINDS = Object.freeze(["cli", "vscode"]);
   const MAINTENANCE_THREAD_SOURCE_KINDS = Object.freeze([
     ...USER_VISIBLE_THREAD_SOURCE_KINDS,
     "exec",
@@ -47,7 +49,19 @@
     "subAgentOther",
     "unknown",
   ]);
-  const VERSION = 52;
+  const PUBLISHER_VERSION = 53;
+  const VERSION = 53;
+  const TRUSTED_TITLE_SOURCES = new Set([
+    "app-server-displayName",
+    "app-server-entry-title",
+    "app-server-name",
+    "app-server-subject",
+    "app-server-summary-title",
+    "app-server-title",
+    "native-dom",
+    "native-generated-title",
+    "native-title",
+  ]);
   const LOCAL_FOLDER_PATH = Object.freeze({
     closed: "M5.55957 2.14136C6.06503 2.14136 6.55801 2.30207 6.9668 2.59937L7.81836 3.21851C8.04761 3.38513 8.32401 3.47534 8.60742 3.47534H12.1338C13.4545 3.47559 14.5254 4.54621 14.5254 5.86694V11.4666C14.5254 12.7873 13.4545 13.8579 12.1338 13.8582H3.86621C2.54554 13.8579 1.47461 12.7873 1.47461 11.4666V4.53296C1.47486 3.21244 2.54569 2.1416 3.86621 2.14136H5.55957ZM2.52539 7.85718V11.4666C2.52539 12.2074 3.12544 12.8081 3.86621 12.8083H12.1338C12.8746 12.8081 13.4746 12.2074 13.4746 11.4666V7.85718H2.52539ZM3.86621 3.19214C3.12559 3.19238 2.52564 3.79234 2.52539 4.53296V6.8064H13.4746V5.86694C13.4746 5.12611 12.8746 4.52539 12.1338 4.52515H8.60742C8.10203 4.52515 7.60895 4.36534 7.2002 4.06812L6.34863 3.448C6.11937 3.28135 5.84301 3.19214 5.55957 3.19214H3.86621Z",
     open: "M4.75488 2.1416C5.30942 2.14164 5.74594 2.23705 6.11816 2.38965C6.48323 2.53934 6.76728 2.73817 7.00391 2.9043L7.02148 2.91699C7.47057 3.23238 7.8162 3.47463 8.55176 3.47461H11.333C12.7194 3.47484 13.8311 4.61217 13.8311 6L13.875 6.38281H13.8594C14.8729 6.38292 15.5982 7.3629 15.3018 8.33203L14.0068 12.5586C13.7703 13.3297 13.0576 13.8563 12.251 13.8564H3.83984C3.4199 13.8564 3.04144 13.7174 2.73828 13.4883L2.67383 13.4346C1.99907 12.9811 1.55577 12.2065 1.55566 11.3311L0.941406 4.66699C0.941406 3.2792 2.05315 2.1419 3.43945 2.1416H4.75488ZM4.7627 7.42969C4.56039 7.42972 4.3807 7.5625 4.32129 7.75586L3.08594 11.7891C2.96123 12.1965 3.18214 12.6072 3.54883 12.7529C3.63476 12.7768 3.74102 12.7958 3.88184 12.8086H12.251C12.5974 12.8085 12.9033 12.5821 13.0049 12.251L14.2998 8.02539C14.3901 7.72947 14.1688 7.42979 13.8594 7.42969H4.7627ZM3.43945 3.19141C2.64724 3.1917 1.99121 3.84481 1.99121 4.66699L2.49316 10.1201L3.32031 7.44922C3.51452 6.81571 4.10008 6.38284 4.7627 6.38281H12.8252L12.7812 6C12.7812 5.22902 12.2045 4.607 11.4795 4.53223L11.333 4.52441H8.55176C8.05756 4.52442 7.64464 4.44062 7.2666 4.2793C6.91453 4.12896 6.6274 3.92345 6.41797 3.77637L6.40039 3.76367C6.16212 3.59639 5.96404 3.46151 5.71973 3.36133C5.54113 3.28812 5.32754 3.2289 5.05176 3.2041L4.75488 3.19141H3.43945Z",
@@ -157,12 +171,46 @@
   function loadVerifiedThreadIds() {
     const now = Date.now();
     const records = readRecords(VERIFIED_THREAD_IDS_KEY);
+    let changed = false;
     for (const [hostId, record] of Object.entries(records)) {
       const verifiedAt = Number(record?.verifiedAt);
-      if (!Number.isFinite(verifiedAt) || now - verifiedAt > VERIFIED_THREAD_IDS_MAX_AGE_MS || !Array.isArray(record?.ids)) continue;
+      if (!Number.isFinite(verifiedAt)
+        || record?.contractVersion !== THREAD_VISIBILITY_CONTRACT_VERSION
+        || verifiedAt - now > VERIFIED_THREAD_IDS_FUTURE_SKEW_MS
+        || now - verifiedAt > VERIFIED_THREAD_IDS_MAX_AGE_MS
+        || !Array.isArray(record?.ids)) {
+        changed = true;
+        continue;
+      }
       const ids = new Set(record.ids.slice(0, 10000).map(rawConversationId).filter(Boolean));
       state.verifiedThreadIds.set(normalizeHostId(hostId), { ids, verifiedAt });
     }
+    if (changed) persistVerifiedThreadIds(now);
+  }
+
+  function persistVerifiedThreadIds(now = Date.now()) {
+    const records = {};
+    for (const [hostId, record] of state.verifiedThreadIds) {
+      if (!Number.isFinite(record?.verifiedAt)
+        || record.verifiedAt - now > VERIFIED_THREAD_IDS_FUTURE_SKEW_MS
+        || now - record.verifiedAt > VERIFIED_THREAD_IDS_MAX_AGE_MS) continue;
+      records[hostId] = { contractVersion: THREAD_VISIBILITY_CONTRACT_VERSION, ids: [...record.ids].slice(0, 10000), verifiedAt: record.verifiedAt };
+    }
+    writeRecords(VERIFIED_THREAD_IDS_KEY, records);
+  }
+
+  function pruneVerifiedThreadIds(now = Date.now()) {
+    let changed = false;
+    for (const [hostId, record] of state.verifiedThreadIds) {
+      if (!Number.isFinite(record?.verifiedAt)
+        || record.verifiedAt - now > VERIFIED_THREAD_IDS_FUTURE_SKEW_MS
+        || now - record.verifiedAt > VERIFIED_THREAD_IDS_MAX_AGE_MS) {
+        state.verifiedThreadIds.delete(hostId);
+        changed = true;
+      }
+    }
+    if (changed) persistVerifiedThreadIds(now);
+    return changed;
   }
 
   function rememberVerifiedThreadIds(hostId, threads) {
@@ -170,12 +218,8 @@
     const verifiedAt = Date.now();
     const ids = new Set((threads ?? []).slice(0, 10000).map((thread) => rawConversationId(thread?.id ?? thread?.conversationId ?? "")).filter(Boolean));
     state.verifiedThreadIds.set(normalizedHostId, { ids, verifiedAt });
-    const records = {};
-    for (const [recordHostId, record] of state.verifiedThreadIds) {
-      if (!Number.isFinite(record.verifiedAt) || verifiedAt - record.verifiedAt > VERIFIED_THREAD_IDS_MAX_AGE_MS) continue;
-      records[recordHostId] = { ids: [...record.ids], verifiedAt: record.verifiedAt };
-    }
-    writeRecords(VERIFIED_THREAD_IDS_KEY, records);
+    pruneVerifiedThreadIds(verifiedAt);
+    persistVerifiedThreadIds(verifiedAt);
   }
 
   function acquireAutoArchiveLease() {
@@ -223,15 +267,94 @@
     return /^(?:active|generating|in[_-]?progress|loading|pending|queued|running|working)$/iu.test(value || "") ? "loading" : "idle";
   }
 
+  function normalizedTitle(value) {
+    return typeof value === "string" && value.trim() ? value.trim() : null;
+  }
+
+  function persistedThreadTitle(thread) {
+    const candidates = [
+      ["app-server-name", thread?.name],
+      ["app-server-title", thread?.title],
+      ["app-server-displayName", thread?.displayName],
+      ["app-server-subject", thread?.subject],
+      ["app-server-summary-title", thread?.summary?.title],
+      ["app-server-entry-title", thread?.entry?.title],
+    ];
+    for (const [titleSource, value] of candidates) {
+      const title = normalizedTitle(value);
+      if (title) return { title, titleSource };
+    }
+    return { titleSource: "none" };
+  }
+
+  function trustedThreadTitle(thread) {
+    if (Object.prototype.hasOwnProperty.call(thread ?? {}, "titleSource")) {
+      const titleSource = TRUSTED_TITLE_SOURCES.has(thread?.titleSource) ? thread.titleSource : "none";
+      const title = titleSource === "none" ? null : normalizedTitle(thread?.title);
+      return title ? { title, titleSource } : { titleSource: "none" };
+    }
+    return persistedThreadTitle(thread);
+  }
+
+  function parsedThreadTitle(thread, publisherVersion) {
+    if (!Number.isInteger(publisherVersion) || publisherVersion < PUBLISHER_VERSION
+      || !Object.prototype.hasOwnProperty.call(thread ?? {}, "titleSource")) return { titleSource: "none" };
+    return trustedThreadTitle(thread);
+  }
+
   function threadTitle(thread) {
-    // App-server v2 calls the persisted user title `name`; `preview` is the
-    // native sidebar's fallback for unnamed threads. Keep the final fallback
-    // so a genuinely empty/new thread remains visible as "Untitled task".
-    const candidates = [thread?.title, thread?.name, thread?.displayName, thread?.subject, thread?.summary?.title, thread?.entry?.title];
-    const persisted = candidates.find((value) => typeof value === "string" && value.trim())?.trim();
-    if (persisted) return persisted;
-    const preview = typeof thread?.preview === "string" ? thread.preview.split(/\r?\n/u)[0].trim().slice(0, 120) : "";
-    return preview || "Untitled task";
+    return trustedThreadTitle(thread).title ?? "Untitled task";
+  }
+
+  function localNativeSummaryTitle(conversationId) {
+    const manager = state.threadManagers.get("local");
+    if (typeof manager?.getThreadSummaries !== "function") return { titleSource: "none" };
+    try {
+      const result = manager.getThreadSummaries();
+      const summaries = Array.isArray(result) ? result : Array.isArray(result?.threads) ? result.threads : Array.isArray(result?.summaries) ? result.summaries : [];
+      const summary = summaries.find((item) => rawConversationId(item?.id ?? item?.conversationId ?? item?.conversationKey ?? "") === conversationId);
+      const title = normalizedTitle(summary?.title);
+      if (title) return { title, titleSource: "native-title" };
+      const generatedTitle = normalizedTitle(summary?.generatedTitle);
+      if (generatedTitle) return { title: generatedTitle, titleSource: "native-generated-title" };
+    } catch {}
+    return { titleSource: "none" };
+  }
+
+  function localNativeDomTitle(conversationId) {
+    const row = [...document.querySelectorAll(ROW_SELECTOR)]
+      .find((item) => rawConversationId(item.getAttribute("data-app-action-sidebar-thread-id") || "") === conversationId);
+    const title = normalizedTitle(row?.getAttribute("data-app-action-sidebar-thread-title"));
+    return title && title !== "Untitled task" ? { title, titleSource: "native-dom" } : { titleSource: "none" };
+  }
+
+  function publishedThreadTitle(thread, conversationId) {
+    for (const candidate of [localNativeSummaryTitle(conversationId), localNativeDomTitle(conversationId), persistedThreadTitle(thread)]) {
+      if (candidate.title) return candidate;
+    }
+    return { titleSource: "none" };
+  }
+
+  function titleSourceRank(titleSource) {
+    if (typeof titleSource === "string" && titleSource.startsWith("app-server-")) return 3;
+    if (titleSource === "native-title" || titleSource === "native-generated-title") return 2;
+    if (titleSource === "native-dom") return 1;
+    return 0;
+  }
+
+  function mergeTaskTitle(target, source) {
+    const candidate = trustedThreadTitle(source);
+    if (!candidate.title) {
+      if (!trustedThreadTitle(target).title) {
+        target.title = "Untitled task";
+        target.titleSource = "none";
+      }
+      return;
+    }
+    if (titleSourceRank(candidate.titleSource) >= titleSourceRank(target?.titleSource)) {
+      target.title = candidate.title;
+      target.titleSource = candidate.titleSource;
+    }
   }
 
   function acknowledgeRemoteUnread(task) {
@@ -358,7 +481,7 @@
     const conversationId = rawConversationId(conversationKey);
     const title = row.getAttribute("data-app-action-sidebar-thread-title") || "Untitled task";
     const selected = row.getAttribute("data-app-action-sidebar-thread-selected") === "true";
-    return { conversationId, conversationKey, cwd, hostDisplayName, hostId, hostNames, isGrouped, isProjectless, originalRow: row, projectId, projectLabel, selected, statusType: normalizeTaskStatus(statusType), title, unread };
+    return { conversationId, conversationKey, cwd, hostDisplayName, hostId, hostNames, isGrouped, isProjectless, originalRow: row, projectId, projectLabel, selected, statusType: normalizeTaskStatus(statusType), title, titleSource: title === "Untitled task" ? "none" : "native-dom", unread };
   }
 
   function commonAncestor(elements) {
@@ -745,6 +868,22 @@
     return inventory;
   }
 
+  function preferredThreadInventory(existing, incoming) {
+    const existingScopedAndFresh = scopedThreadsAreFresh(existing);
+    return existingScopedAndFresh && !scopedThreadsAreFresh(incoming) ? existing : incoming;
+  }
+
+  function scopedThreadsAreFresh(inventory) {
+    if (inventory?.threadScope !== "user-visible"
+      || inventory?.threadsAuthoritative !== true
+      || !Number.isInteger(inventory?.publisherVersion)
+      || inventory.publisherVersion < THREAD_VISIBILITY_CONTRACT_VERSION) return false;
+    const generatedAt = Number(inventory.threadScopeGeneratedAt ?? inventory.generatedAt);
+    return Number.isFinite(generatedAt)
+      && Date.now() - generatedAt <= REMOTE_INVENTORY_MAX_AGE_MS
+      && generatedAt - Date.now() <= REMOTE_INVENTORY_FUTURE_SKEW_MS;
+  }
+
   function inventoryContainsProject(inventory, project) {
     if (!inventory || !project?.cwd) return false;
     const path = normalizePath(project.cwd);
@@ -834,19 +973,25 @@
     }
     const threadsTruncated = Array.isArray(value.threads) && value.threads.length > 10000;
     const threadsAuthoritative = Array.isArray(value.threads) && !threadsTruncated;
+    const publisherVersion = Number.isInteger(value.publisherVersion) ? value.publisherVersion : undefined;
+    const threadScope = value.threadScope === "user-visible" ? "user-visible" : null;
+    const threadScopeGeneratedAt = threadScope ? Date.parse(value.threadScopeGeneratedAt ?? value.generatedAt) : undefined;
     const threads = (Array.isArray(value.threads) ? value.threads : []).slice(0, 10000).flatMap((thread) => {
       const id = rawConversationId(thread?.id ?? "");
       if (!id) return [];
-      return [{
+      const titleRecord = parsedThreadTitle(thread, publisherVersion);
+      const parsedThread = {
         cwd: canonicalRemotePath(thread?.cwd),
         hasUnreadTurn: typeof thread?.hasUnreadTurn === "boolean" ? thread.hasUnreadTurn : undefined,
         id,
         projectId: typeof thread?.projectId === "string" ? thread.projectId : null,
         status: typeof thread?.status === "string" ? thread.status : thread?.status?.type,
-        title: threadTitle(thread),
         updatedAt: thread?.updatedAt ?? null,
         workspaceKind: typeof thread?.workspaceKind === "string" ? thread.workspaceKind : null,
-      }];
+      };
+      if (Object.prototype.hasOwnProperty.call(thread ?? {}, "titleSource")) parsedThread.titleSource = thread.titleSource;
+      if (titleRecord.title) parsedThread.title = titleRecord.title;
+      return [parsedThread];
     });
     const peers = new Map();
     if (includePeers && value?.peers && typeof value.peers === "object" && !Array.isArray(value.peers)) {
@@ -858,7 +1003,27 @@
         } catch {}
       }
     }
-    return { generatedAt, peers, projects: [...projects.values()].sort((left, right) => left.name.localeCompare(right.name)), projectsAuthoritative: !projectsTruncated, projectsTruncated, tasks, tasksTruncated, threadScope: value.threadScope === "user-visible" ? "user-visible" : null, threads, threadsAuthoritative, threadsTruncated };
+    return { generatedAt, peers, projects: [...projects.values()].sort((left, right) => left.name.localeCompare(right.name)), projectsAuthoritative: !projectsTruncated, projectsTruncated, publisherVersion, tasks, tasksTruncated, threadScope, threadScopeGeneratedAt, threads, threadsAuthoritative, threadsTruncated };
+  }
+
+  function serializePeerInventory(inventory) {
+    const payload = {
+      generatedAt: new Date(inventory.generatedAt).toISOString(),
+      projects: (inventory.projects ?? []).map((project) => ({
+        name: project.name,
+        rootPaths: [...new Set([...(project.rootPaths ?? []), project.cwd].filter(Boolean))],
+      })),
+      publisherVersion: inventory.publisherVersion,
+      schemaVersion: 1,
+      tasks: [...(inventory.tasks ?? new Map())].map(([conversationKey, task]) => ({ conversationKey, statusType: task.statusType, unread: task.unread })),
+      threadScope: inventory.threadScope,
+      threads: inventory.threads ?? [],
+    };
+    const threadScopeGeneratedAt = Number(inventory.threadScopeGeneratedAt ?? inventory.generatedAt);
+    if (inventory.threadScope === "user-visible" && Number.isFinite(threadScopeGeneratedAt)) {
+      payload.threadScopeGeneratedAt = new Date(threadScopeGeneratedAt).toISOString();
+    }
+    return payload;
   }
 
   function parseRemoteProjectInventory(result) {
@@ -905,6 +1070,7 @@
           state.remoteProjectInventories.set(hostId, { ...latest, pending: false, retryAt: 0 });
           return;
         }
+        const threadInventory = preferredThreadInventory(latest, parsed);
         state.remoteProjectInventories.set(hostId, {
           error: null,
           fetchedAt: Date.now(),
@@ -913,19 +1079,22 @@
           projects: parsed.projects,
           projectsAuthoritative: parsed.projectsAuthoritative,
           projectsTruncated: parsed.projectsTruncated,
+          publisherVersion: threadInventory?.publisherVersion,
           retryAt: 0,
           tasks: parsed.tasks,
           tasksTruncated: parsed.tasksTruncated,
-          threads: parsed.threads,
-          threadsAuthoritative: parsed.threadsAuthoritative,
-          threadScope: parsed.threadScope,
-          threadsTruncated: parsed.threadsTruncated,
+          threads: threadInventory?.threads ?? [],
+          threadsAuthoritative: threadInventory?.threadsAuthoritative === true,
+          threadScope: threadInventory?.threadScope ?? null,
+          threadScopeGeneratedAt: threadInventory?.threadScope === "user-visible" ? (threadInventory.threadScopeGeneratedAt ?? threadInventory.generatedAt) : undefined,
+          threadsTruncated: threadInventory?.threadsTruncated === true,
         });
         for (const [peerHostId, peer] of parsed.peers) {
           if (peerHostId === hostId) continue;
           if (inventoryMatchesLocal(peer)) continue;
           const existing = state.remoteProjectInventories.get(peerHostId);
           if (Number.isFinite(existing?.generatedAt) && existing.generatedAt >= peer.generatedAt && existing.error == null) continue;
+          const threadInventory = preferredThreadInventory(existing, peer);
           state.remoteProjectInventories.set(peerHostId, {
             error: null,
             fetchedAt: Date.now(),
@@ -934,14 +1103,16 @@
             projects: peer.projects,
             projectsAuthoritative: peer.projectsAuthoritative,
             projectsTruncated: peer.projectsTruncated,
+            publisherVersion: threadInventory?.publisherVersion,
             retryAt: existing?.retryAt ?? 0,
             sourcePeerHostId: hostId,
             tasks: peer.tasks,
             tasksTruncated: peer.tasksTruncated,
-            threads: peer.threads,
-            threadsAuthoritative: peer.threadsAuthoritative,
-            threadScope: peer.threadScope,
-            threadsTruncated: peer.threadsTruncated,
+            threads: threadInventory?.threads ?? [],
+            threadsAuthoritative: threadInventory?.threadsAuthoritative === true,
+            threadScope: threadInventory?.threadScope ?? null,
+            threadScopeGeneratedAt: threadInventory?.threadScope === "user-visible" ? (threadInventory.threadScopeGeneratedAt ?? threadInventory.generatedAt) : undefined,
+            threadsTruncated: threadInventory?.threadsTruncated === true,
           });
         }
         removeGossipedLocalInventoryDuplicates();
@@ -963,6 +1134,7 @@
           generatedAt: latest?.generatedAt,
           pending: false,
           projects: latest?.projects ?? current.projects ?? [],
+          publisherVersion: latest?.publisherVersion ?? current.publisherVersion,
           retryAt: Date.now() + REMOTE_INVENTORY_RETRY_MS,
           sourcePeerCache: latest?.sourcePeerCache === true,
           sourcePeerHostId: latest?.sourcePeerHostId,
@@ -970,6 +1142,7 @@
           threads: latest?.threads ?? current.threads ?? [],
           threadsAuthoritative: latest?.threadsAuthoritative === true || current.threadsAuthoritative === true,
           threadScope: latest?.threadScope ?? current.threadScope ?? null,
+          threadScopeGeneratedAt: latest?.threadScopeGeneratedAt ?? current.threadScopeGeneratedAt ?? latest?.generatedAt ?? current.generatedAt,
         });
       }).finally(() => { if (!state.disposed) schedule(); });
     }
@@ -1013,6 +1186,7 @@
         if (!Number.isFinite(existing?.generatedAt)
           || parsed.generatedAt >= existing.generatedAt
           || Date.now() - existing.generatedAt > REMOTE_INVENTORY_MAX_AGE_MS) {
+          const threadInventory = preferredThreadInventory(existing, parsed);
           state.remoteProjectInventories.set(host.id, {
             error: null,
             fetchedAt: Date.now(),
@@ -1021,14 +1195,16 @@
             projects: parsed.projects,
             projectsAuthoritative: parsed.projectsAuthoritative,
             projectsTruncated: parsed.projectsTruncated,
+            publisherVersion: threadInventory?.publisherVersion,
             retryAt: existing?.retryAt ?? 0,
             sourcePeerCache: true,
             tasks: parsed.tasks,
             tasksTruncated: parsed.tasksTruncated,
-            threads: parsed.threads,
-            threadsAuthoritative: parsed.threadsAuthoritative,
-            threadScope: parsed.threadScope,
-            threadsTruncated: parsed.threadsTruncated,
+            threads: threadInventory?.threads ?? [],
+            threadsAuthoritative: threadInventory?.threadsAuthoritative === true,
+            threadScope: threadInventory?.threadScope ?? null,
+            threadScopeGeneratedAt: threadInventory?.threadScope === "user-visible" ? (threadInventory.threadScopeGeneratedAt ?? threadInventory.generatedAt) : undefined,
+            threadsTruncated: threadInventory?.threadsTruncated === true,
           });
         }
         state.peerCacheStates.set(host.id, { error: null, fetchedAt: Date.now(), pending: false });
@@ -1051,37 +1227,34 @@
     const threads = (state.threadInventories.get("local")?.threads ?? []).flatMap((thread) => {
       const id = rawConversationId(thread?.id ?? thread?.conversationId ?? "");
       if (!id) return [];
-      return [{
+      const titleRecord = publishedThreadTitle(thread, id);
+      const publishedThread = {
         cwd: canonicalRemotePath(thread?.cwd),
         hasUnreadTurn: thread?.hasUnreadTurn === true,
         id,
         projectId: typeof thread?.projectId === "string" ? thread.projectId : null,
         status: typeof thread?.status === "string" ? thread.status : thread?.status?.type,
-        title: threadTitle(thread),
+        titleSource: titleRecord.titleSource,
         updatedAt: thread?.updatedAt ?? null,
         workspaceKind: typeof thread?.workspaceKind === "string" ? thread.workspaceKind : null,
-      }];
+      };
+      if (titleRecord.title) publishedThread.title = titleRecord.title;
+      return [publishedThread];
     });
     const peers = Object.fromEntries([...state.remoteProjectInventories].flatMap(([hostId]) => {
       const inventory = freshInventory(hostId);
       if (!inventory || inventory.threadsAuthoritative !== true) return [];
-      return [[hostId, {
-        generatedAt: new Date(inventory.generatedAt).toISOString(),
-        projects: (inventory.projects ?? []).map((project) => ({
-          name: project.name,
-          rootPaths: [...new Set([...(project.rootPaths ?? []), project.cwd].filter(Boolean))],
-        })),
-        schemaVersion: 1,
-        tasks: [...(inventory.tasks ?? new Map())].map(([conversationKey, task]) => ({ conversationKey, statusType: task.statusType, unread: task.unread })),
-        threadScope: inventory.threadScope,
-        threads: inventory.threads ?? [],
-      }]];
+      return [[hostId, serializePeerInventory(inventory)]];
     }));
     const localThreadInventory = state.threadInventories.get("local");
     const statusSignature = JSON.stringify({
-      peerGenerations: Object.fromEntries(Object.entries(peers).map(([hostId, peer]) => [hostId, peer.generatedAt])),
+      peers: Object.fromEntries(Object.entries(peers).map(([hostId, peer]) => [hostId, {
+        generatedAt: peer.generatedAt,
+        publisherVersion: peer.publisherVersion,
+        threads: peer.threads.map((thread) => ({ id: thread.id, title: thread.title ?? null, titleSource: thread.titleSource })),
+      }])),
       tasks,
-      threadCount: threads.length,
+      threads: threads.map((thread) => ({ id: thread.id, title: thread.title ?? null, titleSource: thread.titleSource })),
       threadFetchedAt: localThreadInventory?.fetchedAt ?? 0,
     });
     const publishInterval = tasks.length ? REMOTE_INVENTORY_ACTIVE_MS : REMOTE_INVENTORY_IDLE_MS;
@@ -1119,7 +1292,8 @@
         rootPaths: project.rootPaths,
       }))).filter((project) => project.projectId && project.cwd);
       removeGossipedLocalInventoryDuplicates();
-      const payload = JSON.stringify({ generatedAt: new Date().toISOString(), peers, projects, schemaVersion: 1, tasks, threadScope: "user-visible", threads });
+      const generatedAt = new Date().toISOString();
+      const payload = JSON.stringify({ generatedAt, peers, projects, publisherVersion: PUBLISHER_VERSION, schemaVersion: 1, tasks, threadScope: "user-visible", threadScopeGeneratedAt: generatedAt, threads });
       const dataBase64 = encodeText(payload);
       return sendRequestWithTimeout(runtime.requestClient, "fs/writeFile", { dataBase64, path: inventoryPath(codexHome) })
         .then(() => pushLocalInventoryToPeers(dataBase64));
@@ -1197,6 +1371,7 @@
     const runtimeStatus = typeof thread?.status === "string" ? thread.status : thread?.status?.type;
     const statusKnown = typeof runtimeStatus === "string" && runtimeStatus.length > 0;
     const unreadKnown = typeof thread?.hasUnreadTurn === "boolean" || typeof thread?.unread === "boolean";
+    const titleRecord = trustedThreadTitle(thread);
     return {
       conversationId,
       conversationKey: conversationId,
@@ -1213,29 +1388,41 @@
       sourceThread: thread,
       statusKnown,
       statusType: normalizeTaskStatus(runtimeStatus),
-      title: threadTitle(thread),
+      title: titleRecord.title ?? "Untitled task",
+      titleSource: titleRecord.titleSource,
       unread: thread?.hasUnreadTurn === true || thread?.unread === true,
       unreadKnown,
     };
   }
 
-  function collectModel() {
-    const rows = [...document.querySelectorAll(ROW_SELECTOR)].filter((row) => !row.closest(`#${PANEL_ID}`));
+  function collectAuthoritativeThreadIds() {
+    pruneVerifiedThreadIds();
     const authoritativeIds = new Map();
     for (const [hostId, record] of state.verifiedThreadIds) authoritativeIds.set(hostId, new Set(record.ids));
     for (const [hostId, inventory] of state.threadInventories) {
       if (!inventory.error) authoritativeIds.set(hostId, new Set((inventory.threads ?? []).map((thread) => rawConversationId(thread?.id ?? thread?.conversationId ?? "")).filter(Boolean)));
     }
     for (const [hostId] of state.remoteProjectInventories) {
-      const inventory = directCompleteInventory(hostId);
-      if (!authoritativeIds.has(hostId) && inventory?.threadScope === "user-visible" && inventory?.threadsAuthoritative === true) {
+      const inventory = freshInventory(hostId);
+      if (!authoritativeIds.has(hostId) && scopedThreadsAreFresh(inventory)) {
         authoritativeIds.set(hostId, new Set(inventory.threads.map((thread) => rawConversationId(thread?.id ?? "")).filter(Boolean)));
       }
     }
+    return authoritativeIds;
+  }
+
+  function taskIsAuthoritative(task, authoritativeIds) {
+    return Boolean(task?.conversationId
+      && authoritativeIds.has(task.hostId)
+      && authoritativeIds.get(task.hostId).has(task.conversationId));
+  }
+
+  function collectModel() {
+    const rows = [...document.querySelectorAll(ROW_SELECTOR)].filter((row) => !row.closest(`#${PANEL_ID}`));
+    const authoritativeIds = collectAuthoritativeThreadIds();
     const taskMap = new Map();
     for (const task of rows.map(metadataFromRow).filter((task) => task.conversationId)) {
-      if (!authoritativeIds.has(task.hostId) && !task.selected) continue;
-      if (authoritativeIds.has(task.hostId) && !authoritativeIds.get(task.hostId).has(task.conversationId)) continue;
+      if (!taskIsAuthoritative(task, authoritativeIds)) continue;
       taskMap.set(`${task.hostId}::${task.conversationId}`, task);
     }
     for (const [hostId, inventory] of state.threadInventories) {
@@ -1250,7 +1437,7 @@
           if (task.projectId) nativeTask.projectId = task.projectId;
           if (task.projectLabel) nativeTask.projectLabel = task.projectLabel;
           nativeTask.sourceThread = thread;
-          if (task.title !== "Untitled task") nativeTask.title = task.title;
+          mergeTaskTitle(nativeTask, task);
           if (task.statusKnown) nativeTask.statusType = task.statusType;
           if (task.unreadKnown) nativeTask.unread = task.unread;
         } else {
@@ -1271,7 +1458,7 @@
           if (task.cwd) existing.cwd = task.cwd;
           if (task.projectId) existing.projectId = task.projectId;
           existing.sourceThread = thread;
-          if (task.title !== "Untitled task") existing.title = task.title;
+          mergeTaskTitle(existing, task);
           if (task.statusKnown) existing.statusType = task.statusType;
           if (task.unreadKnown) existing.unread = task.unread;
         } else {

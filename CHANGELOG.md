@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.5.9
+
+- Prevent internal task rows from flashing during startup, reinjection, and inventory refresh by retaining only verified user-facing thread IDs, refusing unverified non-selected rows, and marking peer inventories with their filtered thread scope.
+
 ## v1.5.8
 
 - Filter Mobile Projects inventory to user-facing CLI, VS Code, and desktop chats so internal exec/subagent runs no longer appear as repeated project rows; retain the complete source inventory for maintenance safety, deduplicate paginated results by thread ID, and prefer a connected device's filtered direct task list over legacy cached inventory during staggered upgrades.

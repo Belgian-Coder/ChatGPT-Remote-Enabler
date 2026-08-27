@@ -49,7 +49,12 @@ if ((Get-FileHash -LiteralPath $windowsMaintenance -Algorithm SHA256).Hash -ne (
 }
 $renderer = Get-Content -LiteralPath $windowsRenderer -Raw
 $requiredContracts = @(
-    'const VERSION = 51;',
+    'const VERSION = 52;',
+    'VERIFIED_THREAD_IDS_KEY',
+    'loadVerifiedThreadIds();',
+    'rememberVerifiedThreadIds(hostId, inventory.threads)',
+    'threadScope: "user-visible"',
+    'if (!authoritativeIds.has(task.hostId) && !task.selected) continue;',
     'USER_VISIBLE_THREAD_SOURCE_KINDS = Object.freeze(["cli", "vscode", "appServer"])',
     'includeInternalSources ? MAINTENANCE_THREAD_SOURCE_KINDS : USER_VISIBLE_THREAD_SOURCE_KINDS',
     'listAllRuntimeThreads(requestClient, archived, deadline, true)',

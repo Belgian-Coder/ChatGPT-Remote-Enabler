@@ -34,6 +34,8 @@
   const REMOTE_INVENTORY_IDLE_TTL_MS = 30000;
   const REQUEST_TIMEOUT_MS = 12000;
   const MAX_THREAD_LIST_PAGES = 2000;
+  const VERIFIED_THREAD_IDS_KEY = "codex-remote-mobile-verified-thread-ids-v1";
+  const VERIFIED_THREAD_IDS_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
   const USER_VISIBLE_THREAD_SOURCE_KINDS = Object.freeze(["cli", "vscode", "appServer"]);
   const MAINTENANCE_THREAD_SOURCE_KINDS = Object.freeze([
     ...USER_VISIBLE_THREAD_SOURCE_KINDS,
@@ -45,7 +47,7 @@
     "subAgentOther",
     "unknown",
   ]);
-  const VERSION = 51;
+  const VERSION = 52;
   const LOCAL_FOLDER_PATH = Object.freeze({
     closed: "M5.55957 2.14136C6.06503 2.14136 6.55801 2.30207 6.9668 2.59937L7.81836 3.21851C8.04761 3.38513 8.32401 3.47534 8.60742 3.47534H12.1338C13.4545 3.47559 14.5254 4.54621 14.5254 5.86694V11.4666C14.5254 12.7873 13.4545 13.8579 12.1338 13.8582H3.86621C2.54554 13.8579 1.47461 12.7873 1.47461 11.4666V4.53296C1.47486 3.21244 2.54569 2.1416 3.86621 2.14136H5.55957ZM2.52539 7.85718V11.4666C2.52539 12.2074 3.12544 12.8081 3.86621 12.8083H12.1338C12.8746 12.8081 13.4746 12.2074 13.4746 11.4666V7.85718H2.52539ZM3.86621 3.19214C3.12559 3.19238 2.52564 3.79234 2.52539 4.53296V6.8064H13.4746V5.86694C13.4746 5.12611 12.8746 4.52539 12.1338 4.52515H8.60742C8.10203 4.52515 7.60895 4.36534 7.2002 4.06812L6.34863 3.448C6.11937 3.28135 5.84301 3.19214 5.55957 3.19214H3.86621Z",
     open: "M4.75488 2.1416C5.30942 2.14164 5.74594 2.23705 6.11816 2.38965C6.48323 2.53934 6.76728 2.73817 7.00391 2.9043L7.02148 2.91699C7.47057 3.23238 7.8162 3.47463 8.55176 3.47461H11.333C12.7194 3.47484 13.8311 4.61217 13.8311 6L13.875 6.38281H13.8594C14.8729 6.38292 15.5982 7.3629 15.3018 8.33203L14.0068 12.5586C13.7703 13.3297 13.0576 13.8563 12.251 13.8564H3.83984C3.4199 13.8564 3.04144 13.7174 2.73828 13.4883L2.67383 13.4346C1.99907 12.9811 1.55577 12.2065 1.55566 11.3311L0.941406 4.66699C0.941406 3.2792 2.05315 2.1419 3.43945 2.1416H4.75488ZM4.7627 7.42969C4.56039 7.42972 4.3807 7.5625 4.32129 7.75586L3.08594 11.7891C2.96123 12.1965 3.18214 12.6072 3.54883 12.7529C3.63476 12.7768 3.74102 12.7958 3.88184 12.8086H12.251C12.5974 12.8085 12.9033 12.5821 13.0049 12.251L14.2998 8.02539C14.3901 7.72947 14.1688 7.42979 13.8594 7.42969H4.7627ZM3.43945 3.19141C2.64724 3.1917 1.99121 3.84481 1.99121 4.66699L2.49316 10.1201L3.32031 7.44922C3.51452 6.81571 4.10008 6.38284 4.7627 6.38281H12.8252L12.7812 6C12.7812 5.22902 12.2045 4.607 11.4795 4.53223L11.333 4.52441H8.55176C8.05756 4.52442 7.64464 4.44062 7.2666 4.2793C6.91453 4.12896 6.6274 3.92345 6.41797 3.77637L6.40039 3.76367C6.16212 3.59639 5.96404 3.46151 5.71973 3.36133C5.54113 3.28812 5.32754 3.2289 5.05176 3.2041L4.75488 3.19141H3.43945Z",
@@ -122,6 +124,7 @@
     scheduledFrame: null,
     threadInventories: new Map(),
     threadManagers: new Map(),
+    verifiedThreadIds: new Map(),
     view: "mobile",
   };
 
@@ -149,6 +152,30 @@
 
   function writeRecords(key, value) {
     try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+  }
+
+  function loadVerifiedThreadIds() {
+    const now = Date.now();
+    const records = readRecords(VERIFIED_THREAD_IDS_KEY);
+    for (const [hostId, record] of Object.entries(records)) {
+      const verifiedAt = Number(record?.verifiedAt);
+      if (!Number.isFinite(verifiedAt) || now - verifiedAt > VERIFIED_THREAD_IDS_MAX_AGE_MS || !Array.isArray(record?.ids)) continue;
+      const ids = new Set(record.ids.slice(0, 10000).map(rawConversationId).filter(Boolean));
+      state.verifiedThreadIds.set(normalizeHostId(hostId), { ids, verifiedAt });
+    }
+  }
+
+  function rememberVerifiedThreadIds(hostId, threads) {
+    const normalizedHostId = normalizeHostId(hostId);
+    const verifiedAt = Date.now();
+    const ids = new Set((threads ?? []).slice(0, 10000).map((thread) => rawConversationId(thread?.id ?? thread?.conversationId ?? "")).filter(Boolean));
+    state.verifiedThreadIds.set(normalizedHostId, { ids, verifiedAt });
+    const records = {};
+    for (const [recordHostId, record] of state.verifiedThreadIds) {
+      if (!Number.isFinite(record.verifiedAt) || verifiedAt - record.verifiedAt > VERIFIED_THREAD_IDS_MAX_AGE_MS) continue;
+      records[recordHostId] = { ids: [...record.ids], verifiedAt: record.verifiedAt };
+    }
+    writeRecords(VERIFIED_THREAD_IDS_KEY, records);
   }
 
   function acquireAutoArchiveLease() {
@@ -831,7 +858,7 @@
         } catch {}
       }
     }
-    return { generatedAt, peers, projects: [...projects.values()].sort((left, right) => left.name.localeCompare(right.name)), projectsAuthoritative: !projectsTruncated, projectsTruncated, tasks, tasksTruncated, threads, threadsAuthoritative, threadsTruncated };
+    return { generatedAt, peers, projects: [...projects.values()].sort((left, right) => left.name.localeCompare(right.name)), projectsAuthoritative: !projectsTruncated, projectsTruncated, tasks, tasksTruncated, threadScope: value.threadScope === "user-visible" ? "user-visible" : null, threads, threadsAuthoritative, threadsTruncated };
   }
 
   function parseRemoteProjectInventory(result) {
@@ -891,6 +918,7 @@
           tasksTruncated: parsed.tasksTruncated,
           threads: parsed.threads,
           threadsAuthoritative: parsed.threadsAuthoritative,
+          threadScope: parsed.threadScope,
           threadsTruncated: parsed.threadsTruncated,
         });
         for (const [peerHostId, peer] of parsed.peers) {
@@ -912,6 +940,7 @@
             tasksTruncated: peer.tasksTruncated,
             threads: peer.threads,
             threadsAuthoritative: peer.threadsAuthoritative,
+            threadScope: peer.threadScope,
             threadsTruncated: peer.threadsTruncated,
           });
         }
@@ -940,6 +969,7 @@
           tasks: latest?.tasks ?? current.tasks ?? new Map(),
           threads: latest?.threads ?? current.threads ?? [],
           threadsAuthoritative: latest?.threadsAuthoritative === true || current.threadsAuthoritative === true,
+          threadScope: latest?.threadScope ?? current.threadScope ?? null,
         });
       }).finally(() => { if (!state.disposed) schedule(); });
     }
@@ -997,6 +1027,7 @@
             tasksTruncated: parsed.tasksTruncated,
             threads: parsed.threads,
             threadsAuthoritative: parsed.threadsAuthoritative,
+            threadScope: parsed.threadScope,
             threadsTruncated: parsed.threadsTruncated,
           });
         }
@@ -1042,6 +1073,7 @@
         })),
         schemaVersion: 1,
         tasks: [...(inventory.tasks ?? new Map())].map(([conversationKey, task]) => ({ conversationKey, statusType: task.statusType, unread: task.unread })),
+        threadScope: inventory.threadScope,
         threads: inventory.threads ?? [],
       }]];
     }));
@@ -1087,7 +1119,7 @@
         rootPaths: project.rootPaths,
       }))).filter((project) => project.projectId && project.cwd);
       removeGossipedLocalInventoryDuplicates();
-      const payload = JSON.stringify({ generatedAt: new Date().toISOString(), peers, projects, schemaVersion: 1, tasks, threads });
+      const payload = JSON.stringify({ generatedAt: new Date().toISOString(), peers, projects, schemaVersion: 1, tasks, threadScope: "user-visible", threads });
       const dataBase64 = encodeText(payload);
       return sendRequestWithTimeout(runtime.requestClient, "fs/writeFile", { dataBase64, path: inventoryPath(codexHome) })
         .then(() => pushLocalInventoryToPeers(dataBase64));
@@ -1190,17 +1222,19 @@
   function collectModel() {
     const rows = [...document.querySelectorAll(ROW_SELECTOR)].filter((row) => !row.closest(`#${PANEL_ID}`));
     const authoritativeIds = new Map();
+    for (const [hostId, record] of state.verifiedThreadIds) authoritativeIds.set(hostId, new Set(record.ids));
     for (const [hostId, inventory] of state.threadInventories) {
-      if (!inventory.error && (inventory.threads?.length ?? 0) > 0) authoritativeIds.set(hostId, new Set(inventory.threads.map((thread) => rawConversationId(thread?.id ?? thread?.conversationId ?? "")).filter(Boolean)));
+      if (!inventory.error) authoritativeIds.set(hostId, new Set((inventory.threads ?? []).map((thread) => rawConversationId(thread?.id ?? thread?.conversationId ?? "")).filter(Boolean)));
     }
     for (const [hostId] of state.remoteProjectInventories) {
       const inventory = directCompleteInventory(hostId);
-      if (!authoritativeIds.has(hostId) && inventory?.threadsAuthoritative === true && (inventory.threads?.length ?? 0) > 0) {
+      if (!authoritativeIds.has(hostId) && inventory?.threadScope === "user-visible" && inventory?.threadsAuthoritative === true) {
         authoritativeIds.set(hostId, new Set(inventory.threads.map((thread) => rawConversationId(thread?.id ?? "")).filter(Boolean)));
       }
     }
     const taskMap = new Map();
     for (const task of rows.map(metadataFromRow).filter((task) => task.conversationId)) {
+      if (!authoritativeIds.has(task.hostId) && !task.selected) continue;
       if (authoritativeIds.has(task.hostId) && !authoritativeIds.get(task.hostId).has(task.conversationId)) continue;
       taskMap.set(`${task.hostId}::${task.conversationId}`, task);
     }
@@ -1226,6 +1260,7 @@
     }
     for (const [hostId] of state.remoteProjectInventories) {
       const inventory = freshInventory(hostId);
+      if (!authoritativeIds.has(hostId)) continue;
       for (const thread of inventory?.threads ?? []) {
         const task = taskFromThread(thread, hostId);
         if (!task) continue;
@@ -1595,6 +1630,7 @@
           const result = await Promise.race([request, timeout]);
           const inventory = { error: null, fetchedAt: Date.now(), hostId, pages: result.pages, threads: Array.isArray(result.threads) ? result.threads : [] };
           state.threadInventories.set(hostId, inventory);
+          rememberVerifiedThreadIds(hostId, inventory.threads);
           state.inventoryHydrationRounds += inventory.pages;
           if (hostId === "local") removeGossipedLocalInventoryDuplicates();
           if (!state.disposed) schedule();
@@ -3111,6 +3147,7 @@
       threadsTruncated: inventory.threadsTruncated === true,
       threads: inventory.threads?.length ?? 0,
       threadsAuthoritative: inventory.threadsAuthoritative === true,
+      threadScope: inventory.threadScope ?? null,
     }]));
     const visibleGroups = model.groups.filter((project) => state.filter === "all" || project.hostId === state.filter);
     const visibleProjects = visibleGroups.filter((project) => project.kind === "project");
@@ -3184,6 +3221,8 @@
       syntheticTasks: model.tasks.filter((task) => !task.originalRow).length,
       syntheticNavigableTasks: model.tasks.filter((task) => !task.originalRow && (state.threadManagers.has(task.hostId) || typeof state.navigationBridge?.navigateToLocalConversation === "function")).length,
       unreadTasks: model.tasks.filter((task) => task.unread).length,
+      verifiedThreadHosts: state.verifiedThreadIds.size,
+      verifiedThreads: [...state.verifiedThreadIds.values()].reduce((total, record) => total + record.ids.size, 0),
       version: VERSION,
       view: state.view,
       visibleProjects: visibleProjects.length,
@@ -3264,7 +3303,7 @@
     document.getElementById(STYLE_ID)?.remove();
     state.active = false;
     const report = probe();
-    for (const collection of [state.autoRegistrationFailures, state.collapsed, state.hostConnectivity, state.localRegisteredProjects, state.peerCacheStates, state.remoteCodexHomes, state.remoteProjectInventories, state.remoteRuntimeCache, state.threadInventories, state.threadManagers]) collection.clear();
+    for (const collection of [state.autoRegistrationFailures, state.collapsed, state.hostConnectivity, state.localRegisteredProjects, state.peerCacheStates, state.remoteCodexHomes, state.remoteProjectInventories, state.remoteRuntimeCache, state.threadInventories, state.threadManagers, state.verifiedThreadIds]) collection.clear();
     state.localFetchFromHost = null;
     state.localRuntime = null;
     state.navigationBridge = null;
@@ -3273,6 +3312,7 @@
     return report;
   }
 
+  loadVerifiedThreadIds();
   const api = Object.freeze({ install, previewAutoArchive, previewAutoMaintenance: previewAutoArchive, probe, reconcileAutoRegisteredProjects, removeAllAutoRegistered, runAutoArchiveNow, runAutoMaintenanceNow: runAutoArchiveNow, setAutoArchive, setAutoMaintenance: setAutoArchive, setAutoRegistration, setFilter, setView, uninstall, version: VERSION });
   Object.defineProperty(globalThis, API_SLOT, { configurable: true, enumerable: false, value: api });
   return install();

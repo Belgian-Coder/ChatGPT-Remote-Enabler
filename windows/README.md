@@ -10,7 +10,7 @@ Run `ChatGPT Remote Enabler.exe`, or open PowerShell here and run:
 .\Enable-ChatGPTRemote.ps1
 ```
 
-The compatibility check runs first. Renderer v51 preserves the user's
+The compatibility check runs first. Renderer v52 preserves the user's
 **By project**/**By connection** Native views preference and every folder's
 open/closed state. It automatically paginates the authoritative active task
 list for user-facing CLI, VS Code, and desktop chats. Internal exec and subagent
@@ -23,6 +23,10 @@ appear while archived/removed projects and stale native rows do not.
 When a connected device is still running an older publisher, its direct
 user-facing task list takes precedence over that cached inventory so internal
 child runs stay hidden during a staggered upgrade.
+Verified user-facing task IDs are retained locally for seven days so renderer
+reinjection and background refreshes keep the last correct list on screen.
+An unverified device contributes no non-selected chat rows until its filtered
+task query succeeds, preventing internal rows from flashing temporarily.
 Device dots use current Remote runtime presence plus successful direct probes.
 Cached peer inventory alone cannot mark an offline device as online; an online
 device can remain green while its inventory service retries independently.

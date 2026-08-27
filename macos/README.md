@@ -6,7 +6,7 @@ In Mobile Projects, **Auto-register: on/off** locally enables or pauses remote-p
 
 macOS already exposes native ChatGPT remote connections. This package adds the optional Mobile projects view.
 
-Renderer version 51 preserves the original folder states, native-backed drag
+Renderer version 52 preserves the original folder states, native-backed drag
 ordering, and the user's **By project**/**By connection** preference. It
 automatically paginates the authoritative active task list for user-facing CLI,
 VS Code, and desktop chats. Internal exec and subagent runs remain available to
@@ -19,6 +19,10 @@ removed projects and stale native rows do not.
 When a connected device is still running an older publisher, its direct
 user-facing task list takes precedence over that cached inventory so internal
 child runs stay hidden during a staggered upgrade.
+Verified user-facing task IDs are retained locally for seven days so renderer
+reinjection and background refreshes keep the last correct list on screen.
+An unverified device contributes no non-selected chat rows until its filtered
+task query succeeds, preventing internal rows from flashing temporarily.
 Device dots use current Remote runtime presence plus successful direct probes.
 Cached peer inventory alone cannot mark an offline device as online; an online
 device can remain green while its inventory service retries independently.

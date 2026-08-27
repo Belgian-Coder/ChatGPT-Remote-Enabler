@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.5.11
+
+- Let every fresh authoritative v53+ peer task list replace the local verified-ID fallback, so a remotely archived conversation disappears on the next inventory refresh instead of lingering as a visible but non-openable row.
+- Add a focused regression test proving that an archived remote task is removed even when the seven-day fallback cache still contains its ID. Windows and macOS use renderer v54.
+
 ## v1.5.10
 
 - Publish only authoritative native or persisted chat titles with explicit provenance; previews and first-message text can no longer become shared titles.

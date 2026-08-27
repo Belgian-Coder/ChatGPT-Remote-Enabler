@@ -50,7 +50,7 @@
     "unknown",
   ]);
   const PUBLISHER_VERSION = 53;
-  const VERSION = 53;
+  const VERSION = 54;
   const TRUSTED_TITLE_SOURCES = new Set([
     "app-server-displayName",
     "app-server-entry-title",
@@ -1398,13 +1398,17 @@
   function collectAuthoritativeThreadIds() {
     pruneVerifiedThreadIds();
     const authoritativeIds = new Map();
+    const directAuthoritativeHosts = new Set();
     for (const [hostId, record] of state.verifiedThreadIds) authoritativeIds.set(hostId, new Set(record.ids));
     for (const [hostId, inventory] of state.threadInventories) {
-      if (!inventory.error) authoritativeIds.set(hostId, new Set((inventory.threads ?? []).map((thread) => rawConversationId(thread?.id ?? thread?.conversationId ?? "")).filter(Boolean)));
+      if (!inventory.error) {
+        authoritativeIds.set(hostId, new Set((inventory.threads ?? []).map((thread) => rawConversationId(thread?.id ?? thread?.conversationId ?? "")).filter(Boolean)));
+        directAuthoritativeHosts.add(hostId);
+      }
     }
     for (const [hostId] of state.remoteProjectInventories) {
       const inventory = freshInventory(hostId);
-      if (!authoritativeIds.has(hostId) && scopedThreadsAreFresh(inventory)) {
+      if (!directAuthoritativeHosts.has(hostId) && scopedThreadsAreFresh(inventory)) {
         authoritativeIds.set(hostId, new Set(inventory.threads.map((thread) => rawConversationId(thread?.id ?? "")).filter(Boolean)));
       }
     }

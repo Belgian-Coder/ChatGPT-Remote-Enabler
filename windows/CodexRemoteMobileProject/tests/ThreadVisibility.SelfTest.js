@@ -67,6 +67,7 @@ assert.deepEqual([...authoritative.get("local")], ["verified-user"]);
 visibility.state.threadInventories.clear();
 visibility.state.verifiedThreadIds.clear();
 const hostId = "peer-host";
+visibility.state.verifiedThreadIds.set(hostId, { ids: new Set(["peer-user", "archived-peer-task"]), verifiedAt: now });
 visibility.state.remoteProjectInventories.set(hostId, {
   error: null,
   fetchedAt: now,
@@ -82,6 +83,20 @@ visibility.state.remoteProjectInventories.set(hostId, {
 });
 authoritative = visibility.collectAuthoritativeThreadIds();
 assert.deepEqual([...authoritative.get(hostId)], ["peer-user"]);
+assert.equal(visibility.taskIsAuthoritative({ conversationId: "archived-peer-task", hostId }, authoritative), false);
+
+visibility.state.remoteProjectInventories.set(hostId, {
+  ...visibility.state.remoteProjectInventories.get(hostId),
+  threads: [],
+});
+authoritative = visibility.collectAuthoritativeThreadIds();
+assert.equal(authoritative.has(hostId), true);
+assert.equal(authoritative.get(hostId).size, 0);
+
+visibility.state.threadInventories.set(hostId, { error: null, threads: [{ id: "direct-user" }] });
+authoritative = visibility.collectAuthoritativeThreadIds();
+assert.deepEqual([...authoritative.get(hostId)], ["direct-user"]);
+visibility.state.threadInventories.clear();
 
 visibility.state.remoteProjectInventories.set(hostId, {
   error: null,
@@ -95,7 +110,7 @@ visibility.state.remoteProjectInventories.set(hostId, {
   threadsAuthoritative: true,
 });
 authoritative = visibility.collectAuthoritativeThreadIds();
-assert.equal(authoritative.has(hostId), false);
+assert.deepEqual([...authoritative.get(hostId)], ["peer-user", "archived-peer-task"]);
 
 const scoped = {
   generatedAt: now - 1000,

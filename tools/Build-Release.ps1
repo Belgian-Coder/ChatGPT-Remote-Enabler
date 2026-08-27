@@ -23,6 +23,16 @@ if ($versions.Count -ne 1 -or $versions[0] -notmatch '^v\d+\.\d+\.\d+$') {
     throw 'Windows and macOS must contain one matching semantic VERSION.'
 }
 $version = $versions[0]
+$expectedWindowsFileVersion = $version.TrimStart('v') + '.0'
+foreach ($launcher in @(
+    (Join-Path $repositoryRoot 'windows\ChatGPT Remote Enabler.exe'),
+    (Join-Path $repositoryRoot 'windows\CodexRemoteMobileProject\ChatGPT Custom.exe')
+)) {
+    $actualFileVersion = (Get-Item -LiteralPath $launcher).VersionInfo.FileVersion
+    if ($actualFileVersion -ne $expectedWindowsFileVersion) {
+        throw "Windows launcher $([IO.Path]::GetFileName($launcher)) is version $actualFileVersion; expected $expectedWindowsFileVersion."
+    }
+}
 
 $temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) ("chatgpt-remote-release-" + [guid]::NewGuid().ToString('N'))
 try {

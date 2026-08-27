@@ -49,7 +49,11 @@ if ((Get-FileHash -LiteralPath $windowsMaintenance -Algorithm SHA256).Hash -ne (
 }
 $renderer = Get-Content -LiteralPath $windowsRenderer -Raw
 $requiredContracts = @(
-    'const VERSION = 50;',
+    'const VERSION = 51;',
+    'USER_VISIBLE_THREAD_SOURCE_KINDS = Object.freeze(["cli", "vscode", "appServer"])',
+    'includeInternalSources ? MAINTENANCE_THREAD_SOURCE_KINDS : USER_VISIBLE_THREAD_SOURCE_KINDS',
+    'listAllRuntimeThreads(requestClient, archived, deadline, true)',
+    'threadIds.has(threadId)',
     'sendRequestWithTimeout',
     'state.autoArchiveGeneration',
     'AUTO_ARCHIVE_LOCK_KEY',
@@ -57,6 +61,9 @@ $requiredContracts = @(
     'freshInventory(hostId)',
     'listAllRuntimeThreads',
     'state.threadInventories',
+    'new Map(discoverRemoteRuntimes(discovery.runtimes))',
+    '!authoritativeIds.has(hostId)',
+    '!authoritativeIds.get(hostId).has(task.conversationId)',
     'state.hostConnectivity',
     'navigateToLocalConversation',
     'AUTO_ARCHIVE_ENABLED_KEY',
@@ -72,6 +79,9 @@ $requiredContracts = @(
 )
 foreach ($contract in $requiredContracts) {
     if (-not $renderer.Contains($contract)) { throw "Renderer contract is missing: $contract" }
+}
+foreach ($internalSource in @('"exec"', '"subAgent"', '"subAgentReview"', '"subAgentCompact"', '"subAgentThreadSpawn"', '"subAgentOther"', '"unknown"')) {
+    if (-not $renderer.Contains($internalSource)) { throw "Maintenance source-kind contract is missing: $internalSource" }
 }
 if ($renderer -match 'availability\.set\(normalizedHostId, true\)') {
     throw 'A cached request client must not be treated as proof that a host is online.'

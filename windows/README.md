@@ -10,14 +10,19 @@ Run `ChatGPT Remote Enabler.exe`, or open PowerShell here and run:
 .\Enable-ChatGPTRemote.ps1
 ```
 
-The compatibility check runs first. Renderer v50 preserves the user's
+The compatibility check runs first. Renderer v51 preserves the user's
 **By project**/**By connection** Native views preference and every folder's
 open/closed state. It automatically paginates the authoritative active task
-list and publishes complete active projects, tasks, and working/unread state
+list for user-facing CLI, VS Code, and desktop chats. Internal exec and subagent
+runs remain available to maintenance safety checks but are not published as
+project chats. The renderer publishes complete active projects, tasks, and working/unread state
 into this device's Codex home. Other devices use direct peer reads plus local
 per-device cache files if a request stalls. No folder opening, **Show more**
 click, shared catalogue, or central storage is required. Empty active projects
 appear while archived/removed projects and stale native rows do not.
+When a connected device is still running an older publisher, its direct
+user-facing task list takes precedence over that cached inventory so internal
+child runs stay hidden during a staggered upgrade.
 Device dots use current Remote runtime presence plus successful direct probes.
 Cached peer inventory alone cannot mark an offline device as online; an online
 device can remain green while its inventory service retries independently.

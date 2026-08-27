@@ -34,7 +34,18 @@
   const REMOTE_INVENTORY_IDLE_TTL_MS = 30000;
   const REQUEST_TIMEOUT_MS = 12000;
   const MAX_THREAD_LIST_PAGES = 2000;
-  const VERSION = 50;
+  const USER_VISIBLE_THREAD_SOURCE_KINDS = Object.freeze(["cli", "vscode", "appServer"]);
+  const MAINTENANCE_THREAD_SOURCE_KINDS = Object.freeze([
+    ...USER_VISIBLE_THREAD_SOURCE_KINDS,
+    "exec",
+    "subAgent",
+    "subAgentReview",
+    "subAgentCompact",
+    "subAgentThreadSpawn",
+    "subAgentOther",
+    "unknown",
+  ]);
+  const VERSION = 51;
   const LOCAL_FOLDER_PATH = Object.freeze({
     closed: "M5.55957 2.14136C6.06503 2.14136 6.55801 2.30207 6.9668 2.59937L7.81836 3.21851C8.04761 3.38513 8.32401 3.47534 8.60742 3.47534H12.1338C13.4545 3.47559 14.5254 4.54621 14.5254 5.86694V11.4666C14.5254 12.7873 13.4545 13.8579 12.1338 13.8582H3.86621C2.54554 13.8579 1.47461 12.7873 1.47461 11.4666V4.53296C1.47486 3.21244 2.54569 2.1416 3.86621 2.14136H5.55957ZM2.52539 7.85718V11.4666C2.52539 12.2074 3.12544 12.8081 3.86621 12.8083H12.1338C12.8746 12.8081 13.4746 12.2074 13.4746 11.4666V7.85718H2.52539ZM3.86621 3.19214C3.12559 3.19238 2.52564 3.79234 2.52539 4.53296V6.8064H13.4746V5.86694C13.4746 5.12611 12.8746 4.52539 12.1338 4.52515H8.60742C8.10203 4.52515 7.60895 4.36534 7.2002 4.06812L6.34863 3.448C6.11937 3.28135 5.84301 3.19214 5.55957 3.19214H3.86621Z",
     open: "M4.75488 2.1416C5.30942 2.14164 5.74594 2.23705 6.11816 2.38965C6.48323 2.53934 6.76728 2.73817 7.00391 2.9043L7.02148 2.91699C7.47057 3.23238 7.8162 3.47463 8.55176 3.47461H11.333C12.7194 3.47484 13.8311 4.61217 13.8311 6L13.875 6.38281H13.8594C14.8729 6.38292 15.5982 7.3629 15.3018 8.33203L14.0068 12.5586C13.7703 13.3297 13.0576 13.8563 12.251 13.8564H3.83984C3.4199 13.8564 3.04144 13.7174 2.73828 13.4883L2.67383 13.4346C1.99907 12.9811 1.55577 12.2065 1.55566 11.3311L0.941406 4.66699C0.941406 3.2792 2.05315 2.1419 3.43945 2.1416H4.75488ZM4.7627 7.42969C4.56039 7.42972 4.3807 7.5625 4.32129 7.75586L3.08594 11.7891C2.96123 12.1965 3.18214 12.6072 3.54883 12.7529C3.63476 12.7768 3.74102 12.7958 3.88184 12.8086H12.251C12.5974 12.8085 12.9033 12.5821 13.0049 12.251L14.2998 8.02539C14.3901 7.72947 14.1688 7.42979 13.8594 7.42969H4.7627ZM3.43945 3.19141C2.64724 3.1917 1.99121 3.84481 1.99121 4.66699L2.49316 10.1201L3.32031 7.44922C3.51452 6.81571 4.10008 6.38284 4.7627 6.38281H12.8252L12.7812 6C12.7812 5.22902 12.2045 4.607 11.4795 4.53223L11.333 4.52441H8.55176C8.05756 4.52442 7.64464 4.44062 7.2666 4.2793C6.91453 4.12896 6.6274 3.92345 6.41797 3.77637L6.40039 3.76367C6.16212 3.59639 5.96404 3.46151 5.71973 3.36133C5.54113 3.28812 5.32754 3.2289 5.05176 3.2041L4.75488 3.19141H3.43945Z",
@@ -1184,7 +1195,9 @@
     }
     for (const [hostId] of state.remoteProjectInventories) {
       const inventory = directCompleteInventory(hostId);
-      if (inventory?.threadsAuthoritative === true && (inventory.threads?.length ?? 0) > 0) authoritativeIds.set(hostId, new Set(inventory.threads.map((thread) => rawConversationId(thread?.id ?? "")).filter(Boolean)));
+      if (!authoritativeIds.has(hostId) && inventory?.threadsAuthoritative === true && (inventory.threads?.length ?? 0) > 0) {
+        authoritativeIds.set(hostId, new Set(inventory.threads.map((thread) => rawConversationId(thread?.id ?? "")).filter(Boolean)));
+      }
     }
     const taskMap = new Map();
     for (const task of rows.map(metadataFromRow).filter((task) => task.conversationId)) {
@@ -1216,6 +1229,7 @@
       for (const thread of inventory?.threads ?? []) {
         const task = taskFromThread(thread, hostId);
         if (!task) continue;
+        if (authoritativeIds.has(hostId) && !authoritativeIds.get(hostId).has(task.conversationId)) continue;
         const key = `${hostId}::${task.conversationId}`;
         const existing = taskMap.get(key);
         if (existing) {
@@ -1568,8 +1582,8 @@
     state.inventoryHydrationPhase = "listing-threads";
     state.inventoryHydrationTruncated = false;
     try {
-      discoverHostNames();
-      const runtimes = new Map();
+      const discovery = discoverHostNames();
+      const runtimes = new Map(discoverRemoteRuntimes(discovery.runtimes));
       if (state.localRuntime?.requestClient) runtimes.set("local", state.localRuntime);
       const tasks = [...runtimes].map(async ([hostId, runtime]) => {
         let timer = null;
@@ -2155,9 +2169,10 @@
     return values.length ? Math.max(...values) : Number.NaN;
   }
 
-  async function listAllRuntimeThreads(requestClient, archived = false, deadline = Number.POSITIVE_INFINITY) {
+  async function listAllRuntimeThreads(requestClient, archived = false, deadline = Number.POSITIVE_INFINITY, includeInternalSources = false) {
     if (typeof requestClient?.sendRequest !== "function") throw new Error("App-server bridge is unavailable");
     const threads = [];
+    const threadIds = new Set();
     const cursors = new Set();
     let cursor = null;
     for (let page = 0; page < MAX_THREAD_LIST_PAGES; page += 1) {
@@ -2166,12 +2181,17 @@
         archived: archived === true,
         cursor,
         limit: 49,
-        sourceKinds: ["cli", "vscode", "exec", "appServer", "subAgent", "subAgentReview", "subAgentCompact", "subAgentThreadSpawn", "subAgentOther", "unknown"],
+        sourceKinds: includeInternalSources ? MAINTENANCE_THREAD_SOURCE_KINDS : USER_VISIBLE_THREAD_SOURCE_KINDS,
         sortDirection: "desc",
         sortKey: "updated_at",
       }, 30000);
       if (state.disposed) return { pages: page + 1, threads: [] };
-      if (Array.isArray(result?.data)) threads.push(...result.data);
+      for (const thread of Array.isArray(result?.data) ? result.data : []) {
+        const threadId = rawConversationId(thread?.id ?? thread?.conversationId ?? "");
+        if (!threadId || threadIds.has(threadId)) continue;
+        threadIds.add(threadId);
+        threads.push(thread);
+      }
       const nextCursor = typeof result?.nextCursor === "string" && result.nextCursor ? result.nextCursor : null;
       if (!nextCursor) return { pages: page + 1, threads };
       if (cursors.has(nextCursor)) throw new Error("thread/list returned a repeated pagination cursor");
@@ -2184,7 +2204,7 @@
   async function listAllLocalThreads(archived = false, deadline = Number.POSITIVE_INFINITY) {
     const requestClient = state.localRuntime?.requestClient;
     if (typeof requestClient?.sendRequest !== "function") throw new Error("Local app-server bridge is unavailable");
-    return (await listAllRuntimeThreads(requestClient, archived, deadline)).threads;
+    return (await listAllRuntimeThreads(requestClient, archived, deadline, true)).threads;
   }
 
   function eligibleAutoArchiveThreads(threads, pinnedThreadIds = new Set(), relatedThreads = threads) {

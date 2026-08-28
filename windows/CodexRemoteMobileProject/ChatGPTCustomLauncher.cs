@@ -2,32 +2,55 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Threading;
 
 [assembly: AssemblyTitle("ChatGPT Custom")]
 [assembly: AssemblyDescription("Starts ChatGPT with the audited remote Mobile projects injection")]
 [assembly: AssemblyCompany("Community")]
 [assembly: AssemblyProduct("ChatGPT Custom")]
-[assembly: AssemblyVersion("1.5.12.0")]
-[assembly: AssemblyFileVersion("1.5.12.0")]
+[assembly: AssemblyVersion("1.5.13.0")]
+[assembly: AssemblyFileVersion("1.5.13.0")]
 
 internal static class ChatGPTCustomLauncher
 {
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int MessageBox(IntPtr window, string text, string caption, uint type);
+
+    private static bool HasArgument(string[] args, string expected)
+    {
+        foreach (string arg in args)
+        {
+            if (string.Equals(arg, expected, StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        return false;
+    }
+
+    private static int Fail(int exitCode, bool silent, string message)
+    {
+        if (!silent) MessageBox(IntPtr.Zero, message, "ChatGPT Custom", 0x10);
+        return exitCode;
+    }
+
     [STAThread]
     private static int Main(string[] args)
     {
-        bool useProxy = args.Length == 1 &&
-            string.Equals(args[0], "--proxy", StringComparison.OrdinalIgnoreCase);
-        if (args.Length > 1 || (args.Length == 1 && !useProxy))
+        bool useProxy = HasArgument(args, "--proxy");
+        bool startupMode = HasArgument(args, "--startup");
+        foreach (string arg in args)
         {
-            return 13;
+            if (!string.Equals(arg, "--proxy", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(arg, "--startup", StringComparison.OrdinalIgnoreCase))
+            {
+                return Fail(13, startupMode, "The shortcut contains an unsupported launcher argument.");
+            }
         }
 
         string root = AppDomain.CurrentDomain.BaseDirectory;
-        string startup = Path.Combine(root, "MobileProjectStartup.ps1");
-        if (!File.Exists(startup))
+        string startupScript = Path.Combine(root, "MobileProjectStartup.ps1");
+        if (!File.Exists(startupScript))
         {
-            return 11;
+            return Fail(11, false, "MobileProjectStartup.ps1 was not found beside the launcher.");
         }
 
         bool created;
@@ -42,28 +65,39 @@ internal static class ChatGPTCustomLauncher
                 @"WindowsPowerShell\v1.0\powershell.exe");
             if (!File.Exists(executable))
             {
-                return 10;
+                return Fail(10, startupMode, "Windows PowerShell could not be found.");
             }
 
             var start = new ProcessStartInfo
             {
                 FileName = executable,
-                Arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File \"" + startup +
-                    "\" -Action Run" + (useProxy ? " -UseProxy" : ""),
+                Arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File \"" + startupScript +
+                    "\" -Action Run" + (useProxy ? " -UseProxy" : "") + (startupMode ? "" : " -ReplaceRunningApp"),
                 WorkingDirectory = root,
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 WindowStyle = ProcessWindowStyle.Hidden
             };
 
-            using (Process child = Process.Start(start))
+            try
             {
-                if (child == null)
+                using (Process child = Process.Start(start))
                 {
-                    return 12;
+                    if (child == null) return Fail(12, startupMode, "Windows PowerShell could not be started.");
+                    child.WaitForExit();
+                    if (child.ExitCode != 0)
+                    {
+                        string log = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                            @"CodexRemoteFeatures\startup.log");
+                        return Fail(child.ExitCode, startupMode,
+                            "The injected launch could not be completed. If injection failed after ChatGPT was closed, ordinary ChatGPT was restored automatically.\r\n\r\nDetails: " + log);
+                    }
+                    return 0;
                 }
-                child.WaitForExit();
-                return child.ExitCode;
+            }
+            catch
+            {
+                return Fail(14, startupMode, "The injected launcher failed before Windows PowerShell could complete.");
             }
         }
     }

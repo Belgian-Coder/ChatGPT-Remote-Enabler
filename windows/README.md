@@ -43,7 +43,9 @@ Mobile Projects folder opens the exact native project composer when available;
 registered projects retain a native global-composer fallback when their folder
 row is not mounted by the selected grouping.
 
-The launcher checks for a verified GitHub release on every start. Manage it with:
+The launcher checks for an update once per day by default. A clean `main` Git
+checkout fast-forwards to the latest release tag through its configured origin;
+an extracted release still uses the verified archive updater. Manage it with:
 
 ```powershell
 .\Update-ChatGPTRemote.ps1 -Action Probe
@@ -52,7 +54,7 @@ The launcher checks for a verified GitHub release on every start. Manage it with
 .\Update-ChatGPTRemote.ps1 -Action Update
 ```
 
-Set `CHATGPT_REMOTE_UPDATE_REPOSITORY=owner/repo`, `CHATGPT_REMOTE_UPDATE_API_BASE`, or `CHATGPT_REMOTE_UPDATE_LATEST_URL` for a fork or GitHub mirror. `CHATGPT_REMOTE_AUTO_UPDATE=0` skips one automatic check. Set a positive `CHATGPT_REMOTE_UPDATE_INTERVAL_HOURS` only if you want throttling. Failed downloads or verification never replace the installed files.
+Set `CHATGPT_REMOTE_UPDATE_REPOSITORY=owner/repo`, `CHATGPT_REMOTE_UPDATE_API_BASE`, or `CHATGPT_REMOTE_UPDATE_LATEST_URL` for a fork or GitHub mirror. `CHATGPT_REMOTE_AUTO_UPDATE=0` skips one automatic check. Set `CHATGPT_REMOTE_UPDATE_INTERVAL_HOURS=0` to restore every-start checks or another value to change the daily interval. Failed downloads, Cisco/security block pages, dirty Git checkouts, and verification failures never replace installed files.
 
 For a persistent local shortcut, keep the extracted folder in place and run:
 
@@ -65,11 +67,21 @@ Start menu. It always runs the sibling stable and Mobile Projects bundles, so
 future clicks load the injected view rather than the normal app. Use
 `-UseProxy` only when this device needs proxy mode; it configures those same
 shortcuts with `--proxy`. The installer never creates a separate proxy
-shortcut and recoverably removes obsolete proxy entries. When
-`HTTPS_PROXY` or `HTTP_PROXY` is set, proxy mode uses an HTTP CONNECT tunnel only for the ChatGPT Remote
-control WebSocket; other ChatGPT traffic is unchanged. TLS verification stays
+shortcut and recoverably removes obsolete proxy entries. First import the
+existing User-scope proxy into DPAPI-protected local storage and remove the
+global variables that otherwise affect all ChatGPT traffic:
+
+```powershell
+.\CodexRemoteMobileProject\ProxyConfiguration.ps1 -Action Install -ImportUserEnvironment -RemoveUserEnvironment
+.\CodexRemoteMobileProject\ProxyConfiguration.ps1 -Action Probe
+```
+
+Sign out or reboot once after migration so Explorer and future normal ChatGPT
+processes stop inheriting the old environment. Proxy mode then uses an HTTP
+CONNECT tunnel only for the ChatGPT Remote control WebSocket; other ChatGPT traffic is unchanged. TLS verification stays
 enabled and includes certificates trusted by Windows. Proxy URLs containing
-credentials are rejected. Without `-UseProxy`, the shortcut uses direct
+credentials are rejected, and probe output never exposes the proxy host. An
+environment-variable fallback remains for older installations. Without `-UseProxy`, the shortcut uses direct
 networking. If injection fails, the launcher restores ordinary ChatGPT startup
 without the targeted proxy shim.
 
@@ -89,7 +101,10 @@ where Remote requires the configured proxy; omit it for direct networking.
 The installer replaces a disabled legacy startup shortcut after preserving a
 rollback copy. Use `-Action Remove` to remove the active shortcut. The target is
 the versioned `ChatGPT Custom.exe` in this folder, so verified in-place updates
-are used at the next sign-in.
+are used at the next sign-in. A manual **ChatGPT Custom** click is explicit
+permission to replace an ordinary running ChatGPT session. Unattended startup
+uses `--startup`, never terminates an active ordinary session, and records the
+reason in `%LOCALAPPDATA%\CodexRemoteFeatures\startup.log`.
 
 An elevated scheduled-task alternative remains available and now supports the
 same proxy mode:

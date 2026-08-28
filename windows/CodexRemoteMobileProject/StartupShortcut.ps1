@@ -48,7 +48,8 @@ function Get-StartupSummary {
         $result.arguments = $shortcut.Arguments
         $result.workingDirectory = $shortcut.WorkingDirectory
         $result.description = $shortcut.Description
-        $result.proxyMode = $shortcut.Arguments -eq '--proxy'
+        $result.proxyMode = $shortcut.Arguments -match '(?:^|\s)--proxy(?:\s|$)'
+        $result.startupMode = $shortcut.Arguments -match '(?:^|\s)--startup(?:\s|$)'
     }
     return $result
 }
@@ -76,7 +77,7 @@ switch ($Action) {
             $shell = New-Object -ComObject WScript.Shell
             $shortcut = $shell.CreateShortcut($shortcutPath)
             $shortcut.TargetPath = $launcherPath
-            $shortcut.Arguments = if ($UseProxy) { '--proxy' } else { '' }
+            $shortcut.Arguments = if ($UseProxy) { '--proxy --startup' } else { '--startup' }
             $shortcut.WorkingDirectory = $bundleRoot
             $shortcut.Description = if ($UseProxy) {
                 'Start ChatGPT/Codex with the audited injection and Remote-control proxy after sign-in.'

@@ -25,10 +25,13 @@ $powershell = @(
     'windows\CodexRemoteMobileProject\DesktopShortcut.ps1',
     'windows\CodexRemoteMobileProject\StartupShortcut.ps1',
     'windows\CodexRemoteMobileProject\MobileProjectStartup.ps1',
+    'windows\CodexRemoteMobileProject\ProxyConfiguration.ps1',
+    'windows\CodexRemoteMobileProject\ProxyConfiguration.psm1',
     'tools\Build-Release.ps1',
     'tools\Test-Source.ps1',
     'tools\Test-WindowsUpdaterCompatibility.ps1'
-    'tools\Test-Maintenance.ps1'
+    'tools\Test-Maintenance.ps1',
+    'tools\Test-ProxyConfiguration.ps1'
 )
 foreach ($relative in $powershell) {
     $tokens = $null
@@ -120,6 +123,9 @@ if ($LASTEXITCODE -ne 0) { throw 'Task status self-test failed.' }
 & (Join-Path $root 'tools\Test-Maintenance.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Maintenance self-test failed.' }
 
+& (Join-Path $root 'tools\Test-ProxyConfiguration.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Proxy configuration self-test failed.' }
+
 git -C $root diff --check
 if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
 
@@ -130,6 +136,7 @@ if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
     RendererParity = $true
     MaintenanceParity = $true
     MaintenanceSelfTest = $true
+    ProxyConfigurationSelfTest = $true
     StableRendererSelfTest = $true
     TitleProvenanceSelfTest = $true
     ThreadVisibilitySelfTest = $true

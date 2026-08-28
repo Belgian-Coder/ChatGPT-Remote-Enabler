@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.5.13
+
+- Store the Windows Remote-control proxy in a per-user DPAPI-protected file and clear inherited proxy variables before starting ChatGPT, so only the injected Remote WebSocket receives the proxy URL.
+- Let an explicit **ChatGPT Custom** click replace an ordinary running ChatGPT session, while unattended startup still preserves active sessions; manual launcher failures now show an actionable message instead of disappearing silently.
+- Update Git checkouts through a clean `main` fast-forward, check packaged releases once per day by default, and identify Cisco/security-gateway HTML substitutions before checksum processing.
+- Add protected-proxy and network-block regression tests. Windows launchers are version 1.5.13.0; the Mobile Projects renderer remains v55 on Windows and macOS.
+
 ## v1.5.12
 
 - Stop completed remote chats from retaining a working spinner: direct app-server thread status now outranks remote thread snapshots, and remote thread status outranks DOM-derived task state.

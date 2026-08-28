@@ -5,7 +5,8 @@ $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $node = (Get-Command node.exe -ErrorAction Stop).Source
 $helper = Join-Path $root 'windows\CodexRemoteMobileProject\maintenance.js'
-$testRoot = Join-Path ([IO.Path]::GetTempPath()) ('chatgpt-remote-maintenance-test-' + [guid]::NewGuid().ToString('N'))
+$nodeTemp = (& $node -p 'require("node:os").tmpdir()').Trim()
+$testRoot = Join-Path $nodeTemp ('chatgpt-remote-maintenance-test-' + [guid]::NewGuid().ToString('N'))
 
 try {
     New-Item -ItemType Directory -Path $testRoot | Out-Null
@@ -58,7 +59,7 @@ db.close();
     } | ConvertTo-Json -Compress
 } finally {
     $resolved = [IO.Path]::GetFullPath($testRoot)
-    $temporary = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+    $temporary = [IO.Path]::GetFullPath($nodeTemp)
     if ((Test-Path -LiteralPath $resolved) -and $resolved.StartsWith($temporary, [StringComparison]::OrdinalIgnoreCase)) {
         Remove-Item -LiteralPath $resolved -Recurse -Force
     }

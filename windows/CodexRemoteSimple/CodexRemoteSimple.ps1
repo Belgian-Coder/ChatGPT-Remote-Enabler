@@ -7,6 +7,8 @@ param(
 
     [switch]$UseProxy,
 
+    [string]$ProxyServer,
+
     [ValidateRange(5, 60)]
     [int]$TimeoutSeconds = 20
 )
@@ -21,15 +23,19 @@ $script:PackageActivationLauncher = Join-Path $script:RuntimeRoot 'PackageActiva
 $script:LaunchLogPath = Join-Path $env:LOCALAPPDATA 'CodexRemoteFeatures\launch.log'
 
 function Resolve-CrsProxyServer {
-    $value = $null
-    foreach ($name in @('HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy')) {
-        $candidate = [Environment]::GetEnvironmentVariable($name, 'Process')
-        if ([string]::IsNullOrWhiteSpace($candidate)) {
-            $candidate = [Environment]::GetEnvironmentVariable($name, 'User')
-        }
-        if (-not [string]::IsNullOrWhiteSpace($candidate)) {
-            $value = $candidate.Trim()
-            break
+    param([string]$RequestedProxy)
+
+    $value = $RequestedProxy
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        foreach ($name in @('HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy')) {
+            $candidate = [Environment]::GetEnvironmentVariable($name, 'Process')
+            if ([string]::IsNullOrWhiteSpace($candidate)) {
+                $candidate = [Environment]::GetEnvironmentVariable($name, 'User')
+            }
+            if (-not [string]::IsNullOrWhiteSpace($candidate)) {
+                $value = $candidate.Trim()
+                break
+            }
         }
     }
     if ([string]::IsNullOrWhiteSpace($value)) {
@@ -505,9 +511,9 @@ switch ($Action) {
         Stop-CrsCodex -ExecutablePath $package.ExecutablePath
 
         try {
-            $proxyServer = $null
+            $resolvedProxyServer = $null
             if ($UseProxy) {
-                $proxyServer = Resolve-CrsProxyServer
+                $resolvedProxyServer = Resolve-CrsProxyServer -RequestedProxy $ProxyServer
                 Write-Host 'Experimental proxy mode is enabled only for the Remote-control WebSocket.' -ForegroundColor Yellow
             }
             $arguments = @(
@@ -516,7 +522,7 @@ switch ($Action) {
                 "--inspect=127.0.0.1:$mainPort"
             )
             $launch = Start-CrsPackagedCodex -Package $package -ArgumentList $arguments -ExpectedPort $rendererPort
-            $bridge = Invoke-CrsBridge -Node $node -RendererPort $rendererPort -MainPort $mainPort -ProxyServer $(if ($UseProxy) { $proxyServer } else { $null })
+            $bridge = Invoke-CrsBridge -Node $node -RendererPort $rendererPort -MainPort $mainPort -ProxyServer $(if ($UseProxy) { $resolvedProxyServer } else { $null })
             Write-CrsState -Package $package -RendererPort $rendererPort -MainPort $mainPort -Probe $compatibility -Launch $launch -ProxyMode ([bool]$UseProxy)
             Write-Host 'Control other devices and macOS-style connection grouping are active for this Codex session.' -ForegroundColor Green
             Write-Host 'Open Settings > Connections > Control other devices.'

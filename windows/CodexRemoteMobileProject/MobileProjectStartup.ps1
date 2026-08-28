@@ -8,7 +8,8 @@ param(
     [ValidateRange(5, 120)]
     [int]$MobileReadyTimeoutSeconds = 45,
     [string]$NodePath,
-    [switch]$UseProxy
+    [switch]$UseProxy,
+    [switch]$ReplaceRunningApp
 )
 
 $ErrorActionPreference = 'Stop'
@@ -21,12 +22,13 @@ $stableController = Join-Path $bundleParent 'CodexRemoteSimple\CodexRemoteSimple
 $mobileController = Join-Path $bundleRoot 'MobileProjectView.ps1'
 $maintenanceHelper = Join-Path $bundleRoot 'maintenance.js'
 $updateController = Join-Path $bundleParent 'Update-ChatGPTRemote.ps1'
+$proxyModule = Join-Path $bundleRoot 'ProxyConfiguration.psm1'
 $logRoot = Join-Path $env:LOCALAPPDATA 'CodexRemoteFeatures'
 $logPath = Join-Path $logRoot 'startup.log'
 $rollbackRoot = Join-Path $bundleRoot 'rollback'
 
 function Assert-Controllers {
-    foreach ($path in @($stableController, $mobileController, $maintenanceHelper)) {
+    foreach ($path in @($stableController, $mobileController, $maintenanceHelper, $proxyModule)) {
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
             throw "Required controller is missing: $path"
         }
@@ -93,24 +95,39 @@ function Get-TaskSummary {
 
 switch ($Action) {
     'Run' {
-        if (Test-Path -LiteralPath $updateController -PathType Leaf) {
-            try { Write-CommandOutput @(& $updateController -Action Auto 2>&1) }
-            catch { Write-StartupLog "$(Get-Date -Format o) [$computerName] automatic update skipped: $($_.Exception.Message)" }
-        }
-        Assert-Controllers
-        $node = Resolve-NodePath
         Write-StartupLog "$(Get-Date -Format o) [$computerName] startup run begins"
         try {
+            if (Test-Path -LiteralPath $updateController -PathType Leaf) {
+                try { Write-CommandOutput @(& $updateController -Action Auto 2>&1) }
+                catch { Write-StartupLog "$(Get-Date -Format o) [$computerName] automatic update skipped: $($_.Exception.Message)" }
+            }
+            Assert-Controllers
+            $node = Resolve-NodePath
+            $proxyServer = $null
+            if ($UseProxy) {
+                Import-Module $proxyModule -Force
+                $proxyServer = Get-ChatGPTRemoteProxy -AllowEnvironmentFallback
+                foreach ($name in @('HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy')) {
+                    [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+                }
+                Write-StartupLog "$(Get-Date -Format o) [$computerName] protected Remote-only proxy configuration loaded"
+            }
             Write-CommandOutput @(& $node --no-warnings $maintenanceHelper 2>&1)
             $appProcesses = @(Get-CimInstance Win32_Process -Filter "Name='ChatGPT.exe' OR Name='Codex.exe'" -ErrorAction SilentlyContinue)
             $debugApp = @($appProcesses | Where-Object { $_.CommandLine -match '--remote-debugging-port(?:=|\s)' })
-            if ($appProcesses.Count -gt 0 -and $debugApp.Count -eq 0) {
+            if ($appProcesses.Count -gt 0 -and $debugApp.Count -eq 0 -and -not $ReplaceRunningApp) {
                 throw 'ChatGPT/Codex is already running without the audited debug endpoint. Close it normally, then use ChatGPT Custom; startup will not terminate an active app.'
             }
             if ($debugApp.Count -eq 0) {
                 for ($stableAttempt = 1; $stableAttempt -le 2; $stableAttempt++) {
                     try {
-                        Write-CommandOutput @(& $stableController -Action Enable -UseProxy:$UseProxy -Confirm:$false 2>&1)
+                        $stableArguments = @{
+                            Action = 'Enable'
+                            UseProxy = [bool]$UseProxy
+                            Confirm = $false
+                        }
+                        if ($UseProxy) { $stableArguments.ProxyServer = $proxyServer }
+                        Write-CommandOutput @(& $stableController @stableArguments 2>&1)
                         break
                     } catch {
                         if ($stableAttempt -ge 2) { throw }

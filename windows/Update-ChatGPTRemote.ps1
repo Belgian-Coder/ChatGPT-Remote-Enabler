@@ -7,7 +7,7 @@ param(
     [string]$LatestReleaseUrl = $env:CHATGPT_REMOTE_UPDATE_LATEST_URL,
     [string]$InstallRoot,
     [ValidateRange(0, 720)]
-    [int]$CheckIntervalHours = $(if ($env:CHATGPT_REMOTE_UPDATE_INTERVAL_HOURS) { [int]$env:CHATGPT_REMOTE_UPDATE_INTERVAL_HOURS } else { 0 }),
+    [int]$CheckIntervalHours = $(if ($env:CHATGPT_REMOTE_UPDATE_INTERVAL_HOURS) { [int]$env:CHATGPT_REMOTE_UPDATE_INTERVAL_HOURS } else { 24 }),
     [switch]$AllowInsecureTransport
 )
 
@@ -126,6 +126,68 @@ function Test-InstalledIntegrity {
     }
 }
 
+function Get-SourceCheckout {
+    $gitCommand = Get-Command git.exe -ErrorAction SilentlyContinue
+    $gitPath = @(
+        $(if ($gitCommand) { $gitCommand.Source }),
+        (Join-Path $env:LOCALAPPDATA 'Programs\Git\cmd\git.exe'),
+        (Join-Path $env:USERPROFILE '.cache\codex-runtimes\codex-primary-runtime\dependencies\native\git\cmd\git.exe'),
+        'C:\Program Files\Git\cmd\git.exe'
+    ) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) } | Select-Object -First 1
+    if (-not $gitPath) { return $null }
+    $rootOutput = @(& $gitPath -C $InstallRoot rev-parse --show-toplevel 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $rootOutput.Count -ne 1) { return $null }
+    $root = [IO.Path]::GetFullPath(([string]$rootOutput[0]).Trim())
+    $expectedInstallRoot = [IO.Path]::GetFullPath((Join-Path $root 'windows'))
+    if ($expectedInstallRoot -ne $InstallRoot) { return $null }
+    $origin = @(& $gitPath -C $root remote get-url origin 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $origin.Count -ne 1) { return $null }
+    $normalizedOrigin = ([string]$origin[0]).Trim().TrimEnd('/').ToLowerInvariant() -replace '\.git$', ''
+    $expectedRepository = $Repository.ToLowerInvariant()
+    if (-not ($normalizedOrigin.EndsWith("/$expectedRepository") -or $normalizedOrigin.EndsWith(":$expectedRepository"))) { return $null }
+    return [pscustomobject]@{ git = $gitPath; root = $root }
+}
+
+function Get-SourceRemoteState {
+    param($Checkout)
+
+    & $Checkout.git -C $Checkout.root fetch --quiet origin 'refs/heads/main:refs/remotes/origin/main'
+    if ($LASTEXITCODE -ne 0) { throw 'Git could not fetch origin/main.' }
+    $head = (@(& $Checkout.git -C $Checkout.root rev-parse HEAD 2>$null)[0]).Trim()
+    $target = (@(& $Checkout.git -C $Checkout.root rev-parse refs/remotes/origin/main 2>$null)[0]).Trim()
+    $version = (@(& $Checkout.git -C $Checkout.root show 'refs/remotes/origin/main:windows/VERSION' 2>$null)[0]).Trim()
+    if ($LASTEXITCODE -ne 0 -or $version -notmatch '^v\d+\.\d+\.\d+$') { throw 'origin/main does not contain a valid Windows VERSION.' }
+    $available = $false
+    if ($head -ne $target) {
+        & $Checkout.git -C $Checkout.root merge-base --is-ancestor HEAD $target
+        if ($LASTEXITCODE -eq 0) {
+            $available = $true
+        } else {
+            & $Checkout.git -C $Checkout.root merge-base --is-ancestor $target HEAD
+            if ($LASTEXITCODE -ne 0) { throw 'The source checkout has diverged from origin/main.' }
+        }
+    }
+    return [pscustomobject]@{ available = $available; target = $target; version = $version }
+}
+
+function Install-SourceCheckout {
+    param($Checkout, $RemoteState)
+
+    $branch = @(& $Checkout.git -C $Checkout.root branch --show-current 2>$null)
+    if ($LASTEXITCODE -ne 0 -or ([string]$branch[0]).Trim() -ne 'main') {
+        throw 'The source checkout is not on main; automatic update was skipped.'
+    }
+    $changes = @(& $Checkout.git -C $Checkout.root status --porcelain=v1 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $changes.Count -gt 0) {
+        throw 'The source checkout has local changes; automatic update was skipped.'
+    }
+    & $Checkout.git -C $Checkout.root merge --ff-only --quiet $RemoteState.target
+    if ($LASTEXITCODE -ne 0) { throw 'Git could not fast-forward the source checkout to origin/main.' }
+    $installedVersion = Get-LocalVersion
+    if ($installedVersion -ne $RemoteState.version) { throw "The updated source checkout reports $installedVersion instead of $($RemoteState.version)." }
+    return [ordered]@{ updated = $true; version = $RemoteState.version; method = 'git-fast-forward'; files = $null }
+}
+
 function Assert-SafeInstallDestination {
     param([string]$RelativePath)
     if ((Get-Item -LiteralPath $InstallRoot).Attributes -band [IO.FileAttributes]::ReparsePoint) {
@@ -153,6 +215,10 @@ function Install-Release {
         $checksumsPath = Join-Path $temporaryRoot $Release.checksumsName
         Invoke-WebRequest -Uri $Release.archiveUrl -OutFile $archivePath -UseBasicParsing -TimeoutSec 120
         Invoke-WebRequest -Uri $Release.checksumsUrl -OutFile $checksumsPath -UseBasicParsing -TimeoutSec 20
+        $archiveBytes = [IO.File]::ReadAllBytes($archivePath)
+        if ($archiveBytes.Length -lt 4 -or $archiveBytes[0] -ne 0x50 -or $archiveBytes[1] -ne 0x4b) {
+            throw 'The release download is not a ZIP archive. A proxy or network security gateway may have replaced it with a block page.'
+        }
         $escapedName = [regex]::Escape($Release.archiveName)
         $checksumLine = Get-Content -LiteralPath $checksumsPath | Where-Object { $_ -match "^([0-9a-fA-F]{64})\s+(?:\*)?$escapedName$" } | Select-Object -First 1
         if (-not $checksumLine) { throw "Published checksum for $($Release.archiveName) is missing." }
@@ -228,6 +294,7 @@ function Install-Release {
 }
 
 function Get-Probe {
+    $sourceCheckout = Get-SourceCheckout
     return [ordered]@{
         autoUpdateEnabled = -not (Test-AutoUpdateDisabled)
         checkIntervalHours = $CheckIntervalHours
@@ -236,6 +303,7 @@ function Get-Probe {
         localVersion = Get-LocalVersion
         repository = $Repository
         lastCheckPath = $lastCheckPath
+        installKind = if ($sourceCheckout) { 'git-checkout' } else { 'release' }
     }
 }
 
@@ -271,13 +339,25 @@ try {
         ([ordered]@{ skipped = $true; reason = 'update-already-running'; localVersion = Get-LocalVersion } | ConvertTo-Json)
         return
     }
+    $sourceCheckout = Get-SourceCheckout
+    if ($sourceCheckout) {
+        $remoteState = Get-SourceRemoteState -Checkout $sourceCheckout
+        Write-LastCheck $remoteState.version
+        $localVersion = Get-LocalVersion
+        if ($Action -eq 'Check' -or -not $remoteState.available) {
+            ([ordered]@{ available = $remoteState.available; latestVersion = $remoteState.version; localVersion = $localVersion; updated = $false; method = 'git-fast-forward' } | ConvertTo-Json)
+            return
+        }
+        (Install-SourceCheckout -Checkout $sourceCheckout -RemoteState $remoteState) | ConvertTo-Json -Depth 4
+        return
+    }
     $release = Get-LatestRelease
     Write-LastCheck $release.tag
     $localVersion = Get-LocalVersion
     $available = (ConvertTo-Version $release.tag) -gt (ConvertTo-Version $localVersion)
     if ($release.tag -eq $localVersion -and -not (Test-InstalledIntegrity)) { $available = $true }
     if ($Action -eq 'Check' -or -not $available) {
-        ([ordered]@{ available = $available; latestVersion = $release.tag; localVersion = $localVersion; updated = $false } | ConvertTo-Json)
+        ([ordered]@{ available = $available; latestVersion = $release.tag; localVersion = $localVersion; updated = $false; method = 'verified-release' } | ConvertTo-Json)
         return
     }
     (Install-Release $release) | ConvertTo-Json -Depth 4

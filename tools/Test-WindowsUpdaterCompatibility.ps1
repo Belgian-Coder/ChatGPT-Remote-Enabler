@@ -72,9 +72,24 @@ try {
         throw 'New updater did not accept the flat archive and star checksum format.'
     }
 
+    $blockedFixture = Join-Path $temporaryRoot 'blocked-fixture'
+    New-Item -ItemType Directory -Path $blockedFixture -Force | Out-Null
+    Copy-Item -Path (Join-Path $PreviousInstallRoot '*') -Destination $blockedFixture -Recurse -Force
+    $realHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    [IO.File]::WriteAllText((Join-Path $serverRoot $archiveName), '<!doctype html><title>blocked</title>', [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText((Join-Path $serverRoot $sumsName), "$realHash  $archiveName$([Environment]::NewLine)", [Text.UTF8Encoding]::new($false))
+    $securityBlockDetected = $false
+    try {
+        & $newUpdater -Action Update -LatestReleaseUrl "$baseUrl/release.json" -InstallRoot $blockedFixture -AllowInsecureTransport | Out-Null
+    } catch {
+        $securityBlockDetected = $_.Exception.Message -match 'proxy or network security gateway'
+    }
+    if (-not $securityBlockDetected) { throw 'The updater did not identify an HTML security block page.' }
+
     [pscustomobject]@{
         PreviousUpdaterAcceptedRelease = $true
         NewUpdaterAcceptedFlatStar = $true
+        SecurityBlockDetected = $true
         RootedArchive = $archiveName
         UpdatedVersion = $version
         RollbackCreated = Test-Path -LiteralPath $result.rollbackPath -PathType Container

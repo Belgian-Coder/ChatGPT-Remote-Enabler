@@ -114,6 +114,7 @@ assert.deepEqual([...authoritative.get(hostId)], ["peer-user", "archived-peer-ta
 
 const scoped = {
   generatedAt: now - 1000,
+  hostDisplayName: "PC-Marc",
   publisherVersion: 53,
   threadScope: "user-visible",
   threadScopeGeneratedAt: now - 1000,
@@ -129,6 +130,7 @@ assert.equal(visibility.scopedThreadsAreFresh({ ...scoped, publisherVersion: 52 
 
 const relayed = visibility.serializePeerInventory(scoped);
 assert.equal(Date.parse(relayed.threadScopeGeneratedAt), scoped.threadScopeGeneratedAt);
+assert.equal(relayed.hostDisplayName, "PC-Marc");
 const roundTripped = visibility.parseInventoryPayload({
   ...relayed,
   projects: [],
@@ -136,7 +138,17 @@ const roundTripped = visibility.parseInventoryPayload({
   tasks: [],
 }, false);
 assert.equal(roundTripped.threadScopeGeneratedAt, scoped.threadScopeGeneratedAt);
+assert.equal(roundTripped.hostDisplayName, "PC-Marc");
 assert.equal(visibility.scopedThreadsAreFresh(roundTripped), true);
+
+const syntheticName = visibility.parseInventoryPayload({
+  ...relayed,
+  hostDisplayName: "Remote env_e_deadbeef",
+  projects: [],
+  schemaVersion: 1,
+  tasks: [],
+}, false);
+assert.equal(syntheticName.hostDisplayName, null);
 
 assert.match(originalSource, /USER_VISIBLE_THREAD_SOURCE_KINDS = Object\.freeze\(\["cli", "vscode"\]\)/);
 assert.doesNotMatch(originalSource, /!authoritativeIds\.has\(task\.hostId\) && !task\.selected/);

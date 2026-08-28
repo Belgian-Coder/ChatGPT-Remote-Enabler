@@ -51,7 +51,7 @@
     "unknown",
   ]);
   const PUBLISHER_VERSION = 53;
-  const VERSION = 55;
+  const VERSION = 56;
   const TRUSTED_TITLE_SOURCES = new Set([
     "app-server-displayName",
     "app-server-entry-title",
@@ -971,6 +971,7 @@
     if (!Array.isArray(value.projects) || !Array.isArray(value.threads)) throw new Error("Remote project inventory is incomplete");
     if (Date.now() - generatedAt > REMOTE_INVENTORY_MAX_AGE_MS) throw new Error("Remote project inventory is stale");
     if (generatedAt - Date.now() > REMOTE_INVENTORY_FUTURE_SKEW_MS) throw new Error("Remote project inventory timestamp is in the future");
+    const hostDisplayName = !isSyntheticHostName(value.hostDisplayName) ? value.hostDisplayName.trim() : null;
     const projectsTruncated = value.projects.length > 500;
     const entries = value.projects.slice(0, 500);
     const projects = new Map();
@@ -1029,12 +1030,13 @@
         } catch {}
       }
     }
-    return { generatedAt, peers, projects: [...projects.values()].sort((left, right) => left.name.localeCompare(right.name)), projectsAuthoritative: !projectsTruncated, projectsTruncated, publisherVersion, tasks, tasksTruncated, threadScope, threadScopeGeneratedAt, threads, threadsAuthoritative, threadsTruncated };
+    return { generatedAt, hostDisplayName, peers, projects: [...projects.values()].sort((left, right) => left.name.localeCompare(right.name)), projectsAuthoritative: !projectsTruncated, projectsTruncated, publisherVersion, tasks, tasksTruncated, threadScope, threadScopeGeneratedAt, threads, threadsAuthoritative, threadsTruncated };
   }
 
   function serializePeerInventory(inventory) {
     const payload = {
       generatedAt: new Date(inventory.generatedAt).toISOString(),
+      hostDisplayName: inventory.hostDisplayName,
       projects: (inventory.projects ?? []).map((project) => ({
         name: project.name,
         rootPaths: [...new Set([...(project.rootPaths ?? []), project.cwd].filter(Boolean))],
@@ -1101,6 +1103,7 @@
           error: null,
           fetchedAt: Date.now(),
           generatedAt: parsed.generatedAt,
+          hostDisplayName: parsed.hostDisplayName,
           pending: false,
           projects: parsed.projects,
           projectsAuthoritative: parsed.projectsAuthoritative,
@@ -1125,6 +1128,7 @@
             error: null,
             fetchedAt: Date.now(),
             generatedAt: peer.generatedAt,
+            hostDisplayName: peer.hostDisplayName,
             pending: false,
             projects: peer.projects,
             projectsAuthoritative: peer.projectsAuthoritative,
@@ -1158,6 +1162,7 @@
           error: error?.message || String(error),
           fetchedAt: latest?.fetchedAt ?? 0,
           generatedAt: latest?.generatedAt,
+          hostDisplayName: latest?.hostDisplayName ?? current.hostDisplayName,
           pending: false,
           projects: latest?.projects ?? current.projects ?? [],
           publisherVersion: latest?.publisherVersion ?? current.publisherVersion,
@@ -1217,6 +1222,7 @@
             error: null,
             fetchedAt: Date.now(),
             generatedAt: parsed.generatedAt,
+            hostDisplayName: parsed.hostDisplayName,
             pending: false,
             projects: parsed.projects,
             projectsAuthoritative: parsed.projectsAuthoritative,
@@ -1323,7 +1329,7 @@
       }))).filter((project) => project.projectId && project.cwd);
       removeGossipedLocalInventoryDuplicates();
       const generatedAt = new Date().toISOString();
-      const payload = JSON.stringify({ generatedAt, peers, projects, publisherVersion: PUBLISHER_VERSION, schemaVersion: 1, tasks, threadScope: "user-visible", threadScopeGeneratedAt: generatedAt, threads });
+      const payload = JSON.stringify({ generatedAt, hostDisplayName: config.localDisplayName || null, peers, projects, publisherVersion: PUBLISHER_VERSION, schemaVersion: 1, tasks, threadScope: "user-visible", threadScopeGeneratedAt: generatedAt, threads });
       const dataBase64 = encodeText(payload);
       return sendRequestWithTimeout(runtime.requestClient, "fs/writeFile", { dataBase64, path: inventoryPath(codexHome) })
         .then(() => pushLocalInventoryToPeers(dataBase64));
@@ -1564,6 +1570,9 @@
     }
     const names = hostDiscovery.names;
     const availability = hostDiscovery.availability;
+    for (const [hostId, inventory] of state.remoteProjectInventories) {
+      if (!isSyntheticHostName(inventory?.hostDisplayName)) names.set(hostId, inventory.hostDisplayName.trim());
+    }
     const remoteRuntimes = discoverRemoteRuntimes(hostDiscovery.runtimes);
     for (const hostId of new Set([...names.keys(), ...availability.keys(), ...hostDiscovery.registeredProjects.values()].map((item) => typeof item === "string" ? item : item.hostId))) {
       if (hostId !== "local" && !remoteRuntimes.has(hostId)) availability.set(hostId, false);

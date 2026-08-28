@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.5.17
+
+- Publish each device's validated display name with its project and chat
+  inventory, and preserve that name when the inventory is relayed through a
+  connected peer.
+- Use the relayed name for device filters without treating peer gossip as
+  proof that the device is online. This replaces raw offline `Remote env_...`
+  labels with the correct device name while preserving accurate red/green
+  connectivity state. Windows and macOS use renderer v56.
+
 ## v1.5.16
 
 - Fix the macOS same-version integrity check so it no longer shadows zsh's

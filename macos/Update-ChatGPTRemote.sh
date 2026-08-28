@@ -139,14 +139,14 @@ download_release_metadata() {
 }
 
 installed_integrity_valid() {
-  local manifest="$install_root/RELEASE-MANIFEST.sha256" line hash relative path actual count=0
+  local manifest="$install_root/RELEASE-MANIFEST.sha256" line hash relative file_path actual count=0
   [[ -f "$manifest" && ! -L "$manifest" ]] || return 1
   while IFS= read -r line || [[ -n "$line" ]]; do
     line="${line%$'\r'}"; hash="${line%% *}"; relative="${line#* \*}"
     [[ ${#hash} -eq 64 && "$hash" != *[^0-9a-fA-F]* && -n "$relative" && "$relative" != /* && "$relative" != *'../'* && "$relative" != '../'* && "$relative" != *'/..' ]] || return 1
-    path="$install_root/$relative"
-    [[ -f "$path" && ! -L "$path" ]] || return 1
-    actual="$(/usr/bin/shasum -a 256 "$path" | awk '{print $1}')"
+    file_path="$install_root/$relative"
+    [[ -f "$file_path" && ! -L "$file_path" ]] || return 1
+    actual="$(/usr/bin/shasum -a 256 "$file_path" | /usr/bin/awk '{print $1}')"
     [[ "${actual:l}" == "${hash:l}" ]] || return 1
     (( count += 1 ))
   done < "$manifest"

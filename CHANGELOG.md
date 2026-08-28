@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.5.16
+
+- Fix the macOS same-version integrity check so it no longer shadows zsh's
+  special `path` parameter and temporarily clears `PATH` while validating an
+  installed release.
+- Use absolute system tools for the integrity digest pipeline and add a
+  regression contract preventing the special-variable collision from
+  returning. This stops every-launch update checks from needlessly
+  reinstalling an already valid release. The Mobile Projects renderer remains
+  v55 on Windows and macOS.
+
 ## v1.5.15
 
 - Make the Windows Node.js capability probe safe for Windows PowerShell 5.1 native argument handling, preventing the injected shortcut from failing at `[eval]:1` before proxy loading and injection.

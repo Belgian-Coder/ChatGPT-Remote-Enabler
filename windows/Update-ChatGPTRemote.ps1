@@ -127,6 +127,9 @@ function Test-InstalledIntegrity {
 }
 
 function Get-SourceCheckout {
+    $candidateRoot = Split-Path -Parent $InstallRoot
+    if (-not (Test-Path -LiteralPath (Join-Path $candidateRoot '.git'))) { return $null }
+
     $gitCommand = Get-Command git.exe -ErrorAction SilentlyContinue
     $gitPath = @(
         $(if ($gitCommand) { $gitCommand.Source }),
@@ -135,13 +138,26 @@ function Get-SourceCheckout {
         'C:\Program Files\Git\cmd\git.exe'
     ) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) } | Select-Object -First 1
     if (-not $gitPath) { return $null }
-    $rootOutput = @(& $gitPath -C $InstallRoot rev-parse --show-toplevel 2>$null)
-    if ($LASTEXITCODE -ne 0 -or $rootOutput.Count -ne 1) { return $null }
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $rootOutput = @(& $gitPath -C $InstallRoot rev-parse --show-toplevel 2>$null)
+        $rootExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    if ($rootExitCode -ne 0 -or $rootOutput.Count -ne 1) { return $null }
     $root = [IO.Path]::GetFullPath(([string]$rootOutput[0]).Trim())
     $expectedInstallRoot = [IO.Path]::GetFullPath((Join-Path $root 'windows'))
     if ($expectedInstallRoot -ne $InstallRoot) { return $null }
-    $origin = @(& $gitPath -C $root remote get-url origin 2>$null)
-    if ($LASTEXITCODE -ne 0 -or $origin.Count -ne 1) { return $null }
+    try {
+        $ErrorActionPreference = 'Continue'
+        $origin = @(& $gitPath -C $root remote get-url origin 2>$null)
+        $originExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    if ($originExitCode -ne 0 -or $origin.Count -ne 1) { return $null }
     $normalizedOrigin = ([string]$origin[0]).Trim().TrimEnd('/').ToLowerInvariant() -replace '\.git$', ''
     $expectedRepository = $Repository.ToLowerInvariant()
     if (-not ($normalizedOrigin.EndsWith("/$expectedRepository") -or $normalizedOrigin.EndsWith(":$expectedRepository"))) { return $null }

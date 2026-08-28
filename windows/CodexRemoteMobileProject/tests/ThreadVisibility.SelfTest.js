@@ -11,7 +11,7 @@ const testSource = originalSource
   .replace("(() => {", "globalThis.__visibilityTest = (() => {")
   .replace(
     "  return install();\n})();",
-    "  return { collectAuthoritativeThreadIds, parseInventoryPayload, preferredThreadInventory, pruneVerifiedThreadIds, rememberVerifiedThreadIds, scopedThreadsAreFresh, serializePeerInventory, state, taskIsAuthoritative };\n})();",
+    "  return { collectAuthoritativeThreadIds, parseInventoryPayload, preferredThreadInventory, pruneVerifiedThreadIds, rememberVerifiedThreadIds, removeGossipedLocalInventoryDuplicates, scopedThreadsAreFresh, serializePeerInventory, state, taskIsAuthoritative };\n})();",
   );
 
 const now = Date.now();
@@ -149,6 +149,84 @@ const syntheticName = visibility.parseInventoryPayload({
   tasks: [],
 }, false);
 assert.equal(syntheticName.hostDisplayName, null);
+
+visibility.state.remoteProjectInventories.clear();
+visibility.state.hostConnectivity.clear();
+visibility.state.remoteCodexHomes.clear();
+visibility.state.remoteRuntimeCache.clear();
+visibility.state.threadInventories.set("local", { error: null, threads: [{ id: "local-user" }] });
+visibility.state.localInventoryProjects = [{ cwd: "C:\\work\\local-project" }];
+
+const selfEchoHostId = "remote-control:test-self";
+const distinctSameNameHostId = "remote-control:test-distinct";
+const directSameNameHostId = "remote-control:test-direct";
+const relayToDirectConnectivityHostId = "remote-control:test-relay-to-direct-connectivity";
+const relayToDirectRuntimeHostId = "remote-control:test-relay-to-direct-runtime";
+const matchingLocalInventory = {
+  error: null,
+  fetchedAt: now,
+  generatedAt: now,
+  hostDisplayName: "WINDOWS11-VM",
+  projects: [{ cwd: "C:\\work\\local-project", rootPaths: ["C:\\work\\local-project"] }],
+  threads: [{ id: "local-user" }],
+  threadsAuthoritative: true,
+};
+visibility.state.remoteProjectInventories.set(selfEchoHostId, {
+  ...matchingLocalInventory,
+  sourcePeerHostId: "remote-control:test-relay",
+});
+visibility.state.hostConnectivity.set(selfEchoHostId, { available: false, checkedAt: now });
+visibility.state.remoteCodexHomes.set(selfEchoHostId, "C:\\remote-home");
+visibility.state.remoteRuntimeCache.set(selfEchoHostId, { requestClient: {} });
+visibility.state.remoteRuntimeScannedAt = now;
+
+visibility.state.remoteProjectInventories.set(distinctSameNameHostId, {
+  ...matchingLocalInventory,
+  hostDisplayName: "windows11-vm",
+  projects: [{ cwd: "D:\\work\\other-project", rootPaths: ["D:\\work\\other-project"] }],
+  sourcePeerHostId: "remote-control:test-relay",
+  threads: [{ id: "distinct-user" }],
+});
+visibility.state.hostConnectivity.set(distinctSameNameHostId, { available: false, checkedAt: now });
+
+visibility.state.remoteProjectInventories.set(directSameNameHostId, {
+  ...matchingLocalInventory,
+  sourcePeerHostId: null,
+});
+visibility.state.hostConnectivity.set(directSameNameHostId, { available: true, checkedAt: now });
+const directRuntime = { requestClient: { sendRequest() {} } };
+visibility.state.remoteRuntimeCache.set(directSameNameHostId, directRuntime);
+
+visibility.state.remoteProjectInventories.set(relayToDirectConnectivityHostId, {
+  ...matchingLocalInventory,
+  sourcePeerHostId: "remote-control:test-relay",
+});
+visibility.state.hostConnectivity.set(relayToDirectConnectivityHostId, { available: true, checkedAt: now });
+
+visibility.state.remoteProjectInventories.set(relayToDirectRuntimeHostId, {
+  ...matchingLocalInventory,
+  sourcePeerHostId: "remote-control:test-relay",
+});
+visibility.state.hostConnectivity.set(relayToDirectRuntimeHostId, { available: false, checkedAt: now });
+const relayToDirectRuntime = { requestClient: { sendRequest() {} } };
+visibility.state.remoteRuntimeCache.set(relayToDirectRuntimeHostId, relayToDirectRuntime);
+
+visibility.removeGossipedLocalInventoryDuplicates();
+assert.equal(visibility.state.remoteProjectInventories.has(selfEchoHostId), false);
+assert.equal(visibility.state.hostConnectivity.has(selfEchoHostId), false);
+assert.equal(visibility.state.remoteCodexHomes.has(selfEchoHostId), false);
+assert.equal(visibility.state.remoteRuntimeCache.has(selfEchoHostId), false);
+assert.equal(visibility.state.remoteRuntimeScannedAt, 0);
+assert.equal(visibility.state.remoteProjectInventories.has(distinctSameNameHostId), true);
+assert.equal(visibility.state.hostConnectivity.has(distinctSameNameHostId), true);
+assert.equal(visibility.state.remoteProjectInventories.has(directSameNameHostId), true);
+assert.equal(visibility.state.hostConnectivity.get(directSameNameHostId).available, true);
+assert.equal(visibility.state.remoteRuntimeCache.get(directSameNameHostId), directRuntime);
+assert.equal(visibility.state.remoteProjectInventories.has(relayToDirectConnectivityHostId), true);
+assert.equal(visibility.state.hostConnectivity.get(relayToDirectConnectivityHostId).available, true);
+assert.equal(visibility.state.remoteProjectInventories.has(relayToDirectRuntimeHostId), true);
+assert.equal(visibility.state.hostConnectivity.get(relayToDirectRuntimeHostId).available, false);
+assert.equal(visibility.state.remoteRuntimeCache.get(relayToDirectRuntimeHostId), relayToDirectRuntime);
 
 assert.match(originalSource, /USER_VISIBLE_THREAD_SOURCE_KINDS = Object\.freeze\(\["cli", "vscode"\]\)/);
 assert.doesNotMatch(originalSource, /!authoritativeIds\.has\(task\.hostId\) && !task\.selected/);

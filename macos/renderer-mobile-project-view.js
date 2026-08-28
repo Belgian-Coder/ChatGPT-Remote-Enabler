@@ -51,7 +51,7 @@
     "unknown",
   ]);
   const PUBLISHER_VERSION = 53;
-  const VERSION = 56;
+  const VERSION = 57;
   const TRUSTED_TITLE_SOURCES = new Set([
     "app-server-displayName",
     "app-server-entry-title",
@@ -845,9 +845,21 @@
     return threadsMatch && pathsMatch;
   }
 
+  function removeRemoteHostState(hostId) {
+    state.remoteProjectInventories.delete(hostId);
+    state.hostConnectivity.delete(hostId);
+    state.remoteCodexHomes.delete(hostId);
+    if (state.remoteRuntimeCache.delete(hostId)) state.remoteRuntimeScannedAt = 0;
+  }
+
+  function remoteHostHasDirectProof(hostId) {
+    if (state.hostConnectivity.get(hostId)?.available === true) return true;
+    return typeof state.remoteRuntimeCache.get(hostId)?.requestClient?.sendRequest === "function";
+  }
+
   function removeGossipedLocalInventoryDuplicates() {
     for (const [hostId, inventory] of state.remoteProjectInventories) {
-      if (inventory.sourcePeerHostId && inventoryMatchesLocal(inventory)) state.remoteProjectInventories.delete(hostId);
+      if (inventory.sourcePeerHostId && !remoteHostHasDirectProof(hostId) && inventoryMatchesLocal(inventory)) removeRemoteHostState(hostId);
     }
   }
 

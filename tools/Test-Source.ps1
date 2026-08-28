@@ -30,6 +30,7 @@ $powershell = @(
     'tools\Build-Release.ps1',
     'tools\Test-Source.ps1',
     'tools\Test-WindowsUpdaterCompatibility.ps1'
+    'tools\Test-WindowsUpdaterNonGit.ps1'
     'tools\Test-MacOSUpdaterCompatibility.ps1'
     'tools\Test-WindowsNodeProbe.ps1'
     'tools\Test-Maintenance.ps1',
@@ -54,7 +55,7 @@ if ((Get-FileHash -LiteralPath $windowsMaintenance -Algorithm SHA256).Hash -ne (
 }
 $renderer = Get-Content -LiteralPath $windowsRenderer -Raw
 $requiredContracts = @(
-    'const VERSION = 56;',
+    'const VERSION = 57;',
     'hostDisplayName: config.localDisplayName || null',
     'codex-remote-mobile-verified-thread-ids-v2',
     'THREAD_VISIBILITY_CONTRACT_VERSION',
@@ -132,6 +133,9 @@ if ($LASTEXITCODE -ne 0) { throw 'Proxy configuration self-test failed.' }
 & (Join-Path $root 'tools\Test-WindowsNodeProbe.ps1') -NodePath $node
 if ($LASTEXITCODE -ne 0) { throw 'Windows PowerShell Node capability probe self-test failed.' }
 
+& (Join-Path $root 'tools\Test-WindowsUpdaterNonGit.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Windows packaged updater self-test failed.' }
+
 & (Join-Path $root 'tools\Test-MacOSUpdaterCompatibility.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'macOS updater compatibility self-test failed.' }
 
@@ -141,12 +145,13 @@ if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
 [pscustomobject]@{
     JavaScriptFiles = $javascript.Count
     PowerShellFiles = $powershell.Count
-    RendererVersion = 56
+    RendererVersion = 57
     RendererParity = $true
     MaintenanceParity = $true
     MaintenanceSelfTest = $true
     ProxyConfigurationSelfTest = $true
     WindowsPowerShellNodeProbeSelfTest = $true
+    WindowsPackagedUpdaterSelfTest = $true
     MacOSUpdaterCompatibilitySelfTest = $true
     StableRendererSelfTest = $true
     TitleProvenanceSelfTest = $true

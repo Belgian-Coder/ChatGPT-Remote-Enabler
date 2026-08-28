@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.5.18
+
+- Remove every derived remote-state entry for a transitive inventory only
+  after its thread/project fingerprint proves it is a local self-echo. This
+  prevents an orphan connectivity record from rendering the local machine as
+  a red, zero-task raw environment ID.
+- Preserve peers that already have direct connectivity or a live request
+  client, plus genuinely distinct same-named devices. Renderer v57 is
+  byte-identical on Windows and macOS with transition and cleanup regressions.
+- Make packaged Windows release detection quiet under Windows PowerShell 5.1:
+  non-Git layouts are rejected before Git runs, while genuine clean checkout
+  fast-forward behavior remains unchanged. A packaged Probe/Auto regression
+  covers the exact controller capture path.
+
 ## v1.5.17
 
 - Publish each device's validated display name with its project and chat

@@ -18,6 +18,10 @@ Download your platform archive from [Releases](https://github.com/belgian-coder/
 ```
 
 If the device requires a configured HTTP(S) proxy, add `-UseProxy` while installing those same shortcuts. No separate proxy shortcut is created.
+Copy an existing User-scope proxy into the launcher's protected storage with
+`ProxyConfiguration.ps1 -Action Install -ImportUserEnvironment`; the importer
+preserves all shared User- and Machine-scope environment variables. Proxy
+isolation applies only inside the custom launcher's child process.
 
 **macOS Apple Silicon:**
 

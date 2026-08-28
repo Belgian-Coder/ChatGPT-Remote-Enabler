@@ -4,7 +4,6 @@ param(
     [string]$Action = 'Probe',
     [string]$ProxyUrl,
     [switch]$ImportUserEnvironment,
-    [switch]$RemoveUserEnvironment,
     [string]$ConfigPath
 )
 
@@ -19,25 +18,6 @@ function Get-UserEnvironmentProxy {
         if (-not [string]::IsNullOrWhiteSpace($candidate)) { return $candidate }
     }
     throw 'No User-scope HTTPS_PROXY or HTTP_PROXY value is available to import.'
-}
-
-function Publish-EnvironmentChange {
-    if (-not ('ChatGPTRemote.NativeMethods' -as [type])) {
-        Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-namespace ChatGPTRemote {
-    public static class NativeMethods {
-        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-        public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint msg, UIntPtr wParam,
-            string lParam, uint flags, uint timeout, out UIntPtr result);
-    }
-}
-'@
-    }
-    $result = [UIntPtr]::Zero
-    [void][ChatGPTRemote.NativeMethods]::SendMessageTimeout([IntPtr]0xffff, 0x001A, [UIntPtr]::Zero,
-        'Environment', 0x0002, 5000, [ref]$result)
 }
 
 function Get-Probe {
@@ -72,12 +52,6 @@ switch ($Action) {
         }
         if ([string]::IsNullOrWhiteSpace($ProxyUrl)) { throw 'Install requires -ProxyUrl or -ImportUserEnvironment.' }
         Set-ChatGPTRemoteProxy -ProxyUrl $ProxyUrl -ConfigPath $ConfigPath -Confirm:$false
-        if ($RemoveUserEnvironment) {
-            foreach ($name in @('HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy')) {
-                [Environment]::SetEnvironmentVariable($name, $null, 'User')
-            }
-            Publish-EnvironmentChange
-        }
         Get-Probe | ConvertTo-Json -Depth 3
     }
     'Remove' {

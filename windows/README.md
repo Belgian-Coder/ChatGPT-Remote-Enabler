@@ -68,17 +68,19 @@ future clicks load the injected view rather than the normal app. Use
 `-UseProxy` only when this device needs proxy mode; it configures those same
 shortcuts with `--proxy`. The installer never creates a separate proxy
 shortcut and recoverably removes obsolete proxy entries. First import the
-existing User-scope proxy into DPAPI-protected local storage and remove the
-global variables that otherwise affect all ChatGPT traffic:
+existing User-scope proxy into DPAPI-protected local storage:
 
 ```powershell
-.\CodexRemoteMobileProject\ProxyConfiguration.ps1 -Action Install -ImportUserEnvironment -RemoveUserEnvironment
+.\CodexRemoteMobileProject\ProxyConfiguration.ps1 -Action Install -ImportUserEnvironment
 .\CodexRemoteMobileProject\ProxyConfiguration.ps1 -Action Probe
 ```
 
-Sign out or reboot once after migration so Explorer and future normal ChatGPT
-processes stop inheriting the old environment. Proxy mode then uses an HTTP
-CONNECT tunnel only for the ChatGPT Remote control WebSocket; other ChatGPT traffic is unchanged. TLS verification stays
+The import copies the proxy into protected storage; it never removes or changes
+User- or Machine-scope environment variables needed by other software. The
+custom launcher clears only its own process-local inherited proxy variables
+before starting ChatGPT, then uses an HTTP CONNECT tunnel only for the ChatGPT
+Remote control WebSocket. Other applications retain their normal proxy
+environment. TLS verification stays
 enabled and includes certificates trusted by Windows. Proxy URLs containing
 credentials are rejected, and probe output never exposes the proxy host. An
 environment-variable fallback remains for older installations. Without `-UseProxy`, the shortcut uses direct

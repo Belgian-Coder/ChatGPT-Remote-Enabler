@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.5.14
+
+- Preserve shared User- and Machine-scope proxy environment variables when importing the Windows Remote-control proxy into DPAPI-protected storage.
+- Remove the proxy importer's environment-removal option and add a regression contract that rejects future User-scope environment mutation; proxy isolation remains limited to the custom launcher's child process.
+- Windows launchers are version 1.5.14.0; the Mobile Projects renderer remains v55 on Windows and macOS.
+
 ## v1.5.13
 
 - Store the Windows Remote-control proxy in a per-user DPAPI-protected file and clear inherited proxy variables before starting ChatGPT, so only the injected Remote WebSocket receives the proxy URL.

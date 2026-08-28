@@ -30,6 +30,7 @@ $powershell = @(
     'tools\Build-Release.ps1',
     'tools\Test-Source.ps1',
     'tools\Test-WindowsUpdaterCompatibility.ps1'
+    'tools\Test-WindowsNodeProbe.ps1'
     'tools\Test-Maintenance.ps1',
     'tools\Test-ProxyConfiguration.ps1'
 )
@@ -126,6 +127,9 @@ if ($LASTEXITCODE -ne 0) { throw 'Maintenance self-test failed.' }
 & (Join-Path $root 'tools\Test-ProxyConfiguration.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Proxy configuration self-test failed.' }
 
+& (Join-Path $root 'tools\Test-WindowsNodeProbe.ps1') -NodePath $node
+if ($LASTEXITCODE -ne 0) { throw 'Windows PowerShell Node capability probe self-test failed.' }
+
 git -C $root diff --check
 if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
 
@@ -137,6 +141,7 @@ if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
     MaintenanceParity = $true
     MaintenanceSelfTest = $true
     ProxyConfigurationSelfTest = $true
+    WindowsPowerShellNodeProbeSelfTest = $true
     StableRendererSelfTest = $true
     TitleProvenanceSelfTest = $true
     ThreadVisibilitySelfTest = $true

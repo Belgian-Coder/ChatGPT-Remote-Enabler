@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.5.15
+
+- Make the Windows Node.js capability probe safe for Windows PowerShell 5.1 native argument handling, preventing the injected shortcut from failing at `[eval]:1` before proxy loading and injection.
+- Add a regression test that executes the exact quote-free capability check through Windows PowerShell 5.1. Windows launchers are version 1.5.15.0; the Mobile Projects renderer remains v55 on Windows and macOS.
+
 ## v1.5.14
 
 - Preserve shared User- and Machine-scope proxy environment variables when importing the Windows Remote-control proxy into DPAPI-protected storage.

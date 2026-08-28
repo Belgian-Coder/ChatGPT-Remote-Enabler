@@ -56,7 +56,7 @@ function Resolve-NodePath {
     ) | Where-Object { $_ } | Select-Object -Unique
     foreach ($candidate in $candidates) {
         if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
-        & $candidate -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 22 && typeof WebSocket === "function" ? 0 : 1)' 2>$null
+        & $candidate -e 'process.exit(parseInt(process.versions.node) >= 22 && globalThis.WebSocket ? 0 : 1)' 2>$null
         if ($LASTEXITCODE -eq 0) { return $candidate }
     }
     throw 'Node.js 22 or newer with built-in WebSocket support was not found for the interactive user.'

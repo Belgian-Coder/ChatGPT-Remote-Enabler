@@ -4,6 +4,8 @@ set -euo pipefail
 action="${1:-check}"
 action="${action:l}"
 script_path="${0:A}"
+[[ -n "${HOME:-}" && -d "$HOME" ]] || { print -u2 "A readable user home directory is required."; exit 2; }
+cd -- "$HOME" || { print -u2 "Could not enter the user home directory."; exit 2; }
 install_root="${CHATGPT_REMOTE_UPDATE_INSTALL_ROOT:-${script_path:h}}"
 install_root="${install_root:A}"
 repository="${CHATGPT_REMOTE_UPDATE_REPOSITORY:-Belgian-Coder/ChatGPT-Remote-Enabler}"
@@ -99,6 +101,13 @@ probe() {
   print -r -- "{\"autoUpdateEnabled\":$enabled,\"checkIntervalHours\":$check_interval_hours,\"installRoot\":\"${install_root//\\/\\\\}\",\"latestReleaseUrl\":\"$(release_url)\",\"localVersion\":\"$(local_version)\",\"repository\":\"$repository\"}"
 }
 
+record_check() {
+  local tag="$1" temporary_check="$state_root/last-check.json.tmp.$$"
+  mkdir -p "$state_root"
+  print -r -- "{\"checkedAt\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"repository\":\"$repository\",\"tag\":\"$tag\"}" > "$temporary_check"
+  mv -f -- "$temporary_check" "$last_check"
+}
+
 acquire_lock() {
   mkdir -p "$state_root"
   if mkdir "$lock_dir" 2>/dev/null; then lock_acquired=1; return 0; fi
@@ -175,19 +184,20 @@ version_is_newer() {
 }
 
 rollback_copies() {
-  local backup_root="$1" index relative destination backup existed
+  local backup_root="$1" index relative destination backup existed failed=0
   for (( index=${#copied_relatives[@]}; index>=1; index-- )); do
     relative="${copied_relatives[$index]}"
     existed="${copied_existed[$index]}"
     destination="$install_root/$relative"
     backup="$backup_root/$relative"
     if [[ "$existed" == 1 ]]; then
-      mkdir -p "${destination:h}"
-      cp -p -- "$backup" "$destination" || true
+      mkdir -p "${destination:h}" || { failed=1; continue; }
+      cp -p -- "$backup" "$destination" || failed=1
     elif [[ -f "$destination" ]]; then
-      rm -f -- "$destination" || true
+      rm -f -- "$destination" || failed=1
     fi
   done
+  (( failed == 0 ))
 }
 
 install_release() {
@@ -249,8 +259,12 @@ install_release() {
   local safe_local_version="$(local_version)"
   safe_local_version="${safe_local_version//[^A-Za-z0-9._-]/_}"
   safe_local_version="${safe_local_version[1,48]}"
-  local backup_root="$rollback_root/$(date +%Y%m%d-%H%M%S)-$safe_local_version"
-  mkdir -p "$backup_root"
+  mkdir -p "$rollback_root"
+  local backup_base="$rollback_root/$(date +%Y%m%d-%H%M%S)-$safe_local_version"
+  local backup_root="$backup_base"
+  if ! mkdir "$backup_root" 2>/dev/null; then
+    backup_root="$(mktemp -d "$backup_base.XXXXXX")"
+  fi
   typeset -ga copied_relatives=() copied_existed=()
   local destination backup existed
   for relative in "${relatives[@]}"; do
@@ -258,10 +272,10 @@ install_release() {
     assert_safe_destination "$relative" || { rollback_copies "$backup_root"; return 1; }
     destination="$install_root/$relative"; backup="$backup_root/$relative"; existed=0
     if [[ -f "$destination" ]]; then existed=1; mkdir -p "${backup:h}"; cp -p -- "$destination" "$backup" && cmp -s -- "$destination" "$backup" || { rollback_copies "$backup_root"; return 1; }; fi
-    mkdir -p "${destination:h}"
-    cp -p -- "$release_root/$relative" "$destination" || { rollback_copies "$backup_root"; return 1; }
-    [[ "$relative" == *.sh ]] && chmod 755 "$destination"
+    mkdir -p "${destination:h}" || { rollback_copies "$backup_root"; return 1; }
     copied_relatives+=("$relative"); copied_existed+=("$existed")
+    cp -p -- "$release_root/$relative" "$destination" || { rollback_copies "$backup_root"; return 1; }
+    if [[ "$relative" == *.sh ]]; then chmod 755 "$destination" || { rollback_copies "$backup_root"; return 1; }; fi
   done
   local previous_manifest="$install_root/RELEASE-MANIFEST.sha256" old_hash old_relative old_actual
   if [[ -f "$previous_manifest" ]]; then
@@ -274,8 +288,8 @@ install_release() {
       old_actual="$(/usr/bin/shasum -a 256 "$destination" | awk '{print $1}')"
       [[ "${old_actual:l}" == "${old_hash:l}" ]] || continue
       mkdir -p "${backup:h}"; cp -p -- "$destination" "$backup" && cmp -s -- "$destination" "$backup" || { rollback_copies "$backup_root"; return 1; }
-      rm -f -- "$destination" || { rollback_copies "$backup_root"; return 1; }
       copied_relatives+=("$old_relative"); copied_existed+=(1)
+      rm -f -- "$destination" || { rollback_copies "$backup_root"; return 1; }
     done < "$previous_manifest"
   fi
   relative='Update-ChatGPTRemote.sh'
@@ -283,14 +297,19 @@ install_release() {
     assert_safe_destination "$relative" || { rollback_copies "$backup_root"; return 1; }
     destination="$install_root/$relative"; backup="$backup_root/$relative"; existed=0
     if [[ -f "$destination" ]]; then existed=1; cp -p -- "$destination" "$backup" && cmp -s -- "$destination" "$backup" || { rollback_copies "$backup_root"; return 1; }; fi
-    cp -p -- "$release_root/$relative" "$destination" || { rollback_copies "$backup_root"; return 1; }
-    chmod 755 "$destination"
     copied_relatives+=("$relative"); copied_existed+=("$existed")
+    cp -p -- "$release_root/$relative" "$destination" || { rollback_copies "$backup_root"; return 1; }
+    chmod 755 "$destination" || { rollback_copies "$backup_root"; return 1; }
   fi
   relative='RELEASE-MANIFEST.sha256'; assert_safe_destination "$relative" || { rollback_copies "$backup_root"; return 1; }; destination="$install_root/$relative"; backup="$backup_root/$relative"; existed=0
   if [[ -f "$destination" ]]; then existed=1; cp -p -- "$destination" "$backup" && cmp -s -- "$destination" "$backup" || { rollback_copies "$backup_root"; return 1; }; fi
-  cp -p -- "$manifest" "$destination" || { rollback_copies "$backup_root"; return 1; }
   copied_relatives+=("$relative"); copied_existed+=("$existed")
+  cp -p -- "$manifest" "$destination" || { rollback_copies "$backup_root"; return 1; }
+  if ! installed_integrity_valid; then
+    print -u2 "Installed release failed final manifest verification; restoring the previous files."
+    rollback_copies "$backup_root"
+    return 1
+  fi
   print -r -- "{\"updated\":true,\"version\":\"$tag\",\"files\":${#relatives[@]},\"rollbackPath\":\"$backup_root\"}"
 }
 
@@ -324,12 +343,11 @@ temporary_root="$(mktemp -d "${TMPDIR:-/tmp}/chatgpt-remote-update.XXXXXX")"
 typeset metadata="$temporary_root/release.json" values tag archive_name archive_url sums_name sums_url
 values="$(download_release_metadata "$node_bin" "$metadata")"
 IFS=$'\t' read -r tag archive_name archive_url sums_name sums_url <<< "$values"
-mkdir -p "$state_root"
-print -r -- "{\"checkedAt\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"repository\":\"$repository\",\"tag\":\"$tag\"}" > "$last_check"
 typeset current="$(local_version)" available=false
 if version_is_newer "$node_bin" "$tag" "$current"; then available=true; fi
 if [[ "$tag" == "$current" ]] && ! installed_integrity_valid; then available=true; fi
 if [[ "$action" == check || "$available" == false ]]; then
+  record_check "$tag"
   print -r -- "{\"available\":$available,\"latestVersion\":\"$tag\",\"localVersion\":\"$current\",\"updated\":false}"
   exit 0
 fi
@@ -338,3 +356,4 @@ lock_acquired=0
 temporary_root=""
 acquire_lock || { print -u2 'Could not reacquire update lock.'; exit 1; }
 install_release "$tag" "$archive_name" "$archive_url" "$sums_name" "$sums_url"
+record_check "$tag"

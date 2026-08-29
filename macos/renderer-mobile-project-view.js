@@ -24,6 +24,7 @@
   const REMOTE_UNREAD_ACK_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
   const LOCAL_REMOTE_PROJECTS_TTL_MS = 15000;
   const NATIVE_INVENTORY_REFRESH_MS = 15000;
+  const NATIVE_INVENTORY_ERROR_RETRY_MS = 60000;
   const REMOTE_INVENTORY_FILENAME = "remote-project-inventory-v1.json";
   const REMOTE_INVENTORY_MAX_AGE_MS = 180000;
   const REMOTE_INVENTORY_ACTIVE_MS = 5000;
@@ -34,7 +35,7 @@
   const REMOTE_INVENTORY_IDLE_TTL_MS = 30000;
   const REMOTE_TASK_STATUS_MAX_AGE_MS = 30000;
   const REQUEST_TIMEOUT_MS = 12000;
-  const MAX_THREAD_LIST_PAGES = 2000;
+  const MAX_THREAD_LIST_PAGES = 200;
   const THREAD_VISIBILITY_CONTRACT_VERSION = 53;
   const VERIFIED_THREAD_IDS_KEY = "codex-remote-mobile-verified-thread-ids-v2";
   const VERIFIED_THREAD_IDS_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -51,7 +52,7 @@
     "unknown",
   ]);
   const PUBLISHER_VERSION = 53;
-  const VERSION = 57;
+  const VERSION = 58;
   const TRUSTED_TITLE_SOURCES = new Set([
     "app-server-displayName",
     "app-server-entry-title",
@@ -114,6 +115,7 @@
     localInventoryPublisherPending: false,
     localInventoryPublisherTimer: null,
     localInventoryStatusSignature: "",
+    localRuntimeHostIds: new Set(),
     localRegisteredProjects: new Map(),
     localRegisteredProjectsError: null,
     localRegisteredProjectsFetchedAt: 0,
@@ -842,19 +844,50 @@
     const localPaths = new Set(state.localInventoryProjects.map((project) => normalizePath(project.cwd)));
     const remotePaths = new Set((inventory?.projects ?? []).flatMap((project) => [project.cwd, ...(project.rootPaths ?? [])]).filter(Boolean).map(normalizePath));
     const pathsMatch = localPaths.size > 0 && localPaths.size === remotePaths.size && [...localPaths].every((path) => remotePaths.has(path));
-    return threadsMatch && pathsMatch;
+    const localName = !isSyntheticHostName(config.localDisplayName) ? config.localDisplayName.trim().replace(/\.local$/iu, "").toLocaleLowerCase() : null;
+    const inventoryName = !isSyntheticHostName(inventory?.hostDisplayName) ? inventory.hostDisplayName.trim().replace(/\.local$/iu, "").toLocaleLowerCase() : null;
+    return threadsMatch && (pathsMatch || Boolean(localName && inventoryName === localName));
   }
 
   function removeRemoteHostState(hostId) {
+    state.localRuntimeHostIds.add(hostId);
     state.remoteProjectInventories.delete(hostId);
     state.hostConnectivity.delete(hostId);
     state.remoteCodexHomes.delete(hostId);
+    state.peerCacheStates.delete(hostId);
+    state.threadInventories.delete(hostId);
+    state.threadManagers.delete(hostId);
+    state.verifiedThreadIds.delete(hostId);
     if (state.remoteRuntimeCache.delete(hostId)) state.remoteRuntimeScannedAt = 0;
+  }
+
+  function purgeLocalRuntimeAliases() {
+    for (const hostId of state.localRuntimeHostIds) {
+      state.remoteProjectInventories.delete(hostId);
+      state.hostConnectivity.delete(hostId);
+      state.remoteCodexHomes.delete(hostId);
+      state.peerCacheStates.delete(hostId);
+      state.threadInventories.delete(hostId);
+      state.threadManagers.delete(hostId);
+      state.verifiedThreadIds.delete(hostId);
+      if (state.remoteRuntimeCache.delete(hostId)) state.remoteRuntimeScannedAt = 0;
+    }
   }
 
   function remoteHostHasDirectProof(hostId) {
     if (state.hostConnectivity.get(hostId)?.available === true) return true;
     return typeof state.remoteRuntimeCache.get(hostId)?.requestClient?.sendRequest === "function";
+  }
+
+  function directInventoryHasPriority(hostId, inventory, now = Date.now()) {
+    if (!remoteHostHasDirectProof(hostId) || !inventory) return false;
+    if (inventory.pending === true) return true;
+    if (inventory.error || inventory.sourcePeerHostId || inventory.sourcePeerCache === true) return false;
+    return Number.isFinite(inventory.fetchedAt)
+      && Number.isFinite(inventory.generatedAt)
+      && now - inventory.fetchedAt <= REMOTE_INVENTORY_IDLE_TTL_MS
+      && now - inventory.generatedAt <= REMOTE_INVENTORY_MAX_AGE_MS
+      && inventory.generatedAt - now <= REMOTE_INVENTORY_FUTURE_SKEW_MS;
   }
 
   function removeGossipedLocalInventoryDuplicates() {
@@ -1132,8 +1165,12 @@
         });
         for (const [peerHostId, peer] of parsed.peers) {
           if (peerHostId === hostId) continue;
-          if (inventoryMatchesLocal(peer)) continue;
+          if (inventoryMatchesLocal(peer)) {
+            if (!remoteHostHasDirectProof(peerHostId)) removeRemoteHostState(peerHostId);
+            continue;
+          }
           const existing = state.remoteProjectInventories.get(peerHostId);
+          if (directInventoryHasPriority(peerHostId, existing)) continue;
           if (Number.isFinite(existing?.generatedAt) && existing.generatedAt >= peer.generatedAt && existing.error == null) continue;
           const threadInventory = preferredThreadInventory(existing, peer);
           state.remoteProjectInventories.set(peerHostId, {
@@ -1226,9 +1263,10 @@
         if (state.disposed) return;
         const parsed = parseRemoteProjectInventory(result);
         const existing = state.remoteProjectInventories.get(host.id);
-        if (!Number.isFinite(existing?.generatedAt)
+        if (!directInventoryHasPriority(host.id, existing)
+          && (!Number.isFinite(existing?.generatedAt)
           || parsed.generatedAt >= existing.generatedAt
-          || Date.now() - existing.generatedAt > REMOTE_INVENTORY_MAX_AGE_MS) {
+          || Date.now() - existing.generatedAt > REMOTE_INVENTORY_MAX_AGE_MS)) {
           const threadInventory = preferredThreadInventory(existing, parsed);
           state.remoteProjectInventories.set(host.id, {
             error: null,
@@ -1472,6 +1510,7 @@
   }
 
   function collectModel() {
+    purgeLocalRuntimeAliases();
     const rows = [...document.querySelectorAll(ROW_SELECTOR)].filter((row) => !row.closest(`#${PANEL_ID}`));
     const authoritativeIds = collectAuthoritativeThreadIds();
     const taskMap = new Map();
@@ -1557,7 +1596,7 @@
     };
     const domNativeProjects = [...document.querySelectorAll('[data-sidebar-project-kind][role="listitem"]')]
       .map(metadataFromNativeProject)
-      .filter((project) => project && projectIsAuthoritative(project));
+      .filter((project) => project && !state.localRuntimeHostIds.has(project.hostId) && projectIsAuthoritative(project));
     const hostDiscovery = discoverHostNames();
     const nativeProjects = [...domNativeProjects];
     const nativeProjectIds = new Set(nativeProjects.map((project) => project.projectId));
@@ -1586,6 +1625,11 @@
       if (!isSyntheticHostName(inventory?.hostDisplayName)) names.set(hostId, inventory.hostDisplayName.trim());
     }
     const remoteRuntimes = discoverRemoteRuntimes(hostDiscovery.runtimes);
+    for (const hostId of state.localRuntimeHostIds) {
+      names.delete(hostId);
+      availability.delete(hostId);
+      remoteRuntimes.delete(hostId);
+    }
     for (const hostId of new Set([...names.keys(), ...availability.keys(), ...hostDiscovery.registeredProjects.values()].map((item) => typeof item === "string" ? item : item.hostId))) {
       if (hostId !== "local" && !remoteRuntimes.has(hostId)) availability.set(hostId, false);
     }
@@ -1865,17 +1909,22 @@
       .some((control) => control.navigationListId?.startsWith("codex:connection:"));
   }
 
+  function runtimeThreadInventoryDue(hostId, now = Date.now()) {
+    if (hostId === "local") return true;
+    return Number(state.threadInventories.get(hostId)?.retryAt ?? 0) <= now;
+  }
+
   async function hydrateNativeInventory() {
     if (state.inventoryHydrationPending) return;
     state.inventoryHydrationPending = true;
-    state.inventoryHydrationError = null;
     state.inventoryHydrationPhase = "listing-threads";
+    state.inventoryHydrationRounds = 0;
     state.inventoryHydrationTruncated = false;
     try {
       const discovery = discoverHostNames();
       const runtimes = new Map(discoverRemoteRuntimes(discovery.runtimes));
       if (state.localRuntime?.requestClient) runtimes.set("local", state.localRuntime);
-      const tasks = [...runtimes].map(async ([hostId, runtime]) => {
+      const tasks = [...runtimes].filter(([hostId]) => !state.localRuntimeHostIds.has(hostId) && runtimeThreadInventoryDue(hostId)).map(async ([hostId, runtime]) => {
         let timer = null;
         try {
           const request = listAllRuntimeThreads(runtime.requestClient, false, Date.now() + 90000);
@@ -1883,7 +1932,7 @@
             timer = setTimeout(() => reject(new Error("Thread inventory timed out")), 90000);
           });
           const result = await Promise.race([request, timeout]);
-          const inventory = { error: null, fetchedAt: Date.now(), hostId, pages: result.pages, threads: Array.isArray(result.threads) ? result.threads : [] };
+          const inventory = { error: null, fetchedAt: Date.now(), hostId, pages: result.pages, retryAt: 0, threads: Array.isArray(result.threads) ? result.threads : [], truncated: result.truncated === true };
           state.threadInventories.set(hostId, inventory);
           rememberVerifiedThreadIds(hostId, inventory.threads);
           state.inventoryHydrationRounds += inventory.pages;
@@ -1891,7 +1940,7 @@
           if (!state.disposed) schedule();
           return inventory;
         } catch (error) {
-          const inventory = { error: String(error?.message ?? error).slice(0, 240), fetchedAt: Date.now(), hostId, pages: 0, threads: state.threadInventories.get(hostId)?.threads ?? [] };
+          const inventory = { error: String(error?.message ?? error).slice(0, 240), fetchedAt: Date.now(), hostId, pages: 0, retryAt: Date.now() + NATIVE_INVENTORY_ERROR_RETRY_MS, threads: state.threadInventories.get(hostId)?.threads ?? [] };
           state.threadInventories.set(hostId, inventory);
           if (!state.disposed) schedule();
           return inventory;
@@ -1900,9 +1949,9 @@
         }
       });
       const results = await Promise.all(tasks);
-      const errors = results.filter((result) => result.error).map((result) => `${result.hostId}: ${result.error}`);
+      const errors = [...state.threadInventories.values()].filter((result) => result.error).map((result) => `${result.hostId}: ${result.error}`);
       state.inventoryHydrationError = errors.length ? errors.join("; ").slice(0, 240) : null;
-      state.inventoryHydrationTruncated = results.some((result) => result.threads.length >= 9800);
+      state.inventoryHydrationTruncated = results.some((result) => result.truncated === true || result.threads.length >= 9800);
     } catch (error) {
       state.inventoryHydrationError = String(error?.message ?? error).slice(0, 240);
     } finally {
@@ -2489,7 +2538,8 @@
       cursors.add(nextCursor);
       cursor = nextCursor;
     }
-    throw new Error("thread/list exceeded the bounded page limit");
+    if (includeInternalSources) throw new Error("thread/list exceeded the bounded page limit");
+    return { pages: MAX_THREAD_LIST_PAGES, threads, truncated: true };
   }
 
   async function listAllLocalThreads(archived = false, deadline = Number.POSITIVE_INFINITY) {
@@ -3558,7 +3608,7 @@
     document.getElementById(STYLE_ID)?.remove();
     state.active = false;
     const report = probe();
-    for (const collection of [state.autoRegistrationFailures, state.collapsed, state.hostConnectivity, state.localRegisteredProjects, state.peerCacheStates, state.remoteCodexHomes, state.remoteProjectInventories, state.remoteRuntimeCache, state.threadInventories, state.threadManagers, state.verifiedThreadIds]) collection.clear();
+    for (const collection of [state.autoRegistrationFailures, state.collapsed, state.hostConnectivity, state.localRegisteredProjects, state.localRuntimeHostIds, state.peerCacheStates, state.remoteCodexHomes, state.remoteProjectInventories, state.remoteRuntimeCache, state.threadInventories, state.threadManagers, state.verifiedThreadIds]) collection.clear();
     state.localFetchFromHost = null;
     state.localRuntime = null;
     state.navigationBridge = null;

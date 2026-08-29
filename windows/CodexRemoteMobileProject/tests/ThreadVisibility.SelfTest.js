@@ -11,7 +11,7 @@ const testSource = originalSource
   .replace("(() => {", "globalThis.__visibilityTest = (() => {")
   .replace(
     "  return install();\n})();",
-    "  return { collectAuthoritativeThreadIds, parseInventoryPayload, preferredThreadInventory, pruneVerifiedThreadIds, rememberVerifiedThreadIds, removeGossipedLocalInventoryDuplicates, scopedThreadsAreFresh, serializePeerInventory, state, taskIsAuthoritative };\n})();",
+    "  return { collectAuthoritativeThreadIds, directInventoryHasPriority, listAllRuntimeThreads, parseInventoryPayload, preferredThreadInventory, pruneVerifiedThreadIds, purgeLocalRuntimeAliases, rememberVerifiedThreadIds, removeGossipedLocalInventoryDuplicates, runtimeThreadInventoryDue, scopedThreadsAreFresh, serializePeerInventory, state, taskIsAuthoritative };\n})();",
   );
 
 const now = Date.now();
@@ -26,6 +26,7 @@ const storage = new Map([
   local: { contractVersion: 53, ids: ["verified-user"], verifiedAt: now },
 })]]);
 const context = vm.createContext({
+  __CODEX_REMOTE_MOBILE_CONFIG__: { localDisplayName: "Fixture-Local" },
   TextDecoder,
   TextEncoder,
   clearInterval,
@@ -114,7 +115,7 @@ assert.deepEqual([...authoritative.get(hostId)], ["peer-user", "archived-peer-ta
 
 const scoped = {
   generatedAt: now - 1000,
-  hostDisplayName: "PC-Marc",
+  hostDisplayName: "Fixture-Peer",
   publisherVersion: 53,
   threadScope: "user-visible",
   threadScopeGeneratedAt: now - 1000,
@@ -130,7 +131,7 @@ assert.equal(visibility.scopedThreadsAreFresh({ ...scoped, publisherVersion: 52 
 
 const relayed = visibility.serializePeerInventory(scoped);
 assert.equal(Date.parse(relayed.threadScopeGeneratedAt), scoped.threadScopeGeneratedAt);
-assert.equal(relayed.hostDisplayName, "PC-Marc");
+assert.equal(relayed.hostDisplayName, "Fixture-Peer");
 const roundTripped = visibility.parseInventoryPayload({
   ...relayed,
   projects: [],
@@ -138,7 +139,7 @@ const roundTripped = visibility.parseInventoryPayload({
   tasks: [],
 }, false);
 assert.equal(roundTripped.threadScopeGeneratedAt, scoped.threadScopeGeneratedAt);
-assert.equal(roundTripped.hostDisplayName, "PC-Marc");
+assert.equal(roundTripped.hostDisplayName, "Fixture-Peer");
 assert.equal(visibility.scopedThreadsAreFresh(roundTripped), true);
 
 const syntheticName = visibility.parseInventoryPayload({
@@ -162,11 +163,12 @@ const distinctSameNameHostId = "remote-control:test-distinct";
 const directSameNameHostId = "remote-control:test-direct";
 const relayToDirectConnectivityHostId = "remote-control:test-relay-to-direct-connectivity";
 const relayToDirectRuntimeHostId = "remote-control:test-relay-to-direct-runtime";
+const pathDriftSelfEchoHostId = "remote-control:test-path-drift-self";
 const matchingLocalInventory = {
   error: null,
   fetchedAt: now,
   generatedAt: now,
-  hostDisplayName: "WINDOWS11-VM",
+  hostDisplayName: "Fixture-Local",
   projects: [{ cwd: "C:\\work\\local-project", rootPaths: ["C:\\work\\local-project"] }],
   threads: [{ id: "local-user" }],
   threadsAuthoritative: true,
@@ -182,7 +184,7 @@ visibility.state.remoteRuntimeScannedAt = now;
 
 visibility.state.remoteProjectInventories.set(distinctSameNameHostId, {
   ...matchingLocalInventory,
-  hostDisplayName: "windows11-vm",
+  hostDisplayName: "fixture-local",
   projects: [{ cwd: "D:\\work\\other-project", rootPaths: ["D:\\work\\other-project"] }],
   sourcePeerHostId: "remote-control:test-relay",
   threads: [{ id: "distinct-user" }],
@@ -211,6 +213,13 @@ visibility.state.hostConnectivity.set(relayToDirectRuntimeHostId, { available: f
 const relayToDirectRuntime = { requestClient: { sendRequest() {} } };
 visibility.state.remoteRuntimeCache.set(relayToDirectRuntimeHostId, relayToDirectRuntime);
 
+visibility.state.remoteProjectInventories.set(pathDriftSelfEchoHostId, {
+  ...matchingLocalInventory,
+  projects: [{ cwd: "E:\\work\\stale-local-alias", rootPaths: ["E:\\work\\stale-local-alias"] }],
+  sourcePeerHostId: "remote-control:test-relay",
+});
+visibility.state.hostConnectivity.set(pathDriftSelfEchoHostId, { available: false, checkedAt: now });
+
 visibility.removeGossipedLocalInventoryDuplicates();
 assert.equal(visibility.state.remoteProjectInventories.has(selfEchoHostId), false);
 assert.equal(visibility.state.hostConnectivity.has(selfEchoHostId), false);
@@ -227,9 +236,81 @@ assert.equal(visibility.state.hostConnectivity.get(relayToDirectConnectivityHost
 assert.equal(visibility.state.remoteProjectInventories.has(relayToDirectRuntimeHostId), true);
 assert.equal(visibility.state.hostConnectivity.get(relayToDirectRuntimeHostId).available, false);
 assert.equal(visibility.state.remoteRuntimeCache.get(relayToDirectRuntimeHostId), relayToDirectRuntime);
+assert.equal(visibility.state.remoteProjectInventories.has(pathDriftSelfEchoHostId), false);
+assert.equal(visibility.state.hostConnectivity.has(pathDriftSelfEchoHostId), false);
+assert.equal(visibility.state.localRuntimeHostIds.has(pathDriftSelfEchoHostId), true);
+
+visibility.state.hostConnectivity.set(pathDriftSelfEchoHostId, { available: false, checkedAt: now });
+visibility.state.remoteCodexHomes.set(pathDriftSelfEchoHostId, "C:\\orphan-home");
+visibility.state.peerCacheStates.set(pathDriftSelfEchoHostId, { fetchedAt: now });
+visibility.state.threadInventories.set(pathDriftSelfEchoHostId, { error: null, threads: [{ id: "local-user" }] });
+visibility.state.threadManagers.set(pathDriftSelfEchoHostId, {});
+visibility.state.verifiedThreadIds.set(pathDriftSelfEchoHostId, { ids: new Set(["local-user"]), verifiedAt: now });
+visibility.state.remoteRuntimeCache.set(pathDriftSelfEchoHostId, { requestClient: { sendRequest() {} } });
+visibility.purgeLocalRuntimeAliases();
+for (const collection of [visibility.state.hostConnectivity, visibility.state.remoteCodexHomes, visibility.state.peerCacheStates, visibility.state.threadInventories, visibility.state.threadManagers, visibility.state.verifiedThreadIds, visibility.state.remoteRuntimeCache]) {
+  assert.equal(collection.has(pathDriftSelfEchoHostId), false);
+}
+
+const authorityHostId = "remote-control:test-authority";
+const healthyDirect = {
+  error: null,
+  fetchedAt: now,
+  generatedAt: now,
+  pending: false,
+  sourcePeerCache: false,
+  sourcePeerHostId: null,
+};
+visibility.state.hostConnectivity.set(authorityHostId, { available: true, checkedAt: now });
+assert.equal(visibility.directInventoryHasPriority(authorityHostId, healthyDirect, now), true);
+assert.equal(visibility.directInventoryHasPriority(authorityHostId, { ...healthyDirect, pending: true, sourcePeerHostId: "remote-control:test-relay" }, now), true);
+assert.equal(visibility.directInventoryHasPriority(authorityHostId, { ...healthyDirect, error: "temporary failure" }, now), false);
+assert.equal(visibility.directInventoryHasPriority(authorityHostId, { ...healthyDirect, fetchedAt: now - 30001 }, now), false);
+assert.equal(visibility.directInventoryHasPriority(authorityHostId, { ...healthyDirect, sourcePeerHostId: "remote-control:test-relay" }, now), false);
+assert.equal(visibility.directInventoryHasPriority(authorityHostId, { ...healthyDirect, sourcePeerCache: true }, now), false);
+visibility.state.hostConnectivity.set(authorityHostId, { available: false, checkedAt: now });
+visibility.state.remoteRuntimeCache.delete(authorityHostId);
+assert.equal(visibility.directInventoryHasPriority(authorityHostId, healthyDirect, now), false);
+
+const retryHostId = "remote-control:test-retry";
+visibility.state.threadInventories.set(retryHostId, { error: "temporarily unavailable", retryAt: now + 60000, threads: [] });
+assert.equal(visibility.runtimeThreadInventoryDue(retryHostId, now), false);
+assert.equal(visibility.runtimeThreadInventoryDue(retryHostId, now + 60000), true);
+visibility.state.threadInventories.set("local", { error: "temporary local failure", retryAt: now + 60000, threads: [] });
+assert.equal(visibility.runtimeThreadInventoryDue("local", now), true);
 
 assert.match(originalSource, /USER_VISIBLE_THREAD_SOURCE_KINDS = Object\.freeze\(\["cli", "vscode"\]\)/);
+assert.equal((originalSource.match(/directInventoryHasPriority\(/gu) ?? []).length, 3);
+assert.match(originalSource, /state\.inventoryHydrationRounds = 0;/u);
+assert.doesNotMatch(originalSource, /inventoryHydrationPending = true;\s*state\.inventoryHydrationError = null;/u);
+assert.match(originalSource, /MAX_THREAD_LIST_PAGES = 200;/u);
+assert.match(originalSource, /retryAt: Date\.now\(\) \+ NATIVE_INVENTORY_ERROR_RETRY_MS/u);
+assert.match(originalSource, /finally \{\s*state\.inventoryHydrationPending = false;/u);
 assert.doesNotMatch(originalSource, /!authoritativeIds\.has\(task\.hostId\) && !task\.selected/);
 assert.match(originalSource, /threadScopeGeneratedAt/);
 
-console.log("Thread visibility self-test passed.");
+(async () => {
+  let pageCalls = 0;
+  const changingCursorClient = {
+    async sendRequest() {
+      pageCalls += 1;
+      return { data: [{ id: `thread-${pageCalls}` }], nextCursor: `cursor-${pageCalls}` };
+    },
+  };
+  const bounded = await visibility.listAllRuntimeThreads(changingCursorClient, false, Number.POSITIVE_INFINITY, false);
+  assert.equal(pageCalls, 200);
+  assert.equal(bounded.pages, 200);
+  assert.equal(bounded.truncated, true);
+  assert.equal(bounded.threads.length, 200);
+
+  pageCalls = 0;
+  await assert.rejects(
+    visibility.listAllRuntimeThreads(changingCursorClient, false, Number.POSITIVE_INFINITY, true),
+    /bounded page limit/,
+  );
+  assert.equal(pageCalls, 200);
+  console.log("Thread visibility self-test passed.");
+})().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

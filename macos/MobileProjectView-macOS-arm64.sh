@@ -63,7 +63,21 @@ computer_name() {
 }
 
 debug_endpoint_ready() {
-  /usr/bin/curl --silent --fail --max-time 1 "http://127.0.0.1:$port/json" 2>/dev/null | /usr/bin/grep -Fq 'app://-/index.html'
+  local node_bin="$1"
+  /usr/bin/curl --silent --fail --max-time 1 "http://127.0.0.1:$port/json" 2>/dev/null \
+    | "$node_bin" -e '
+      let text = "";
+      process.stdin.setEncoding("utf8");
+      process.stdin.on("data", (chunk) => { text += chunk; });
+      process.stdin.on("end", () => {
+        try {
+          const targets = JSON.parse(text);
+          process.exit(Array.isArray(targets) && targets.some((target) => target?.url === "app://-/index.html") ? 0 : 1);
+        } catch {
+          process.exit(1);
+        }
+      });
+    '
 }
 
 app_is_running() {
@@ -90,7 +104,7 @@ enable_view() {
   maybe_auto_update
   local node_bin
   node_bin="$(resolve_node)"
-  if ! debug_endpoint_ready; then
+  if ! debug_endpoint_ready "$node_bin"; then
     if app_is_running; then
       print -u2 "$app_name is already running without the required loopback renderer endpoint. Quit it normally and reopen it with the ChatGPT Custom shortcut; refusing to start a second instance."
       return 1
@@ -99,11 +113,11 @@ enable_view() {
     /usr/bin/open -na "$app_name" --args --remote-debugging-address=127.0.0.1 --remote-debugging-port="$port"
     local attempt
     for attempt in {1..60}; do
-      debug_endpoint_ready && break
+      debug_endpoint_ready "$node_bin" && break
       sleep 0.5
     done
   fi
-  debug_endpoint_ready || { print -u2 "The loopback Codex renderer endpoint did not become ready."; return 1; }
+  debug_endpoint_ready "$node_bin" || { print -u2 "The loopback Codex renderer endpoint did not become ready."; return 1; }
   run_injector "$node_bin" enable
 }
 
@@ -124,10 +138,15 @@ install_startup() {
   fi
   mkdir -p "$launch_agents" "$rollback_root" "$log_root"
   chmod 755 "$script_path"
+  local stamp="$(date +%Y%m%d-%H%M%S)-$$"
+  local previous_plist="$rollback_root/$label-$stamp.plist"
+  local previous_exists=0
   if [[ -e "$plist" ]]; then
-    cp -p "$plist" "$rollback_root/$label-$(date +%Y%m%d-%H%M%S).plist"
+    cp -p "$plist" "$previous_plist"
+    previous_exists=1
   fi
   local temporary_plist="$plist.tmp.$$"
+  rm -f -- "$temporary_plist"
   /usr/bin/plutil -create xml1 "$temporary_plist"
   /usr/libexec/PlistBuddy -c "Add :Label string $label" "$temporary_plist"
   /usr/libexec/PlistBuddy -c "Add :ProgramArguments array" "$temporary_plist"
@@ -146,8 +165,24 @@ install_startup() {
   mv -f "$temporary_plist" "$plist"
   chmod 600 "$plist"
   /bin/launchctl bootout "gui/$UID" "$plist" 2>/dev/null || true
-  /bin/launchctl bootstrap "gui/$UID" "$plist"
-  /bin/launchctl print "gui/$UID/$label" >/dev/null
+  if ! /bin/launchctl bootstrap "gui/$UID" "$plist" \
+    || ! /bin/launchctl print "gui/$UID/$label" >/dev/null; then
+    /bin/launchctl bootout "gui/$UID" "$plist" 2>/dev/null || true
+    local failed_plist="$rollback_root/$label-failed-$stamp.plist"
+    mv -f -- "$plist" "$failed_plist" 2>/dev/null || true
+    if (( previous_exists )); then
+      cp -p -- "$previous_plist" "$plist"
+      if ! /bin/launchctl bootstrap "gui/$UID" "$plist" \
+        || ! /bin/launchctl print "gui/$UID/$label" >/dev/null; then
+        print -u2 "New LaunchAgent failed and the preserved previous LaunchAgent could not be reloaded: $previous_plist"
+        return 1
+      fi
+      print -u2 "New LaunchAgent failed to load; the previous definition was restored."
+    else
+      print -u2 "New LaunchAgent failed to load; no previous definition existed."
+    fi
+    return 1
+  fi
   print "Installed and loaded $plist"
 }
 
@@ -155,7 +190,7 @@ remove_startup() {
   mkdir -p "$rollback_root"
   /bin/launchctl bootout "gui/$UID" "$plist" 2>/dev/null || true
   if [[ -e "$plist" ]]; then
-    mv "$plist" "$rollback_root/$label-removed-$(date +%Y%m%d-%H%M%S).plist"
+    mv "$plist" "$rollback_root/$label-removed-$(date +%Y%m%d-%H%M%S)-$$.plist"
   fi
   print "Removed $label; the previous plist was preserved in $rollback_root"
 }

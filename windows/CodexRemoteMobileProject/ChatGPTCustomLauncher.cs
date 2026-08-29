@@ -9,8 +9,8 @@ using System.Threading;
 [assembly: AssemblyDescription("Starts ChatGPT with the audited remote Mobile projects injection")]
 [assembly: AssemblyCompany("Community")]
 [assembly: AssemblyProduct("ChatGPT Custom")]
-[assembly: AssemblyVersion("1.5.18.0")]
-[assembly: AssemblyFileVersion("1.5.18.0")]
+[assembly: AssemblyVersion("1.5.19.0")]
+[assembly: AssemblyFileVersion("1.5.19.0")]
 
 internal static class ChatGPTCustomLauncher
 {
@@ -50,55 +50,71 @@ internal static class ChatGPTCustomLauncher
         string startupScript = Path.Combine(root, "MobileProjectStartup.ps1");
         if (!File.Exists(startupScript))
         {
-            return Fail(11, false, "MobileProjectStartup.ps1 was not found beside the launcher.");
+            return Fail(11, startupMode, "MobileProjectStartup.ps1 was not found beside the launcher.");
         }
 
         bool created;
+        int resultCode = 0;
+        string failureMessage = null;
         using (var mutex = new Mutex(true, @"Local\ChatGPTCustomInjectionLauncher", out created))
         {
             if (!created)
             {
-                return 0;
+                resultCode = 15;
+                failureMessage = "Another ChatGPT Custom launch is still running. Wait for it to finish, then try again.";
             }
-
-            string executable = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System),
-                @"WindowsPowerShell\v1.0\powershell.exe");
-            if (!File.Exists(executable))
+            else
             {
-                return Fail(10, startupMode, "Windows PowerShell could not be found.");
-            }
-
-            var start = new ProcessStartInfo
-            {
-                FileName = executable,
-                Arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File \"" + startupScript +
-                    "\" -Action Run" + (useProxy ? " -UseProxy" : "") + (startupMode ? "" : " -ReplaceRunningApp"),
-                WorkingDirectory = root,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                WindowStyle = ProcessWindowStyle.Hidden
-            };
-
-            try
-            {
-                using (Process child = Process.Start(start))
+                string executable = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System),
+                    @"WindowsPowerShell\v1.0\powershell.exe");
+                if (!File.Exists(executable))
                 {
-                    if (child == null) return Fail(12, startupMode, "Windows PowerShell could not be started.");
-                    child.WaitForExit();
-                    if (child.ExitCode != 0)
+                    resultCode = 10;
+                    failureMessage = "Windows PowerShell could not be found.";
+                }
+                else
+                {
+                    var start = new ProcessStartInfo
                     {
-                        string log = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                            @"CodexRemoteFeatures\startup.log");
-                        return Fail(child.ExitCode, startupMode,
-                            "The injected launch could not be completed. If injection failed after ChatGPT was closed, ordinary ChatGPT was restored automatically.\r\n\r\nDetails: " + log);
+                        FileName = executable,
+                        Arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File \"" + startupScript +
+                            "\" -Action Run" + (useProxy ? " -UseProxy" : "") + (startupMode ? "" : " -ReplaceRunningApp"),
+                        WorkingDirectory = root,
+                        UseShellExecute = false,
+                        CreateNoWindow = true,
+                        WindowStyle = ProcessWindowStyle.Hidden
+                    };
+
+                    try
+                    {
+                        using (Process child = Process.Start(start))
+                        {
+                            if (child == null)
+                            {
+                                resultCode = 12;
+                                failureMessage = "Windows PowerShell could not be started.";
+                            }
+                            else
+                            {
+                                child.WaitForExit();
+                                if (child.ExitCode != 0)
+                                {
+                                    string log = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                                        @"CodexRemoteFeatures\startup.log");
+                                    resultCode = child.ExitCode;
+                                    failureMessage = "The injected launch could not be completed. If injection failed after ChatGPT was closed, ordinary ChatGPT was restored automatically.\r\n\r\nDetails: " + log;
+                                }
+                            }
+                        }
                     }
-                    return 0;
+                    catch
+                    {
+                        resultCode = 14;
+                        failureMessage = "The injected launcher failed before Windows PowerShell could complete.";
+                    }
                 }
             }
-            catch
-            {
-                return Fail(14, startupMode, "The injected launcher failed before Windows PowerShell could complete.");
-            }
         }
+        return resultCode == 0 ? 0 : Fail(resultCode, startupMode, failureMessage);
     }
 }

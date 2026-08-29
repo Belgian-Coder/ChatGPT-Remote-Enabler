@@ -18,7 +18,9 @@ $ErrorActionPreference = 'Stop'
 
 $script:BundleRoot = [IO.Path]::GetFullPath($PSScriptRoot)
 $script:RuntimeRoot = Join-Path $script:BundleRoot 'runtime'
-$script:StatePath = Join-Path $script:BundleRoot '.codexremote-simple-session.json'
+$script:StateRoot = Join-Path $env:LOCALAPPDATA 'CodexRemoteFeatures'
+$script:StatePath = Join-Path $script:StateRoot 'codexremote-simple-session.json'
+$script:LegacyStatePath = Join-Path $script:BundleRoot '.codexremote-simple-session.json'
 $script:PackageActivationLauncher = Join-Path $script:RuntimeRoot 'PackageActivationLauncher.exe'
 $script:LaunchLogPath = Join-Path $env:LOCALAPPDATA 'CodexRemoteFeatures\launch.log'
 
@@ -204,6 +206,52 @@ function Get-CrsCodexProcesses {
     )
 }
 
+function Get-CrsDiscoverableSession {
+    param(
+        $Package,
+        [object[]]$Processes,
+        [scriptblock]$PortTester
+    )
+
+    if ($null -eq $Processes) {
+        $Processes = @(Get-CimInstance Win32_Process -Filter "Name='ChatGPT.exe'" -ErrorAction SilentlyContinue)
+    }
+    if ($null -eq $PortTester) {
+        $PortTester = { param([int]$Port) Test-CrsPortOpen -Port $Port }
+    }
+    $candidates = foreach ($process in @($Processes)) {
+        $commandLine = [string]$process.CommandLine
+        if ([string]::IsNullOrWhiteSpace($commandLine) -or $commandLine -match '(?:^|\s)--type=') { continue }
+        if (-not [string]::Equals([string]$process.ExecutablePath, [string]$Package.ExecutablePath, [StringComparison]::OrdinalIgnoreCase)) { continue }
+        if ($commandLine -notmatch '(?:^|\s)--remote-debugging-address(?:=|\s+)127\.0\.0\.1(?:\s|$)') { continue }
+        $rendererMatch = [regex]::Match($commandLine, '(?:^|\s)--remote-debugging-port(?:=|\s+)(?<port>\d+)(?:\s|$)')
+        $mainMatch = [regex]::Match($commandLine, '(?:^|\s)--inspect(?:=|\s+)127\.0\.0\.1:(?<port>\d+)(?:\s|$)')
+        if (-not $rendererMatch.Success -or -not $mainMatch.Success) { continue }
+        $rendererPort = [int]$rendererMatch.Groups['port'].Value
+        $mainPort = [int]$mainMatch.Groups['port'].Value
+        if ($rendererPort -lt 1 -or $rendererPort -gt 65535 -or $mainPort -lt 1 -or $mainPort -gt 65535 -or $rendererPort -eq $mainPort) { continue }
+        if (-not (& $PortTester $rendererPort) -or -not (& $PortTester $mainPort)) { continue }
+        [pscustomobject][ordered]@{
+            schemaVersion = 1
+            packageFullName = $Package.FullName
+            packageVersion = $Package.Version
+            executablePath = $Package.ExecutablePath
+            rendererPort = $rendererPort
+            mainPort = $mainPort
+            launchMethod = 'adopted-existing-session'
+            launchProcessId = $process.ProcessId
+            # The process command line proves the loopback ports, but it cannot
+            # prove whether the injected main-process bridge installed a proxy.
+            proxyMode = $null
+            appAsarSha256 = $null
+            startedAtUtc = $null
+        }
+    }
+    $candidates = @($candidates)
+    if ($candidates.Count -ne 1) { return $null }
+    return $candidates[0]
+}
+
 function Stop-CrsCodex {
     param([string]$ExecutablePath)
 
@@ -356,7 +404,11 @@ function Start-CrsOrdinaryCodex {
 function Read-CrsState {
     param([switch]$AllowInvalid)
 
-    if (-not (Test-Path -LiteralPath $script:StatePath -PathType Leaf)) { return $null }
+    if (-not (Test-Path -LiteralPath $script:StatePath -PathType Leaf)) {
+        if (-not (Test-Path -LiteralPath $script:LegacyStatePath -PathType Leaf)) { return $null }
+        New-Item -ItemType Directory -Path $script:StateRoot -Force | Out-Null
+        Copy-Item -LiteralPath $script:LegacyStatePath -Destination $script:StatePath -Force
+    }
     try {
         $state = Get-Content -LiteralPath $script:StatePath -Raw | ConvertFrom-Json -ErrorAction Stop
         $rendererPort = 0
@@ -397,6 +449,7 @@ function Write-CrsState {
         startedAtUtc = [DateTime]::UtcNow.ToString('o')
     }
     $json = $state | ConvertTo-Json -Depth 4
+    New-Item -ItemType Directory -Path $script:StateRoot -Force | Out-Null
     Set-Content -LiteralPath $script:StatePath -Value $json -Encoding UTF8
 }
 
@@ -437,6 +490,14 @@ function Invoke-CrsProbeExisting {
     $output = @(& $Node.Path $orchestrator '--mode' 'probe' '--renderer-port' ([string]$State.rendererPort) '--main-port' ([string]$State.mainPort) '--timeout-ms' '3000' 2>&1)
     if ($LASTEXITCODE -ne 0 -or $output.Count -ne 1) { return $null }
     try { return ([string]$output[0] | ConvertFrom-Json -ErrorAction Stop) } catch { return $null }
+}
+
+function Test-CrsProxyModeProof {
+    param($State, [bool]$RequestedProxyMode)
+
+    if ($null -eq $State -or $null -eq $State.PSObject.Properties['proxyMode']) { return $false }
+    if ($State.proxyMode -isnot [bool]) { return $false }
+    return ([bool]$State.proxyMode -eq $RequestedProxyMode)
 }
 
 function Invoke-CrsRollback {
@@ -491,12 +552,21 @@ switch ($Action) {
     }
     'Enable' {
         $existing = Invoke-CrsProbeExisting -Node $node -State $state
-        if ($null -ne $existing -and $existing.ok -and $existing.renderer.probe.proof) {
-            $activeProxyMode = $false
-            if ($null -ne $state -and $null -ne $state.PSObject.Properties['proxyMode']) {
-                $activeProxyMode = [bool]$state.proxyMode
+        if ($null -eq $existing -or -not $existing.ok -or -not $existing.renderer.probe.proof) {
+            $discovered = Get-CrsDiscoverableSession -Package $package
+            if ($null -ne $discovered) {
+                $discoveredProbe = Invoke-CrsProbeExisting -Node $node -State $discovered
+                if ($null -ne $discoveredProbe -and $discoveredProbe.ok -and $discoveredProbe.renderer.probe.proof -and
+                    (Test-CrsProxyModeProof -State $discovered -RequestedProxyMode ([bool]$UseProxy))) {
+                    Write-CrsState -Package $package -RendererPort $discovered.rendererPort -MainPort $discovered.mainPort -Probe $compatibility -Launch ([pscustomobject]@{ Method = 'adopted-existing-session'; ProcessId = $discovered.launchProcessId }) -ProxyMode ([bool]$discovered.proxyMode)
+                    $state = Read-CrsState
+                    $existing = $discoveredProbe
+                    Write-Host 'Adopted the existing audited loopback session without relaunching ChatGPT.' -ForegroundColor Green
+                }
             }
-            if ($activeProxyMode -eq [bool]$UseProxy) {
+        }
+        if ($null -ne $existing -and $existing.ok -and $existing.renderer.probe.proof) {
+            if (Test-CrsProxyModeProof -State $state -RequestedProxyMode ([bool]$UseProxy)) {
                 Write-Host 'The local Control other devices bridge is already active in the requested proxy mode.' -ForegroundColor Green
                 break
             }

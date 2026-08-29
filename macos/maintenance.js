@@ -40,6 +40,20 @@ function databaseStats(db) {
   return { freeBytes: freePages * pageSize, freePages, pageCount, pageSize };
 }
 
+function safeTemporaryTestRoot(codexHome) {
+  if (!process.argv.includes("--test-temp")) return false;
+  try {
+    if (fs.lstatSync(codexHome).isSymbolicLink()) return false;
+    const resolvedHome = fs.realpathSync(codexHome);
+    const resolvedTemp = fs.realpathSync(os.tmpdir());
+    const normalize = (value) => process.platform === "win32" ? value.toLowerCase() : value;
+    return normalize(path.dirname(resolvedHome)) === normalize(resolvedTemp)
+      && /^chatgpt-remote-maintenance-test-[0-9a-f]{32}$/.test(path.basename(resolvedHome));
+  } catch {
+    return false;
+  }
+}
+
 function optimizeDatabase(DatabaseSync, dbPath, pruneLogs) {
   if (!fs.existsSync(dbPath)) return { status: "missing" };
   const beforeBytes = fs.statSync(dbPath).size;
@@ -103,9 +117,7 @@ function main() {
   const codexHomeIndex = process.argv.indexOf("--codex-home");
   const codexHomeArgument = codexHomeIndex >= 0 ? process.argv[codexHomeIndex + 1] : null;
   const codexHome = path.resolve(codexHomeArgument || process.env.CODEX_HOME || path.join(os.homedir(), ".codex"));
-  const testRoot = path.resolve(os.tmpdir(), "chatgpt-remote-maintenance-test-");
-  const safeTestOverride = process.argv.includes("--test-temp")
-    && codexHome.startsWith(testRoot);
+  const safeTestOverride = safeTemporaryTestRoot(codexHome);
   const processState = safeTestOverride ? { safe: true, testOverride: true } : appProcessesRunning();
   if (!processState.safe) {
     process.stdout.write(`${JSON.stringify({ processState, status: "skipped-app-running-or-process-check-failed" })}\n`);

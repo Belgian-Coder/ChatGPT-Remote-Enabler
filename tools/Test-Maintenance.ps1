@@ -5,8 +5,10 @@ $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $node = (Get-Command node.exe -ErrorAction Stop).Source
 $helper = Join-Path $root 'windows\CodexRemoteMobileProject\maintenance.js'
-$nodeTemp = (& $node -p 'require("node:os").tmpdir()').Trim()
+$nodeTemp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
 $testRoot = Join-Path $nodeTemp ('chatgpt-remote-maintenance-test-' + [guid]::NewGuid().ToString('N'))
+$lookalikeRoot = "$testRoot-sibling"
+$linkRoot = Join-Path $nodeTemp ('chatgpt-remote-maintenance-test-' + [guid]::NewGuid().ToString('N'))
 
 try {
     New-Item -ItemType Directory -Path $testRoot | Out-Null
@@ -50,17 +52,30 @@ db.close();
     if ($report.logs.removedByAge -ne 240 -or -not $report.logs.vacuumed) { throw 'Log pruning or vacuum proof failed.' }
     if (-not $report.state.vacuumed) { throw 'State-database vacuum proof failed.' }
     if ($report.logs.fileBytesAfter -ge $logsBefore -or $report.state.fileBytesAfter -ge $stateBefore) { throw 'Database files did not shrink.' }
+    New-Item -ItemType Directory -Path $lookalikeRoot | Out-Null
+    $lookalikeReport = & $node --no-warnings $helper --test-temp --codex-home $lookalikeRoot | ConvertFrom-Json
+    if ($lookalikeReport.processState.testOverride) { throw 'A sibling prefix lookalike bypassed the maintenance process guard.' }
+    New-Item -ItemType Junction -Path $linkRoot -Target $lookalikeRoot | Out-Null
+    $linkReport = & $node --no-warnings $helper --test-temp --codex-home $linkRoot | ConvertFrom-Json
+    if ($linkReport.processState.testOverride) { throw 'A temporary-root junction bypassed the maintenance process guard.' }
     [pscustomobject]@{
         ExpiredRowsRemoved = [int]$report.logs.removedByAge
         RemainingRows = [int]$remaining.rows
         LogsShrank = $report.logs.fileBytesAfter -lt $logsBefore
         StateShrank = $report.state.fileBytesAfter -lt $stateBefore
         Vacuumed = [bool]($report.logs.vacuumed -and $report.state.vacuumed)
+        PrefixLookalikeRejected = $true
+        JunctionRejected = $true
     } | ConvertTo-Json -Compress
 } finally {
-    $resolved = [IO.Path]::GetFullPath($testRoot)
     $temporary = [IO.Path]::GetFullPath($nodeTemp)
-    if ((Test-Path -LiteralPath $resolved) -and $resolved.StartsWith($temporary, [StringComparison]::OrdinalIgnoreCase)) {
-        Remove-Item -LiteralPath $resolved -Recurse -Force
+    if (Test-Path -LiteralPath $linkRoot) { Remove-Item -LiteralPath $linkRoot -Force }
+    foreach ($candidate in @($testRoot, $lookalikeRoot)) {
+        $resolved = [IO.Path]::GetFullPath($candidate)
+        if ((Test-Path -LiteralPath $resolved) -and
+            [IO.Path]::GetFullPath((Split-Path -Parent $resolved)) -eq $temporary -and
+            [IO.Path]::GetFileName($resolved) -match '^chatgpt-remote-maintenance-test-[0-9a-f]{32}(?:-sibling)?$') {
+            Remove-Item -LiteralPath $resolved -Recurse -Force
+        }
     }
 }

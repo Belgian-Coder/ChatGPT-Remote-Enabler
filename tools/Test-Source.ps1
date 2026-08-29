@@ -28,10 +28,13 @@ $powershell = @(
     'windows\CodexRemoteMobileProject\ProxyConfiguration.ps1',
     'windows\CodexRemoteMobileProject\ProxyConfiguration.psm1',
     'tools\Build-Release.ps1',
+    'tools\Test-BuildReleasePrivacy.ps1',
     'tools\Test-Source.ps1',
     'tools\Test-WindowsUpdaterCompatibility.ps1'
     'tools\Test-WindowsUpdaterNonGit.ps1'
+    'tools\Test-WindowsControllerReliability.ps1'
     'tools\Test-MacOSUpdaterCompatibility.ps1'
+    'tools\Test-MacOSSupport.ps1'
     'tools\Test-WindowsNodeProbe.ps1'
     'tools\Test-Maintenance.ps1',
     'tools\Test-ProxyConfiguration.ps1'
@@ -55,7 +58,7 @@ if ((Get-FileHash -LiteralPath $windowsMaintenance -Algorithm SHA256).Hash -ne (
 }
 $renderer = Get-Content -LiteralPath $windowsRenderer -Raw
 $requiredContracts = @(
-    'const VERSION = 57;',
+    'const VERSION = 58;',
     'hostDisplayName: config.localDisplayName || null',
     'codex-remote-mobile-verified-thread-ids-v2',
     'THREAD_VISIBILITY_CONTRACT_VERSION',
@@ -112,6 +115,9 @@ if (Test-Path -LiteralPath (Join-Path $root '.github\workflows')) {
     throw 'GitHub Actions workflows are not allowed in this repository.'
 }
 
+& (Join-Path $root 'tools\Test-BuildReleasePrivacy.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Build release privacy self-test failed.' }
+
 & $node (Join-Path $root 'windows\CodexRemoteSimple\tests\RendererOverrides.SelfTest.js')
 if ($LASTEXITCODE -ne 0) { throw 'Stable renderer self-test failed.' }
 
@@ -136,8 +142,14 @@ if ($LASTEXITCODE -ne 0) { throw 'Windows PowerShell Node capability probe self-
 & (Join-Path $root 'tools\Test-WindowsUpdaterNonGit.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Windows packaged updater self-test failed.' }
 
+& (Join-Path $root 'tools\Test-WindowsControllerReliability.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Windows controller reliability self-test failed.' }
+
 & (Join-Path $root 'tools\Test-MacOSUpdaterCompatibility.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'macOS updater compatibility self-test failed.' }
+
+& (Join-Path $root 'tools\Test-MacOSSupport.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'macOS support reliability self-test failed.' }
 
 git -C $root diff --check
 if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
@@ -145,14 +157,17 @@ if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
 [pscustomobject]@{
     JavaScriptFiles = $javascript.Count
     PowerShellFiles = $powershell.Count
-    RendererVersion = 57
+    RendererVersion = 58
     RendererParity = $true
     MaintenanceParity = $true
+    BuildReleasePrivacySelfTest = $true
     MaintenanceSelfTest = $true
     ProxyConfigurationSelfTest = $true
     WindowsPowerShellNodeProbeSelfTest = $true
     WindowsPackagedUpdaterSelfTest = $true
+    WindowsControllerReliabilitySelfTest = $true
     MacOSUpdaterCompatibilitySelfTest = $true
+    MacOSSupportReliabilitySelfTest = $true
     StableRendererSelfTest = $true
     TitleProvenanceSelfTest = $true
     ThreadVisibilitySelfTest = $true

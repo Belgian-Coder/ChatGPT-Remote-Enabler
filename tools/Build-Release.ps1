@@ -5,6 +5,32 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+function Assert-ReleasePrivacy {
+    param(
+        [Parameter(Mandatory)]
+        [string]$StageRoot,
+        [string[]]$AdditionalPattern = @()
+    )
+
+    $privacyPatterns = @(
+        '-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----',
+        '(?i)\b(?:ghp|github_pat|sk)-[A-Za-z0-9_-]{20,}\b',
+        '(?i)\bremote-control:env_[A-Za-z0-9_]+\b',
+        '(?i)(?:C:\\Users\\|/Users/)[^\s/\\]+',
+        '(?i)\bPC[-]MARC\b',
+        '(?i)\bWINDOWS11[-]VM\b',
+        '(?i)\bMacBook[-]Pro\b'
+    ) + $AdditionalPattern
+    foreach ($file in Get-ChildItem -LiteralPath $StageRoot -File -Recurse) {
+        if ($file.Extension -in '.exe','.png','.jpg','.jpeg','.zip') { continue }
+        $content = Get-Content -LiteralPath $file.FullName -Raw -ErrorAction SilentlyContinue
+        foreach ($pattern in $privacyPatterns) {
+            if ($pattern -and $content -match $pattern) { throw "Privacy scan failed for $($file.Name)." }
+        }
+    }
+}
+
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 $platforms = @(
@@ -58,19 +84,7 @@ try {
         }
         [IO.File]::WriteAllText((Join-Path $stageRoot 'RELEASE-MANIFEST.sha256'), (($manifestLines -join "`n") + "`n"), [Text.UTF8Encoding]::new($false))
 
-        $privacyPatterns = @(
-            '-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----',
-            '(?i)\b(?:ghp|github_pat|sk)-[A-Za-z0-9_-]{20,}\b',
-            '(?i)\bremote-control:env_[A-Za-z0-9_]+\b',
-            '(?i)(?:C:\\Users\\|/Users/)[^\s/\\]+'
-        ) + $ForbiddenPattern
-        foreach ($file in Get-ChildItem -LiteralPath $stageRoot -File -Recurse) {
-            if ($file.Extension -in '.exe','.png','.jpg','.jpeg','.zip') { continue }
-            $content = Get-Content -LiteralPath $file.FullName -Raw -ErrorAction SilentlyContinue
-            foreach ($pattern in $privacyPatterns) {
-                if ($pattern -and $content -match $pattern) { throw "Privacy scan failed for $($file.Name)." }
-            }
-        }
+        Assert-ReleasePrivacy -StageRoot $stageRoot -AdditionalPattern $ForbiddenPattern
 
         $archivePath = Join-Path $OutputDirectory "$rootName.zip"
         if (Test-Path -LiteralPath $archivePath) { Remove-Item -LiteralPath $archivePath -Force }

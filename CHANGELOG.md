@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.5.19
+
+- Keep fresh or in-progress direct inventories authoritative over newer peer
+  gossip and disk caches. Renderer v58 also removes proven orphan aliases of
+  the local runtime, including zero-task raw environment chips, while
+  preserving distinct and directly connected devices.
+- Bound user-visible task pagination to 200 pages, fail maintenance pagination
+  closed at that limit, back off failed remote hydration, and always clear its
+  pending state. This prevents changing-cursor responses from holding the UI
+  in a multi-thousand-page refresh.
+- Make Windows and macOS release replacement recover the current file after a
+  failed copy, verify the installed manifest before success, defer check stamps
+  until success, and harden macOS cwd, LaunchAgent, and Dock-shortcut swaps.
+- Preserve Windows special-session state across versioned installs, require
+  durable proof before reusing a proxy/non-proxy session, release the launcher
+  mutex before error UI, and check for updates on every start by default.
+- Reject maintenance test-path lookalikes and links, and make release builds
+  fail on real device labels. Windows/macOS renderer and maintenance sources
+  remain byte-identical with focused PowerShell 5.1 and zsh regression tests.
+
 ## v1.5.18
 
 - Remove every derived remote-state entry for a transitive inventory only

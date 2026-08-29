@@ -14,8 +14,16 @@ function Invoke-WindowsPowerShellCapture {
     param([string]$Command)
 
     $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Command))
-    $output = @(& $windowsPowerShell -NoProfile -NonInteractive -EncodedCommand $encodedCommand 2>&1)
-    $exitCode = $LASTEXITCODE
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        # A deliberately failing child is test data. Windows PowerShell emits
+        # its redirected stderr as NativeCommandError records in this host.
+        $ErrorActionPreference = 'Continue'
+        $output = @(& $windowsPowerShell -NoProfile -NonInteractive -EncodedCommand $encodedCommand 2>&1)
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
     $text = [string]::Join([Environment]::NewLine, @($output | ForEach-Object { [string]$_ }))
     return [pscustomobject]@{ exitCode = $exitCode; text = $text }
 }
@@ -53,7 +61,7 @@ try {
         throw "Packaged Probe leaked Git discovery diagnostics: $($probeCapture.text)"
     }
     $probe = $probeCapture.text | ConvertFrom-Json
-    if ($probe.installKind -ne 'release' -or $probe.localVersion -ne 'v9.8.7') {
+    if ($probe.installKind -ne 'release' -or $probe.localVersion -ne 'v9.8.7' -or $probe.checkIntervalHours -ne 0) {
         throw 'Packaged Probe did not retain release-mode detection.'
     }
 
@@ -76,7 +84,7 @@ try {
         $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $Port)
         $listener.Start()
         try {
-            for ($request = 0; $request -lt 2; $request++) {
+            for ($request = 0; $request -lt 5; $request++) {
                 $client = $listener.AcceptTcpClient()
                 try {
                     $stream = $client.GetStream()
@@ -125,6 +133,15 @@ try {
         throw 'Packaged Auto did not retain verified-release behavior.'
     }
 
+    [IO.File]::WriteAllText((Join-Path $fixtureRoot 'VERSION'), "v9.8.6$([Environment]::NewLine)", [Text.UTF8Encoding]::new($false))
+    $lastCheckPath = Join-Path $fixtureLocalAppData 'ChatGPTRemoteEnabler\update\last-check.json'
+    if (Test-Path -LiteralPath $lastCheckPath -PathType Leaf) { Remove-Item -LiteralPath $lastCheckPath -Force }
+    $failureCapture = Invoke-WindowsPowerShellCapture $autoCommand
+    if ($failureCapture.exitCode -eq 0) { throw 'The invalid update fixture did not fail.' }
+    if (Test-Path -LiteralPath $lastCheckPath -PathType Leaf) {
+        throw 'A failed packaged update was stamped as successfully checked.'
+    }
+
     $sourceUpdater = Quote-PowerShellLiteral $updaterPath
     $sourceInstallRoot = Quote-PowerShellLiteral (Join-Path $repositoryRoot 'windows')
     $sourceCapture = Invoke-WindowsPowerShellCapture "& $sourceUpdater -Action Probe -InstallRoot $sourceInstallRoot 2>&1"
@@ -137,7 +154,9 @@ try {
         PackagedProbeQuiet = $true
         PackagedAutoQuiet = $true
         PackagedInstallKind = $probe.installKind
+        DefaultCheckIntervalHours = [int]$probe.checkIntervalHours
         AutoMethod = $auto.method
+        FailedUpdateNotStamped = $true
         SourceInstallKind = $sourceProbe.installKind
     } | ConvertTo-Json
 } finally {

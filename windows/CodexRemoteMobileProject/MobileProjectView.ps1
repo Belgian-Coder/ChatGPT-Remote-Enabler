@@ -8,7 +8,10 @@ param(
 $ErrorActionPreference = 'Stop'
 $bundleParent = Split-Path -Parent $PSScriptRoot
 $stableRoot = Join-Path $bundleParent 'CodexRemoteSimple'
-$sessionPath = Join-Path $stableRoot '.codexremote-simple-session.json'
+$sessionPath = Join-Path (Join-Path $env:LOCALAPPDATA 'CodexRemoteFeatures') 'codexremote-simple-session.json'
+if (-not (Test-Path -LiteralPath $sessionPath -PathType Leaf)) {
+    $sessionPath = Join-Path $stableRoot '.codexremote-simple-session.json'
+}
 if (-not (Test-Path -LiteralPath $sessionPath -PathType Leaf)) {
     throw 'No CodexRemoteSimple special-session record exists. Run the stable Enable action first.'
 }

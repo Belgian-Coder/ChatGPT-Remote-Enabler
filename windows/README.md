@@ -10,7 +10,7 @@ Run `ChatGPT Remote Enabler.exe`, or open PowerShell here and run:
 .\Enable-ChatGPTRemote.ps1
 ```
 
-The compatibility check runs first. Renderer v56 preserves the user's
+The compatibility check runs first. Renderer v58 preserves the user's
 **By project**/**By connection** Native views preference and every folder's
 open/closed state. It automatically paginates the authoritative active task
 list for the app-server's interactive CLI/VS Code sources used by the desktop UI. Internal exec and subagent
@@ -43,7 +43,7 @@ Mobile Projects folder opens the exact native project composer when available;
 registered projects retain a native global-composer fallback when their folder
 row is not mounted by the selected grouping.
 
-The launcher checks for an update once per day by default. A clean `main` Git
+The launcher checks for an update on every start by default. A clean `main` Git
 checkout fast-forwards to the latest release tag through its configured origin;
 an extracted release still uses the verified archive updater. Manage it with:
 
@@ -54,7 +54,7 @@ an extracted release still uses the verified archive updater. Manage it with:
 .\Update-ChatGPTRemote.ps1 -Action Update
 ```
 
-Set `CHATGPT_REMOTE_UPDATE_REPOSITORY=owner/repo`, `CHATGPT_REMOTE_UPDATE_API_BASE`, or `CHATGPT_REMOTE_UPDATE_LATEST_URL` for a fork or GitHub mirror. `CHATGPT_REMOTE_AUTO_UPDATE=0` skips one automatic check. Set `CHATGPT_REMOTE_UPDATE_INTERVAL_HOURS=0` to restore every-start checks or another value to change the daily interval. Failed downloads, Cisco/security block pages, dirty Git checkouts, and verification failures never replace installed files.
+Set `CHATGPT_REMOTE_UPDATE_REPOSITORY=owner/repo`, `CHATGPT_REMOTE_UPDATE_API_BASE`, or `CHATGPT_REMOTE_UPDATE_LATEST_URL` for a fork or GitHub mirror. `CHATGPT_REMOTE_AUTO_UPDATE=0` skips one automatic check. Set `CHATGPT_REMOTE_UPDATE_INTERVAL_HOURS` to a positive number only when you want to throttle checks. Failed downloads, Cisco/security block pages, dirty Git checkouts, and verification failures never replace installed files.
 
 For a persistent local shortcut, keep the extracted folder in place and run:
 

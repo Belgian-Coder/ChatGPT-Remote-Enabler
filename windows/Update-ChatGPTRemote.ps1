@@ -7,7 +7,7 @@ param(
     [string]$LatestReleaseUrl = $env:CHATGPT_REMOTE_UPDATE_LATEST_URL,
     [string]$InstallRoot,
     [ValidateRange(0, 720)]
-    [int]$CheckIntervalHours = $(if ($env:CHATGPT_REMOTE_UPDATE_INTERVAL_HOURS) { [int]$env:CHATGPT_REMOTE_UPDATE_INTERVAL_HOURS } else { 24 }),
+    [int]$CheckIntervalHours = $(if ($env:CHATGPT_REMOTE_UPDATE_INTERVAL_HOURS) { [int]$env:CHATGPT_REMOTE_UPDATE_INTERVAL_HOURS } else { 0 }),
     [switch]$AllowInsecureTransport
 )
 
@@ -269,9 +269,9 @@ function Install-Release {
                 New-Item -ItemType Directory -Path (Split-Path -Parent $backup) -Force | Out-Null
                 Copy-Item -LiteralPath $destination -Destination $backup -Force
             }
+            $copied.Add([pscustomobject]@{ destination = $destination; backup = $backup; existed = $existed })
             New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
             Copy-Item -LiteralPath $entry.source -Destination $destination -Force
-            $copied.Add([pscustomobject]@{ destination = $destination; backup = $backup; existed = $existed })
         }
         foreach ($entry in $previousEntries) {
             if ($newRelativePaths.Contains($entry.relative)) { continue }
@@ -281,25 +281,43 @@ function Install-Release {
             if (-not (Test-Path -LiteralPath $destination -PathType Leaf)) { continue }
             New-Item -ItemType Directory -Path (Split-Path -Parent $backup) -Force | Out-Null
             Copy-Item -LiteralPath $destination -Destination $backup -Force
-            Remove-Item -LiteralPath $destination -Force
             $copied.Add([pscustomobject]@{ destination = $destination; backup = $backup; existed = $true })
+            Remove-Item -LiteralPath $destination -Force
         }
         $manifestDestination = Join-Path $InstallRoot 'RELEASE-MANIFEST.sha256'
         Assert-SafeInstallDestination 'RELEASE-MANIFEST.sha256'
         $manifestBackup = Join-Path $backupRoot 'RELEASE-MANIFEST.sha256'
         $manifestExisted = Test-Path -LiteralPath $manifestDestination -PathType Leaf
         if ($manifestExisted) { Copy-Item -LiteralPath $manifestDestination -Destination $manifestBackup -Force }
-        Copy-Item -LiteralPath (Join-Path $releaseRoot 'RELEASE-MANIFEST.sha256') -Destination $manifestDestination -Force
         $copied.Add([pscustomobject]@{ destination = $manifestDestination; backup = $manifestBackup; existed = $manifestExisted })
+        Copy-Item -LiteralPath (Join-Path $releaseRoot 'RELEASE-MANIFEST.sha256') -Destination $manifestDestination -Force
+        if (-not (Test-InstalledIntegrity)) { throw 'Installed release failed its final manifest verification.' }
         return [ordered]@{ updated = $true; version = $Release.tag; rollbackPath = $backupRoot; files = $entries.Count }
     } catch {
+        $installError = $_
+        $rollbackErrors = [Collections.Generic.List[string]]::new()
         $restoreEntries = @($copied)
         [array]::Reverse($restoreEntries)
         foreach ($entry in $restoreEntries) {
-            if ($entry.existed) { Copy-Item -LiteralPath $entry.backup -Destination $entry.destination -Force }
-            elseif (Test-Path -LiteralPath $entry.destination -PathType Leaf) { Remove-Item -LiteralPath $entry.destination -Force }
+            try {
+                if ($entry.existed) {
+                    $restoreNeeded = -not (Test-Path -LiteralPath $entry.destination -PathType Leaf)
+                    if (-not $restoreNeeded) {
+                        $restoreNeeded = (Get-FileHash -LiteralPath $entry.destination -Algorithm SHA256).Hash -ne
+                            (Get-FileHash -LiteralPath $entry.backup -Algorithm SHA256).Hash
+                    }
+                    if ($restoreNeeded) { Copy-Item -LiteralPath $entry.backup -Destination $entry.destination -Force }
+                } elseif (Test-Path -LiteralPath $entry.destination -PathType Leaf) {
+                    Remove-Item -LiteralPath $entry.destination -Force
+                }
+            } catch {
+                $rollbackErrors.Add("$($entry.destination): $($_.Exception.Message)")
+            }
         }
-        throw
+        if ($rollbackErrors.Count -gt 0) {
+            throw "Update failed: $($installError.Exception.Message) Rollback was incomplete: $([string]::Join('; ', $rollbackErrors))"
+        }
+        throw $installError
     } finally {
         $resolvedTemp = [IO.Path]::GetFullPath($temporaryRoot)
         $systemTemp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
@@ -358,25 +376,29 @@ try {
     $sourceCheckout = Get-SourceCheckout
     if ($sourceCheckout) {
         $remoteState = Get-SourceRemoteState -Checkout $sourceCheckout
-        Write-LastCheck $remoteState.version
         $localVersion = Get-LocalVersion
         if ($Action -eq 'Check' -or -not $remoteState.available) {
+            Write-LastCheck $remoteState.version
             ([ordered]@{ available = $remoteState.available; latestVersion = $remoteState.version; localVersion = $localVersion; updated = $false; method = 'git-fast-forward' } | ConvertTo-Json)
             return
         }
-        (Install-SourceCheckout -Checkout $sourceCheckout -RemoteState $remoteState) | ConvertTo-Json -Depth 4
+        $result = Install-SourceCheckout -Checkout $sourceCheckout -RemoteState $remoteState
+        Write-LastCheck $remoteState.version
+        $result | ConvertTo-Json -Depth 4
         return
     }
     $release = Get-LatestRelease
-    Write-LastCheck $release.tag
     $localVersion = Get-LocalVersion
     $available = (ConvertTo-Version $release.tag) -gt (ConvertTo-Version $localVersion)
     if ($release.tag -eq $localVersion -and -not (Test-InstalledIntegrity)) { $available = $true }
     if ($Action -eq 'Check' -or -not $available) {
+        Write-LastCheck $release.tag
         ([ordered]@{ available = $available; latestVersion = $release.tag; localVersion = $localVersion; updated = $false; method = 'verified-release' } | ConvertTo-Json)
         return
     }
-    (Install-Release $release) | ConvertTo-Json -Depth 4
+    $result = Install-Release $release
+    Write-LastCheck $release.tag
+    $result | ConvertTo-Json -Depth 4
 } finally {
     if ($acquired) { $mutex.ReleaseMutex() }
     $mutex.Dispose()

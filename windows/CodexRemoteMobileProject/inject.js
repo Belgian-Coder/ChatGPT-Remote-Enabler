@@ -12,6 +12,7 @@ const userStateRoot = process.env.LOCALAPPDATA
   || (process.env.HOME ? path.join(process.env.HOME, ".local", "state") : null)
   || __dirname;
 const STATE_PATH = path.join(userStateRoot, "CodexRemoteFeatures", "mobile-project-session.json");
+const PROBE_TIMEOUT_MS = 10000;
 
 function parseArgs(argv) {
   const values = {};
@@ -88,9 +89,9 @@ async function main() {
         const report = await evaluate(client, source, 10000);
         const validCounts = [report?.hosts, report?.projects, report?.tasks]
           .every((value) => Number.isInteger(value) && value >= 0);
-        if (report?.active !== true || !validCounts) throw new Error("Mobile project view did not return valid proof");
+        if (report?.active !== true || !validCounts || !Number.isInteger(report?.version) || report.version < 1) throw new Error("Mobile project view did not return valid proof");
         fs.mkdirSync(path.dirname(STATE_PATH), { recursive: true });
-        fs.writeFileSync(STATE_PATH, `${JSON.stringify({ identifier: persistent.identifier, port: options.port, version: 55 }, null, 2)}\n`, "utf8");
+        fs.writeFileSync(STATE_PATH, `${JSON.stringify({ identifier: persistent.identifier, port: options.port, version: report.version }, null, 2)}\n`, "utf8");
         try { fs.rmSync(LEGACY_STATE_PATH, { force: true }); } catch {}
         process.stdout.write(`${JSON.stringify({ action: options.action, ok: true, report })}\n`);
         return;
@@ -128,29 +129,29 @@ async function main() {
     }
     if (options.action === "archive-run" || options.action === "maintenance-run") {
       const result = await evaluate(client, "globalThis.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__?.runAutoMaintenanceNow?.() ?? globalThis.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__?.runAutoArchiveNow?.() ?? { archived:0, deleted:0, eligible:0 }", 120000);
-      const report = await evaluate(client, "globalThis.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__?.probe?.() ?? { active:false, version:null }", 5000);
+      const report = await evaluate(client, "globalThis.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__?.probe?.() ?? { active:false, version:null }", PROBE_TIMEOUT_MS);
       process.stdout.write(`${JSON.stringify({ action: options.action, ok: true, report, result })}\n`);
       return;
     }
     if (options.action === "archive-preview" || options.action === "maintenance-preview") {
       const result = await evaluate(client, "globalThis.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__?.previewAutoMaintenance?.() ?? globalThis.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__?.previewAutoArchive?.() ?? { archiveEligible:0, deleteEligible:0, eligible:0, scanned:0 }", 120000);
-      const report = await evaluate(client, "globalThis.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__?.probe?.() ?? { active:false, version:null }", 5000);
+      const report = await evaluate(client, "globalThis.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__?.probe?.() ?? { active:false, version:null }", PROBE_TIMEOUT_MS);
       process.stdout.write(`${JSON.stringify({ action: options.action, ok: true, report, result })}\n`);
       return;
     }
     if (options.action === "auto-remove") {
       const result = await evaluate(client, "globalThis.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__?.removeAllAutoRegistered?.() ?? { removed:0 }", 30000);
-      const report = await evaluate(client, "globalThis.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__?.probe?.() ?? { active:false, version:null }", 5000);
+      const report = await evaluate(client, "globalThis.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__?.probe?.() ?? { active:false, version:null }", PROBE_TIMEOUT_MS);
       process.stdout.write(`${JSON.stringify({ action: options.action, ok: true, report, result })}\n`);
       return;
     }
     if (options.action === "auto-reconcile") {
       const result = await evaluate(client, "globalThis.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__?.reconcileAutoRegisteredProjects?.() ?? { removed:0 }", 30000);
-      const report = await evaluate(client, "globalThis.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__?.probe?.() ?? { active:false, version:null }", 5000);
+      const report = await evaluate(client, "globalThis.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__?.probe?.() ?? { active:false, version:null }", PROBE_TIMEOUT_MS);
       process.stdout.write(`${JSON.stringify({ action: options.action, ok: true, report, result })}\n`);
       return;
     }
-    const report = await evaluate(client, "globalThis.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__?.probe?.() ?? { active:false, version:null }", 5000);
+    const report = await evaluate(client, "globalThis.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__?.probe?.() ?? { active:false, version:null }", PROBE_TIMEOUT_MS);
     process.stdout.write(`${JSON.stringify({ action: options.action, ok: true, report })}\n`);
   } finally {
     client.close();

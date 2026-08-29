@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.5.20
+
+- Record the renderer version actually proven by the injected runtime instead
+  of the obsolete hard-coded v55 session value.
+- Give normal renderer probes ten seconds to complete. This prevents a healthy
+  busy renderer from being reported as failed during inventory or maintenance
+  activity; Windows and macOS use the same proof and timeout contract.
+
 ## v1.5.19
 
 - Keep fresh or in-progress direct inventories authoritative over newer peer

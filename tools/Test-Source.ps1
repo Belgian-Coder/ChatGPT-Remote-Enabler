@@ -115,6 +115,16 @@ if (Test-Path -LiteralPath (Join-Path $root '.github\workflows')) {
     throw 'GitHub Actions workflows are not allowed in this repository.'
 }
 
+foreach ($relative in @('windows\CodexRemoteMobileProject\inject.js', 'macos\inject.js')) {
+    $injector = Get-Content -LiteralPath (Join-Path $root $relative) -Raw
+    foreach ($contract in @('const PROBE_TIMEOUT_MS = 10000;', 'version: report.version')) {
+        if (-not $injector.Contains($contract)) { throw "Injector reliability contract is missing in ${relative}: $contract" }
+    }
+    if ($injector.Contains('version: 55') -or $injector -match 'probe\?\.\(\).*?, 5000\)') {
+        throw "Injector retains stale session-version or short probe behavior: $relative"
+    }
+}
+
 & (Join-Path $root 'tools\Test-BuildReleasePrivacy.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Build release privacy self-test failed.' }
 
@@ -160,6 +170,8 @@ if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
     RendererVersion = 58
     RendererParity = $true
     MaintenanceParity = $true
+    InjectorVersionProof = $true
+    InjectorProbeTimeout = $true
     BuildReleasePrivacySelfTest = $true
     MaintenanceSelfTest = $true
     ProxyConfigurationSelfTest = $true

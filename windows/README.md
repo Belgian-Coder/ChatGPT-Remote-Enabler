@@ -10,7 +10,7 @@ Run `ChatGPT Remote Enabler.exe`, or open PowerShell here and run:
 .\Enable-ChatGPTRemote.ps1
 ```
 
-The compatibility check runs first. Renderer v58 preserves the user's
+The compatibility check runs first. Renderer v61 preserves the user's
 **By project**/**By connection** Native views preference and every folder's
 open/closed state. It automatically paginates the authoritative active task
 list for the app-server's interactive CLI/VS Code sources used by the desktop UI. Internal exec and subagent

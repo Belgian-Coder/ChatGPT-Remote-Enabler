@@ -43,6 +43,7 @@
   const USER_VISIBLE_THREAD_SOURCE_KINDS = Object.freeze(["cli", "vscode"]);
   const MAINTENANCE_THREAD_SOURCE_KINDS = Object.freeze([
     ...USER_VISIBLE_THREAD_SOURCE_KINDS,
+    "appServer",
     "exec",
     "subAgent",
     "subAgentReview",
@@ -52,7 +53,7 @@
     "unknown",
   ]);
   const PUBLISHER_VERSION = 53;
-  const VERSION = 58;
+  const VERSION = 61;
   const TRUSTED_TITLE_SOURCES = new Set([
     "app-server-displayName",
     "app-server-entry-title",
@@ -121,6 +122,8 @@
     localRegisteredProjectsFetchedAt: 0,
     localRegisteredProjectsPending: false,
     localRuntime: null,
+    localRuntimeGeneration: 0,
+    localThreadListGates: new WeakMap(),
     navigationBridge: null,
     mountRetryTimer: null,
     mountRetryDelay: 500,
@@ -144,6 +147,12 @@
     verifiedThreadIds: new Map(),
     view: "mobile",
   };
+
+  function assignLocalRuntime(fetchFromHost, requestClient) {
+    if (typeof requestClient?.sendRequest !== "function") return;
+    if (state.localRuntime?.requestClient !== requestClient) state.localRuntimeGeneration += 1;
+    state.localRuntime = { fetchFromHost, requestClient };
+  }
 
   function readBoolean(key) {
     try {
@@ -257,9 +266,9 @@
     return withTimeout(Promise.resolve().then(() => requestClient.sendRequest(method, params)), method, timeoutMilliseconds);
   }
 
-  function fetchFromHostWithTimeout(fetchFromHost, action, payload) {
+  function fetchFromHostWithTimeout(fetchFromHost, action, payload, timeoutMilliseconds = REQUEST_TIMEOUT_MS) {
     if (typeof fetchFromHost !== "function") return Promise.reject(new Error("Project-state bridge is unavailable"));
-    return withTimeout(Promise.resolve().then(() => fetchFromHost(action, payload)), action);
+    return withTimeout(Promise.resolve().then(() => fetchFromHost(action, payload)), action, timeoutMilliseconds);
   }
 
   function remoteUnreadIdentity(hostId, conversationKey) {
@@ -569,7 +578,7 @@
         const localRequestClient = typeof value.sendRequest === "function" ? value : value.requestClient;
         state.localFetchFromHost = value.fetchFromHost.bind(value);
         if (typeof localRequestClient?.sendRequest === "function") {
-          state.localRuntime = { fetchFromHost: state.localFetchFromHost, requestClient: localRequestClient };
+          assignLocalRuntime(state.localFetchFromHost, localRequestClient);
         }
       }
       if (Array.isArray(value.remoteProjects)) {
@@ -691,7 +700,7 @@
         if (hostId === "local" && fetchFromHost) {
           const localRequestClient = typeof value.sendRequest === "function" ? value : value.requestClient;
           state.localFetchFromHost = fetchFromHost;
-          if (typeof localRequestClient?.sendRequest === "function") state.localRuntime = { fetchFromHost, requestClient: localRequestClient };
+          assignLocalRuntime(fetchFromHost, localRequestClient);
         }
       } catch {}
       if (Array.isArray(value)) {
@@ -1925,13 +1934,11 @@
       const runtimes = new Map(discoverRemoteRuntimes(discovery.runtimes));
       if (state.localRuntime?.requestClient) runtimes.set("local", state.localRuntime);
       const tasks = [...runtimes].filter(([hostId]) => !state.localRuntimeHostIds.has(hostId) && runtimeThreadInventoryDue(hostId)).map(async ([hostId, runtime]) => {
-        let timer = null;
         try {
-          const request = listAllRuntimeThreads(runtime.requestClient, false, Date.now() + 90000);
-          const timeout = new Promise((resolve, reject) => {
-            timer = setTimeout(() => reject(new Error("Thread inventory timed out")), 90000);
-          });
-          const result = await Promise.race([request, timeout]);
+          const deadline = Date.now() + 90000;
+          const result = await (hostId === "local"
+            ? listAllLocalThreadInventory(runtime.requestClient, false, deadline, false, "local inventory hydration", state.localRuntimeGeneration)
+            : listAllRuntimeThreads(runtime.requestClient, false, deadline));
           const inventory = { error: null, fetchedAt: Date.now(), hostId, pages: result.pages, retryAt: 0, threads: Array.isArray(result.threads) ? result.threads : [], truncated: result.truncated === true };
           state.threadInventories.set(hostId, inventory);
           rememberVerifiedThreadIds(hostId, inventory.threads);
@@ -1944,8 +1951,6 @@
           state.threadInventories.set(hostId, inventory);
           if (!state.disposed) schedule();
           return inventory;
-        } finally {
-          if (timer !== null) clearTimeout(timer);
         }
       });
       const results = await Promise.all(tasks);
@@ -2509,22 +2514,137 @@
     return values.length ? Math.max(...values) : Number.NaN;
   }
 
-  async function listAllRuntimeThreads(requestClient, archived = false, deadline = Number.POSITIVE_INFINITY, includeInternalSources = false) {
+  function lexicalAbsolutePath(value) {
+    const canonical = canonicalRemotePath(value);
+    if (!canonical) return null;
+    const slashPath = canonical.replace(/\\/gu, "/");
+    const windowsDrive = slashPath.match(/^([a-z]:)(?:\/|$)/iu);
+    const uncParts = slashPath.startsWith("//") ? slashPath.slice(2).split("/").filter(Boolean) : [];
+    const isUnc = uncParts.length >= 2;
+    const isPosix = !windowsDrive && !isUnc && slashPath.startsWith("/");
+    if (!windowsDrive && !isUnc && !isPosix) return null;
+    const root = windowsDrive ? windowsDrive[1]
+      : isUnc ? `//${uncParts[0]}/${uncParts[1]}`
+      : "";
+    const remainder = windowsDrive ? slashPath.slice(windowsDrive[0].length)
+      : isUnc ? uncParts.slice(2).join("/")
+      : slashPath.slice(1);
+    const segments = [];
+    for (const segment of remainder.split("/")) {
+      if (!segment || segment === ".") continue;
+      if (segment === "..") {
+        if (!segments.length) return null;
+        segments.pop();
+      } else {
+        segments.push(segment);
+      }
+    }
+    const normalized = `${root}/${segments.join("/")}`.replace(/\/+$/u, "") || "/";
+    const caseInsensitive = Boolean(windowsDrive || isUnc);
+    return { caseInsensitive, value: caseInsensitive ? normalized.toLocaleLowerCase() : normalized };
+  }
+
+  function maintenanceThreadPathManaged(thread, archived) {
+    const threadPath = typeof thread?.path === "string" && thread.path.trim() ? thread.path : null;
+    if (!threadPath || !state.localCodexHome) return true;
+    const home = lexicalAbsolutePath(state.localCodexHome);
+    const candidate = lexicalAbsolutePath(threadPath);
+    if (!home || !candidate || home.caseInsensitive !== candidate.caseInsensitive) return false;
+    const directory = archived ? "archived_sessions" : "sessions";
+    const root = `${home.value}/${directory}`;
+    return candidate.value === root || candidate.value.startsWith(`${root}/`);
+  }
+
+  function unmanagedMaintenanceThreadCount(threads, archived) {
+    if (!state.localCodexHome) return 0;
+    return threads.filter((thread) => typeof thread?.path === "string" && thread.path.trim() && !maintenanceThreadPathManaged(thread, archived)).length;
+  }
+
+  function sanitizedMaintenanceFailure(operation, error) {
+    const message = String(error?.message ?? error ?? "");
+    const action = operation === "delete" ? "Delete" : "Archive";
+    if (/timed out|bounded deadline/iu.test(message)) return `${action} timed out`;
+    if (/runtime changed/iu.test(message)) return `${action} stopped because the local runtime changed`;
+    if (/outside|rollout path|sessions directory/iu.test(message)) return `${action} skipped a chat outside the managed Codex sessions directory`;
+    if (/not found/iu.test(message)) return `${action} could not find the chat`;
+    if (/permission|access denied|unauthorized|forbidden/iu.test(message)) return `${action} was denied by the local app-server`;
+    return `${action} was rejected by the local app-server`;
+  }
+
+  function maintenanceDeadlineError(phase) {
+    return new Error(`${phase} reached its bounded deadline`);
+  }
+
+  function remainingRequestTimeout(deadline, phase) {
+    if (!Number.isFinite(deadline)) return 30000;
+    const remaining = Math.floor(deadline - Date.now());
+    if (remaining <= 0) throw maintenanceDeadlineError(phase);
+    return Math.max(1, Math.min(30000, remaining));
+  }
+
+  function enqueueLocalThreadList(requestClient, runtimeGeneration, deadline, phase, operation) {
+    if (typeof requestClient?.sendRequest !== "function") return Promise.reject(new Error(`${phase}: local app-server bridge is unavailable`));
+    const token = { cancelled: false };
+    const pendingRequestSettlements = [];
+    let gateRecord = state.localThreadListGates.get(requestClient);
+    if (!gateRecord || gateRecord.runtimeGeneration !== runtimeGeneration) {
+      gateRecord = { gate: Promise.resolve(), runtimeGeneration };
+      state.localThreadListGates.set(requestClient, gateRecord);
+    }
+    const predecessor = Promise.resolve(gateRecord.gate).catch(() => {});
+    const execution = predecessor.then(async () => {
+      if (token.cancelled || Date.now() >= deadline) throw maintenanceDeadlineError(`${phase} while waiting for the local thread/list gate`);
+      if (state.localRuntime?.requestClient !== requestClient || state.localRuntimeGeneration !== runtimeGeneration) {
+        throw new Error(`${phase}: local app-server runtime changed before listing`);
+      }
+      return operation((params) => {
+        if (token.cancelled) throw maintenanceDeadlineError(phase);
+        if (state.localRuntime?.requestClient !== requestClient || state.localRuntimeGeneration !== runtimeGeneration) {
+          throw new Error(`${phase}: local app-server runtime changed during listing`);
+        }
+        const timeoutMilliseconds = remainingRequestTimeout(deadline, phase);
+        const underlying = Promise.resolve().then(() => requestClient.sendRequest("thread/list", params));
+        pendingRequestSettlements.push(underlying.then(() => {}, () => {}));
+        return withTimeout(underlying, `thread/list (${phase})`, timeoutMilliseconds);
+      });
+    });
+    gateRecord.gate = execution
+      .then(() => Promise.allSettled(pendingRequestSettlements), () => Promise.allSettled(pendingRequestSettlements))
+      .then(() => undefined, () => undefined);
+    if (!Number.isFinite(deadline)) return execution;
+    const waitMilliseconds = Math.max(1, deadline - Date.now());
+    let timer = null;
+    const timeout = new Promise((resolve, reject) => {
+      timer = setTimeout(() => {
+        token.cancelled = true;
+        reject(maintenanceDeadlineError(phase));
+      }, waitMilliseconds);
+    });
+    return Promise.race([execution, timeout]).finally(() => {
+      if (timer !== null) clearTimeout(timer);
+    });
+  }
+
+  async function listAllRuntimeThreads(requestClient, archived = false, deadline = Number.POSITIVE_INFINITY, includeInternalSources = false, requestThreadList = null, phase = "thread inventory") {
     if (typeof requestClient?.sendRequest !== "function") throw new Error("App-server bridge is unavailable");
     const threads = [];
     const threadIds = new Set();
     const cursors = new Set();
     let cursor = null;
     for (let page = 0; page < MAX_THREAD_LIST_PAGES; page += 1) {
-      if (Date.now() >= deadline) throw new Error("thread/list reached the bounded maintenance deadline");
-      const result = await sendRequestWithTimeout(requestClient, "thread/list", {
+      if (Date.now() >= deadline) throw maintenanceDeadlineError(phase);
+      const params = {
         archived: archived === true,
         cursor,
         limit: 49,
         sourceKinds: includeInternalSources ? MAINTENANCE_THREAD_SOURCE_KINDS : USER_VISIBLE_THREAD_SOURCE_KINDS,
         sortDirection: "desc",
         sortKey: "updated_at",
-      }, 30000);
+      };
+      if (includeInternalSources) params.useStateDbOnly = true;
+      const result = requestThreadList
+        ? await requestThreadList(params)
+        : await sendRequestWithTimeout(requestClient, "thread/list", params, remainingRequestTimeout(deadline, phase));
       if (state.disposed) return { pages: page + 1, threads: [] };
       for (const thread of Array.isArray(result?.data) ? result.data : []) {
         const threadId = rawConversationId(thread?.id ?? thread?.conversationId ?? "");
@@ -2542,10 +2662,15 @@
     return { pages: MAX_THREAD_LIST_PAGES, threads, truncated: true };
   }
 
-  async function listAllLocalThreads(archived = false, deadline = Number.POSITIVE_INFINITY) {
-    const requestClient = state.localRuntime?.requestClient;
-    if (typeof requestClient?.sendRequest !== "function") throw new Error("Local app-server bridge is unavailable");
-    return (await listAllRuntimeThreads(requestClient, archived, deadline, true)).threads;
+  async function listAllLocalThreadInventory(requestClient, archived = false, deadline = Number.POSITIVE_INFINITY, includeInternalSources = true, phase = "local thread listing", runtimeGeneration = state.localRuntimeGeneration) {
+    return enqueueLocalThreadList(requestClient, runtimeGeneration, deadline, phase, async (requestThreadList) => (
+      listAllRuntimeThreads(requestClient, archived, deadline, includeInternalSources, requestThreadList, phase)
+    ));
+  }
+
+  async function listAllLocalThreads(requestClient, archived = false, deadline = Number.POSITIVE_INFINITY, includeInternalSources = true, phase = "local thread listing", runtimeGeneration = state.localRuntimeGeneration) {
+    return listAllLocalThreadInventory(requestClient, archived, deadline, includeInternalSources, phase, runtimeGeneration)
+      .then((result) => result.threads);
   }
 
   function eligibleAutoArchiveThreads(threads, pinnedThreadIds = new Set(), relatedThreads = threads) {
@@ -2562,6 +2687,7 @@
       const statusType = typeof thread?.status === "string" ? thread.status : thread?.status?.type;
       const activityAt = threadActivityTime(thread);
       return Boolean(threadId)
+        && maintenanceThreadPathManaged(thread, false)
         && !parentsWithActiveChildren.has(threadId)
         && !protectedIds.has(threadId)
         && !pinnedThreadIds.has(threadId)
@@ -2606,6 +2732,7 @@
       const statusType = typeof thread?.status === "string" ? thread.status : thread?.status?.type;
       const archivedAt = Number(archiveRecords?.[threadId]);
       return Boolean(threadId)
+        && maintenanceThreadPathManaged(thread, true)
         && !parentsWithKnownChildren.has(threadId)
         && !pinnedThreadIds.has(threadId)
         && thread.selected !== true
@@ -2619,10 +2746,12 @@
   }
 
   async function previewAutoArchive() {
-    const [activeThreads, archivedThreads] = await Promise.all([
-      listAllLocalThreads(false),
-      listAllLocalThreads(true),
-    ]);
+    const requestClient = state.localRuntime?.requestClient;
+    const runtimeGeneration = state.localRuntimeGeneration;
+    const deadline = Date.now() + AUTO_MAINTENANCE_RUN_LIMIT_MS;
+    if (typeof requestClient?.sendRequest !== "function") throw new Error("Local app-server bridge is unavailable");
+    const activeThreads = await listAllLocalThreads(requestClient, false, deadline, true, "maintenance preview active snapshot", runtimeGeneration);
+    const archivedThreads = await listAllLocalThreads(requestClient, true, deadline, true, "maintenance preview archived snapshot", runtimeGeneration);
     const pinnedResult = typeof state.localFetchFromHost === "function"
       ? await fetchFromHostWithTimeout(state.localFetchFromHost, "get-global-state", { params: { key: "pinned-thread-ids" } }).catch(() => ({ value: [] }))
       : { value: [] };
@@ -2637,6 +2766,8 @@
       untrackedArchived: archivedThreads.filter((thread) => typeof thread?.id === "string" && !Number.isFinite(Number(archiveRecords[thread.id]))).length,
       eligible: archiveEligible,
       scanned: activeThreads.length,
+      unmanagedActiveSkipped: unmanagedMaintenanceThreadCount(activeThreads, false),
+      unmanagedArchivedSkipped: unmanagedMaintenanceThreadCount(archivedThreads, true),
     };
   }
 
@@ -2644,6 +2775,8 @@
     if (state.autoArchivePending || state.disposed) return state.autoArchiveLastResult ?? { archived: 0, eligible: 0 };
     if (!readOptionalBoolean(AUTO_ARCHIVE_ENABLED_KEY)) return { archived: 0, eligible: 0, skipped: "auto-archive-disabled" };
     const requestClient = state.localRuntime?.requestClient;
+    const runtimeGeneration = state.localRuntimeGeneration;
+    const fetchFromHost = state.localFetchFromHost;
     if (typeof requestClient?.sendRequest !== "function") {
       state.autoArchiveError = "Local app-server bridge is unavailable";
       scheduleAutoArchive(AUTO_ARCHIVE_RETRY_MS);
@@ -2657,6 +2790,7 @@
     const runDeadline = Date.now() + AUTO_MAINTENANCE_RUN_LIMIT_MS;
     let leaseLost = false;
     let timeLimitReached = false;
+    let maintenanceContinuationNeeded = false;
     state.autoArchiveLeaseTimer = setInterval(() => {
       if (!acquireAutoArchiveLease()) {
         leaseLost = true;
@@ -2669,64 +2803,102 @@
     const deleteFailures = [];
     let archived = 0;
     let deleted = 0;
+    const assertCapturedRuntime = (phase) => {
+      if (state.localRuntime?.requestClient !== requestClient || state.localRuntimeGeneration !== runtimeGeneration) {
+        throw new Error(`Local app-server runtime changed ${phase}`);
+      }
+    };
     try {
-      const [activeThreads, archivedThreads] = await Promise.all([
-        listAllLocalThreads(false, runDeadline),
-        listAllLocalThreads(true, runDeadline),
-      ]);
-      if (typeof state.localFetchFromHost !== "function") throw new Error("Local project-state bridge is unavailable for pinned-chat protection");
-      const pinnedResult = await fetchFromHostWithTimeout(state.localFetchFromHost, "get-global-state", { params: { key: "pinned-thread-ids" } });
+      const activeThreads = await listAllLocalThreads(requestClient, false, runDeadline, true, "maintenance active snapshot", runtimeGeneration);
+      const archivedThreads = await listAllLocalThreads(requestClient, true, runDeadline, true, "maintenance archived snapshot", runtimeGeneration);
+      if (typeof fetchFromHost !== "function") throw new Error("Local project-state bridge is unavailable for pinned-chat protection");
+      const pinnedResult = await fetchFromHostWithTimeout(fetchFromHost, "get-global-state", { params: { key: "pinned-thread-ids" } }, remainingRequestTimeout(runDeadline, "maintenance pinned-chat snapshot"));
       if (!Array.isArray(pinnedResult?.value)) throw new Error("Pinned chat state did not contain a valid thread list");
       const pinnedThreadIds = new Set(pinnedResult.value.filter((id) => typeof id === "string"));
       const archiveRecords = synchronizeTrackedArchivedThreads(archivedThreads, false);
       const deleteCandidates = eligibleAutoDeleteThreads(archivedThreads, activeThreads, archiveRecords, AUTO_DELETE_AFTER_ARCHIVE_DAYS * 24 * 60 * 60 * 1000, pinnedThreadIds).slice(0, AUTO_MAINTENANCE_BATCH_LIMIT);
-      for (const thread of deleteCandidates) {
-        if (Date.now() >= runDeadline) { timeLimitReached = true; break; }
-        if (state.disposed || generation !== state.autoArchiveGeneration || !readOptionalBoolean(AUTO_ARCHIVE_ENABLED_KEY)) break;
+      const archiveCandidates = eligibleAutoArchiveThreads(activeThreads, pinnedThreadIds, [...activeThreads, ...archivedThreads]).slice(0, AUTO_MAINTENANCE_BATCH_LIMIT);
+      const deleteThread = deleteCandidates[0] ?? null;
+      const archiveThread = deleteThread ? null : archiveCandidates[0] ?? null;
+      maintenanceContinuationNeeded = deleteCandidates.length + archiveCandidates.length > 1;
+      if ((deleteThread || archiveThread) && Date.now() >= runDeadline) timeLimitReached = true;
+      if (deleteThread && Date.now() < runDeadline && !state.disposed && generation === state.autoArchiveGeneration && readOptionalBoolean(AUTO_ARCHIVE_ENABLED_KEY)) {
         try {
-          if (!acquireAutoArchiveLease()) { leaseLost = true; break; }
-          const currentPinnedResult = typeof state.localFetchFromHost === "function"
-            ? await fetchFromHostWithTimeout(state.localFetchFromHost, "get-global-state", { params: { key: "pinned-thread-ids" } })
-            : { value: [] };
-          if (!Array.isArray(currentPinnedResult?.value)) throw new Error("Pinned chat state became unavailable during cleanup");
-          const currentPinned = new Set(currentPinnedResult.value);
-          const [currentActive, currentArchived] = await Promise.all([listAllLocalThreads(false, runDeadline), listAllLocalThreads(true, runDeadline)]);
-          const currentDomTask = [...document.querySelectorAll(ROW_SELECTOR)].map(metadataFromRow).find((task) => task.conversationId === thread.id);
-          if (currentPinned.has(thread.id)
-            || currentDomTask?.selected
-            || currentDomTask?.statusType === "loading"
-            || !eligibleAutoDeleteThreads(currentArchived, currentActive, archiveRecords, AUTO_DELETE_AFTER_ARCHIVE_DAYS * 24 * 60 * 60 * 1000, currentPinned).some((candidate) => candidate.id === thread.id)) continue;
-          if (Date.now() >= runDeadline || generation !== state.autoArchiveGeneration) { timeLimitReached = true; break; }
-          await sendRequestWithTimeout(requestClient, "thread/delete", { threadId: thread.id }, 30000);
-          delete archiveRecords[thread.id];
-          deleted += 1;
+          if (!acquireAutoArchiveLease()) {
+            leaseLost = true;
+          } else {
+            assertCapturedRuntime("before delete revalidation");
+            const currentPinnedResult = await fetchFromHostWithTimeout(fetchFromHost, "get-global-state", { params: { key: "pinned-thread-ids" } }, remainingRequestTimeout(runDeadline, "maintenance delete pinned-chat check"));
+            if (!Array.isArray(currentPinnedResult?.value)) throw new Error("Pinned chat state became unavailable during cleanup");
+            const currentPinned = new Set(currentPinnedResult.value);
+            const currentActive = await listAllLocalThreads(requestClient, false, runDeadline, true, "maintenance delete active revalidation", runtimeGeneration);
+            const currentArchived = await listAllLocalThreads(requestClient, true, runDeadline, true, "maintenance delete archived revalidation", runtimeGeneration);
+            assertCapturedRuntime("after delete revalidation");
+            const currentArchiveRecords = readRecords(AUTO_ARCHIVED_RECORDS_KEY);
+            const currentDomTask = [...document.querySelectorAll(ROW_SELECTOR)].map(metadataFromRow).find((task) => task.conversationId === deleteThread.id);
+            const currentDeleteEligible = eligibleAutoDeleteThreads(currentArchived, currentActive, currentArchiveRecords, AUTO_DELETE_AFTER_ARCHIVE_DAYS * 24 * 60 * 60 * 1000, currentPinned);
+            const currentArchiveEligible = eligibleAutoArchiveThreads(currentActive, currentPinned, [...currentActive, ...currentArchived]);
+            const stillEligible = !currentPinned.has(deleteThread.id)
+              && !currentDomTask?.selected
+              && currentDomTask?.statusType !== "loading"
+              && currentDeleteEligible.some((candidate) => candidate.id === deleteThread.id);
+            maintenanceContinuationNeeded ||= currentDeleteEligible.length + currentArchiveEligible.length > (stillEligible ? 1 : 0);
+            if (stillEligible) {
+              if (!acquireAutoArchiveLease()) {
+                leaseLost = true;
+              } else if (Date.now() >= runDeadline || generation !== state.autoArchiveGeneration) {
+                timeLimitReached = true;
+              } else {
+                assertCapturedRuntime("before delete");
+                await sendRequestWithTimeout(requestClient, "thread/delete", { threadId: deleteThread.id }, remainingRequestTimeout(runDeadline, "maintenance delete"));
+                assertCapturedRuntime("after delete");
+                delete archiveRecords[deleteThread.id];
+                deleted = 1;
+              }
+            }
+          }
         } catch (error) {
-          deleteFailures.push({ id: thread.id, error: String(error?.message ?? error).slice(0, 160) });
+          assertCapturedRuntime("during delete cleanup");
+          deleteFailures.push({ error: sanitizedMaintenanceFailure("delete", error) });
         }
       }
-      const archiveCandidates = eligibleAutoArchiveThreads(activeThreads, pinnedThreadIds, [...activeThreads, ...archivedThreads]).slice(0, AUTO_MAINTENANCE_BATCH_LIMIT);
-      for (const thread of archiveCandidates) {
-        if (Date.now() >= runDeadline) { timeLimitReached = true; break; }
-        if (state.disposed || generation !== state.autoArchiveGeneration || !readOptionalBoolean(AUTO_ARCHIVE_ENABLED_KEY)) break;
+      if (archiveThread && Date.now() < runDeadline && !state.disposed && generation === state.autoArchiveGeneration && readOptionalBoolean(AUTO_ARCHIVE_ENABLED_KEY)) {
         try {
-          if (!acquireAutoArchiveLease()) { leaseLost = true; break; }
-          const currentPinnedResult = typeof state.localFetchFromHost === "function"
-            ? await fetchFromHostWithTimeout(state.localFetchFromHost, "get-global-state", { params: { key: "pinned-thread-ids" } })
-            : { value: [] };
-          if (!Array.isArray(currentPinnedResult?.value)) throw new Error("Pinned chat state became unavailable during cleanup");
-          const currentPinned = new Set(currentPinnedResult.value);
-          const [currentActive, currentArchived] = await Promise.all([listAllLocalThreads(false, runDeadline), listAllLocalThreads(true, runDeadline)]);
-          const currentDomTask = [...document.querySelectorAll(ROW_SELECTOR)].map(metadataFromRow).find((task) => task.conversationId === thread.id);
-          if (currentPinned.has(thread.id)
-            || currentDomTask?.selected
-            || currentDomTask?.statusType === "loading"
-            || !eligibleAutoArchiveThreads(currentActive, currentPinned, [...currentActive, ...currentArchived]).some((candidate) => candidate.id === thread.id)) continue;
-          if (Date.now() >= runDeadline || generation !== state.autoArchiveGeneration) { timeLimitReached = true; break; }
-          await sendRequestWithTimeout(requestClient, "thread/archive", { threadId: thread.id }, 30000);
-          archiveRecords[thread.id] = Date.now();
-          archived += 1;
+          if (!acquireAutoArchiveLease()) {
+            leaseLost = true;
+          } else {
+            assertCapturedRuntime("before archive revalidation");
+            const currentPinnedResult = await fetchFromHostWithTimeout(fetchFromHost, "get-global-state", { params: { key: "pinned-thread-ids" } }, remainingRequestTimeout(runDeadline, "maintenance archive pinned-chat check"));
+            if (!Array.isArray(currentPinnedResult?.value)) throw new Error("Pinned chat state became unavailable during cleanup");
+            const currentPinned = new Set(currentPinnedResult.value);
+            const currentActive = await listAllLocalThreads(requestClient, false, runDeadline, true, "maintenance archive active revalidation", runtimeGeneration);
+            const currentArchived = await listAllLocalThreads(requestClient, true, runDeadline, true, "maintenance archive archived revalidation", runtimeGeneration);
+            assertCapturedRuntime("after archive revalidation");
+            const currentDomTask = [...document.querySelectorAll(ROW_SELECTOR)].map(metadataFromRow).find((task) => task.conversationId === archiveThread.id);
+            const currentDeleteEligible = eligibleAutoDeleteThreads(currentArchived, currentActive, readRecords(AUTO_ARCHIVED_RECORDS_KEY), AUTO_DELETE_AFTER_ARCHIVE_DAYS * 24 * 60 * 60 * 1000, currentPinned);
+            const currentArchiveEligible = eligibleAutoArchiveThreads(currentActive, currentPinned, [...currentActive, ...currentArchived]);
+            const stillEligible = !currentPinned.has(archiveThread.id)
+              && !currentDomTask?.selected
+              && currentDomTask?.statusType !== "loading"
+              && currentArchiveEligible.some((candidate) => candidate.id === archiveThread.id);
+            maintenanceContinuationNeeded ||= currentDeleteEligible.length + currentArchiveEligible.length > (stillEligible ? 1 : 0);
+            if (stillEligible) {
+              if (!acquireAutoArchiveLease()) {
+                leaseLost = true;
+              } else if (Date.now() >= runDeadline || generation !== state.autoArchiveGeneration) {
+                timeLimitReached = true;
+              } else {
+                assertCapturedRuntime("before archive");
+                await sendRequestWithTimeout(requestClient, "thread/archive", { threadId: archiveThread.id }, remainingRequestTimeout(runDeadline, "maintenance archive"));
+                assertCapturedRuntime("after archive");
+                archiveRecords[archiveThread.id] = Date.now();
+                archived = 1;
+              }
+            }
+          }
         } catch (error) {
-          archiveFailures.push({ id: thread.id, error: String(error?.message ?? error).slice(0, 160) });
+          assertCapturedRuntime("during archive cleanup");
+          archiveFailures.push({ error: sanitizedMaintenanceFailure("archive", error) });
         }
       }
       if (generation === state.autoArchiveGeneration && readOptionalBoolean(AUTO_ARCHIVE_ENABLED_KEY) && !state.disposed) {
@@ -2744,12 +2916,17 @@
         eligible: archiveCandidates.length,
         failed: archiveFailures.length + deleteFailures.length,
         scanned: activeThreads.length,
+        unmanagedActiveSkipped: unmanagedMaintenanceThreadCount(activeThreads, false),
+        unmanagedArchivedSkipped: unmanagedMaintenanceThreadCount(archivedThreads, true),
+        continuationScheduled: maintenanceContinuationNeeded,
       };
       const failureCount = archiveFailures.length + deleteFailures.length;
+      const firstOperationError = deleteFailures[0]?.error ?? archiveFailures[0]?.error ?? null;
+      if (firstOperationError) state.autoArchiveLastResult.operationError = firstOperationError;
       state.autoArchiveError = leaseLost
         ? "Automatic cleanup lost its cross-window lease and will retry"
         : timeLimitReached ? "Automatic cleanup reached its bounded run limit and will continue on retry"
-        : failureCount ? `${failureCount} eligible chat maintenance operation(s) failed` : null;
+        : failureCount ? `${firstOperationError} (${failureCount} failed operation${failureCount === 1 ? "" : "s"})` : null;
       state.lastAction = { commandId: "auto-maintain-old-chats", found: true, invoked: true, ...state.autoArchiveLastResult };
       void state.queryClient?.invalidateQueries?.();
       return state.autoArchiveLastResult;
@@ -2764,7 +2941,7 @@
       releaseAutoArchiveLease();
       state.autoArchivePending = false;
       if (!state.disposed) {
-        scheduleAutoArchive(state.autoArchiveError ? AUTO_ARCHIVE_RETRY_MS : AUTO_ARCHIVE_INTERVAL_MS);
+        scheduleAutoArchive(state.autoArchiveError || maintenanceContinuationNeeded ? AUTO_ARCHIVE_RETRY_MS : AUTO_ARCHIVE_INTERVAL_MS);
         schedule();
       }
     }
@@ -3580,6 +3757,8 @@
   function uninstall() {
     state.disposed = true;
     state.autoArchiveGeneration += 1;
+    state.localRuntimeGeneration += 1;
+    state.localThreadListGates = new WeakMap();
     document.removeEventListener("pointerdown", dismissOverlays);
     document.removeEventListener("keydown", dismissOnEscape);
     state.observer?.disconnect();

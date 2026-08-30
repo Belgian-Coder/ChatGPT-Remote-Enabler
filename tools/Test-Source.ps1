@@ -28,6 +28,7 @@ $powershell = @(
     'windows\CodexRemoteMobileProject\ProxyConfiguration.ps1',
     'windows\CodexRemoteMobileProject\ProxyConfiguration.psm1',
     'tools\Build-Release.ps1',
+    'tools\Test-BuildReleaseArchive.ps1',
     'tools\Test-BuildReleasePrivacy.ps1',
     'tools\Test-Source.ps1',
     'tools\Test-WindowsUpdaterCompatibility.ps1'
@@ -58,7 +59,7 @@ if ((Get-FileHash -LiteralPath $windowsMaintenance -Algorithm SHA256).Hash -ne (
 }
 $renderer = Get-Content -LiteralPath $windowsRenderer -Raw
 $requiredContracts = @(
-    'const VERSION = 58;',
+    'const VERSION = 61;',
     'hostDisplayName: config.localDisplayName || null',
     'codex-remote-mobile-verified-thread-ids-v2',
     'THREAD_VISIBILITY_CONTRACT_VERSION',
@@ -73,7 +74,9 @@ $requiredContracts = @(
     'threadScope: "user-visible"',
     'USER_VISIBLE_THREAD_SOURCE_KINDS = Object.freeze(["cli", "vscode"])',
     'includeInternalSources ? MAINTENANCE_THREAD_SOURCE_KINDS : USER_VISIBLE_THREAD_SOURCE_KINDS',
-    'listAllRuntimeThreads(requestClient, archived, deadline, true)',
+    'listAllLocalThreadInventory',
+    'localThreadListGates',
+    'params.useStateDbOnly = true',
     'threadIds.has(threadId)',
     'sendRequestWithTimeout',
     'state.autoArchiveGeneration',
@@ -101,7 +104,7 @@ $requiredContracts = @(
 foreach ($contract in $requiredContracts) {
     if (-not $renderer.Contains($contract)) { throw "Renderer contract is missing: $contract" }
 }
-foreach ($internalSource in @('"exec"', '"subAgent"', '"subAgentReview"', '"subAgentCompact"', '"subAgentThreadSpawn"', '"subAgentOther"', '"unknown"')) {
+foreach ($internalSource in @('"appServer"', '"exec"', '"subAgent"', '"subAgentReview"', '"subAgentCompact"', '"subAgentThreadSpawn"', '"subAgentOther"', '"unknown"')) {
     if (-not $renderer.Contains($internalSource)) { throw "Maintenance source-kind contract is missing: $internalSource" }
 }
 if ($renderer -match 'availability\.set\(normalizedHostId, true\)') {
@@ -127,6 +130,9 @@ foreach ($relative in @('windows\CodexRemoteMobileProject\inject.js', 'macos\inj
 
 & (Join-Path $root 'tools\Test-BuildReleasePrivacy.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Build release privacy self-test failed.' }
+
+& (Join-Path $root 'tools\Test-BuildReleaseArchive.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Build release archive self-test failed.' }
 
 & $node (Join-Path $root 'windows\CodexRemoteSimple\tests\RendererOverrides.SelfTest.js')
 if ($LASTEXITCODE -ne 0) { throw 'Stable renderer self-test failed.' }
@@ -167,12 +173,13 @@ if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
 [pscustomobject]@{
     JavaScriptFiles = $javascript.Count
     PowerShellFiles = $powershell.Count
-    RendererVersion = 58
+    RendererVersion = 61
     RendererParity = $true
     MaintenanceParity = $true
     InjectorVersionProof = $true
     InjectorProbeTimeout = $true
     BuildReleasePrivacySelfTest = $true
+    BuildReleaseArchiveSelfTest = $true
     MaintenanceSelfTest = $true
     ProxyConfigurationSelfTest = $true
     WindowsPowerShellNodeProbeSelfTest = $true

@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.5.21
+
+- Serialize local task listings across hydration, preview, and optional
+  auto-cleanup so one app-server client never receives overlapping pagination
+  streams. A timed-out raw request keeps the gate until it settles, preventing
+  retry storms and hidden overlap.
+- Read maintenance inventory directly from the authoritative state database,
+  include desktop `appServer` chats, capture one runtime client per cleanup
+  run, and apply the remaining hard deadline to every list and mutation call.
+- Replace per-chat full active/archived re-listing with one bounded fresh
+  snapshot while retaining pinned, selected, loading, parent/child, lease, and
+  generation protections.
+- Skip reported rollout paths outside the current Codex home's managed session
+  roots instead of repeatedly sending app-server mutations that must fail.
+  Preview and run results expose only safe skipped counts and sanitized errors.
+  Renderer v61 is identical on Windows and macOS.
+- Build ZIP entries with portable forward-slash names under Windows PowerShell
+  5.1 and reject archives without exactly one top-level release directory.
+
 ## v1.5.20
 
 - Record the renderer version actually proven by the injected runtime instead

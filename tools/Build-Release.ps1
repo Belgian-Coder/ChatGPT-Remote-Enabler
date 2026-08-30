@@ -5,6 +5,34 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.IO.Compression
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+function New-PortableReleaseArchive {
+    param(
+        [Parameter(Mandatory)]
+        [string]$SourceDirectory,
+        [Parameter(Mandatory)]
+        [string]$DestinationPath
+    )
+
+    if (Test-Path -LiteralPath $DestinationPath) { Remove-Item -LiteralPath $DestinationPath -Force }
+    $sourceParent = Split-Path -Parent $SourceDirectory
+    $archive = [IO.Compression.ZipFile]::Open($DestinationPath, [IO.Compression.ZipArchiveMode]::Create)
+    try {
+        foreach ($file in Get-ChildItem -LiteralPath $SourceDirectory -File -Recurse | Sort-Object FullName) {
+            $entryName = $file.FullName.Substring($sourceParent.Length + 1).Replace('\', '/')
+            [IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+                $archive,
+                $file.FullName,
+                $entryName,
+                [IO.Compression.CompressionLevel]::Optimal
+            ) | Out-Null
+        }
+    } finally {
+        $archive.Dispose()
+    }
+}
 
 function Assert-ReleasePrivacy {
     param(
@@ -87,8 +115,7 @@ try {
         Assert-ReleasePrivacy -StageRoot $stageRoot -AdditionalPattern $ForbiddenPattern
 
         $archivePath = Join-Path $OutputDirectory "$rootName.zip"
-        if (Test-Path -LiteralPath $archivePath) { Remove-Item -LiteralPath $archivePath -Force }
-        Compress-Archive -LiteralPath $stageRoot -DestinationPath $archivePath -CompressionLevel Optimal
+        New-PortableReleaseArchive -SourceDirectory $stageRoot -DestinationPath $archivePath
         $archives.Add([pscustomobject]@{
             Name = [IO.Path]::GetFileName($archivePath)
             Path = $archivePath
@@ -100,7 +127,6 @@ try {
     $sumLines = @($archives | ForEach-Object { "$($_.Sha256)  $($_.Name)" })
     [IO.File]::WriteAllText($sumsPath, (($sumLines -join "`n") + "`n"), [Text.UTF8Encoding]::new($false))
 
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
     foreach ($archive in $archives) {
         $zip = [IO.Compression.ZipFile]::OpenRead($archive.Path)
         try {

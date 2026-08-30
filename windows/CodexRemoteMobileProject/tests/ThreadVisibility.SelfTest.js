@@ -9,9 +9,10 @@ const rendererPath = path.join(__dirname, "..", "renderer-mobile-project-view.js
 const originalSource = fs.readFileSync(rendererPath, "utf8");
 const testSource = originalSource
   .replace("(() => {", "globalThis.__visibilityTest = (() => {")
+  .replace("const AUTO_MAINTENANCE_RUN_LIMIT_MS = 90000;", "const AUTO_MAINTENANCE_RUN_LIMIT_MS = 40;")
   .replace(
     "  return install();\n})();",
-    "  return { collectAuthoritativeThreadIds, directInventoryHasPriority, listAllRuntimeThreads, parseInventoryPayload, preferredThreadInventory, pruneVerifiedThreadIds, purgeLocalRuntimeAliases, rememberVerifiedThreadIds, removeGossipedLocalInventoryDuplicates, runtimeThreadInventoryDue, scopedThreadsAreFresh, serializePeerInventory, state, taskIsAuthoritative };\n})();",
+    "  return { assignLocalRuntime, collectAuthoritativeThreadIds, directInventoryHasPriority, eligibleAutoArchiveThreads, eligibleAutoDeleteThreads, lexicalAbsolutePath, listAllLocalThreads, listAllRuntimeThreads, maintenanceThreadPathManaged, parseInventoryPayload, preferredThreadInventory, pruneVerifiedThreadIds, purgeLocalRuntimeAliases, rememberVerifiedThreadIds, removeGossipedLocalInventoryDuplicates, runAutoArchiveNow, runtimeThreadInventoryDue, sanitizedMaintenanceFailure, scopedThreadsAreFresh, serializePeerInventory, state, taskIsAuthoritative, unmanagedMaintenanceThreadCount };\n})();",
   );
 
 const now = Date.now();
@@ -42,6 +43,7 @@ const context = vm.createContext({
   },
   setInterval,
   setTimeout,
+  requestAnimationFrame: () => 1,
 });
 context.globalThis = context;
 vm.runInContext(testSource, context, { filename: rendererPath });
@@ -309,6 +311,283 @@ assert.match(originalSource, /threadScopeGeneratedAt/);
     /bounded page limit/,
   );
   assert.equal(pageCalls, 200);
+
+  const requestShapes = [];
+  const shapeClient = {
+    async sendRequest(method, params) {
+      assert.equal(method, "thread/list");
+      requestShapes.push(params);
+      return { data: [], nextCursor: null };
+    },
+  };
+  await visibility.listAllRuntimeThreads(shapeClient, false, Date.now() + 1000, false);
+  await visibility.listAllRuntimeThreads(shapeClient, true, Date.now() + 1000, true);
+  assert.equal(Object.hasOwn(requestShapes[0], "useStateDbOnly"), false);
+  assert.equal(requestShapes[1].useStateDbOnly, true);
+  assert.equal(requestShapes[1].sourceKinds.includes("appServer"), true);
+
+  visibility.state.localCodexHome = "D:\\Fixture\\.codex";
+  assert.equal(visibility.maintenanceThreadPathManaged({ path: "d:/FIXTURE/.codex/sessions/2026/thread.jsonl" }, false), true);
+  assert.equal(visibility.maintenanceThreadPathManaged({ path: "D:\\Fixture\\.codex\\archived_sessions\\thread.jsonl" }, true), true);
+  assert.equal(visibility.maintenanceThreadPathManaged({ path: "D:\\Fixture\\.codex\\sessions-old\\thread.jsonl" }, false), false);
+  assert.equal(visibility.maintenanceThreadPathManaged({ path: "D:\\Fixture\\.codex\\sessions\\..\\legacy\\thread.jsonl" }, false), false);
+  assert.equal(visibility.maintenanceThreadPathManaged({ path: null }, false), true);
+  visibility.state.localCodexHome = "/opt/fixture/.codex";
+  assert.equal(visibility.maintenanceThreadPathManaged({ path: "/opt/fixture/.codex/sessions/2026/thread.jsonl" }, false), true);
+  assert.equal(visibility.maintenanceThreadPathManaged({ path: "/opt/fixture/.codex/archived_sessions/thread.jsonl" }, true), true);
+  assert.equal(visibility.maintenanceThreadPathManaged({ path: "/opt/Fixture/.codex/sessions/thread.jsonl" }, false), false);
+  assert.equal(visibility.maintenanceThreadPathManaged({ path: "/opt/fixture/.codex/sessions-backup/thread.jsonl" }, false), false);
+  visibility.state.localCodexHome = null;
+  assert.equal(visibility.maintenanceThreadPathManaged({ path: "/legacy/thread.jsonl" }, false), true);
+
+  const sanitized = visibility.sanitizedMaintenanceFailure("archive", new Error("rollout path D:\\Private\\thread.jsonl is outside sessions for 00000000-0000-0000-0000-000000000000"));
+  assert.equal(sanitized, "Archive skipped a chat outside the managed Codex sessions directory");
+  assert.doesNotMatch(sanitized, /Private|00000000/);
+
+  let concurrentLists = 0;
+  let maxConcurrentLists = 0;
+  let serializedListCalls = 0;
+  const serializedClient = {
+    sendRequest(method) {
+      assert.equal(method, "thread/list");
+      serializedListCalls += 1;
+      concurrentLists += 1;
+      maxConcurrentLists = Math.max(maxConcurrentLists, concurrentLists);
+      return new Promise((resolve) => setTimeout(() => {
+        concurrentLists -= 1;
+        resolve({ data: [], nextCursor: null });
+      }, 5));
+    },
+  };
+  visibility.assignLocalRuntime(null, serializedClient);
+  const serializedGeneration = visibility.state.localRuntimeGeneration;
+  await Promise.all([
+    visibility.listAllLocalThreads(serializedClient, false, Date.now() + 1000, true, "serialized active", serializedGeneration),
+    visibility.listAllLocalThreads(serializedClient, true, Date.now() + 1000, true, "serialized archived", serializedGeneration),
+  ]);
+  assert.equal(serializedListCalls, 2);
+  assert.equal(maxConcurrentLists, 1);
+
+  let releaseTimedOutRequest;
+  let heldGateCalls = 0;
+  concurrentLists = 0;
+  maxConcurrentLists = 0;
+  const heldGateClient = {
+    sendRequest() {
+      heldGateCalls += 1;
+      concurrentLists += 1;
+      maxConcurrentLists = Math.max(maxConcurrentLists, concurrentLists);
+      if (heldGateCalls === 1) {
+        return new Promise((resolve) => {
+          releaseTimedOutRequest = () => {
+            concurrentLists -= 1;
+            resolve({ data: [], nextCursor: null });
+          };
+        });
+      }
+      concurrentLists -= 1;
+      return Promise.resolve({ data: [], nextCursor: null });
+    },
+  };
+  visibility.assignLocalRuntime(null, heldGateClient);
+  const heldGeneration = visibility.state.localRuntimeGeneration;
+  await assert.rejects(
+    visibility.listAllLocalThreads(heldGateClient, false, Date.now() + 15, true, "timed out active", heldGeneration),
+    /timed out active/,
+  );
+  const queuedAfterTimeout = visibility.listAllLocalThreads(heldGateClient, true, Date.now() + 500, true, "queued archived", heldGeneration);
+  await new Promise((resolve) => setTimeout(resolve, 15));
+  assert.equal(heldGateCalls, 1, "a timed-out underlying request must continue holding the gate");
+  let replacementGateCalls = 0;
+  const replacementGateClient = {
+    async sendRequest() {
+      replacementGateCalls += 1;
+      return { data: [], nextCursor: null };
+    },
+  };
+  visibility.assignLocalRuntime(null, replacementGateClient);
+  await visibility.listAllLocalThreads(replacementGateClient, false, Date.now() + 200, true, "replacement active", visibility.state.localRuntimeGeneration);
+  assert.equal(replacementGateCalls, 1, "a replacement runtime must not queue behind a dead client gate");
+  assert.equal(heldGateCalls, 1, "the same-client retry must remain blocked until the old request settles");
+  releaseTimedOutRequest();
+  await assert.rejects(queuedAfterTimeout, /runtime changed/);
+  assert.equal(heldGateCalls, 1);
+
+  const old = Date.now() - 8 * 24 * 60 * 60 * 1000;
+  const protectedThreads = [
+    { id: "eligible", path: "d:/FIXTURE/.codex/sessions/2026/eligible.jsonl", status: "notLoaded", updatedAt: old },
+    { id: "eligible-two", path: "D:\\Fixture\\.codex\\sessions\\2026\\eligible-two.jsonl", status: "notLoaded", updatedAt: old },
+    { id: "unmanaged", path: "D:\\Fixture\\.codex\\sessions-old\\unmanaged.jsonl", status: "notLoaded", updatedAt: old },
+    { id: "pinned", status: "notLoaded", updatedAt: old },
+    { id: "selected", selected: true, status: "notLoaded", updatedAt: old },
+    { id: "loading", status: "active", updatedAt: old },
+    { id: "parent", status: "notLoaded", updatedAt: old },
+    { id: "child", parentThreadId: "parent", status: "active", updatedAt: old },
+  ];
+  let maintenanceListCalls = 0;
+  const mutations = [];
+  const maintenanceClient = {
+    async sendRequest(method, params) {
+      if (method === "thread/list") {
+        maintenanceListCalls += 1;
+        assert.equal(params.useStateDbOnly, true);
+        return { data: params.archived ? [] : protectedThreads, nextCursor: null };
+      }
+      mutations.push({ method, params });
+      return {};
+    },
+  };
+  storage.set("codex-remote-mobile-auto-archive-enabled-v1", "true");
+  visibility.state.localCodexHome = "D:\\Fixture\\.codex";
+  visibility.state.localFetchFromHost = async () => ({ value: ["pinned"] });
+  visibility.assignLocalRuntime(visibility.state.localFetchFromHost, maintenanceClient);
+  visibility.state.autoArchivePending = false;
+  visibility.state.autoArchiveError = null;
+  const maintenanceResult = await visibility.runAutoArchiveNow();
+  if (visibility.state.autoArchiveTimer !== null) clearTimeout(visibility.state.autoArchiveTimer);
+  visibility.state.autoArchiveTimer = null;
+  assert.equal(maintenanceListCalls, 4, "maintenance must take initial and immediate pre-mutation active/archived snapshots");
+  assert.equal(mutations.length, 1);
+  assert.equal(mutations[0].method, "thread/archive");
+  assert.equal(mutations[0].params.threadId, "eligible");
+  assert.equal(maintenanceResult.archived, 1);
+  assert.equal(maintenanceResult.continuationScheduled, true);
+  assert.equal(maintenanceResult.unmanagedActiveSkipped, 1);
+  assert.equal(maintenanceResult.unmanagedArchivedSkipped, 0);
+  assert.equal(visibility.state.autoArchivePending, false);
+
+  let archiveRaceActiveLists = 0;
+  const archiveRaceMutations = [];
+  const archiveRaceClient = {
+    async sendRequest(method, params) {
+      if (method !== "thread/list") {
+        archiveRaceMutations.push(method);
+        return {};
+      }
+      if (params.archived) return { data: [], nextCursor: null };
+      archiveRaceActiveLists += 1;
+      return {
+        data: [{
+          id: "archive-race",
+          path: "D:\\Fixture\\.codex\\sessions\\archive-race.jsonl",
+          status: archiveRaceActiveLists === 1 ? "notLoaded" : "active",
+          updatedAt: old,
+        }],
+        nextCursor: null,
+      };
+    },
+  };
+  visibility.assignLocalRuntime(visibility.state.localFetchFromHost, archiveRaceClient);
+  visibility.state.autoArchivePending = false;
+  const archiveRaceResult = await visibility.runAutoArchiveNow();
+  if (visibility.state.autoArchiveTimer !== null) clearTimeout(visibility.state.autoArchiveTimer);
+  visibility.state.autoArchiveTimer = null;
+  assert.equal(archiveRaceActiveLists, 2);
+  assert.equal(archiveRaceResult.archived, 0);
+  assert.deepEqual(archiveRaceMutations, []);
+
+  let deleteRaceActiveLists = 0;
+  let deleteRaceArchivedLists = 0;
+  const deleteRaceMutations = [];
+  storage.set("codex-remote-mobile-auto-archived-records-v1", JSON.stringify({ "delete-race": old }));
+  const deleteRaceClient = {
+    async sendRequest(method, params) {
+      if (method !== "thread/list") {
+        deleteRaceMutations.push(method);
+        return {};
+      }
+      if (params.archived) {
+        deleteRaceArchivedLists += 1;
+        return {
+          data: deleteRaceArchivedLists === 1 ? [{ id: "delete-race", path: "D:\\Fixture\\.codex\\archived_sessions\\delete-race.jsonl", status: "notLoaded" }] : [],
+          nextCursor: null,
+        };
+      }
+      deleteRaceActiveLists += 1;
+      return {
+        data: deleteRaceActiveLists === 1 ? [] : [{ id: "delete-race", path: "D:\\Fixture\\.codex\\sessions\\delete-race.jsonl", status: "active", updatedAt: Date.now() }],
+        nextCursor: null,
+      };
+    },
+  };
+  visibility.assignLocalRuntime(visibility.state.localFetchFromHost, deleteRaceClient);
+  visibility.state.autoArchivePending = false;
+  const deleteRaceResult = await visibility.runAutoArchiveNow();
+  if (visibility.state.autoArchiveTimer !== null) clearTimeout(visibility.state.autoArchiveTimer);
+  visibility.state.autoArchiveTimer = null;
+  assert.equal(deleteRaceResult.deleted, 0);
+  assert.deepEqual(deleteRaceMutations, []);
+
+  const failingMaintenanceClient = {
+    async sendRequest(method, params) {
+      if (method === "thread/list") {
+        return {
+          data: params.archived ? [] : [{ id: "failure-id", path: "D:\\Fixture\\.codex\\sessions\\failure.jsonl", status: "notLoaded", updatedAt: old }],
+          nextCursor: null,
+        };
+      }
+      throw new Error("rollout path D:\\Private\\failure.jsonl is outside sessions for failure-id");
+    },
+  };
+  visibility.assignLocalRuntime(visibility.state.localFetchFromHost, failingMaintenanceClient);
+  visibility.state.autoArchivePending = false;
+  const failureResult = await visibility.runAutoArchiveNow();
+  if (visibility.state.autoArchiveTimer !== null) clearTimeout(visibility.state.autoArchiveTimer);
+  visibility.state.autoArchiveTimer = null;
+  assert.equal(failureResult.operationError, "Archive skipped a chat outside the managed Codex sessions directory");
+  assert.match(failureResult.error ?? visibility.state.autoArchiveError, /Archive skipped a chat outside/);
+  assert.doesNotMatch(JSON.stringify(failureResult), /Private|failure-id/);
+  assert.equal(visibility.state.autoArchivePending, false);
+
+  const archivedPathThreads = [
+    { id: "archived-managed", path: "D:\\Fixture\\.codex\\archived_sessions\\managed.jsonl", status: "notLoaded" },
+    { id: "archived-unmanaged", path: "D:\\Fixture\\.codex\\archived_sessions-old\\unmanaged.jsonl", status: "notLoaded" },
+    { id: "archived-legacy-api", status: "notLoaded" },
+  ];
+  const archiveRecords = Object.fromEntries(archivedPathThreads.map((thread) => [thread.id, old]));
+  assert.deepEqual(
+    visibility.eligibleAutoDeleteThreads(archivedPathThreads, [], archiveRecords).map((thread) => thread.id),
+    ["archived-managed", "archived-legacy-api"],
+  );
+  assert.equal(visibility.unmanagedMaintenanceThreadCount(archivedPathThreads, true), 1);
+  visibility.state.localCodexHome = null;
+
+  let originalClientMutations = 0;
+  let replacementClientMutations = 0;
+  const replacementClient = {
+    async sendRequest(method) {
+      if (method !== "thread/list") replacementClientMutations += 1;
+      return { data: [], nextCursor: null };
+    },
+  };
+  const swappingClient = {
+    async sendRequest(method, params) {
+      if (method !== "thread/list") {
+        originalClientMutations += 1;
+        return {};
+      }
+      if (!params.archived) visibility.assignLocalRuntime(visibility.state.localFetchFromHost, replacementClient);
+      return { data: params.archived ? [] : [{ id: "swap-eligible", status: "notLoaded", updatedAt: old }], nextCursor: null };
+    },
+  };
+  visibility.assignLocalRuntime(visibility.state.localFetchFromHost, swappingClient);
+  visibility.state.autoArchivePending = false;
+  const swapResult = await visibility.runAutoArchiveNow();
+  if (visibility.state.autoArchiveTimer !== null) clearTimeout(visibility.state.autoArchiveTimer);
+  visibility.state.autoArchiveTimer = null;
+  assert.match(swapResult.error, /runtime changed/);
+  assert.equal(originalClientMutations, 0);
+  assert.equal(replacementClientMutations, 0);
+  assert.equal(visibility.state.autoArchivePending, false);
+
+  const neverSettlesClient = { sendRequest: () => new Promise(() => {}) };
+  visibility.assignLocalRuntime(visibility.state.localFetchFromHost, neverSettlesClient);
+  visibility.state.autoArchivePending = false;
+  const timeoutResult = await visibility.runAutoArchiveNow();
+  if (visibility.state.autoArchiveTimer !== null) clearTimeout(visibility.state.autoArchiveTimer);
+  visibility.state.autoArchiveTimer = null;
+  assert.match(timeoutResult.error, /maintenance active snapshot/);
+  assert.equal(visibility.state.autoArchivePending, false);
   console.log("Thread visibility self-test passed.");
 })().catch((error) => {
   console.error(error);

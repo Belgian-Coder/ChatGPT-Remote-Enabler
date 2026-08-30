@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.5.22
+
+- Quarantine a local app-server request client when a raw `thread/list` call
+  outlives its deadline instead of leaving every later hydration queued behind
+  an orphaned gate. A distinct client can recover immediately without ever
+  overlapping the unresolved request.
+- Preserve request gates and quarantines across renderer reinjection. Busy
+  v61 upgrades, including an idle renderer with prior timeout evidence, fail
+  closed by retaining cached inventory with an explicit recovery state until
+  a distinct client completes an authoritative listing.
+- Keep late legacy clients from replacing a healthy recovered runtime, expose
+  bounded recovery state in probes, and retain Windows/macOS renderer parity
+  at v62.
+
 ## v1.5.21
 
 - Serialize local task listings across hydration, preview, and optional

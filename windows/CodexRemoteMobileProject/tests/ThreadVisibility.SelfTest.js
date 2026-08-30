@@ -10,9 +10,10 @@ const originalSource = fs.readFileSync(rendererPath, "utf8");
 const testSource = originalSource
   .replace("(() => {", "globalThis.__visibilityTest = (() => {")
   .replace("const AUTO_MAINTENANCE_RUN_LIMIT_MS = 90000;", "const AUTO_MAINTENANCE_RUN_LIMIT_MS = 40;")
+  .replace("    const report = probe();", "    const report = {};")
   .replace(
     "  return install();\n})();",
-    "  return { assignLocalRuntime, collectAuthoritativeThreadIds, directInventoryHasPriority, eligibleAutoArchiveThreads, eligibleAutoDeleteThreads, lexicalAbsolutePath, listAllLocalThreads, listAllRuntimeThreads, maintenanceThreadPathManaged, parseInventoryPayload, preferredThreadInventory, pruneVerifiedThreadIds, purgeLocalRuntimeAliases, rememberVerifiedThreadIds, removeGossipedLocalInventoryDuplicates, runAutoArchiveNow, runtimeThreadInventoryDue, sanitizedMaintenanceFailure, scopedThreadsAreFresh, serializePeerInventory, state, taskIsAuthoritative, unmanagedMaintenanceThreadCount };\n})();",
+    "  return { assignLocalRuntime, collectAuthoritativeThreadIds, directInventoryHasPriority, eligibleAutoArchiveThreads, eligibleAutoDeleteThreads, lexicalAbsolutePath, listAllLocalThreads, listAllRuntimeThreads, maintenanceThreadPathManaged, parseInventoryPayload, preferredThreadInventory, pruneVerifiedThreadIds, purgeLocalRuntimeAliases, rememberVerifiedThreadIds, removeGossipedLocalInventoryDuplicates, runAutoArchiveNow, runtimeThreadInventoryDue, sanitizedMaintenanceFailure, scopedThreadsAreFresh, serializePeerInventory, sharedThreadListRegistry, state, taskIsAuthoritative, unmanagedMaintenanceThreadCount, uninstall };\n})();",
   );
 
 const now = Date.now();
@@ -34,7 +35,7 @@ const context = vm.createContext({
   clearTimeout,
   console,
   crypto: { randomUUID: () => "visibility-test" },
-  document: { querySelectorAll: () => [] },
+  document: { addEventListener() {}, getElementById: () => null, querySelector: () => null, querySelectorAll: () => [], removeEventListener() {} },
   globalThis: null,
   localStorage: {
     getItem: (key) => storage.get(key) ?? null,
@@ -43,6 +44,8 @@ const context = vm.createContext({
   },
   setInterval,
   setTimeout,
+  cancelAnimationFrame() {},
+  queueMicrotask,
   requestAnimationFrame: () => 1,
 });
 context.globalThis = context;
@@ -389,15 +392,21 @@ assert.match(originalSource, /threadScopeGeneratedAt/);
       return Promise.resolve({ data: [], nextCursor: null });
     },
   };
+  visibility.state.localRuntime = null;
   visibility.assignLocalRuntime(null, heldGateClient);
   const heldGeneration = visibility.state.localRuntimeGeneration;
   await assert.rejects(
     visibility.listAllLocalThreads(heldGateClient, false, Date.now() + 15, true, "timed out active", heldGeneration),
     /timed out active/,
   );
-  const queuedAfterTimeout = visibility.listAllLocalThreads(heldGateClient, true, Date.now() + 500, true, "queued archived", heldGeneration);
-  await new Promise((resolve) => setTimeout(resolve, 15));
-  assert.equal(heldGateCalls, 1, "a timed-out underlying request must continue holding the gate");
+  assert.equal(visibility.state.localRuntime, null, "a timed-out client must be removed from the active runtime generation");
+  await assert.rejects(
+    visibility.listAllLocalThreads(heldGateClient, true, Date.now() + 500, true, "queued archived", heldGeneration),
+    /quarantined/,
+  );
+  visibility.assignLocalRuntime(null, heldGateClient);
+  assert.equal(visibility.state.localRuntime, null, "a quarantined client must not be rediscovered before its request settles");
+  assert.equal(heldGateCalls, 1, "a quarantined client must not receive an overlapping request");
   let replacementGateCalls = 0;
   const replacementGateClient = {
     async sendRequest() {
@@ -408,10 +417,33 @@ assert.match(originalSource, /threadScopeGeneratedAt/);
   visibility.assignLocalRuntime(null, replacementGateClient);
   await visibility.listAllLocalThreads(replacementGateClient, false, Date.now() + 200, true, "replacement active", visibility.state.localRuntimeGeneration);
   assert.equal(replacementGateCalls, 1, "a replacement runtime must not queue behind a dead client gate");
-  assert.equal(heldGateCalls, 1, "the same-client retry must remain blocked until the old request settles");
+  assert.equal(heldGateCalls, 1, "the quarantined client must remain unused while its old request is pending");
   releaseTimedOutRequest();
-  await assert.rejects(queuedAfterTimeout, /runtime changed/);
-  assert.equal(heldGateCalls, 1);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  visibility.state.localRuntime = null;
+  visibility.assignLocalRuntime(null, heldGateClient);
+  assert.equal(visibility.state.localRuntime.requestClient, heldGateClient, "a normally settled late request must release its client quarantine");
+  await visibility.listAllLocalThreads(heldGateClient, false, Date.now() + 200, true, "recovered active", visibility.state.localRuntimeGeneration);
+  assert.equal(heldGateCalls, 2);
+  assert.equal(maxConcurrentLists, 1, "late-settlement recovery must never overlap requests on the same client");
+
+  let repeatedDeadCalls = 0;
+  const repeatedDeadClient = { sendRequest: () => { repeatedDeadCalls += 1; return new Promise(() => {}); } };
+  visibility.state.localRuntime = null;
+  visibility.assignLocalRuntime(null, repeatedDeadClient);
+  const repeatedDeadGeneration = visibility.state.localRuntimeGeneration;
+  await assert.rejects(
+    visibility.listAllLocalThreads(repeatedDeadClient, false, Date.now() + 15, true, "first dead hydration", repeatedDeadGeneration),
+    /first dead hydration/,
+  );
+  await assert.rejects(
+    visibility.listAllLocalThreads(repeatedDeadClient, false, Date.now() + 200, true, "repeated dead hydration", repeatedDeadGeneration),
+    /quarantined/,
+  );
+  assert.equal(repeatedDeadCalls, 1, "repeated hydration must fail closed without reusing a never-settling client");
+  const recoveryClient = { sendRequest: async () => ({ data: [], nextCursor: null }) };
+  visibility.assignLocalRuntime(null, recoveryClient);
+  await visibility.listAllLocalThreads(recoveryClient, false, Date.now() + 200, true, "hydration recovery", visibility.state.localRuntimeGeneration);
 
   const old = Date.now() - 8 * 24 * 60 * 60 * 1000;
   const protectedThreads = [
@@ -440,6 +472,7 @@ assert.match(originalSource, /threadScopeGeneratedAt/);
   storage.set("codex-remote-mobile-auto-archive-enabled-v1", "true");
   visibility.state.localCodexHome = "D:\\Fixture\\.codex";
   visibility.state.localFetchFromHost = async () => ({ value: ["pinned"] });
+  visibility.state.localRuntime = null;
   visibility.assignLocalRuntime(visibility.state.localFetchFromHost, maintenanceClient);
   visibility.state.autoArchivePending = false;
   visibility.state.autoArchiveError = null;
@@ -477,6 +510,7 @@ assert.match(originalSource, /threadScopeGeneratedAt/);
       };
     },
   };
+  visibility.state.localRuntime = null;
   visibility.assignLocalRuntime(visibility.state.localFetchFromHost, archiveRaceClient);
   visibility.state.autoArchivePending = false;
   const archiveRaceResult = await visibility.runAutoArchiveNow();
@@ -510,6 +544,7 @@ assert.match(originalSource, /threadScopeGeneratedAt/);
       };
     },
   };
+  visibility.state.localRuntime = null;
   visibility.assignLocalRuntime(visibility.state.localFetchFromHost, deleteRaceClient);
   visibility.state.autoArchivePending = false;
   const deleteRaceResult = await visibility.runAutoArchiveNow();
@@ -529,6 +564,7 @@ assert.match(originalSource, /threadScopeGeneratedAt/);
       throw new Error("rollout path D:\\Private\\failure.jsonl is outside sessions for failure-id");
     },
   };
+  visibility.state.localRuntime = null;
   visibility.assignLocalRuntime(visibility.state.localFetchFromHost, failingMaintenanceClient);
   visibility.state.autoArchivePending = false;
   const failureResult = await visibility.runAutoArchiveNow();
@@ -566,10 +602,14 @@ assert.match(originalSource, /threadScopeGeneratedAt/);
         originalClientMutations += 1;
         return {};
       }
-      if (!params.archived) visibility.assignLocalRuntime(visibility.state.localFetchFromHost, replacementClient);
+      if (!params.archived) {
+        visibility.state.localRuntime = null;
+        visibility.assignLocalRuntime(visibility.state.localFetchFromHost, replacementClient);
+      }
       return { data: params.archived ? [] : [{ id: "swap-eligible", status: "notLoaded", updatedAt: old }], nextCursor: null };
     },
   };
+  visibility.state.localRuntime = null;
   visibility.assignLocalRuntime(visibility.state.localFetchFromHost, swappingClient);
   visibility.state.autoArchivePending = false;
   const swapResult = await visibility.runAutoArchiveNow();
@@ -581,6 +621,7 @@ assert.match(originalSource, /threadScopeGeneratedAt/);
   assert.equal(visibility.state.autoArchivePending, false);
 
   const neverSettlesClient = { sendRequest: () => new Promise(() => {}) };
+  visibility.state.localRuntime = null;
   visibility.assignLocalRuntime(visibility.state.localFetchFromHost, neverSettlesClient);
   visibility.state.autoArchivePending = false;
   const timeoutResult = await visibility.runAutoArchiveNow();
@@ -588,6 +629,99 @@ assert.match(originalSource, /threadScopeGeneratedAt/);
   visibility.state.autoArchiveTimer = null;
   assert.match(timeoutResult.error, /maintenance active snapshot/);
   assert.equal(visibility.state.autoArchivePending, false);
+
+  let releaseAcrossReinjection;
+  let acrossReinjectionCalls = 0;
+  const acrossReinjectionClient = {
+    sendRequest() {
+      acrossReinjectionCalls += 1;
+      if (acrossReinjectionCalls === 1) {
+        return new Promise((resolve) => { releaseAcrossReinjection = () => resolve({ data: [], nextCursor: null }); });
+      }
+      return Promise.resolve({ data: [], nextCursor: null });
+    },
+  };
+  visibility.state.localRuntime = null;
+  visibility.assignLocalRuntime(null, acrossReinjectionClient);
+  const acrossReinjectionPending = visibility.listAllLocalThreads(
+    acrossReinjectionClient,
+    false,
+    Date.now() + 1000,
+    true,
+    "active across reinjection",
+    visibility.state.localRuntimeGeneration,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(acrossReinjectionCalls, 1);
+  visibility.uninstall();
+  vm.runInContext(testSource, context, { filename: rendererPath });
+  const reinjectedVisibility = context.__visibilityTest;
+  assert.equal(reinjectedVisibility.sharedThreadListRegistry, visibility.sharedThreadListRegistry, "renderer reinjection must preserve the global request coordinator");
+  assert.equal(reinjectedVisibility.sharedThreadListRegistry.recoveryPending, true);
+  assert.match(reinjectedVisibility.state.inventoryHydrationError, /recovery/iu);
+  assert.match(reinjectedVisibility.state.threadInventories.get("local").error, /recovery/iu);
+  reinjectedVisibility.assignLocalRuntime(null, acrossReinjectionClient);
+  assert.equal(reinjectedVisibility.state.localRuntime, null, "reinjection must not rediscover a client with an unresolved request");
+  const reinjectedGate = reinjectedVisibility.state.localThreadListGates.get(acrossReinjectionClient);
+  for (let retry = 0; retry < 100; retry += 1) {
+    await assert.rejects(
+      reinjectedVisibility.listAllLocalThreads(acrossReinjectionClient, false, Date.now() + 200, true, `reinjected retry ${retry}`, 1),
+      /quarantined/,
+    );
+    assert.equal(reinjectedVisibility.state.localThreadListGates.get(acrossReinjectionClient), reinjectedGate, "quarantined retries must not grow the request gate chain");
+  }
+  assert.equal(acrossReinjectionCalls, 1, "one hundred reinjected retries must not overlap the unresolved request");
+  releaseAcrossReinjection();
+  await acrossReinjectionPending;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  reinjectedVisibility.assignLocalRuntime(null, acrossReinjectionClient);
+  await reinjectedVisibility.listAllLocalThreads(acrossReinjectionClient, false, Date.now() + 200, false, "post-reinjection recovery", reinjectedVisibility.state.localRuntimeGeneration);
+  assert.equal(acrossReinjectionCalls, 2, "normal late settlement must permit safe reuse after reinjection");
+  assert.equal(reinjectedVisibility.sharedThreadListRegistry.recoveryPending, false);
+  assert.equal(reinjectedVisibility.state.inventoryHydrationError, null);
+  assert.equal(reinjectedVisibility.state.threadInventories.get("local").error, null);
+  const staleLateClient = { sendRequest: async () => ({ data: [], nextCursor: null }) };
+  reinjectedVisibility.assignLocalRuntime(null, staleLateClient);
+  assert.equal(reinjectedVisibility.state.localRuntime.requestClient, acrossReinjectionClient, "a later-discovered client must not displace the current healthy runtime");
+
+  Object.defineProperty(context, "__CODEX_REMOTE_MOBILE_PROJECT_VIEW__", {
+    configurable: true,
+    value: { probe: () => ({ autoArchivePending: false, inventoryHydrationError: "local: thread/list (local inventory hydration) timed out", inventoryHydrationPending: false, inventoryHydrationPhase: "idle" }), uninstall() {}, version: 61 },
+  });
+  vm.runInContext(testSource, context, { filename: rendererPath });
+  const legacyUpgradeVisibility = context.__visibilityTest;
+  const legacyPendingClient = { sendRequest: async () => ({ data: [], nextCursor: null }) };
+  legacyUpgradeVisibility.state.threadInventories.set("local", { error: null, threads: [{ id: "cached-user" }] });
+  legacyUpgradeVisibility.state.localInventoryProjects = [{ cwd: "D:\\Fixture", projectId: "cached-project" }];
+  legacyUpgradeVisibility.assignLocalRuntime(null, legacyPendingClient);
+  assert.equal(legacyUpgradeVisibility.state.localRuntime, null, "the first local client discovered after an idle v61 timeout must be treated as legacy-suspect");
+  assert.deepEqual(legacyUpgradeVisibility.state.threadInventories.get("local").threads.map((thread) => thread.id), ["cached-user"]);
+  assert.equal(legacyUpgradeVisibility.state.localInventoryProjects.length, 1, "quarantine must preserve cached local publisher state");
+  const sameDiscoveryPassClient = { sendRequest: async () => ({ data: [], nextCursor: null }) };
+  legacyUpgradeVisibility.assignLocalRuntime(null, sameDiscoveryPassClient);
+  assert.equal(legacyUpgradeVisibility.state.localRuntime, null, "every local client in the initial idle-timeout v61 discovery turn must be marked legacy-suspect");
+  await Promise.resolve();
+  const distinctLegacyReplacement = { sendRequest: async () => ({ data: [], nextCursor: null }) };
+  legacyUpgradeVisibility.assignLocalRuntime(null, distinctLegacyReplacement);
+  assert.equal(legacyUpgradeVisibility.state.localRuntime.requestClient, distinctLegacyReplacement, "a distinct client must recover hydration after a pending v61 upgrade");
+  assert.equal(legacyUpgradeVisibility.sharedThreadListRegistry.recoveryPending, true);
+  await legacyUpgradeVisibility.listAllLocalThreads(distinctLegacyReplacement, false, Date.now() + 200, false, "legacy replacement recovery", legacyUpgradeVisibility.state.localRuntimeGeneration);
+  assert.equal(legacyUpgradeVisibility.sharedThreadListRegistry.recoveryPending, false, "only a successful authoritative listing on the distinct client may clear recovery state");
+  legacyUpgradeVisibility.assignLocalRuntime(null, legacyPendingClient);
+  assert.equal(legacyUpgradeVisibility.state.localRuntime.requestClient, distinctLegacyReplacement, "a legacy-suspect client must never displace its healthy replacement");
+  legacyUpgradeVisibility.state.localRuntime = null;
+  legacyUpgradeVisibility.assignLocalRuntime(null, legacyPendingClient);
+  assert.equal(legacyUpgradeVisibility.state.localRuntime, null, "a legacy-suspect client must remain permanently rejected after replacement recovery");
+
+  Object.defineProperty(context, "__CODEX_REMOTE_MOBILE_PROJECT_VIEW__", {
+    configurable: true,
+    value: { probe: () => ({ autoArchivePending: false, inventoryHydrationError: "remote-host: thread/list (thread inventory) timed out", inventoryHydrationPending: false, inventoryHydrationPhase: "idle" }), uninstall() {}, version: 61 },
+  });
+  vm.runInContext(testSource, context, { filename: rendererPath });
+  const remoteTimeoutUpgradeVisibility = context.__visibilityTest;
+  const healthyLocalAfterRemoteTimeout = { sendRequest: async () => ({ data: [], nextCursor: null }) };
+  remoteTimeoutUpgradeVisibility.assignLocalRuntime(null, healthyLocalAfterRemoteTimeout);
+  assert.equal(remoteTimeoutUpgradeVisibility.state.localRuntime.requestClient, healthyLocalAfterRemoteTimeout, "a remote-only v61 timeout must not mark the healthy local client as legacy-suspect");
   console.log("Thread visibility self-test passed.");
 })().catch((error) => {
   console.error(error);

@@ -4,6 +4,7 @@
   const API_SLOT = "__CODEX_REMOTE_MOBILE_PROJECT_VIEW__";
   const CARD_ID = "codex-remote-mobile-project-card";
   const CONFIG_SLOT = "__CODEX_REMOTE_MOBILE_CONFIG__";
+  const THREAD_LIST_REGISTRY_SLOT = "__CODEX_REMOTE_MOBILE_THREAD_LIST_REGISTRY__";
   const CONTEXT_ID = "codex-remote-mobile-project-context";
   const PANEL_ID = "codex-remote-mobile-project-panel";
   const STYLE_ID = "codex-remote-mobile-project-style";
@@ -53,7 +54,7 @@
     "unknown",
   ]);
   const PUBLISHER_VERSION = 53;
-  const VERSION = 61;
+  const VERSION = 62;
   const TRUSTED_TITLE_SOURCES = new Set([
     "app-server-displayName",
     "app-server-entry-title",
@@ -71,8 +72,44 @@
   });
 
   const previous = globalThis[API_SLOT];
+  let previousProbe = null;
+  try { previousProbe = previous?.probe?.() ?? null; } catch {}
+  const previousHydrationTimeoutEvidence = typeof previousProbe?.inventoryHydrationError === "string"
+    && /(?:(?:^|;\s*)local:\s*thread\/list\b[^;]*|local inventory hydration[^;]*)(?:timed out|bounded deadline)/iu.test(previousProbe.inventoryHydrationError);
+  const previousMaintenanceTimeoutEvidence = [
+    previousProbe?.autoArchiveError,
+    previousProbe?.autoArchiveLastResult?.error,
+  ].some((value) => typeof value === "string"
+    && /(?:thread\/list|local inventory hydration|maintenance .*?(?:snapshot|revalidation)).*?(?:timed out|bounded deadline)/iu.test(value));
+  let legacyPendingDiscovery = Number(previous?.version) < 62
+    && (previousProbe?.inventoryHydrationPending === true
+      || previousProbe?.autoArchivePending === true
+      || previousHydrationTimeoutEvidence
+      || previousMaintenanceTimeoutEvidence);
+  let legacyDiscoveryCloseScheduled = false;
   try { previous?.uninstall?.(); } catch {}
   try { globalThis.__CODEX_REMOTE_PROJECT_LABELS__?.uninstall?.(); } catch {}
+
+  const sharedThreadListRegistry = (() => {
+    const existing = globalThis[THREAD_LIST_REGISTRY_SLOT];
+    if (existing?.activeRequests instanceof WeakMap && existing?.gates instanceof WeakMap && existing?.legacySuspects instanceof WeakSet && existing?.quarantines instanceof WeakMap) {
+      existing.activeQuarantineCount = Number.isInteger(existing.activeQuarantineCount) && existing.activeQuarantineCount >= 0 ? existing.activeQuarantineCount : 0;
+      existing.recoveryPending = existing.recoveryPending === true;
+      existing.recoveryReason = existing.recoveryPending && typeof existing.recoveryReason === "string" ? existing.recoveryReason : null;
+      return existing;
+    }
+    const registry = {
+      activeRequests: new WeakMap(),
+      activeQuarantineCount: 0,
+      gates: new WeakMap(),
+      legacySuspects: new WeakSet(),
+      quarantines: new WeakMap(),
+      recoveryPending: false,
+      recoveryReason: null,
+    };
+    Object.defineProperty(globalThis, THREAD_LIST_REGISTRY_SLOT, { configurable: false, enumerable: false, value: registry, writable: false });
+    return registry;
+  })();
 
   const config = globalThis[CONFIG_SLOT] ?? {};
   const state = {
@@ -100,7 +137,7 @@
     filter: "all",
     hostConnectivity: new Map(),
     inventoryHydrationPending: false,
-    inventoryHydrationError: null,
+    inventoryHydrationError: sharedThreadListRegistry.recoveryPending ? sharedThreadListRegistry.recoveryReason : null,
     inventoryHydrationMicrotask: false,
     inventoryHydrationPhase: "idle",
     inventoryHydrationRounds: 0,
@@ -123,7 +160,9 @@
     localRegisteredProjectsPending: false,
     localRuntime: null,
     localRuntimeGeneration: 0,
-    localThreadListGates: new WeakMap(),
+    localThreadListActiveClients: new Set(),
+    localThreadListGates: sharedThreadListRegistry.gates,
+    localThreadListQuarantines: sharedThreadListRegistry.quarantines,
     navigationBridge: null,
     mountRetryTimer: null,
     mountRetryDelay: 500,
@@ -142,7 +181,12 @@
     remoteUnreadRecords: null,
     reorderPending: false,
     scheduledFrame: null,
-    threadInventories: new Map(),
+    threadInventories: new Map(sharedThreadListRegistry.lastLocalInventory || sharedThreadListRegistry.recoveryPending ? [["local", {
+      ...(sharedThreadListRegistry.lastLocalInventory ?? { fetchedAt: Date.now(), pages: 0, threads: [] }),
+      error: sharedThreadListRegistry.recoveryPending ? sharedThreadListRegistry.recoveryReason : null,
+      hostId: "local",
+      retryAt: sharedThreadListRegistry.recoveryPending ? Date.now() + NATIVE_INVENTORY_ERROR_RETRY_MS : 0,
+    }]] : []),
     threadManagers: new Map(),
     verifiedThreadIds: new Map(),
     view: "mobile",
@@ -150,6 +194,20 @@
 
   function assignLocalRuntime(fetchFromHost, requestClient) {
     if (typeof requestClient?.sendRequest !== "function") return;
+    if (legacyPendingDiscovery) {
+      sharedThreadListRegistry.legacySuspects.add(requestClient);
+      markLocalThreadListRecoveryPending("Pending v61 local request is awaiting a distinct app-server client");
+      if (!legacyDiscoveryCloseScheduled) {
+        legacyDiscoveryCloseScheduled = true;
+        queueMicrotask(() => {
+          legacyPendingDiscovery = false;
+          legacyDiscoveryCloseScheduled = false;
+        });
+      }
+      return;
+    }
+    if (sharedThreadListRegistry.legacySuspects.has(requestClient) || state.localThreadListQuarantines.has(requestClient)) return;
+    if (state.localRuntime?.requestClient && state.localRuntime.requestClient !== requestClient) return;
     if (state.localRuntime?.requestClient !== requestClient) state.localRuntimeGeneration += 1;
     state.localRuntime = { fetchFromHost, requestClient };
   }
@@ -254,7 +312,11 @@
   function withTimeout(promise, label, timeoutMilliseconds = REQUEST_TIMEOUT_MS) {
     let timer = null;
     const timeout = new Promise((resolve, reject) => {
-      timer = setTimeout(() => reject(new Error(`${label} timed out`)), timeoutMilliseconds);
+      timer = setTimeout(() => {
+        const error = new Error(`${label} timed out`);
+        error.code = "CODEX_REMOTE_REQUEST_TIMEOUT";
+        reject(error);
+      }, timeoutMilliseconds);
     });
     return Promise.race([Promise.resolve(promise), timeout]).finally(() => {
       if (timer !== null) clearTimeout(timer);
@@ -2582,8 +2644,63 @@
     return Math.max(1, Math.min(30000, remaining));
   }
 
+  function quarantineLocalThreadListClient(requestClient, runtimeGeneration, settlement) {
+    const existing = state.localThreadListQuarantines.get(requestClient);
+    if (existing) return existing;
+    const quarantine = { runtimeGeneration, settlement };
+    state.localThreadListQuarantines.set(requestClient, quarantine);
+    sharedThreadListRegistry.activeQuarantineCount += 1;
+    markLocalThreadListRecoveryPending("Local app-server request recovery is waiting for a distinct client");
+    if (state.localRuntime?.requestClient === requestClient && state.localRuntimeGeneration === runtimeGeneration) {
+      state.localRuntimeGeneration += 1;
+      state.localRuntime = null;
+      state.remoteRuntimeScannedAt = 0;
+    }
+    void settlement.finally(() => {
+      if (state.localThreadListQuarantines.get(requestClient) === quarantine) {
+        state.localThreadListQuarantines.delete(requestClient);
+        sharedThreadListRegistry.activeQuarantineCount = Math.max(0, sharedThreadListRegistry.activeQuarantineCount - 1);
+        state.remoteRuntimeScannedAt = 0;
+        if (!state.disposed) schedule();
+      }
+    });
+    return quarantine;
+  }
+
+  function markLocalThreadListRecoveryPending(reason) {
+    sharedThreadListRegistry.recoveryPending = true;
+    sharedThreadListRegistry.recoveryReason = reason;
+    const previousInventory = state.threadInventories.get("local");
+    state.threadInventories.set("local", {
+      ...(previousInventory ?? {}),
+      error: reason,
+      fetchedAt: Date.now(),
+      hostId: "local",
+      pages: previousInventory?.pages ?? 0,
+      retryAt: Date.now() + NATIVE_INVENTORY_ERROR_RETRY_MS,
+      threads: previousInventory?.threads ?? [],
+    });
+    state.inventoryHydrationError = reason;
+  }
+
+  function clearLocalThreadListRecovery(requestClient, runtimeGeneration) {
+    if (!sharedThreadListRegistry.recoveryPending
+      || sharedThreadListRegistry.legacySuspects.has(requestClient)
+      || state.localThreadListQuarantines.has(requestClient)
+      || state.localRuntime?.requestClient !== requestClient
+      || state.localRuntimeGeneration !== runtimeGeneration) return;
+    sharedThreadListRegistry.recoveryPending = false;
+    sharedThreadListRegistry.recoveryReason = null;
+    const localInventory = state.threadInventories.get("local");
+    if (localInventory) state.threadInventories.set("local", { ...localInventory, error: null, retryAt: 0 });
+    state.inventoryHydrationError = null;
+  }
+
   function enqueueLocalThreadList(requestClient, runtimeGeneration, deadline, phase, operation) {
     if (typeof requestClient?.sendRequest !== "function") return Promise.reject(new Error(`${phase}: local app-server bridge is unavailable`));
+    if (state.localThreadListQuarantines.has(requestClient)) {
+      return Promise.reject(new Error(`${phase}: local app-server request client is quarantined until its timed-out request settles`));
+    }
     const token = { cancelled: false };
     const pendingRequestSettlements = [];
     let gateRecord = state.localThreadListGates.get(requestClient);
@@ -2603,9 +2720,33 @@
           throw new Error(`${phase}: local app-server runtime changed during listing`);
         }
         const timeoutMilliseconds = remainingRequestTimeout(deadline, phase);
+        let underlyingSettled = false;
         const underlying = Promise.resolve().then(() => requestClient.sendRequest("thread/list", params));
-        pendingRequestSettlements.push(underlying.then(() => {}, () => {}));
-        return withTimeout(underlying, `thread/list (${phase})`, timeoutMilliseconds);
+        const settlement = underlying.then(
+          () => { underlyingSettled = true; },
+          () => { underlyingSettled = true; },
+        );
+        let activeRequests = sharedThreadListRegistry.activeRequests.get(requestClient);
+        if (!activeRequests) {
+          activeRequests = new Set();
+          sharedThreadListRegistry.activeRequests.set(requestClient, activeRequests);
+        }
+        activeRequests.add(settlement);
+        state.localThreadListActiveClients.add(requestClient);
+        void settlement.finally(() => {
+          activeRequests.delete(settlement);
+          if (!activeRequests.size) {
+            sharedThreadListRegistry.activeRequests.delete(requestClient);
+            state.localThreadListActiveClients.delete(requestClient);
+          }
+        });
+        pendingRequestSettlements.push(settlement);
+        return withTimeout(underlying, `thread/list (${phase})`, timeoutMilliseconds).catch((error) => {
+          if (!underlyingSettled && error?.code === "CODEX_REMOTE_REQUEST_TIMEOUT") {
+            quarantineLocalThreadListClient(requestClient, runtimeGeneration, settlement);
+          }
+          throw error;
+        });
       });
     });
     gateRecord.gate = execution
@@ -2617,6 +2758,9 @@
     const timeout = new Promise((resolve, reject) => {
       timer = setTimeout(() => {
         token.cancelled = true;
+        if (pendingRequestSettlements.length) {
+          quarantineLocalThreadListClient(requestClient, runtimeGeneration, Promise.allSettled(pendingRequestSettlements));
+        }
         reject(maintenanceDeadlineError(phase));
       }, waitMilliseconds);
     });
@@ -2663,9 +2807,19 @@
   }
 
   async function listAllLocalThreadInventory(requestClient, archived = false, deadline = Number.POSITIVE_INFINITY, includeInternalSources = true, phase = "local thread listing", runtimeGeneration = state.localRuntimeGeneration) {
-    return enqueueLocalThreadList(requestClient, runtimeGeneration, deadline, phase, async (requestThreadList) => (
+    const result = await enqueueLocalThreadList(requestClient, runtimeGeneration, deadline, phase, async (requestThreadList) => (
       listAllRuntimeThreads(requestClient, archived, deadline, includeInternalSources, requestThreadList, phase)
     ));
+    if (includeInternalSources === false && archived === false) {
+      sharedThreadListRegistry.lastLocalInventory = {
+        fetchedAt: Date.now(),
+        pages: result.pages,
+        threads: Array.isArray(result.threads) ? result.threads : [],
+        truncated: result.truncated === true,
+      };
+      clearLocalThreadListRecovery(requestClient, runtimeGeneration);
+    }
+    return result;
   }
 
   async function listAllLocalThreads(requestClient, archived = false, deadline = Number.POSITIVE_INFINITY, includeInternalSources = true, phase = "local thread listing", runtimeGeneration = state.localRuntimeGeneration) {
@@ -3673,6 +3827,9 @@
       localInventoryProjects: state.localInventoryProjects.length,
       localInventoryPublisherError: state.localInventoryPublisherError,
       localInventoryPublisherPending: state.localInventoryPublisherPending,
+      localThreadListQuarantineActive: sharedThreadListRegistry.activeQuarantineCount > 0,
+      localThreadListRecoveryPending: sharedThreadListRegistry.recoveryPending === true,
+      localThreadListRecoveryReason: sharedThreadListRegistry.recoveryReason,
       localRegisteredProjects: state.localRegisteredProjects.size,
       localRegisteredProjectsError: state.localRegisteredProjectsError,
       localRegisteredProjectsPending: state.localRegisteredProjectsPending,
@@ -3758,7 +3915,12 @@
     state.disposed = true;
     state.autoArchiveGeneration += 1;
     state.localRuntimeGeneration += 1;
-    state.localThreadListGates = new WeakMap();
+    for (const requestClient of state.localThreadListActiveClients) {
+      const activeRequests = sharedThreadListRegistry.activeRequests.get(requestClient);
+      if (activeRequests?.size) {
+        quarantineLocalThreadListClient(requestClient, state.localRuntimeGeneration - 1, Promise.allSettled([...activeRequests]));
+      }
+    }
     document.removeEventListener("pointerdown", dismissOverlays);
     document.removeEventListener("keydown", dismissOnEscape);
     state.observer?.disconnect();

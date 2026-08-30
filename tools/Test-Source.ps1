@@ -59,7 +59,7 @@ if ((Get-FileHash -LiteralPath $windowsMaintenance -Algorithm SHA256).Hash -ne (
 }
 $renderer = Get-Content -LiteralPath $windowsRenderer -Raw
 $requiredContracts = @(
-    'const VERSION = 61;',
+    'const VERSION = 62;',
     'hostDisplayName: config.localDisplayName || null',
     'codex-remote-mobile-verified-thread-ids-v2',
     'THREAD_VISIBILITY_CONTRACT_VERSION',
@@ -76,6 +76,9 @@ $requiredContracts = @(
     'includeInternalSources ? MAINTENANCE_THREAD_SOURCE_KINDS : USER_VISIBLE_THREAD_SOURCE_KINDS',
     'listAllLocalThreadInventory',
     'localThreadListGates',
+    'THREAD_LIST_REGISTRY_SLOT',
+    'CODEX_REMOTE_REQUEST_TIMEOUT',
+    'localThreadListRecoveryPending',
     'params.useStateDbOnly = true',
     'threadIds.has(threadId)',
     'sendRequestWithTimeout',
@@ -173,7 +176,7 @@ if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
 [pscustomobject]@{
     JavaScriptFiles = $javascript.Count
     PowerShellFiles = $powershell.Count
-    RendererVersion = 61
+    RendererVersion = 62
     RendererParity = $true
     MaintenanceParity = $true
     InjectorVersionProof = $true

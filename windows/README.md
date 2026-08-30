@@ -43,9 +43,13 @@ Mobile Projects folder opens the exact native project composer when available;
 registered projects retain a native global-composer fallback when their folder
 row is not mounted by the selected grouping.
 
-The launcher checks for an update on every start by default. A clean `main` Git
-checkout fast-forwards to the latest release tag through its configured origin;
-an extracted release still uses the verified archive updater. Manage it with:
+The launcher checks for an update on every start by default. It first hands
+launch ownership to a mutex-protected PowerShell worker and exits, allowing the
+verified updater to replace the launcher executable before that same worker
+continues injection exactly once. Direct/proxy and manual/startup arguments are
+preserved. A clean `main` Git checkout fast-forwards to the latest release tag
+through its configured origin; an extracted release still uses the verified
+archive updater. Manage it with:
 
 ```powershell
 .\Update-ChatGPTRemote.ps1 -Action Probe
@@ -102,8 +106,9 @@ where Remote requires the configured proxy; omit it for direct networking.
 
 The installer replaces a disabled legacy startup shortcut after preserving a
 rollback copy. Use `-Action Remove` to remove the active shortcut. The target is
-the versioned `ChatGPT Custom.exe` in this folder, so verified in-place updates
-are used at the next sign-in. A manual **ChatGPT Custom** click is explicit
+the versioned `ChatGPT Custom.exe` in this folder; its worker handoff releases
+the executable before a verified in-place update and then continues startup.
+A manual **ChatGPT Custom** click is explicit
 permission to replace an ordinary running ChatGPT session. Unattended startup
 uses `--startup`, never terminates an active ordinary session, and records the
 reason in `%LOCALAPPDATA%\CodexRemoteFeatures\startup.log`.

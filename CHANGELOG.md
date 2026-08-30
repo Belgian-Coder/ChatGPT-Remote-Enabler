@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.5.23
+
+- Hand Windows launch ownership to a PowerShell worker and exit the launcher
+  before the verified updater replaces package files. This removes the
+  running-executable `Access is denied` failure without weakening checksum,
+  manifest, rollback, or success-only check-stamp validation.
+- Hold one cross-entry launch mutex in the worker, wait for the exact launcher
+  process to exit, and preserve direct/proxy plus manual/startup arguments.
+  Concurrent manual, shortcut, and sign-in launches still resolve to exactly
+  one update-and-injection run.
+- Cover both Windows launcher entry points with a real locked-executable
+  replacement regression under Windows PowerShell 5.1. Renderer v62 and the
+  macOS runtime are unchanged.
+
 ## v1.5.22
 
 - Quarantine a local app-server request client when a raw `thread/list` call

@@ -9,11 +9,13 @@ using System.Threading;
 [assembly: AssemblyDescription("Starts ChatGPT with the audited remote Mobile projects injection")]
 [assembly: AssemblyCompany("Community")]
 [assembly: AssemblyProduct("ChatGPT Custom")]
-[assembly: AssemblyVersion("1.5.22.0")]
-[assembly: AssemblyFileVersion("1.5.22.0")]
+[assembly: AssemblyVersion("1.5.23.0")]
+[assembly: AssemblyFileVersion("1.5.23.0")]
 
 internal static class ChatGPTCustomLauncher
 {
+    private const int HandshakeTimeoutMilliseconds = 15000;
+
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int MessageBox(IntPtr window, string text, string caption, uint type);
 
@@ -30,6 +32,16 @@ internal static class ChatGPTCustomLauncher
     {
         if (!silent) MessageBox(IntPtr.Zero, message, "ChatGPT Custom", 0x10);
         return exitCode;
+    }
+
+    private static string NewEventName(string suffix)
+    {
+        return @"Local\ChatGPTCustomLauncher-" + suffix + "-" + Guid.NewGuid().ToString("N");
+    }
+
+    private static string QuoteArgument(string value)
+    {
+        return "\"" + value.Replace("\"", "\\\"") + "\"";
     }
 
     [STAThread]
@@ -53,32 +65,44 @@ internal static class ChatGPTCustomLauncher
             return Fail(11, startupMode, "MobileProjectStartup.ps1 was not found beside the launcher.");
         }
 
-        bool created;
         int resultCode = 0;
         string failureMessage = null;
-        using (var mutex = new Mutex(true, @"Local\ChatGPTCustomInjectionLauncher", out created))
+        string readyEventName = NewEventName("Ready");
+        string rejectedEventName = NewEventName("Rejected");
+        using (var readyEvent = new EventWaitHandle(false, EventResetMode.ManualReset, readyEventName))
+        using (var rejectedEvent = new EventWaitHandle(false, EventResetMode.ManualReset, rejectedEventName))
         {
-            if (!created)
+            string executable = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System),
+                @"WindowsPowerShell\v1.0\powershell.exe");
+            if (!File.Exists(executable))
             {
-                resultCode = 15;
-                failureMessage = "Another ChatGPT Custom launch is still running. Wait for it to finish, then try again.";
+                resultCode = 10;
+                failureMessage = "Windows PowerShell could not be found.";
             }
             else
             {
-                string executable = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System),
-                    @"WindowsPowerShell\v1.0\powershell.exe");
-                if (!File.Exists(executable))
+                Process current = Process.GetCurrentProcess();
+                long parentStartTimeFileTimeUtc = 0;
+                try
                 {
-                    resultCode = 10;
-                    failureMessage = "Windows PowerShell could not be found.";
+                    parentStartTimeFileTimeUtc = current.StartTime.ToUniversalTime().ToFileTimeUtc();
                 }
-                else
+                catch
+                {
+                    resultCode = 16;
+                    failureMessage = "The launcher could not capture its process identity for the update handoff.";
+                }
+                if (resultCode == 0)
                 {
                     var start = new ProcessStartInfo
                     {
                         FileName = executable,
-                        Arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File \"" + startupScript +
-                            "\" -Action Run" + (useProxy ? " -UseProxy" : "") + (startupMode ? "" : " -ReplaceRunningApp"),
+                        Arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File " + QuoteArgument(startupScript) +
+                            " -Action Run" + (useProxy ? " -UseProxy" : "") + (startupMode ? "" : " -ReplaceRunningApp") +
+                            " -ParentProcessId " + current.Id +
+                            " -ParentProcessStartTimeFileTimeUtc " + parentStartTimeFileTimeUtc +
+                            " -ReadyEventName " + QuoteArgument(readyEventName) +
+                            " -RejectedEventName " + QuoteArgument(rejectedEventName),
                         WorkingDirectory = root,
                         UseShellExecute = false,
                         CreateNoWindow = true,
@@ -96,13 +120,25 @@ internal static class ChatGPTCustomLauncher
                             }
                             else
                             {
-                                child.WaitForExit();
-                                if (child.ExitCode != 0)
+                                int handshake = WaitForHandshake(readyEvent, rejectedEvent, child, HandshakeTimeoutMilliseconds);
+                                if (handshake == 0)
                                 {
-                                    string log = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                                        @"CodexRemoteFeatures\startup.log");
-                                    resultCode = child.ExitCode;
-                                    failureMessage = "The injected launch could not be completed. If injection failed after ChatGPT was closed, ordinary ChatGPT was restored automatically.\r\n\r\nDetails: " + log;
+                                    // The worker owns the mutex and waits for this exact process to
+                                    // exit before it updates or launches anything. Returning here is
+                                    // intentional: the old executable must be unlocked for replacement.
+                                    resultCode = 0;
+                                }
+                                else if (handshake == 1)
+                                {
+                                    child.WaitForExit(5000);
+                                    resultCode = 15;
+                                    failureMessage = "Another ChatGPT Custom launch is still running. Wait for it to finish, then try again.";
+                                }
+                                else
+                                {
+                                    child.WaitForExit(5000);
+                                    resultCode = 17;
+                                    failureMessage = "The injected launch worker did not complete its startup handoff. See the local startup log for details.";
                                 }
                             }
                         }
@@ -116,5 +152,22 @@ internal static class ChatGPTCustomLauncher
             }
         }
         return resultCode == 0 ? 0 : Fail(resultCode, startupMode, failureMessage);
+    }
+
+    private static int WaitForHandshake(EventWaitHandle readyEvent, EventWaitHandle rejectedEvent, Process child, int timeoutMilliseconds)
+    {
+        Stopwatch timer = Stopwatch.StartNew();
+        while (timer.ElapsedMilliseconds < timeoutMilliseconds)
+        {
+            int remaining = timeoutMilliseconds - (int)timer.ElapsedMilliseconds;
+            int index = WaitHandle.WaitAny(
+                new WaitHandle[] { readyEvent, rejectedEvent },
+                Math.Min(250, Math.Max(1, remaining)));
+            if (index == 0) return 0;
+            if (index == 1) return 1;
+            if (child.HasExited) return -2;
+        }
+        try { if (!child.HasExited) child.Kill(); } catch { }
+        return -1;
     }
 }

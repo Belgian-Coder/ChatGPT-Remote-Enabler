@@ -61,7 +61,16 @@ PowerShell and macOS command equivalents:
 
 ## Updates and rollback
 
-Launchers check for updates on every start by default. A clean Windows Git checkout fast-forwards through Git; packaged installs accept only a platform archive whose published SHA-256 and internal manifest pass. Disable automatic updates with `Update-ChatGPTRemote.ps1 -Action DisableAutoUpdate` or `./Update-ChatGPTRemote.sh disable-auto-update`. Forks and mirrors can set `CHATGPT_REMOTE_UPDATE_REPOSITORY`, `CHATGPT_REMOTE_UPDATE_API_BASE`, or `CHATGPT_REMOTE_UPDATE_LATEST_URL`.
+Launchers check for updates on every start by default. On Windows, launch
+ownership first moves to a mutex-protected worker so the launcher executable
+can exit before verified replacement; the worker then continues the same
+direct/proxy and manual/startup launch exactly once. A clean Windows Git
+checkout fast-forwards through Git; packaged installs accept only a platform
+archive whose published SHA-256 and internal manifest pass. Disable automatic
+updates with `Update-ChatGPTRemote.ps1 -Action DisableAutoUpdate` or
+`./Update-ChatGPTRemote.sh disable-auto-update`. Forks and mirrors can set
+`CHATGPT_REMOTE_UPDATE_REPOSITORY`, `CHATGPT_REMOTE_UPDATE_API_BASE`, or
+`CHATGPT_REMOTE_UPDATE_LATEST_URL`.
 
 Before starting ChatGPT, the packaged launcher prunes diagnostic logs older than seven days (96 MiB cap), checkpoints WAL files, runs SQLite optimization, and vacuums materially fragmented databases. It always skips this physical maintenance when ChatGPT/Codex is already running.
 

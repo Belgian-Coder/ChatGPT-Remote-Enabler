@@ -3,16 +3,19 @@ using System.Diagnostics;
 using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Threading;
 
 [assembly: AssemblyTitle("ChatGPT Remote Enabler")]
 [assembly: AssemblyDescription("Starts ChatGPT with the remote access and Mobile projects injection")]
 [assembly: AssemblyCompany("Community")]
 [assembly: AssemblyProduct("ChatGPT Remote Enabler")]
-[assembly: AssemblyVersion("1.5.22.0")]
-[assembly: AssemblyFileVersion("1.5.22.0")]
+[assembly: AssemblyVersion("1.5.23.0")]
+[assembly: AssemblyFileVersion("1.5.23.0")]
 
 internal static class ChatGPTRemoteLauncher
 {
+    private const int HandshakeTimeoutMilliseconds = 15000;
+
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int MessageBox(IntPtr window, string text, string caption, uint type);
 
@@ -20,6 +23,16 @@ internal static class ChatGPTRemoteLauncher
     {
         MessageBox(IntPtr.Zero, message, "ChatGPT Remote Enabler", 0x10);
         return code;
+    }
+
+    private static string NewEventName(string suffix)
+    {
+        return @"Local\ChatGPTCustomLauncher-" + suffix + "-" + Guid.NewGuid().ToString("N");
+    }
+
+    private static string QuoteArgument(string value)
+    {
+        return "\"" + value.Replace("\"", "\\\"") + "\"";
     }
 
     [STAThread]
@@ -41,27 +54,71 @@ internal static class ChatGPTRemoteLauncher
             return Fail(3, "Windows PowerShell was not found in the system directory.");
         }
 
-        var start = new ProcessStartInfo
+        string readyEventName = NewEventName("Ready");
+        string rejectedEventName = NewEventName("Rejected");
+        using (var readyEvent = new EventWaitHandle(false, EventResetMode.ManualReset, readyEventName))
+        using (var rejectedEvent = new EventWaitHandle(false, EventResetMode.ManualReset, rejectedEventName))
         {
-            FileName = powershell,
-            Arguments = "-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File \"" + script + "\"",
-            WorkingDirectory = root,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-        try
-        {
-            using (Process child = Process.Start(start))
+            Process current = Process.GetCurrentProcess();
+            long parentStartTimeFileTimeUtc = 0;
+            try
             {
-                if (child == null) return Fail(4, "Windows PowerShell could not be started.");
-                child.WaitForExit();
-                if (child.ExitCode != 0) return Fail(child.ExitCode, "ChatGPT Remote Enabler could not complete. See the PowerShell error or the local startup log for details.");
-                return 0;
+                parentStartTimeFileTimeUtc = current.StartTime.ToUniversalTime().ToFileTimeUtc();
+            }
+            catch
+            {
+                return Fail(6, "The launcher could not capture its process identity for the update handoff.");
+            }
+
+            var start = new ProcessStartInfo
+            {
+                FileName = powershell,
+                Arguments = "-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File " + QuoteArgument(script) +
+                    " -ParentProcessId " + current.Id +
+                    " -ParentProcessStartTimeFileTimeUtc " + parentStartTimeFileTimeUtc +
+                    " -ReadyEventName " + QuoteArgument(readyEventName) +
+                    " -RejectedEventName " + QuoteArgument(rejectedEventName),
+                WorkingDirectory = root,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            try
+            {
+                using (Process child = Process.Start(start))
+                {
+                    if (child == null) return Fail(4, "Windows PowerShell could not be started.");
+                    int handshake = WaitForHandshake(readyEvent, rejectedEvent, child, HandshakeTimeoutMilliseconds);
+                    if (handshake == 0) return 0;
+                    if (handshake == 1)
+                    {
+                        child.WaitForExit(5000);
+                        return Fail(15, "Another ChatGPT Remote Enabler launch is still running. Wait for it to finish, then try again.");
+                    }
+                    child.WaitForExit(5000);
+                    return Fail(7, "ChatGPT Remote Enabler did not complete its startup handoff. See the local startup log for details.");
+                }
+            }
+            catch
+            {
+                return Fail(5, "ChatGPT Remote Enabler failed before Windows PowerShell could complete.");
             }
         }
-        catch
+    }
+
+    private static int WaitForHandshake(EventWaitHandle readyEvent, EventWaitHandle rejectedEvent, Process child, int timeoutMilliseconds)
+    {
+        Stopwatch timer = Stopwatch.StartNew();
+        while (timer.ElapsedMilliseconds < timeoutMilliseconds)
         {
-            return Fail(5, "ChatGPT Remote Enabler failed before Windows PowerShell could complete.");
+            int remaining = timeoutMilliseconds - (int)timer.ElapsedMilliseconds;
+            int index = WaitHandle.WaitAny(
+                new WaitHandle[] { readyEvent, rejectedEvent },
+                Math.Min(250, Math.Max(1, remaining)));
+            if (index == 0) return 0;
+            if (index == 1) return 1;
+            if (child.HasExited) return -2;
         }
+        try { if (!child.HasExited) child.Kill(); } catch { }
+        return -1;
     }
 }

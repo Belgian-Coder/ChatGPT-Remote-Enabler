@@ -9,7 +9,11 @@ param(
     [int]$MobileReadyTimeoutSeconds = 45,
     [string]$NodePath,
     [switch]$UseProxy,
-    [switch]$ReplaceRunningApp
+    [switch]$ReplaceRunningApp,
+    [int]$ParentProcessId = 0,
+    [long]$ParentProcessStartTimeFileTimeUtc = 0,
+    [string]$ReadyEventName,
+    [string]$RejectedEventName
 )
 
 $ErrorActionPreference = 'Stop'
@@ -93,69 +97,186 @@ function Get-TaskSummary {
     }
 }
 
+$launcherMutexName = 'Local\ChatGPTCustomInjectionLauncher'
+$handshakeRequested = $ParentProcessId -gt 0 -or
+    -not [string]::IsNullOrWhiteSpace($ReadyEventName) -or
+    -not [string]::IsNullOrWhiteSpace($RejectedEventName)
+$readyEvent = $null
+$rejectedEvent = $null
+$handshakeReady = $false
+
+function Signal-Handshake {
+    param([switch]$Rejected)
+    try {
+        if ($Rejected) {
+            if ($rejectedEvent) { [void]$rejectedEvent.Set() }
+        } elseif ($readyEvent) {
+            [void]$readyEvent.Set()
+        }
+    } catch {
+        Write-StartupLog "$(Get-Date -Format o) [$computerName] handshake signal failed: $($_.Exception.Message)"
+    }
+}
+
+function Assert-HandshakeParameters {
+    if (-not $handshakeRequested) { return }
+    if ($ParentProcessId -le 0 -or $ParentProcessStartTimeFileTimeUtc -le 0 -or
+        $ReadyEventName -notmatch '^Local\\ChatGPTCustomLauncher-Ready-[0-9a-f]{32}$' -or
+        $RejectedEventName -notmatch '^Local\\ChatGPTCustomLauncher-Rejected-[0-9a-f]{32}$' -or
+        $ReadyEventName -eq $RejectedEventName) {
+        throw 'The launcher handoff requires an exact parent identity and two valid unpredictable handshake events.'
+    }
+}
+
+function Show-StartupFailure {
+    param([string]$Message)
+    if (-not $ReplaceRunningApp) { return }
+    try {
+        if (-not ('ChatGPTRemoteStartupMessage' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class ChatGPTRemoteStartupMessage {
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int MessageBox(IntPtr window, string text, string caption, uint type);
+}
+'@
+        }
+        [void][ChatGPTRemoteStartupMessage]::MessageBox(
+            [IntPtr]::Zero,
+            "The injected launch could not be completed.`r`n`r`n$Message`r`n`r`nDetails: $logPath",
+            'ChatGPT Custom',
+            0x10)
+    } catch {
+        Write-StartupLog "$(Get-Date -Format o) [$computerName] failure dialog could not be shown"
+    }
+}
+
+function Capture-ExactParent {
+    if ($ParentProcessId -le 0) { return $null }
+    try {
+        $process = [Diagnostics.Process]::GetProcessById($ParentProcessId)
+        if ($ParentProcessStartTimeFileTimeUtc -gt 0) {
+            $actual = $process.StartTime.ToUniversalTime().ToFileTimeUtc()
+            if ($actual -ne $ParentProcessStartTimeFileTimeUtc) {
+                $process.Dispose()
+                throw "Parent process $ParentProcessId did not match the captured start time."
+            }
+        }
+        return $process
+    } catch {
+        throw "The launcher parent process could not be captured exactly: $($_.Exception.Message)"
+    }
+}
+
 switch ($Action) {
     'Run' {
         Write-StartupLog "$(Get-Date -Format o) [$computerName] startup run begins"
+        $mutex = [Threading.Mutex]::new($false, $launcherMutexName)
+        $acquired = $false
+        $parentProcess = $null
         try {
-            if (Test-Path -LiteralPath $updateController -PathType Leaf) {
-                try { Write-CommandOutput @(& $updateController -Action Auto 2>&1) }
-                catch { Write-StartupLog "$(Get-Date -Format o) [$computerName] automatic update skipped: $($_.Exception.Message)" }
+            if ($handshakeRequested) {
+                Assert-HandshakeParameters
+                $readyEvent = [Threading.EventWaitHandle]::OpenExisting($ReadyEventName)
+                $rejectedEvent = [Threading.EventWaitHandle]::OpenExisting($RejectedEventName)
             }
-            Assert-Controllers
-            $node = Resolve-NodePath
-            $proxyServer = $null
-            if ($UseProxy) {
-                Import-Module $proxyModule -Force
-                $proxyServer = Get-ChatGPTRemoteProxy -AllowEnvironmentFallback
-                foreach ($name in @('HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy')) {
-                    [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+            try {
+                $acquired = $mutex.WaitOne(0)
+            } catch [Threading.AbandonedMutexException] {
+                $acquired = $true
+                Write-StartupLog "$(Get-Date -Format o) [$computerName] recovered an abandoned launcher mutex"
+            }
+            if (-not $acquired) {
+                Signal-Handshake -Rejected
+                Write-StartupLog "$(Get-Date -Format o) [$computerName] startup run rejected because another launch owns the mutex"
+                throw 'Another ChatGPT Custom or ChatGPT Remote Enabler launch is still running.'
+            }
+            if ($handshakeRequested) {
+                $parentProcess = Capture-ExactParent
+                Signal-Handshake
+                $handshakeReady = $true
+                Write-StartupLog "$(Get-Date -Format o) [$computerName] launcher handoff accepted; waiting for parent $ParentProcessId to exit"
+                if (-not $parentProcess.WaitForExit(30000)) {
+                    throw "Launcher parent $ParentProcessId did not exit after accepting the handoff."
                 }
-                Write-StartupLog "$(Get-Date -Format o) [$computerName] protected Remote-only proxy configuration loaded"
+                Write-StartupLog "$(Get-Date -Format o) [$computerName] launcher parent exited; continuing update and launch"
             }
-            Write-CommandOutput @(& $node --no-warnings $maintenanceHelper 2>&1)
-            $appProcesses = @(Get-CimInstance Win32_Process -Filter "Name='ChatGPT.exe' OR Name='Codex.exe'" -ErrorAction SilentlyContinue)
-            $debugApp = @($appProcesses | Where-Object { $_.CommandLine -match '--remote-debugging-port(?:=|\s)' })
-            if ($appProcesses.Count -gt 0 -and $debugApp.Count -eq 0 -and -not $ReplaceRunningApp) {
-                throw 'ChatGPT/Codex is already running without the audited debug endpoint. Close it normally, then use ChatGPT Custom; startup will not terminate an active app.'
-            }
-            if ($debugApp.Count -eq 0) {
-                for ($stableAttempt = 1; $stableAttempt -le 2; $stableAttempt++) {
-                    try {
-                        $stableArguments = @{
-                            Action = 'Enable'
-                            UseProxy = [bool]$UseProxy
-                            Confirm = $false
+
+            try {
+                if (Test-Path -LiteralPath $updateController -PathType Leaf) {
+                    try { Write-CommandOutput @(& $updateController -Action Auto 2>&1) }
+                    catch { Write-StartupLog "$(Get-Date -Format o) [$computerName] automatic update skipped: $($_.Exception.Message)" }
+                }
+                Assert-Controllers
+                $node = Resolve-NodePath
+                $proxyServer = $null
+                if ($UseProxy) {
+                    Import-Module $proxyModule -Force
+                    $proxyServer = Get-ChatGPTRemoteProxy -AllowEnvironmentFallback
+                    foreach ($name in @('HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy')) {
+                        [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+                    }
+                    Write-StartupLog "$(Get-Date -Format o) [$computerName] protected Remote-only proxy configuration loaded"
+                }
+                Write-CommandOutput @(& $node --no-warnings $maintenanceHelper 2>&1)
+                $appProcesses = @(Get-CimInstance Win32_Process -Filter "Name='ChatGPT.exe' OR Name='Codex.exe'" -ErrorAction SilentlyContinue)
+                $debugApp = @($appProcesses | Where-Object { $_.CommandLine -match '--remote-debugging-port(?:=|\s)' })
+                if ($appProcesses.Count -gt 0 -and $debugApp.Count -eq 0 -and -not $ReplaceRunningApp) {
+                    throw 'ChatGPT/Codex is already running without the audited debug endpoint. Close it normally, then use ChatGPT Custom; startup will not terminate an active app.'
+                }
+                if ($debugApp.Count -eq 0) {
+                    for ($stableAttempt = 1; $stableAttempt -le 2; $stableAttempt++) {
+                        try {
+                            $stableArguments = @{
+                                Action = 'Enable'
+                                UseProxy = [bool]$UseProxy
+                                Confirm = $false
+                            }
+                            if ($UseProxy) { $stableArguments.ProxyServer = $proxyServer }
+                            Write-CommandOutput @(& $stableController @stableArguments 2>&1)
+                            break
+                        } catch {
+                            if ($stableAttempt -ge 2) { throw }
+                            Write-StartupLog "$(Get-Date -Format o) [$computerName] stable bridge not ready on attempt $stableAttempt; retrying once"
+                            Start-Sleep -Seconds 2
                         }
-                        if ($UseProxy) { $stableArguments.ProxyServer = $proxyServer }
-                        Write-CommandOutput @(& $stableController @stableArguments 2>&1)
+                    }
+                } else {
+                    Write-StartupLog "$(Get-Date -Format o) [$computerName] audited debug session already running; preserving it"
+                }
+                $deadline = (Get-Date).AddSeconds($MobileReadyTimeoutSeconds)
+                $attempt = 0
+                while ($true) {
+                    $attempt++
+                    try {
+                        Write-CommandOutput @(& $mobileController -Action Enable -NodePath $node -Confirm:$false 2>&1)
+                        Write-CommandOutput @(& $mobileController -Action Probe -NodePath $node 2>&1)
                         break
                     } catch {
-                        if ($stableAttempt -ge 2) { throw }
-                        Write-StartupLog "$(Get-Date -Format o) [$computerName] stable bridge not ready on attempt $stableAttempt; retrying once"
+                        if ((Get-Date) -ge $deadline) { throw }
+                        Write-StartupLog "$(Get-Date -Format o) [$computerName] mobile view not ready on attempt $attempt; retrying"
                         Start-Sleep -Seconds 2
                     }
                 }
-            } else {
-                Write-StartupLog "$(Get-Date -Format o) [$computerName] audited debug session already running; preserving it"
+                Write-StartupLog "$(Get-Date -Format o) [$computerName] startup run completed"
+            } catch {
+                Write-StartupLog "$(Get-Date -Format o) [$computerName] startup run failed: $($_.Exception.Message)"
+                if ($handshakeReady) { Show-StartupFailure -Message $_.Exception.Message }
+                throw
             }
-            $deadline = (Get-Date).AddSeconds($MobileReadyTimeoutSeconds)
-            $attempt = 0
-            while ($true) {
-                $attempt++
-                try {
-                    Write-CommandOutput @(& $mobileController -Action Enable -NodePath $node -Confirm:$false 2>&1)
-                    Write-CommandOutput @(& $mobileController -Action Probe -NodePath $node 2>&1)
-                    break
-                } catch {
-                    if ((Get-Date) -ge $deadline) { throw }
-                    Write-StartupLog "$(Get-Date -Format o) [$computerName] mobile view not ready on attempt $attempt; retrying"
-                    Start-Sleep -Seconds 2
-                }
-            }
-            Write-StartupLog "$(Get-Date -Format o) [$computerName] startup run completed"
         } catch {
-            Write-StartupLog "$(Get-Date -Format o) [$computerName] startup run failed: $($_.Exception.Message)"
+            if (-not $handshakeReady) {
+                Signal-Handshake -Rejected
+                Write-StartupLog "$(Get-Date -Format o) [$computerName] startup handoff failed: $($_.Exception.Message)"
+            }
             throw
+        } finally {
+            if ($parentProcess) { $parentProcess.Dispose() }
+            if ($readyEvent) { $readyEvent.Dispose() }
+            if ($rejectedEvent) { $rejectedEvent.Dispose() }
+            if ($acquired) { $mutex.ReleaseMutex() }
+            $mutex.Dispose()
         }
     }
     'Install' {

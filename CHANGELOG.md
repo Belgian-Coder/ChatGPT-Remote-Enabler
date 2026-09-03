@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.5.24
+
+- Detect newer ChatGPT Windows packages that provide native Windows
+  remote-control device keys, and use a renderer-only compatibility bridge
+  when Electron disables main-process inspection. Legacy packages retain the
+  audited main-process shim.
+- Fix the compatibility signature that mistook the new "macOS and Windows"
+  capability message for the former macOS-only build and then waited for a
+  debugger target that could never exist.
+- Persist and discover renderer-only sessions with an explicit bridge mode.
+  Direct startup no longer passes `--inspect`; scoped proxy mode fails safely
+  on native-key builds because its legacy main-process shim is unavailable.
+- Prove that automatic update runs before injection on both Windows launch
+  paths and remains installed even if that launch's injection later fails.
+  Add native/legacy package, renderer-only probe, and session-discovery
+  regressions. Renderer v62 and macOS runtime behavior are unchanged.
+
 ## v1.5.23
 
 - Hand Windows launch ownership to a PowerShell worker and exit the launcher

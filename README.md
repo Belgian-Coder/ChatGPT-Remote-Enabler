@@ -64,7 +64,8 @@ PowerShell and macOS command equivalents:
 Launchers check for updates on every start by default. On Windows, launch
 ownership first moves to a mutex-protected worker so the launcher executable
 can exit before verified replacement; the worker then continues the same
-direct/proxy and manual/startup launch exactly once. A clean Windows Git
+direct/proxy and manual/startup launch exactly once. A completed update remains
+installed and is logged even if the later injection step fails. A clean Windows Git
 checkout fast-forwards through Git; packaged installs accept only a platform
 archive whose published SHA-256 and internal manifest pass. Disable automatic
 updates with `Update-ChatGPTRemote.ps1 -Action DisableAutoUpdate` or

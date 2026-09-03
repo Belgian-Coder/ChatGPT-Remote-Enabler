@@ -140,6 +140,9 @@ if ($LASTEXITCODE -ne 0) { throw 'Build release archive self-test failed.' }
 & $node (Join-Path $root 'windows\CodexRemoteSimple\tests\RendererOverrides.SelfTest.js')
 if ($LASTEXITCODE -ne 0) { throw 'Stable renderer self-test failed.' }
 
+& $node (Join-Path $root 'windows\CodexRemoteSimple\tests\PackageCompatibility.SelfTest.mjs')
+if ($LASTEXITCODE -ne 0) { throw 'Windows package compatibility self-test failed.' }
+
 & $node (Join-Path $root 'windows\CodexRemoteMobileProject\tests\TitleProvenance.SelfTest.js')
 if ($LASTEXITCODE -ne 0) { throw 'Title provenance self-test failed.' }
 
@@ -191,6 +194,7 @@ if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
     MacOSUpdaterCompatibilitySelfTest = $true
     MacOSSupportReliabilitySelfTest = $true
     StableRendererSelfTest = $true
+    PackageCompatibilitySelfTest = $true
     TitleProvenanceSelfTest = $true
     ThreadVisibilitySelfTest = $true
     TaskStatusSelfTest = $true

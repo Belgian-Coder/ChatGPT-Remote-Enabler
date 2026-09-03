@@ -43,13 +43,22 @@ Mobile Projects folder opens the exact native project composer when available;
 registered projects retain a native global-composer fallback when their folder
 row is not mounted by the selected grouping.
 
+Newer Windows builds include native remote-control device keys and disable
+Electron main-process inspection. The launcher detects that capability and
+uses only the loopback renderer bridge, avoiding a debugger-target timeout.
+Older audited builds retain the legacy main-process shim. Scoped `-UseProxy`
+requires that legacy shim and therefore fails before relaunch on native-key
+builds; direct networking remains fully supported.
+
 The launcher checks for an update on every start by default. It first hands
 launch ownership to a mutex-protected PowerShell worker and exits, allowing the
 verified updater to replace the launcher executable before that same worker
 continues injection exactly once. Direct/proxy and manual/startup arguments are
 preserved. A clean `main` Git checkout fast-forwards to the latest release tag
 through its configured origin; an extracted release still uses the verified
-archive updater. Manage it with:
+archive updater. Update completion is independent from injection: if injection
+fails afterward, the verified update remains installed and the two outcomes
+are logged separately. Manage it with:
 
 ```powershell
 .\Update-ChatGPTRemote.ps1 -Action Probe

@@ -150,7 +150,8 @@ function Test-CrsCompatibility {
         throw 'The Codex package compatibility checker failed.'
     }
     $result = [string]$output[0] | ConvertFrom-Json -ErrorAction Stop
-    if ($result.schemaVersion -ne 1 -or $result.classification -cne 'CandidateCompatible' -or
+    if ($result.schemaVersion -ne 2 -or $result.bridgeMode -cnotin @('legacy-main-shim', 'native-renderer') -or
+        $result.classification -cnotin @('CandidateCompatible', 'NativeWindowsCompatible') -or
         $result.affected -isnot [bool] -or -not $result.affected -or
         $result.appAsarSha256 -isnot [string] -or $result.appAsarSha256 -cnotmatch '^[0-9a-f]{64}$') {
         throw 'This Codex build does not match the audited Windows compatibility signature. Refusing to inject.'
@@ -209,6 +210,8 @@ function Get-CrsCodexProcesses {
 function Get-CrsDiscoverableSession {
     param(
         $Package,
+        [ValidateSet('legacy-main-shim', 'native-renderer')]
+        [string]$BridgeMode = 'legacy-main-shim',
         [object[]]$Processes,
         [scriptblock]$PortTester
     )
@@ -226,13 +229,17 @@ function Get-CrsDiscoverableSession {
         if ($commandLine -notmatch '(?:^|\s)--remote-debugging-address(?:=|\s+)127\.0\.0\.1(?:\s|$)') { continue }
         $rendererMatch = [regex]::Match($commandLine, '(?:^|\s)--remote-debugging-port(?:=|\s+)(?<port>\d+)(?:\s|$)')
         $mainMatch = [regex]::Match($commandLine, '(?:^|\s)--inspect(?:=|\s+)127\.0\.0\.1:(?<port>\d+)(?:\s|$)')
-        if (-not $rendererMatch.Success -or -not $mainMatch.Success) { continue }
+        if (-not $rendererMatch.Success -or ($BridgeMode -ceq 'legacy-main-shim' -and -not $mainMatch.Success)) { continue }
         $rendererPort = [int]$rendererMatch.Groups['port'].Value
-        $mainPort = [int]$mainMatch.Groups['port'].Value
-        if ($rendererPort -lt 1 -or $rendererPort -gt 65535 -or $mainPort -lt 1 -or $mainPort -gt 65535 -or $rendererPort -eq $mainPort) { continue }
-        if (-not (& $PortTester $rendererPort) -or -not (& $PortTester $mainPort)) { continue }
+        $mainPort = if ($BridgeMode -ceq 'legacy-main-shim' -and $mainMatch.Success) { [int]$mainMatch.Groups['port'].Value } else { $null }
+        if ($rendererPort -lt 1 -or $rendererPort -gt 65535) { continue }
+        if ($BridgeMode -ceq 'legacy-main-shim' -and
+            ($mainPort -lt 1 -or $mainPort -gt 65535 -or $rendererPort -eq $mainPort)) { continue }
+        if (-not (& $PortTester $rendererPort) -or
+            ($BridgeMode -ceq 'legacy-main-shim' -and -not (& $PortTester $mainPort))) { continue }
         [pscustomobject][ordered]@{
-            schemaVersion = 1
+            schemaVersion = 2
+            bridgeMode = $BridgeMode
             packageFullName = $Package.FullName
             packageVersion = $Package.Version
             executablePath = $Package.ExecutablePath
@@ -240,9 +247,9 @@ function Get-CrsDiscoverableSession {
             mainPort = $mainPort
             launchMethod = 'adopted-existing-session'
             launchProcessId = $process.ProcessId
-            # The process command line proves the loopback ports, but it cannot
-            # prove whether the injected main-process bridge installed a proxy.
-            proxyMode = $null
+            # Renderer-only native sessions cannot contain the legacy scoped
+            # proxy shim. Legacy command lines cannot prove whether it ran.
+            proxyMode = if ($BridgeMode -ceq 'native-renderer') { $false } else { $null }
             appAsarSha256 = $null
             startedAtUtc = $null
         }
@@ -412,13 +419,26 @@ function Read-CrsState {
     try {
         $state = Get-Content -LiteralPath $script:StatePath -Raw | ConvertFrom-Json -ErrorAction Stop
         $rendererPort = 0
-        $mainPort = 0
-        if ($state.schemaVersion -ne 1 -or
-            -not [int]::TryParse([string]$state.rendererPort, [ref]$rendererPort) -or
-            -not [int]::TryParse([string]$state.mainPort, [ref]$mainPort) -or
+        if (-not [int]::TryParse([string]$state.rendererPort, [ref]$rendererPort) -or
             $rendererPort -lt 1 -or $rendererPort -gt 65535 -or
-            $mainPort -lt 1 -or $mainPort -gt 65535 -or $rendererPort -eq $mainPort) {
+            $state.schemaVersion -notin @(1, 2)) {
             throw 'invalid state schema'
+        }
+        $bridgeMode = if ($state.schemaVersion -eq 1) { 'legacy-main-shim' } else { [string]$state.bridgeMode }
+        if ($bridgeMode -cnotin @('legacy-main-shim', 'native-renderer')) { throw 'invalid state bridge mode' }
+        $mainPort = $null
+        if ($bridgeMode -ceq 'legacy-main-shim') {
+            $parsedMainPort = 0
+            if (-not [int]::TryParse([string]$state.mainPort, [ref]$parsedMainPort) -or
+                $parsedMainPort -lt 1 -or $parsedMainPort -gt 65535 -or $rendererPort -eq $parsedMainPort) {
+                throw 'invalid state main port'
+            }
+            $mainPort = $parsedMainPort
+        }
+        if ($null -eq $state.PSObject.Properties['bridgeMode']) {
+            $state | Add-Member -NotePropertyName bridgeMode -NotePropertyValue $bridgeMode
+        } else {
+            $state.bridgeMode = $bridgeMode
         }
         $state.rendererPort = $rendererPort
         $state.mainPort = $mainPort
@@ -433,10 +453,11 @@ function Read-CrsState {
 }
 
 function Write-CrsState {
-    param($Package, [int]$RendererPort, [int]$MainPort, $Probe, $Launch, [bool]$ProxyMode)
+    param($Package, [int]$RendererPort, $MainPort, $Probe, $Launch, [bool]$ProxyMode, [string]$BridgeMode)
 
     $state = [pscustomobject][ordered]@{
-        schemaVersion = 1
+        schemaVersion = 2
+        bridgeMode = $BridgeMode
         packageFullName = $Package.FullName
         packageVersion = $Package.Version
         executablePath = $Package.ExecutablePath
@@ -454,30 +475,30 @@ function Write-CrsState {
 }
 
 function Invoke-CrsBridge {
-    param($Node, [int]$RendererPort, [int]$MainPort, [string]$ProxyServer)
+    param($Node, [int]$RendererPort, $MainPort, [string]$ProxyServer, [string]$BridgeMode)
 
     $orchestrator = Join-Path $script:RuntimeRoot 'orchestrator.js'
-    $mainPayload = Join-Path $script:RuntimeRoot 'main-payload.js'
-    $arguments = @(
-        $orchestrator,
-        '--mode', 'full',
-        '--renderer-port', [string]$RendererPort,
-        '--main-port', [string]$MainPort,
-        '--timeout-ms', [string]($TimeoutSeconds * 1000),
-        '--main-payload', $mainPayload
-    )
-    if (-not [string]::IsNullOrWhiteSpace($ProxyServer)) {
-        $arguments += @('--proxy-url', $ProxyServer)
+    if ($BridgeMode -ceq 'native-renderer') {
+        $arguments = @($orchestrator, '--mode', 'renderer', '--renderer-port', [string]$RendererPort, '--timeout-ms', [string]($TimeoutSeconds * 1000))
+    } else {
+        $mainPayload = Join-Path $script:RuntimeRoot 'main-payload.js'
+        $arguments = @(
+            $orchestrator, '--mode', 'full', '--renderer-port', [string]$RendererPort,
+            '--main-port', [string]$MainPort, '--timeout-ms', [string]($TimeoutSeconds * 1000),
+            '--main-payload', $mainPayload
+        )
+        if (-not [string]::IsNullOrWhiteSpace($ProxyServer)) { $arguments += @('--proxy-url', $ProxyServer) }
     }
     $output = @(& $Node.Path @arguments 2>&1)
     if ($LASTEXITCODE -ne 0 -or $output.Count -ne 1) {
         throw "Runtime bridge failed: $($output -join ' ')"
     }
     $result = [string]$output[0] | ConvertFrom-Json -ErrorAction Stop
-    if ($result.ok -isnot [bool] -or -not $result.ok -or
-        $result.main.inspectorPortClosed.confirmed -isnot [bool] -or -not $result.main.inspectorPortClosed.confirmed -or
+    $mainProof = $BridgeMode -ceq 'native-renderer' -or
+        ($result.main.inspectorPortClosed.confirmed -is [bool] -and $result.main.inspectorPortClosed.confirmed)
+    if ($result.ok -isnot [bool] -or -not $result.ok -or -not $mainProof -or
         $result.renderer.probe.proof -isnot [bool] -or -not $result.renderer.probe.proof) {
-        throw 'Runtime bridge did not return complete main-process closure and renderer proof.'
+        throw 'Runtime bridge did not return complete proof for the selected bridge mode.'
     }
     return $result
 }
@@ -487,7 +508,10 @@ function Invoke-CrsProbeExisting {
 
     if ($null -eq $State -or -not (Test-CrsPortOpen -Port ([int]$State.rendererPort))) { return $null }
     $orchestrator = Join-Path $script:RuntimeRoot 'orchestrator.js'
-    $output = @(& $Node.Path $orchestrator '--mode' 'probe' '--renderer-port' ([string]$State.rendererPort) '--main-port' ([string]$State.mainPort) '--timeout-ms' '3000' 2>&1)
+    $arguments = @($orchestrator, '--mode', $(if ($State.bridgeMode -ceq 'native-renderer') { 'probe-renderer' } else { 'probe' }), '--renderer-port', ([string]$State.rendererPort))
+    if ($State.bridgeMode -ceq 'legacy-main-shim') { $arguments += @('--main-port', ([string]$State.mainPort)) }
+    $arguments += @('--timeout-ms', '3000')
+    $output = @(& $Node.Path @arguments 2>&1)
     if ($LASTEXITCODE -ne 0 -or $output.Count -ne 1) { return $null }
     try { return ([string]$output[0] | ConvertFrom-Json -ErrorAction Stop) } catch { return $null }
 }
@@ -509,7 +533,7 @@ function Invoke-CrsRollback {
 
     Stop-CrsCodex -ExecutablePath $Package.ExecutablePath
     if ($null -ne $State) {
-        foreach ($port in @([int]$State.rendererPort, [int]$State.mainPort)) {
+        foreach ($port in @($State.rendererPort, $State.mainPort) | Where-Object { $null -ne $_ }) {
             if (-not (Wait-CrsPortClosed -Port $port)) {
                 throw "Rollback stopped Codex, but loopback port $port did not close. Codex was not relaunched."
             }
@@ -533,6 +557,7 @@ if ($Action -ceq 'Rollback') {
 
 $node = Resolve-CrsNode -RequestedPath $NodePath
 $compatibility = Test-CrsCompatibility -Package $package -Node $node
+$bridgeMode = [string]$compatibility.bridgeMode
 $state = Read-CrsState
 
 switch ($Action) {
@@ -545,6 +570,7 @@ switch ($Action) {
             NodeVersion = $node.Version
             AppAsarSha256 = $compatibility.appAsarSha256
             Classification = $compatibility.classification
+            BridgeMode = $bridgeMode
             LocalSessionActive = [bool]($null -ne $liveProbe -and $liveProbe.ok -and $liveProbe.renderer.probe.proof)
             SessionRecord = if ($null -eq $state) { $null } else { $script:StatePath }
         }
@@ -553,12 +579,12 @@ switch ($Action) {
     'Enable' {
         $existing = Invoke-CrsProbeExisting -Node $node -State $state
         if ($null -eq $existing -or -not $existing.ok -or -not $existing.renderer.probe.proof) {
-            $discovered = Get-CrsDiscoverableSession -Package $package
+            $discovered = Get-CrsDiscoverableSession -Package $package -BridgeMode $bridgeMode
             if ($null -ne $discovered) {
                 $discoveredProbe = Invoke-CrsProbeExisting -Node $node -State $discovered
                 if ($null -ne $discoveredProbe -and $discoveredProbe.ok -and $discoveredProbe.renderer.probe.proof -and
                     (Test-CrsProxyModeProof -State $discovered -RequestedProxyMode ([bool]$UseProxy))) {
-                    Write-CrsState -Package $package -RendererPort $discovered.rendererPort -MainPort $discovered.mainPort -Probe $compatibility -Launch ([pscustomobject]@{ Method = 'adopted-existing-session'; ProcessId = $discovered.launchProcessId }) -ProxyMode ([bool]$discovered.proxyMode)
+                    Write-CrsState -Package $package -RendererPort $discovered.rendererPort -MainPort $discovered.mainPort -Probe $compatibility -Launch ([pscustomobject]@{ Method = 'adopted-existing-session'; ProcessId = $discovered.launchProcessId }) -ProxyMode ([bool]$discovered.proxyMode) -BridgeMode $bridgeMode
                     $state = Read-CrsState
                     $existing = $discoveredProbe
                     Write-Host 'Adopted the existing audited loopback session without relaunching ChatGPT.' -ForegroundColor Green
@@ -572,12 +598,18 @@ switch ($Action) {
             }
             Write-Host 'The requested proxy mode differs from the active session; ChatGPT will be relaunched.' -ForegroundColor Yellow
         }
+        if ($bridgeMode -ceq 'native-renderer' -and $UseProxy) {
+            throw 'This ChatGPT build provides native Windows remote-control keys and disables the main-process Inspector required by scoped proxy mode. Reinstall the shortcut without -UseProxy.'
+        }
         if (-not $PSCmdlet.ShouldProcess('the current OpenAI Codex session', 'Close it, relaunch with loopback debug ports, and inject the audited compatibility bridge')) {
             break
         }
 
         $rendererPort = Get-CrsFreePort
-        do { $mainPort = Get-CrsFreePort } while ($mainPort -eq $rendererPort)
+        $mainPort = $null
+        if ($bridgeMode -ceq 'legacy-main-shim') {
+            do { $mainPort = Get-CrsFreePort } while ($mainPort -eq $rendererPort)
+        }
         Stop-CrsCodex -ExecutablePath $package.ExecutablePath
 
         try {
@@ -588,12 +620,12 @@ switch ($Action) {
             }
             $arguments = @(
                 '--remote-debugging-address=127.0.0.1',
-                "--remote-debugging-port=$rendererPort",
-                "--inspect=127.0.0.1:$mainPort"
+                "--remote-debugging-port=$rendererPort"
             )
+            if ($bridgeMode -ceq 'legacy-main-shim') { $arguments += "--inspect=127.0.0.1:$mainPort" }
             $launch = Start-CrsPackagedCodex -Package $package -ArgumentList $arguments -ExpectedPort $rendererPort
-            $bridge = Invoke-CrsBridge -Node $node -RendererPort $rendererPort -MainPort $mainPort -ProxyServer $(if ($UseProxy) { $resolvedProxyServer } else { $null })
-            Write-CrsState -Package $package -RendererPort $rendererPort -MainPort $mainPort -Probe $compatibility -Launch $launch -ProxyMode ([bool]$UseProxy)
+            $bridge = Invoke-CrsBridge -Node $node -RendererPort $rendererPort -MainPort $mainPort -ProxyServer $(if ($UseProxy) { $resolvedProxyServer } else { $null }) -BridgeMode $bridgeMode
+            Write-CrsState -Package $package -RendererPort $rendererPort -MainPort $mainPort -Probe $compatibility -Launch $launch -ProxyMode ([bool]$UseProxy) -BridgeMode $bridgeMode
             Write-Host 'Control other devices and macOS-style connection grouping are active for this Codex session.' -ForegroundColor Green
             Write-Host 'Open Settings > Connections > Control other devices.'
             Write-Host 'In the sidebar, open Project sidebar options and choose By connection when desired.'
@@ -602,7 +634,7 @@ switch ($Action) {
         } catch {
             Write-Warning 'Enable failed. Restoring an ordinary Codex session.'
             Stop-CrsCodex -ExecutablePath $package.ExecutablePath
-            foreach ($port in @($rendererPort, $mainPort)) { [void](Wait-CrsPortClosed -Port $port) }
+            foreach ($port in @($rendererPort, $mainPort) | Where-Object { $null -ne $_ }) { [void](Wait-CrsPortClosed -Port $port) }
             if (Test-Path -LiteralPath $script:StatePath) { Remove-Item -LiteralPath $script:StatePath -Force }
             Start-CrsOrdinaryCodex -Package $package
             throw

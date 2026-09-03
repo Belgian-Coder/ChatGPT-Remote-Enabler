@@ -50,11 +50,11 @@ function parseArguments(argv) {
     index += 1;
   }
   const mode = values.get("mode") ?? "full";
-  if (mode !== "full" && mode !== "renderer" && mode !== "probe") {
-    throw cliError("ARGUMENT_INVALID", "mode must be exactly full, renderer, or probe");
+  if (mode !== "full" && mode !== "renderer" && mode !== "probe" && mode !== "probe-renderer") {
+    throw cliError("ARGUMENT_INVALID", "mode must be exactly full, renderer, probe, or probe-renderer");
   }
-  if (mode === "renderer" && (values.has("main-port") || values.has("main-payload"))) {
-    throw cliError("ARGUMENT_MODE_CONFLICT", "renderer mode forbids main Inspector options");
+  if ((mode === "renderer" || mode === "probe-renderer") && (values.has("main-port") || values.has("main-payload"))) {
+    throw cliError("ARGUMENT_MODE_CONFLICT", `${mode} mode forbids main Inspector options`);
   }
   if (mode === "probe" && values.has("main-payload")) {
     throw cliError("ARGUMENT_MODE_CONFLICT", "probe mode forbids payload options");
@@ -423,10 +423,11 @@ async function runProbeBridge(options, dependencies = {}) {
   const connectRendererTarget = dependencies.connectTarget ?? connectTarget;
   const evaluateRenderer = dependencies.evaluate ?? evaluate;
   const deadline = Date.now() + options.timeoutMs;
-  let stage = "probe-main";
+  let stage = options.mode === "probe-renderer" ? "probe-renderer-discovery" : "probe-main";
   try {
-    const mainObservation = await observePort(options.mainPort, Math.min(300, remaining(deadline)));
-    const main = { inspectorPortClosed: probeMainResult(mainObservation) };
+    const main = options.mode === "probe-renderer"
+      ? { inspectorNotRequired: true }
+      : { inspectorPortClosed: probeMainResult(await observePort(options.mainPort, Math.min(300, remaining(deadline)))) };
     stage = "probe-renderer-discovery";
     const targets = await discoverRendererTargets(options.rendererPort, remaining(deadline));
     if (!Array.isArray(targets)) {
@@ -487,13 +488,13 @@ async function main(argv = process.argv.slice(2)) {
     if (options.help) {
       process.stdout.write(`${JSON.stringify({
         ok: true,
-        usage: "node orchestrator.js [--mode full|renderer|probe] --renderer-port PORT --timeout-ms MS [--main-port PORT --main-payload FILE] [--proxy-url URL]",
+        usage: "node orchestrator.js [--mode full|renderer|probe|probe-renderer] --renderer-port PORT --timeout-ms MS [--main-port PORT --main-payload FILE] [--proxy-url URL]",
       })}\n`);
       return 0;
     }
     const result = options.mode === "renderer"
       ? await runRendererBridge(options)
-      : options.mode === "probe"
+      : options.mode === "probe" || options.mode === "probe-renderer"
         ? await runProbeBridge(options)
         : await runBridge(options);
     process.stdout.write(`${JSON.stringify(result)}\n`);

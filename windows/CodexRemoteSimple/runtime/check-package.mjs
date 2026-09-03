@@ -2,7 +2,7 @@
 
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { access, readdir } from "node:fs/promises";
+import { access, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -10,6 +10,7 @@ const signatures = new Map([
   ["invertedGate", Buffer.from("782640499")],
   ["deviceKeyModuleReference", Buffer.from("remote-control-device-key.node")],
   ["macOnlyGuard", Buffer.from("Remote control device keys are only available on macOS")],
+  ["nativeWindowsGuard", Buffer.from("Remote control device keys are only available on macOS and Windows")],
   ["windowsControllerUi", Buffer.from("Control other devices from this PC")],
 ]);
 
@@ -20,6 +21,7 @@ function createProductionAdapters() {
     createReadStream,
     joinPath: path.join,
     process,
+    readFile,
     readdir,
     resolvePath: path.resolve,
   };
@@ -40,22 +42,32 @@ export async function inspectPackage(asarPath, nativeDirectory, Adapters = creat
     carry = searchable.subarray(Math.max(0, searchable.length - longest + 1));
   }
 
-  const nativeModulePresent = await containsNativeDeviceKeyModule(nativeDirectory, Adapters);
-  const allSignatures = Object.values(signatureState).every(Boolean);
-  const classification = allSignatures
-    ? "CandidateCompatible"
-    : nativeModulePresent ? "NativeModulePresent" : "UnknownOrIncompatible";
+  const nativeModule = await inspectNativeDeviceKeyModule(nativeDirectory, Adapters);
+  const commonSignatures = signatureState.invertedGate
+    && signatureState.deviceKeyModuleReference
+    && signatureState.windowsControllerUi;
+  const nativeWindows = commonSignatures
+    && signatureState.nativeWindowsGuard
+    && nativeModule.format === "windows-pe";
+  const legacyMainShim = commonSignatures
+    && signatureState.macOnlyGuard
+    && !signatureState.nativeWindowsGuard;
+  const classification = nativeWindows
+    ? "NativeWindowsCompatible"
+    : legacyMainShim ? "CandidateCompatible" : nativeModule.present ? "NativeModulePresent" : "UnknownOrIncompatible";
   return {
-    affected: classification === "CandidateCompatible",
+    affected: classification === "CandidateCompatible" || classification === "NativeWindowsCompatible",
     appAsarSha256: hash.digest("hex"),
+    bridgeMode: nativeWindows ? "native-renderer" : legacyMainShim ? "legacy-main-shim" : null,
     classification,
-    nativeModulePresent,
-    schemaVersion: 1,
+    nativeModuleFormat: nativeModule.format,
+    nativeModulePresent: nativeModule.present,
+    schemaVersion: 2,
     signatures: signatureState,
   };
 }
 
-async function containsNativeDeviceKeyModule(directory, Adapters) {
+async function inspectNativeDeviceKeyModule(directory, Adapters) {
   const pending = [directory];
   while (pending.length > 0) {
     const current = pending.pop();
@@ -63,17 +75,23 @@ async function containsNativeDeviceKeyModule(directory, Adapters) {
     try {
       entries = await Adapters.readdir(current, { withFileTypes: true });
     } catch (error) {
-      if (error?.code === "ENOENT" && current === directory) return false;
+      if (error?.code === "ENOENT" && current === directory) return { format: null, present: false };
       throw error;
     }
 
     for (const entry of entries) {
       const fullPath = Adapters.joinPath(current, entry.name);
       if (entry.isDirectory()) pending.push(fullPath);
-      if (entry.isFile() && entry.name === "remote-control-device-key.node") return true;
+      if (entry.isFile() && entry.name === "remote-control-device-key.node") {
+        const header = await Adapters.readFile(fullPath);
+        return {
+          format: header.length >= 2 && header[0] === 0x4d && header[1] === 0x5a ? "windows-pe" : "non-windows",
+          present: true,
+        };
+      }
     }
   }
-  return false;
+  return { format: null, present: false };
 }
 
 export async function runCheckPackageCli(Adapters = createProductionAdapters()) {

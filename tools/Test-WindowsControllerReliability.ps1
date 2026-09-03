@@ -38,6 +38,15 @@ if (-not $discovered -or $discovered.rendererPort -ne 24547 -or $discovered.main
     $discovered.launchMethod -ne 'adopted-existing-session') {
     throw 'A unique audited loopback session was not discovered.'
 }
+$nativeProcess = $validProcess.PSObject.Copy()
+$nativeProcess.ProcessId = 4343
+$nativeProcess.CommandLine = '"C:\Program Files\WindowsApps\OpenAI.Codex_test\app\ChatGPT.exe" --remote-debugging-address=127.0.0.1 --remote-debugging-port=24547'
+$nativeDiscovered = Get-CrsDiscoverableSession -Package $package -BridgeMode 'native-renderer' -Processes @($nativeProcess) -PortTester $openPorts
+if (-not $nativeDiscovered -or $nativeDiscovered.schemaVersion -ne 2 -or
+    $nativeDiscovered.bridgeMode -ne 'native-renderer' -or $nativeDiscovered.rendererPort -ne 24547 -or
+    $null -ne $nativeDiscovered.mainPort -or $nativeDiscovered.proxyMode -ne $false) {
+    throw 'A renderer-only native Windows session was not safely discovered.'
+}
 if ($null -ne $discovered.proxyMode -or (Test-CrsProxyModeProof -State $discovered -RequestedProxyMode $false)) {
     throw 'A discovered session with no durable state was incorrectly treated as proof of direct mode.'
 }
@@ -95,14 +104,15 @@ function New-ReplacementLauncher {
 $startupSourceText = Get-Content -LiteralPath (Join-Path $root 'windows\CodexRemoteMobileProject\MobileProjectStartup.ps1') -Raw
 $rootWorkerSourceText = Get-Content -LiteralPath (Join-Path $root 'windows\Enable-ChatGPTRemote.ps1') -Raw
 foreach ($worker in @(
-    [pscustomobject]@{ Name = 'MobileProjectStartup'; Text = $startupSourceText; Updater = '& $updateController -Action Auto' },
-    [pscustomobject]@{ Name = 'Enable-ChatGPTRemote'; Text = $rootWorkerSourceText; Updater = '& $updater -Action Auto' }
+    [pscustomobject]@{ Name = 'MobileProjectStartup'; Text = $startupSourceText; Updater = '& $updateController -Action Auto'; Injection = '& $stableController @stableArguments' },
+    [pscustomobject]@{ Name = 'Enable-ChatGPTRemote'; Text = $rootWorkerSourceText; Updater = '& $updater -Action Auto'; Injection = '& $stable -Action Enable' }
 )) {
     $capture = $worker.Text.IndexOf('$parentProcess = Capture-ExactParent', [StringComparison]::Ordinal)
     $signal = $worker.Text.IndexOf('Signal-Handshake', $capture, [StringComparison]::Ordinal)
     $wait = $worker.Text.IndexOf('$parentProcess.WaitForExit(30000)', $capture, [StringComparison]::Ordinal)
     $update = $worker.Text.IndexOf($worker.Updater, $wait, [StringComparison]::Ordinal)
-    if ($capture -lt 0 -or $signal -lt $capture -or $wait -lt $signal -or $update -lt $wait -or
+    $injection = $worker.Text.IndexOf($worker.Injection, $update, [StringComparison]::Ordinal)
+    if ($capture -lt 0 -or $signal -lt $capture -or $wait -lt $signal -or $update -lt $wait -or $injection -lt $update -or
         -not $worker.Text.Contains("Local\ChatGPTCustomInjectionLauncher") -or
         -not $worker.Text.Contains('if ($actual -ne $ParentProcessStartTimeFileTimeUtc)') -or
         $worker.Text.Contains('[Math]::Abs([double]$actual')) {
@@ -242,6 +252,8 @@ try {
         ExactParentWaitCompleted = $true
         FourArgumentModesPreserved = $true
         ExistingSessionDiscovered = $true
+        NativeRendererOnlySessionDiscovered = $true
+        UpdaterCompletesBeforeInjection = $true
         UnknownProxyModeRejected = $true
         DurableProxyModeMatchedStrictly = $true
         NonLoopbackRejected = $true

@@ -54,7 +54,7 @@ assert.equal(calls.includes("782640499"), false);
 assert.equal(calls.includes("4114442250"), false);
 
 async function testOrchestratorProbeValidation() {
-  const { runProbeBridge } = require("../runtime/orchestrator.js");
+  const { parseArguments, runProbeBridge } = require("../runtime/orchestrator.js");
   const result = await runProbeBridge(
     { rendererPort: 41001, mainPort: 41002, timeoutMs: 30000 },
     {
@@ -76,6 +76,31 @@ async function testOrchestratorProbeValidation() {
   assert.equal(result.renderer.probe.proof, true);
   assert.equal(result.renderer.probe.targetGate, "782640499");
   assert.equal(result.renderer.probe.remoteConnectionsGate, "4114442250");
+
+  const rendererOnlyOptions = parseArguments([
+    "--mode", "probe-renderer", "--renderer-port", "41001", "--timeout-ms", "30000",
+  ]);
+  let mainPortObserved = false;
+  const rendererOnly = await runProbeBridge(rendererOnlyOptions, {
+    checkPortOnce: async () => {
+      mainPortObserved = true;
+      throw new Error("renderer-only probe must not inspect a main-process port");
+    },
+    discoverTargets: async () => [{
+      type: "page",
+      url: "app://-/index.html",
+      webSocketDebuggerUrl: "ws://127.0.0.1/fake",
+    }],
+    connectTarget: async () => ({ close: () => {} }),
+    evaluate: async () => report,
+  });
+  assert.equal(mainPortObserved, false);
+  assert.equal(rendererOnly.main.inspectorNotRequired, true);
+  assert.equal(rendererOnly.renderer.probe.proof, true);
+  assert.throws(
+    () => parseArguments(["--mode", "probe-renderer", "--renderer-port", "41001", "--main-port", "41002", "--timeout-ms", "30000"]),
+    /forbids main Inspector options/u,
+  );
 }
 
 testOrchestratorProbeValidation()

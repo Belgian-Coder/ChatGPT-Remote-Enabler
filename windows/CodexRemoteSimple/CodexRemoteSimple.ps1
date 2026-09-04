@@ -179,10 +179,12 @@ function New-CrsProxyRuntimePackage {
     $runtime = [string]$output[0] | ConvertFrom-Json -ErrorAction Stop
     $managedRoot = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'ChatGPTRemoteEnabler\patched-chatgpt'))
     $runtimeRoot = [IO.Path]::GetFullPath([string]$runtime.runtimeRoot)
+    $runtimeCliPath = [IO.Path]::GetFullPath((Join-Path $runtimeRoot 'resources\codex.exe'))
     $expectedPrefix = $managedRoot.TrimEnd('\') + '\'
     if (-not $runtimeRoot.StartsWith($expectedPrefix, [StringComparison]::OrdinalIgnoreCase) -or
         -not (Test-Path -LiteralPath ([string]$runtime.executablePath) -PathType Leaf) -or
-        -not (Test-Path -LiteralPath ([string]$runtime.appAsarPath) -PathType Leaf)) {
+        -not (Test-Path -LiteralPath ([string]$runtime.appAsarPath) -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $runtimeCliPath -PathType Leaf)) {
         throw 'The private ChatGPT proxy runtime returned an invalid managed path.'
     }
 
@@ -197,7 +199,11 @@ function New-CrsProxyRuntimePackage {
         ExecutablePath = [IO.Path]::GetFullPath([string]$runtime.executablePath)
         AppAsarPath = [IO.Path]::GetFullPath([string]$runtime.appAsarPath)
         NativeRoot = [IO.Path]::GetFullPath((Join-Path $runtimeRoot 'resources\native'))
-        CliPath = $Package.CliPath
+        # A process launched from the private runtime cannot execute the CLI
+        # directly from WindowsApps on managed Windows installations (spawn
+        # EPERM). The copied CLI has ordinary per-user ACLs and belongs to the
+        # same audited package runtime.
+        CliPath = $runtimeCliPath
         OriginalExecutablePath = $Package.ExecutablePath
         ProxyRuntimeReused = [bool]$runtime.reused
     }

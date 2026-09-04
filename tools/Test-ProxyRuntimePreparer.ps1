@@ -15,6 +15,7 @@ try {
     New-Item -ItemType Directory -Path $resources,$profile | Out-Null
     [IO.File]::WriteAllText((Join-Path $source 'ChatGPT.exe'), 'synthetic executable', [Text.UTF8Encoding]::new($false))
     [IO.File]::WriteAllText((Join-Path $resources 'extra-resource.txt'), 'preserved', [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText((Join-Path $resources 'codex.exe'), 'synthetic cli', [Text.UTF8Encoding]::new($false))
 
     $sentinel = [Text.Encoding]::ASCII.GetBytes('dL7pKGdnNz796PbbjQWNKmHXBZaB9tsX')
     $chrome = [Collections.Generic.List[byte]]::new()
@@ -37,7 +38,8 @@ try {
     $result = [string]$output[0] | ConvertFrom-Json -ErrorAction Stop
     if ($result.reused -isnot [bool] -or $result.reused -or
         -not (Test-Path -LiteralPath ([string]$result.executablePath) -PathType Leaf) -or
-        -not (Test-Path -LiteralPath (Join-Path ([string]$result.runtimeRoot) 'resources\extra-resource.txt') -PathType Leaf)) {
+        -not (Test-Path -LiteralPath (Join-Path ([string]$result.runtimeRoot) 'resources\extra-resource.txt') -PathType Leaf) -or
+        -not (Test-Path -LiteralPath (Join-Path ([string]$result.runtimeRoot) 'resources\codex.exe') -PathType Leaf)) {
         throw 'The proxy runtime preparer did not create a complete private runtime.'
     }
     if ((Get-FileHash -LiteralPath (Join-Path $resources 'app.asar') -Algorithm SHA256).Hash -ne $sourceAsarHash -or
@@ -67,6 +69,7 @@ try {
         ScopedControllerPatched = $true
         AsarLengthPreserved = $true
         PrivateFusePatched = $true
+        PrivateCliPreserved = $true
         VerifiedRuntimeReused = $true
     } | ConvertTo-Json
 } finally {

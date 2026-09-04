@@ -135,6 +135,11 @@ if ($startupSourceText.Contains("Name='ChatGPT.exe' OR Name='Codex.exe'") -or
     -not $startupSourceText.Contains('must not block or be terminated by a ChatGPT Custom launch')) {
     throw 'The startup coordinator can still mistake a VS Code codex.exe app-server for the ChatGPT desktop app.'
 }
+$controllerSourceText = Get-Content -LiteralPath (Join-Path $root 'windows\CodexRemoteSimple\CodexRemoteSimple.ps1') -Raw
+if (-not $controllerSourceText.Contains('CliPath = $runtimeCliPath') -or
+    $controllerSourceText.Contains('CliPath = $Package.CliPath')) {
+    throw 'The private proxy runtime can still direct ChatGPT to the WindowsApps Codex CLI and trigger spawn EPERM.'
+}
 $rootWorkerSourceText = Get-Content -LiteralPath (Join-Path $root 'windows\Enable-ChatGPTRemote.ps1') -Raw
 foreach ($worker in @(
     [pscustomobject]@{ Name = 'MobileProjectStartup'; Text = $startupSourceText; Updater = '& $updateController -Action Auto'; Injection = '& $stableController @stableArguments' },

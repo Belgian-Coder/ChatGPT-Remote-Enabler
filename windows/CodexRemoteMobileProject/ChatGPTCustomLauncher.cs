@@ -9,8 +9,8 @@ using System.Threading;
 [assembly: AssemblyDescription("Starts ChatGPT with the audited remote Mobile projects injection")]
 [assembly: AssemblyCompany("Community")]
 [assembly: AssemblyProduct("ChatGPT Custom")]
-[assembly: AssemblyVersion("1.5.25.0")]
-[assembly: AssemblyFileVersion("1.5.25.0")]
+[assembly: AssemblyVersion("1.5.26.0")]
+[assembly: AssemblyFileVersion("1.5.26.0")]
 
 internal static class ChatGPTCustomLauncher
 {
@@ -108,6 +108,9 @@ internal static class ChatGPTCustomLauncher
                         CreateNoWindow = true,
                         WindowStyle = ProcessWindowStyle.Hidden
                     };
+                    // Windows PowerShell must build its own module path. Inheriting a
+                    // PowerShell 7 PSModulePath can hide the inbox hashing/DPAPI modules.
+                    start.EnvironmentVariables.Remove("PSModulePath");
 
                     try
                     {

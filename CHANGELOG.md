@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.5.26
+
+- Start the hidden Windows PowerShell workers with a clean `PSModulePath` so
+  launching **ChatGPT Custom** from PowerShell 7 cannot hide Windows' inbox
+  hashing and DPAPI modules. Desktop, Start-menu, and startup-folder launches
+  retain the same per-user, non-administrator behavior.
+- Extend the real launcher handoff regression to require both `Get-FileHash`
+  and `Microsoft.PowerShell.Security` inside the worker. Renderer v62, scoped
+  native proxying, and macOS runtime behavior are unchanged.
+
 ## v1.5.25
 
 - Restore `-UseProxy` on native-key Windows ChatGPT builds whose Remote-control

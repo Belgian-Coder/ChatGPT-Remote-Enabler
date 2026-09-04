@@ -170,6 +170,8 @@ param(
 `$parent = `$null
 `$kind = if ([IO.Path]::GetFileName(`$PSCommandPath) -eq 'Enable-ChatGPTRemote.ps1') { 'root' } else { 'custom' }
 try {
+    if (-not (Get-Command Get-FileHash -ErrorAction SilentlyContinue)) { throw 'inbox hashing module unavailable' }
+    Import-Module Microsoft.PowerShell.Security -ErrorAction Stop
     try { `$acquired = `$mutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { `$acquired = `$true }
     if (-not `$acquired) { [void]`$rejected.Set(); exit 15 }
     `$parent = [Diagnostics.Process]::GetProcessById(`$ParentProcessId)

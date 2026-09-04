@@ -358,18 +358,28 @@ function Start-CrsPackagedCodex {
             $deadline = [DateTime]::UtcNow.AddMilliseconds($PortTimeoutMilliseconds)
             $portReady = $ExpectedPort -le 0
             while (-not $portReady -and [DateTime]::UtcNow -lt $deadline) {
-                if ($proxyWorker.HasExited) {
-                    throw "The package-context proxy worker exited before loopback port $ExpectedPort opened."
-                }
+                # Invoke-CommandInDesktopPackage returns after it dispatches the
+                # full-trust helper. The short-lived PowerShell worker can therefore
+                # exit normally while the helper and ChatGPT continue starting.
                 $portReady = Test-CrsPortOpen -Port $ExpectedPort
                 if (-not $portReady) { Start-Sleep -Milliseconds 100 }
             }
             if (-not $portReady) { throw "The package-context proxy launch completed, but loopback port $ExpectedPort did not open." }
-            $workerProcessId = [uint32]$proxyWorker.Id
+            $launchProcessId = [uint32]$proxyWorker.Id
+            if ($ExpectedPort -gt 0) {
+                $launchedProcesses = @(
+                    Get-CimInstance Win32_Process -Filter "Name='ChatGPT.exe'" -ErrorAction SilentlyContinue |
+                        Where-Object {
+                            [string]::Equals([string]$_.ExecutablePath, [string]$Package.ExecutablePath, [StringComparison]::OrdinalIgnoreCase) -and
+                            [string]$_.CommandLine -match "(?:^|\s)--remote-debugging-port(?:=|\s+)$ExpectedPort(?:\s|$)"
+                        }
+                )
+                if ($launchedProcesses.Count -eq 1) { $launchProcessId = [uint32]$launchedProcesses[0].ProcessId }
+            }
             Write-CrsLaunchDiagnostic -Method 'PackageContextEnvironmentProxy' -Succeeded $true -PrimaryError '' -FallbackError ''
             return [pscustomobject][ordered]@{
                 Method = 'PackageContextEnvironmentProxy'
-                ProcessId = $workerProcessId
+                ProcessId = $launchProcessId
             }
         } catch {
             Stop-CrsCodex -ExecutablePath $Package.ExecutablePath

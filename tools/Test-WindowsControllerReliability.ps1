@@ -11,9 +11,14 @@ foreach ($contract in @(
     'PackageContextEnvironmentProxy',
     '$launchArguments.EnvironmentProxyServer = $resolvedProxyServer',
     '$script:PackageProcessLauncher',
-    '$script:PackageProcessWorker'
+    '$script:PackageProcessWorker',
+    'Invoke-CommandInDesktopPackage returns after it dispatches the',
+    '$launchedProcesses.Count -eq 1'
 )) {
     if (-not $stableSourceText.Contains($contract)) { throw "Native environment-proxy launch contract is missing: $contract" }
+}
+if ($stableSourceText.Contains('throw "The package-context proxy worker exited before loopback port $ExpectedPort opened."')) {
+    throw 'A detached desktop-package worker exit is still treated as an immediate launch failure.'
 }
 if ($stableSourceText.Contains('Reinstall the shortcut without -UseProxy.')) {
     throw 'The controller still rejects proxy mode on native-key builds.'

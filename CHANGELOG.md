@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.5.27
+
+- Allow the Windows package-context proxy launcher to finish dispatching before
+  ChatGPT opens its requested loopback debugging port. Current ChatGPT builds
+  detach the full-trust helper from the short-lived PowerShell dispatcher, so
+  the dispatcher exit is no longer mistaken for an application launch failure.
+- Record the detached ChatGPT process rather than the completed dispatcher in
+  runtime state when it can be identified unambiguously. Proxy scoping, normal
+  startup fallback, renderer v62, and macOS behavior are unchanged.
+
 ## v1.5.26
 
 - Start the hidden Windows PowerShell workers with a clean `PSModulePath` so

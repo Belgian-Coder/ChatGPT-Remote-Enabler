@@ -220,7 +220,10 @@ switch ($Action) {
                     Write-StartupLog "$(Get-Date -Format o) [$computerName] protected Remote-only proxy configuration loaded"
                 }
                 Write-CommandOutput @(& $node --no-warnings $maintenanceHelper 2>&1)
-                $appProcesses = @(Get-CimInstance Win32_Process -Filter "Name='ChatGPT.exe' OR Name='Codex.exe'" -ErrorAction SilentlyContinue)
+                # The VS Code extension and other Codex clients run a codex.exe
+                # app-server process. It is not the desktop Electron app and
+                # must not block or be terminated by a ChatGPT Custom launch.
+                $appProcesses = @(Get-CimInstance Win32_Process -Filter "Name='ChatGPT.exe'" -ErrorAction SilentlyContinue)
                 $debugApp = @($appProcesses | Where-Object { $_.CommandLine -match '--remote-debugging-port(?:=|\s)' })
                 if ($appProcesses.Count -gt 0 -and $debugApp.Count -eq 0 -and -not $ReplaceRunningApp) {
                     throw 'ChatGPT/Codex is already running without the audited debug endpoint. Close it normally, then use ChatGPT Custom; startup will not terminate an active app.'

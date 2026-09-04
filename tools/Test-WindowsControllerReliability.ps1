@@ -131,6 +131,10 @@ if ($startupSourceText.Contains($bypassExistingSessionValidation) -or
     -not $startupSourceText.Contains('validating its durable proxy transport before reuse')) {
     throw 'The startup coordinator can still bypass durable proxy-transport validation for an existing debug session.'
 }
+if ($startupSourceText.Contains("Name='ChatGPT.exe' OR Name='Codex.exe'") -or
+    -not $startupSourceText.Contains('must not block or be terminated by a ChatGPT Custom launch')) {
+    throw 'The startup coordinator can still mistake a VS Code codex.exe app-server for the ChatGPT desktop app.'
+}
 $rootWorkerSourceText = Get-Content -LiteralPath (Join-Path $root 'windows\Enable-ChatGPTRemote.ps1') -Raw
 foreach ($worker in @(
     [pscustomobject]@{ Name = 'MobileProjectStartup'; Text = $startupSourceText; Updater = '& $updateController -Action Auto'; Injection = '& $stableController @stableArguments' },

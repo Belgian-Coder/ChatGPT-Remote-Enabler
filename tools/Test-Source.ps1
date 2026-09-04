@@ -10,6 +10,7 @@ $javascript = @(
     'windows\CodexRemoteSimple\runtime\renderer-payload.js',
     'windows\CodexRemoteSimple\runtime\orchestrator.js',
     'windows\CodexRemoteSimple\runtime\api-proxy-bridge.js',
+    'windows\CodexRemoteSimple\runtime\prepare-proxy-runtime.js',
     'macos\renderer-mobile-project-view.js',
     'macos\inject.js'
     'windows\CodexRemoteMobileProject\maintenance.js'
@@ -37,6 +38,7 @@ $powershell = @(
     'tools\Test-WindowsUpdaterNonGit.ps1'
     'tools\Test-WindowsControllerReliability.ps1'
     'tools\Test-PackageProcessLauncher.ps1'
+    'tools\Test-ProxyRuntimePreparer.ps1'
     'tools\Test-MacOSUpdaterCompatibility.ps1'
     'tools\Test-MacOSSupport.ps1'
     'tools\Test-WindowsNodeProbe.ps1'
@@ -173,6 +175,9 @@ if ($LASTEXITCODE -ne 0) { throw 'Windows controller reliability self-test faile
 & (Join-Path $root 'tools\Test-PackageProcessLauncher.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Package process launcher self-test failed.' }
 
+& (Join-Path $root 'tools\Test-ProxyRuntimePreparer.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Private proxy runtime preparer self-test failed.' }
+
 & (Join-Path $root 'tools\Test-MacOSUpdaterCompatibility.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'macOS updater compatibility self-test failed.' }
 
@@ -198,6 +203,7 @@ if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
     WindowsPackagedUpdaterSelfTest = $true
     WindowsControllerReliabilitySelfTest = $true
     PackageProcessLauncherSelfTest = $true
+    ProxyRuntimePreparerSelfTest = $true
     MacOSUpdaterCompatibilitySelfTest = $true
     MacOSSupportReliabilitySelfTest = $true
     StableRendererSelfTest = $true

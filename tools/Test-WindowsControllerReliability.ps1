@@ -12,6 +12,9 @@ foreach ($contract in @(
     '$launchArguments.EnvironmentProxyServer = $resolvedProxyServer',
     '$script:PackageProcessLauncher',
     '$script:PackageProcessWorker',
+    '$script:ProxyRuntimePreparer',
+    'remote-websocket-bridge-v1',
+    'Remove-CrsInactiveProxyRuntimes',
     'Invoke-CommandInDesktopPackage returns after it dispatches the',
     '$launchedProcesses.Count -eq 1'
 )) {
@@ -69,8 +72,12 @@ if ($null -ne $discovered.proxyMode -or (Test-CrsProxyModeProof -State $discover
 }
 $directState = [pscustomobject]@{ proxyMode = $false }
 $proxyState = [pscustomobject]@{ proxyMode = $true }
+$supersededNativeProxyState = [pscustomobject]@{ proxyMode = $true; bridgeMode = 'native-renderer' }
+$scopedNativeProxyState = [pscustomobject]@{ proxyMode = $true; bridgeMode = 'native-renderer'; proxyTransport = 'remote-websocket-bridge-v1' }
 if (-not (Test-CrsProxyModeProof -State $directState -RequestedProxyMode $false) -or
     -not (Test-CrsProxyModeProof -State $proxyState -RequestedProxyMode $true) -or
+    -not (Test-CrsProxyModeProof -State $scopedNativeProxyState -RequestedProxyMode $true) -or
+    (Test-CrsProxyModeProof -State $supersededNativeProxyState -RequestedProxyMode $true) -or
     (Test-CrsProxyModeProof -State $directState -RequestedProxyMode $true) -or
     (Test-CrsProxyModeProof -State ([pscustomobject]@{ proxyMode = 'false' }) -RequestedProxyMode $false)) {
     throw 'Durable proxy-mode proof was not matched strictly.'

@@ -47,10 +47,12 @@ Newer Windows builds include native remote-control device keys and disable
 Electron main-process inspection. The launcher detects that capability and
 uses only the loopback renderer bridge, avoiding a debugger-target timeout.
 Older audited builds retain the legacy main-process shim. On a native-key
-build, `-UseProxy` starts ChatGPT inside its package context and points its
-Remote-control API base at a temporary localhost bridge. The bridge forwards
-HTTPS and WebSocket traffic through the configured corporate proxy and keeps
-an explicit loopback bypass. Direct networking remains fully supported.
+build, `-UseProxy` prepares a version- and hash-matched private runtime under
+`%LOCALAPPDATA%\ChatGPTRemoteEnabler\patched-chatgpt`, starts it inside the
+installed package context, and redirects only the Remote-control WebSocket to
+a temporary localhost bridge. Signed enrollment and all ordinary APIs retain
+the canonical `https://chatgpt.com` origin. The installed WindowsApps package
+is never modified. Direct networking remains fully supported.
 
 The launcher checks for an update on every start by default. It first hands
 launch ownership to a mutex-protected PowerShell worker and exits, allowing the
@@ -94,16 +96,21 @@ The import copies the proxy into protected storage; it never removes or changes
 User- or Machine-scope environment variables needed by other software. Older
 audited ChatGPT builds clear only the launcher's process-local inherited proxy
 variables and use an HTTP CONNECT tunnel only for the Remote-control WebSocket.
-Native-key builds instead use a random per-launch localhost API/WebSocket
-bridge because ChatGPT's bundled Node WebSocket client does not honor HTTP
-proxy environment variables. Only the custom child receives the corresponding
-`CODEX_API_BASE_URL`; the bridge exits with ChatGPT. Localhost remains direct,
-and other applications retain their normal proxy environment. TLS verification
-stays enabled and includes certificates trusted by Windows. Proxy URLs containing
+Native-key builds instead use a random per-launch localhost WebSocket bridge
+because ChatGPT's bundled Node WebSocket client does not honor HTTP proxy
+environment variables. The launcher makes a private copy of the currently
+installed ChatGPT runtime, verifies exact source signatures, changes only its
+Remote-control WebSocket URL selection, and disables embedded-ASAR integrity
+checking only in that private copy so Electron can load it. The signed package,
+canonical API base, enrollment challenge, and all other applications remain
+unchanged. The bridge and background supervisor exit with ChatGPT, and stopped
+older private runtimes are cleaned up automatically. TLS verification stays
+enabled and includes certificates trusted by Windows. Proxy URLs containing
 credentials are rejected, and probe output never exposes the proxy host. An
-environment-variable fallback remains for older installations. Without `-UseProxy`, the shortcut uses direct
-networking. If injection fails, the launcher restores ordinary ChatGPT startup
-without the targeted proxy shim.
+environment-variable fallback remains for older installations. Without
+`-UseProxy`, the shortcut uses direct networking. If preparation, launch, or
+injection fails, the launcher restores ordinary ChatGPT startup without the
+targeted proxy shim.
 
 ```powershell
 .\CodexRemoteMobileProject\DesktopShortcut.ps1 -Action Install -UseProxy

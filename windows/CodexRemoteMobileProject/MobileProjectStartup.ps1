@@ -225,24 +225,25 @@ switch ($Action) {
                 if ($appProcesses.Count -gt 0 -and $debugApp.Count -eq 0 -and -not $ReplaceRunningApp) {
                     throw 'ChatGPT/Codex is already running without the audited debug endpoint. Close it normally, then use ChatGPT Custom; startup will not terminate an active app.'
                 }
-                if ($debugApp.Count -ne 0) {
-                    Write-StartupLog "$(Get-Date -Format o) [$computerName] existing debug session found; validating its durable proxy transport before reuse"
-                }
-                for ($stableAttempt = 1; $stableAttempt -le 2; $stableAttempt++) {
-                    try {
-                        $stableArguments = @{
-                            Action = 'Enable'
-                            UseProxy = [bool]$UseProxy
-                            Confirm = $false
+                if ($debugApp.Count -eq 0) {
+                    for ($stableAttempt = 1; $stableAttempt -le 2; $stableAttempt++) {
+                        try {
+                            $stableArguments = @{
+                                Action = 'Enable'
+                                UseProxy = [bool]$UseProxy
+                                Confirm = $false
+                            }
+                            if ($UseProxy) { $stableArguments.ProxyServer = $proxyServer }
+                            Write-CommandOutput @(& $stableController @stableArguments 2>&1)
+                            break
+                        } catch {
+                            if ($stableAttempt -ge 2) { throw }
+                            Write-StartupLog "$(Get-Date -Format o) [$computerName] stable bridge not ready on attempt $stableAttempt; retrying once"
+                            Start-Sleep -Seconds 2
                         }
-                        if ($UseProxy) { $stableArguments.ProxyServer = $proxyServer }
-                        Write-CommandOutput @(& $stableController @stableArguments 2>&1)
-                        break
-                    } catch {
-                        if ($stableAttempt -ge 2) { throw }
-                        Write-StartupLog "$(Get-Date -Format o) [$computerName] stable bridge not ready on attempt $stableAttempt; retrying once"
-                        Start-Sleep -Seconds 2
                     }
+                } else {
+                    Write-StartupLog "$(Get-Date -Format o) [$computerName] audited debug session already running; preserving it"
                 }
                 $deadline = (Get-Date).AddSeconds($MobileReadyTimeoutSeconds)
                 $attempt = 0

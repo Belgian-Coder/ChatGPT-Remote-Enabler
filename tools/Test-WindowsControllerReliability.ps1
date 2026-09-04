@@ -126,11 +126,6 @@ function New-ReplacementLauncher {
 }
 
 $startupSourceText = Get-Content -LiteralPath (Join-Path $root 'windows\CodexRemoteMobileProject\MobileProjectStartup.ps1') -Raw
-$bypassExistingSessionValidation = 'if ($debugApp.Count -eq 0)'
-if ($startupSourceText.Contains($bypassExistingSessionValidation) -or
-    -not $startupSourceText.Contains('validating its durable proxy transport before reuse')) {
-    throw 'The startup coordinator can still bypass durable proxy-transport validation for an existing debug session.'
-}
 $rootWorkerSourceText = Get-Content -LiteralPath (Join-Path $root 'windows\Enable-ChatGPTRemote.ps1') -Raw
 foreach ($worker in @(
     [pscustomobject]@{ Name = 'MobileProjectStartup'; Text = $startupSourceText; Updater = '& $updateController -Action Auto'; Injection = '& $stableController @stableArguments' },

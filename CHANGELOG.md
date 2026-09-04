@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.5.28
+
+- Route native-key Windows Remote-control API and WebSocket traffic through a
+  per-launch localhost bridge when `-UseProxy` is enabled. This fixes repeated
+  `Opening handshake has timed out` errors on networks where direct TLS is
+  blocked but the configured corporate HTTP(S) proxy is available.
+- Scope `CODEX_API_BASE_URL` to the custom ChatGPT child, preserve authorization
+  headers and TLS verification, bind the bridge to loopback behind a random
+  per-launch path, and stop it with ChatGPT. User- and Machine-scope proxy
+  environment variables remain unchanged.
+- Add launcher regression coverage for the scoped API base and loopback access
+  boundary. Direct launch, ordinary fallback, renderer v62, and macOS behavior
+  are unchanged.
+
 ## v1.5.27
 
 - Allow the Windows package-context proxy launcher to finish dispatching before

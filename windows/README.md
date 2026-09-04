@@ -47,9 +47,10 @@ Newer Windows builds include native remote-control device keys and disable
 Electron main-process inspection. The launcher detects that capability and
 uses only the loopback renderer bridge, avoiding a debugger-target timeout.
 Older audited builds retain the legacy main-process shim. On a native-key
-build, `-UseProxy` starts ChatGPT inside its package context with Node's
-environment-proxy support enabled for that ChatGPT process and an explicit
-loopback bypass. Direct networking remains fully supported.
+build, `-UseProxy` starts ChatGPT inside its package context and points its
+Remote-control API base at a temporary localhost bridge. The bridge forwards
+HTTPS and WebSocket traffic through the configured corporate proxy and keeps
+an explicit loopback bypass. Direct networking remains fully supported.
 
 The launcher checks for an update on every start by default. It first hands
 launch ownership to a mutex-protected PowerShell worker and exits, allowing the
@@ -93,11 +94,12 @@ The import copies the proxy into protected storage; it never removes or changes
 User- or Machine-scope environment variables needed by other software. Older
 audited ChatGPT builds clear only the launcher's process-local inherited proxy
 variables and use an HTTP CONNECT tunnel only for the Remote-control WebSocket.
-Native-key builds instead enable Node's environment proxy only in the custom
-ChatGPT child process because their Remote-control WebSocket uses Node
-networking. Localhost remains direct, and other applications retain their
-normal proxy environment. TLS verification stays
-enabled and includes certificates trusted by Windows. Proxy URLs containing
+Native-key builds instead use a random per-launch localhost API/WebSocket
+bridge because ChatGPT's bundled Node WebSocket client does not honor HTTP
+proxy environment variables. Only the custom child receives the corresponding
+`CODEX_API_BASE_URL`; the bridge exits with ChatGPT. Localhost remains direct,
+and other applications retain their normal proxy environment. TLS verification
+stays enabled and includes certificates trusted by Windows. Proxy URLs containing
 credentials are rejected, and probe output never exposes the proxy host. An
 environment-variable fallback remains for older installations. Without `-UseProxy`, the shortcut uses direct
 networking. If injection fails, the launcher restores ordinary ChatGPT startup

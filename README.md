@@ -22,9 +22,10 @@ Copy an existing User-scope proxy into the launcher's protected storage with
 `ProxyConfiguration.ps1 -Action Install -ImportUserEnvironment`; the importer
 preserves all shared User- and Machine-scope environment variables. Proxy
 isolation applies only inside the custom launcher's child process. Native-key
-Windows builds enable Node's environment proxy in that process because their
-Remote-control WebSocket no longer uses Electron networking; loopback traffic
-remains direct.
+Windows builds route the Remote-control API and WebSocket through a temporary
+localhost bridge because the bundled WebSocket client does not honor HTTP proxy
+environment variables. The bridge uses the configured proxy, preserves TLS
+verification, and exits with ChatGPT; loopback traffic remains direct.
 
 **macOS Apple Silicon:**
 

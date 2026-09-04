@@ -9,6 +9,7 @@ $javascript = @(
     'windows\CodexRemoteMobileProject\inject.js',
     'windows\CodexRemoteSimple\runtime\renderer-payload.js',
     'windows\CodexRemoteSimple\runtime\orchestrator.js',
+    'windows\CodexRemoteSimple\runtime\api-proxy-bridge.js',
     'macos\renderer-mobile-project-view.js',
     'macos\inject.js'
     'windows\CodexRemoteMobileProject\maintenance.js'

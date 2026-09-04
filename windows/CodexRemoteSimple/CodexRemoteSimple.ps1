@@ -24,6 +24,7 @@ $script:LegacyStatePath = Join-Path $script:BundleRoot '.codexremote-simple-sess
 $script:PackageActivationLauncher = Join-Path $script:RuntimeRoot 'PackageActivationLauncher.exe'
 $script:PackageProcessLauncher = Join-Path $script:RuntimeRoot 'PackageProcessLauncher.exe'
 $script:PackageProcessWorker = Join-Path $script:RuntimeRoot 'PackageProcessLauncher.ps1'
+$script:ApiProxyBridge = Join-Path $script:RuntimeRoot 'api-proxy-bridge.js'
 $script:LaunchLogPath = Join-Path $env:LOCALAPPDATA 'CodexRemoteFeatures\launch.log'
 
 function Resolve-CrsProxyServer {
@@ -319,6 +320,7 @@ function Start-CrsPackagedCodex {
         $Package,
         [string[]]$ArgumentList = @(),
         [string]$EnvironmentProxyServer,
+        [string]$NodePath,
         [int]$ExpectedPort = 0,
         [ValidateRange(1000, 30000)]
         [int]$PortTimeoutMilliseconds = 8000
@@ -341,12 +343,21 @@ function Start-CrsPackagedCodex {
             if (-not (Test-Path -LiteralPath $script:PackageProcessWorker -PathType Leaf)) {
                 throw "The package-context process worker is missing: $script:PackageProcessWorker"
             }
+            if ([string]::IsNullOrWhiteSpace($NodePath) -or -not (Test-Path -LiteralPath $NodePath -PathType Leaf)) {
+                throw 'The Node.js runtime for the API proxy bridge is missing.'
+            }
+            if (-not (Test-Path -LiteralPath $script:ApiProxyBridge -PathType Leaf)) {
+                throw "The API proxy bridge is missing: $script:ApiProxyBridge"
+            }
             $payload = [ordered]@{
                 packageFamilyName = [string]$Package.FamilyName
                 applicationId = [string]$Package.ApplicationId
                 helperPath = $script:PackageProcessLauncher
                 executablePath = [string]$Package.ExecutablePath
                 proxyServer = $EnvironmentProxyServer
+                nodePath = [IO.Path]::GetFullPath($NodePath)
+                bridgePath = $script:ApiProxyBridge
+                targetBaseUrl = 'https://chatgpt.com'
                 arguments = @($ArgumentList)
             }
             $payloadBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($payload | ConvertTo-Json -Compress)))
@@ -678,7 +689,7 @@ switch ($Action) {
             if ($UseProxy) {
                 $resolvedProxyServer = Resolve-CrsProxyServer -RequestedProxy $ProxyServer
                 if ($bridgeMode -ceq 'native-renderer') {
-                    Write-Host 'Experimental proxy mode is enabled for Node networking in this ChatGPT process.' -ForegroundColor Yellow
+                    Write-Host 'Experimental proxy mode is enabled through a scoped localhost API/WebSocket bridge.' -ForegroundColor Yellow
                 } else {
                     Write-Host 'Experimental proxy mode is enabled only for the Remote-control WebSocket.' -ForegroundColor Yellow
                 }
@@ -695,6 +706,7 @@ switch ($Action) {
             }
             if ($UseProxy -and $bridgeMode -ceq 'native-renderer') {
                 $launchArguments.EnvironmentProxyServer = $resolvedProxyServer
+                $launchArguments.NodePath = $node.Path
             }
             $launch = Start-CrsPackagedCodex @launchArguments
             $bridge = Invoke-CrsBridge -Node $node -RendererPort $rendererPort -MainPort $mainPort -ProxyServer $(if ($UseProxy) { $resolvedProxyServer } else { $null }) -BridgeMode $bridgeMode

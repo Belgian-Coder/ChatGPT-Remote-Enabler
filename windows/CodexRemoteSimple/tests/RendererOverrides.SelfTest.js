@@ -103,7 +103,52 @@ async function testOrchestratorProbeValidation() {
   );
 }
 
-testOrchestratorProbeValidation()
+async function testRendererInstallRetriesTransientReload() {
+  const { runRendererBridge } = require("../runtime/orchestrator.js");
+  let connections = 0;
+  let closes = 0;
+  const target = {
+    type: "page",
+    url: "app://-/index.html",
+    webSocketDebuggerUrl: "ws://127.0.0.1/fake",
+  };
+  const result = await runRendererBridge(
+    { rendererPort: 41001, timeoutMs: 3000 },
+    {
+      readPayload: () => "synthetic renderer payload",
+      waitForTarget: async () => target,
+      connectTarget: async () => {
+        connections += 1;
+        if (connections === 1) {
+          return {
+            call: async () => {
+              const error = new Error("renderer reloaded");
+              error.code = "WEBSOCKET_CLOSED";
+              throw error;
+            },
+            close: () => { closes += 1; },
+          };
+        }
+        return {
+          call: async (method) => method === "Page.addScriptToEvaluateOnNewDocument"
+            ? { identifier: "persistent-script" }
+            : {},
+          close: () => { closes += 1; },
+        };
+      },
+      evaluate: async (_client, expression) => expression.includes("__CODEX_STATSIG_GATE_BRIDGE__")
+        ? report
+        : { targetGate: "782640499", remoteConnectionsGate: "4114442250" },
+    },
+  );
+  assert.equal(connections, 2);
+  assert.equal(closes, 2);
+  assert.equal(result.renderer.currentDocument.installed, true);
+  assert.equal(result.renderer.newDocumentScriptInstalled, true);
+  assert.equal(result.renderer.probe.proof, true);
+}
+
+Promise.all([testOrchestratorProbeValidation(), testRendererInstallRetriesTransientReload()])
   .then(() => process.stdout.write(`${JSON.stringify({ ok: true, report })}\n`))
   .catch((error) => {
     console.error(error);

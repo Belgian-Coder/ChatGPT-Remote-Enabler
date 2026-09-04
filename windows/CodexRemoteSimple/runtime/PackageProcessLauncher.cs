@@ -154,18 +154,11 @@ internal static class PackageProcessLauncher
         }
     }
 
-    private static string EnsureLoopbackBypass(string upper, string lower)
-    {
-        const string loopback = "localhost,127.0.0.1,::1";
-        string current = string.IsNullOrWhiteSpace(lower) ? upper : lower;
-        return string.IsNullOrWhiteSpace(current) ? loopback : current + "," + loopback;
-    }
-
     public static int Main(string[] args)
     {
-        if (args.Length < 5)
+        if (args.Length < 6)
         {
-            Console.Error.WriteLine("Usage: PackageProcessLauncher.exe <executable> <proxy-url> <node> <bridge-script> <target-url> [arguments ...]");
+            Console.Error.WriteLine("Usage: PackageProcessLauncher.exe <executable> <proxy-url> <node> <bridge-script> <target-url> <codex-cli> [arguments ...]");
             return 2;
         }
 
@@ -179,8 +172,9 @@ internal static class PackageProcessLauncher
             string bridgePath = RequireFile(args[3], "The API proxy bridge");
             Uri target = ValidateTarget(args[4]);
             string targetUrl = target.GetLeftPart(UriPartial.Authority);
-            var launchArguments = new string[Math.Max(0, args.Length - 5)];
-            if (launchArguments.Length > 0) Array.Copy(args, 5, launchArguments, 0, launchArguments.Length);
+            string codexCliPath = RequireFile(args[5], "The original Codex CLI runtime");
+            var launchArguments = new string[Math.Max(0, args.Length - 6)];
+            if (launchArguments.Length > 0) Array.Copy(args, 6, launchArguments, 0, launchArguments.Length);
             string token = Guid.NewGuid().ToString("N");
 
             using (BridgeSession bridge = StartBridge(nodePath, bridgePath, proxyUrl, targetUrl, token))
@@ -192,23 +186,18 @@ internal static class PackageProcessLauncher
                     WorkingDirectory = Path.GetDirectoryName(executable),
                     UseShellExecute = false
                 };
-                start.EnvironmentVariables["HTTP_PROXY"] = proxyUrl;
-                start.EnvironmentVariables["HTTPS_PROXY"] = proxyUrl;
-                start.EnvironmentVariables["http_proxy"] = proxyUrl;
-                start.EnvironmentVariables["https_proxy"] = proxyUrl;
-                start.EnvironmentVariables["NODE_USE_ENV_PROXY"] = "1";
-                start.EnvironmentVariables["CODEX_API_BASE_URL"] = string.Format(
-                    "http://127.0.0.1:{0}/{1}/backend-api", bridge.Port, token);
-                string noProxy = EnsureLoopbackBypass(
-                    start.EnvironmentVariables["NO_PROXY"],
-                    start.EnvironmentVariables["no_proxy"]);
-                start.EnvironmentVariables["NO_PROXY"] = noProxy;
-                start.EnvironmentVariables["no_proxy"] = noProxy;
+                foreach (string inheritedProxyVariable in new [] {
+                    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+                    "http_proxy", "https_proxy", "all_proxy",
+                    "NODE_USE_ENV_PROXY", "CODEX_API_BASE_URL"
+                }) start.EnvironmentVariables.Remove(inheritedProxyVariable);
+                start.EnvironmentVariables["CHATGPT_REMOTE_WS_URL"] = string.Format(
+                    "ws://127.0.0.1:{0}/{1}/backend-api/codex/remote/control/client", bridge.Port, token);
+                start.EnvironmentVariables["CODEX_CLI_PATH"] = codexCliPath;
 
                 using (Process child = Process.Start(start))
                 {
                     if (child == null) throw new InvalidOperationException("The packaged process did not start.");
-                    Console.WriteLine(child.Id);
                     child.WaitForExit();
                     return child.ExitCode;
                 }

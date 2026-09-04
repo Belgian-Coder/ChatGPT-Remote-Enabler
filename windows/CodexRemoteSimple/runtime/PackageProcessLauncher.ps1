@@ -9,7 +9,7 @@ $ErrorActionPreference = 'Stop'
 
 $json = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($PayloadBase64))
 $payload = $json | ConvertFrom-Json -ErrorAction Stop
-foreach ($name in @('packageFamilyName', 'applicationId', 'helperPath', 'executablePath', 'proxyServer', 'nodePath', 'bridgePath', 'targetBaseUrl')) {
+foreach ($name in @('packageFamilyName', 'applicationId', 'helperPath', 'executablePath', 'proxyServer', 'nodePath', 'bridgePath', 'targetBaseUrl', 'originalCliPath')) {
     if ($payload.$name -isnot [string] -or [string]::IsNullOrWhiteSpace([string]$payload.$name)) {
         throw "The package-context launch payload is missing $name."
     }
@@ -20,7 +20,8 @@ $values = @(
     [string]$payload.proxyServer,
     [string]$payload.nodePath,
     [string]$payload.bridgePath,
-    [string]$payload.targetBaseUrl
+    [string]$payload.targetBaseUrl,
+    [string]$payload.originalCliPath
 ) + @($arguments | ForEach-Object { [string]$_ })
 foreach ($value in $values) {
     if ($null -eq $value -or $value -match '[\x00\r\n"]') {

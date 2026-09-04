@@ -10,6 +10,18 @@ const path = require("node:path");
 const { connectTarget, discoverTargets, evaluate } = require("./lib/cdp.js");
 
 const MAIN_OPTIONS_SLOT = "__CODEX_CLEANROOM_MAIN_OPTIONS__";
+const TRANSIENT_RENDERER_CODES = new Set([
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EPIPE",
+  "TARGET_NOT_FOUND",
+  "TARGET_NOT_READY",
+  "WEBSOCKET_CLOSED",
+  "WEBSOCKET_CONNECT_FAILED",
+  "WEBSOCKET_CONNECT_TIMEOUT",
+  "WEBSOCKET_NOT_OPEN",
+  "WEBSOCKET_SEND_FAILED",
+]);
 
 function cliError(code, message) {
   const error = new Error(message);
@@ -307,6 +319,22 @@ async function installRendererPayload(options, source, deadline, dependencies = 
   }
 }
 
+async function installRendererPayloadWithRetry(options, source, deadline, dependencies = {}) {
+  let lastTransientError = null;
+  while (Date.now() < deadline) {
+    try {
+      return await installRendererPayload(options, source, deadline, dependencies);
+    } catch (error) {
+      if (!TRANSIENT_RENDERER_CODES.has(error?.code)) throw error;
+      lastTransientError = error;
+      const waitMs = Math.min(100, Math.max(0, deadline - Date.now()));
+      if (waitMs === 0) break;
+      await delay(waitMs);
+    }
+  }
+  throw lastTransientError ?? cliError("RENDERER_PROBE_FAILED", "Renderer payload did not become stable before timeout");
+}
+
 async function runBridge(options) {
   const deadline = Date.now() + options.timeoutMs;
   const mainSource = readPayload(options.mainPayload);
@@ -337,7 +365,7 @@ async function runRendererBridge(options, dependencies = {}) {
   const rendererSource = loadPayload(path.join(__dirname, "renderer-payload.js"));
   let stage = "renderer-install";
   try {
-    const renderer = await installRendererPayload(options, rendererSource, deadline, dependencies);
+    const renderer = await installRendererPayloadWithRetry(options, rendererSource, deadline, dependencies);
     return { ok: true, protocolVersion: 1, renderer };
   } catch (error) {
     error.stage = error.stage ?? stage;
@@ -519,6 +547,7 @@ module.exports = {
   runProbeBridge,
   runBridge,
   runRendererBridge,
+  installRendererPayloadWithRetry,
   waitForTarget,
   waitForExplicitRefusal,
 };

@@ -19,6 +19,14 @@
 - Retry renderer installation when Electron replaces its initial page and
   closes the first DevTools WebSocket. This prevents a slow first launch of the
   private runtime from being mistaken for an application crash.
+- Restore complete project publication on current ChatGPT builds that expose
+  the local app-server request client without the former project-state bridge.
+  A fresh native sidebar catalogue is merged with saved project state, so empty
+  projects are included without falling back to stale or archived inventories.
+- Align Mobile Projects folder icons and row spacing with the native sidebar,
+  and mark inventory-only remote folders consistently. Renderer v63 keeps the
+  existing v53 publisher contract for safe staggered upgrades on Windows and
+  macOS.
 
 ## v1.5.28
 

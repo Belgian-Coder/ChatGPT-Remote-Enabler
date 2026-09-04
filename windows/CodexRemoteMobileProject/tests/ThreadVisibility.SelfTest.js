@@ -13,7 +13,7 @@ const testSource = originalSource
   .replace("    const report = probe();", "    const report = {};")
   .replace(
     "  return install();\n})();",
-    "  return { assignLocalRuntime, collectAuthoritativeThreadIds, directInventoryHasPriority, eligibleAutoArchiveThreads, eligibleAutoDeleteThreads, lexicalAbsolutePath, listAllLocalThreads, listAllRuntimeThreads, maintenanceThreadPathManaged, parseInventoryPayload, preferredThreadInventory, pruneVerifiedThreadIds, purgeLocalRuntimeAliases, rememberVerifiedThreadIds, removeGossipedLocalInventoryDuplicates, runAutoArchiveNow, runtimeThreadInventoryDue, sanitizedMaintenanceFailure, scopedThreadsAreFresh, serializePeerInventory, sharedThreadListRegistry, state, taskIsAuthoritative, unmanagedMaintenanceThreadCount, uninstall };\n})();",
+    "  return { assignLocalRuntime, collectAuthoritativeThreadIds, directInventoryHasPriority, eligibleAutoArchiveThreads, eligibleAutoDeleteThreads, lexicalAbsolutePath, listAllLocalThreads, listAllRuntimeThreads, maintenanceThreadPathManaged, parseInventoryPayload, preferredThreadInventory, pruneVerifiedThreadIds, publishedLocalProjectSnapshot, purgeLocalRuntimeAliases, rememberVerifiedThreadIds, removeGossipedLocalInventoryDuplicates, runAutoArchiveNow, runtimeThreadInventoryDue, sanitizedMaintenanceFailure, scopedThreadsAreFresh, serializePeerInventory, sharedThreadListRegistry, state, taskIsAuthoritative, unmanagedMaintenanceThreadCount, uninstall };\n})();",
   );
 
 const now = Date.now();
@@ -51,6 +51,42 @@ const context = vm.createContext({
 context.globalThis = context;
 vm.runInContext(testSource, context, { filename: rendererPath });
 const visibility = context.__visibilityTest;
+
+const nativeProjectItem = {
+  __reactFiber$fixture: {
+    memoizedProps: {
+      group: {
+        cwd: "D:\\Projects\\EmptyProject",
+        label: "Empty Project",
+        projectId: "native-empty",
+        projectKind: "local",
+      },
+    },
+    return: null,
+  },
+  getAttribute: () => null,
+};
+context.document.querySelectorAll = (selector) => selector === '[data-sidebar-project-kind="local"][role="listitem"]'
+  ? [nativeProjectItem]
+  : [];
+let projectSnapshot = visibility.publishedLocalProjectSnapshot(null);
+assert.equal(projectSnapshot.available, true);
+assert.equal(projectSnapshot.projects.length, 1);
+assert.equal(projectSnapshot.projects[0].id, "native-empty");
+assert.equal(projectSnapshot.projects[0].name, "Empty Project");
+assert.deepEqual(Array.from(projectSnapshot.projects[0].rootPaths), ["D:\\Projects\\EmptyProject"]);
+
+projectSnapshot = visibility.publishedLocalProjectSnapshot({
+  value: {
+    existing: { id: "saved-existing", name: "Old label", rootPaths: ["D:\\Projects\\EmptyProject"] },
+    second: { id: "saved-second", name: "Second Empty", rootPaths: ["D:\\Projects\\SecondEmpty"] },
+  },
+});
+assert.equal(projectSnapshot.projects.length, 2, "native and saved project sources must merge by path");
+assert.equal(projectSnapshot.projects.find((project) => project.id === "saved-existing").name, "Empty Project", "the visible native label must win");
+context.document.querySelectorAll = () => [];
+assert.equal(visibility.publishedLocalProjectSnapshot(null).available, false, "an absent bridge and absent native catalogue must not publish a false empty inventory");
+assert.equal(visibility.publishedLocalProjectSnapshot({ value: {} }).available, true, "an authoritative empty state map must remain publishable");
 
 assert.equal(visibility.state.verifiedThreadIds.has("expired"), false);
 assert.equal(visibility.state.verifiedThreadIds.has("future"), false);

@@ -54,7 +54,7 @@
     "unknown",
   ]);
   const PUBLISHER_VERSION = 53;
-  const VERSION = 62;
+  const VERSION = 63;
   const TRUSTED_TITLE_SOURCES = new Set([
     "app-server-displayName",
     "app-server-entry-title",
@@ -636,11 +636,14 @@
           });
         }
       }
-      if (hostId === "local" && typeof value.fetchFromHost === "function") {
+      if (hostId === "local") {
         const localRequestClient = typeof value.sendRequest === "function" ? value : value.requestClient;
-        state.localFetchFromHost = value.fetchFromHost.bind(value);
+        const localFetchFromHost = typeof value.fetchFromHost === "function"
+          ? value.fetchFromHost.bind(value)
+          : state.localFetchFromHost;
+        if (typeof localFetchFromHost === "function") state.localFetchFromHost = localFetchFromHost;
         if (typeof localRequestClient?.sendRequest === "function") {
-          assignLocalRuntime(state.localFetchFromHost, localRequestClient);
+          assignLocalRuntime(localFetchFromHost, localRequestClient);
         }
       }
       if (Array.isArray(value.remoteProjects)) {
@@ -759,10 +762,11 @@
             requestClient,
           });
         }
-        if (hostId === "local" && fetchFromHost) {
-          const localRequestClient = typeof value.sendRequest === "function" ? value : value.requestClient;
-          state.localFetchFromHost = fetchFromHost;
-          assignLocalRuntime(fetchFromHost, localRequestClient);
+        if (hostId === "local") {
+          if (fetchFromHost) state.localFetchFromHost = fetchFromHost;
+          if (typeof requestClient?.sendRequest === "function") {
+            assignLocalRuntime(fetchFromHost ?? state.localFetchFromHost, requestClient);
+          }
         }
       } catch {}
       if (Array.isArray(value)) {
@@ -1367,6 +1371,55 @@
     }
   }
 
+  function publishedLocalProjectSnapshot(projectsResult) {
+    const stateProjectsAvailable = Boolean(projectsResult?.value
+      && typeof projectsResult.value === "object"
+      && !Array.isArray(projectsResult.value));
+    const nativeItems = [...document.querySelectorAll('[data-sidebar-project-kind="local"][role="listitem"]')];
+    const projects = new Map();
+    const pathOwners = new Map();
+    const addProject = (project, preferMetadata = false) => {
+      if (!project || typeof project !== "object") return;
+      const rawPaths = Array.isArray(project.rootPaths) ? project.rootPaths : [project.cwd];
+      const rootPaths = [...new Set(rawPaths.map(canonicalRemotePath).filter(Boolean))];
+      if (!rootPaths.length) return;
+      const requestedId = typeof project.id === "string" && project.id
+        ? project.id
+        : typeof project.projectId === "string" && project.projectId
+          ? project.projectId
+          : `local-path:${normalizePath(rootPaths[0])}`;
+      const existingId = projects.has(requestedId)
+        ? requestedId
+        : rootPaths.map((cwd) => pathOwners.get(normalizePath(cwd))).find(Boolean);
+      const id = existingId ?? requestedId;
+      const existing = projects.get(id);
+      const name = typeof project.name === "string" && project.name.trim()
+        ? project.name.trim()
+        : typeof project.label === "string" && project.label.trim()
+          ? project.label.trim()
+          : projectName(rootPaths[0]);
+      const mergedPaths = [...new Set([...(existing?.rootPaths ?? []), ...rootPaths])];
+      projects.set(id, {
+        id,
+        name: preferMetadata || !existing?.name ? name : existing.name,
+        rootPaths: mergedPaths,
+      });
+      for (const cwd of mergedPaths) pathOwners.set(normalizePath(cwd), id);
+    };
+    if (stateProjectsAvailable) {
+      for (const project of Object.values(projectsResult.value)) addProject(project);
+    }
+    for (const item of nativeItems) {
+      const project = metadataFromNativeProject(item);
+      if (!project || project.hostId !== "local") continue;
+      addProject({ cwd: project.cwd, id: project.projectId, name: project.label }, true);
+    }
+    return {
+      available: stateProjectsAvailable || nativeItems.length > 0,
+      projects: [...projects.values()],
+    };
+  }
+
   function scheduleLocalProjectInventoryPublication() {
     const runtime = state.localRuntime;
     const now = Date.now();
@@ -1404,12 +1457,14 @@
       return [[hostId, serializePeerInventory(inventory)]];
     }));
     const localThreadInventory = state.threadInventories.get("local");
+    const nativeProjectSnapshot = publishedLocalProjectSnapshot(null);
     const statusSignature = JSON.stringify({
       peers: Object.fromEntries(Object.entries(peers).map(([hostId, peer]) => [hostId, {
         generatedAt: peer.generatedAt,
         publisherVersion: peer.publisherVersion,
         threads: peer.threads.map((thread) => ({ id: thread.id, title: thread.title ?? null, titleSource: thread.titleSource })),
       }])),
+      projects: nativeProjectSnapshot.projects,
       tasks,
       threads: threads.map((thread) => ({ id: thread.id, title: thread.title ?? null, titleSource: thread.titleSource })),
       threadFetchedAt: localThreadInventory?.fetchedAt ?? 0,
@@ -1419,26 +1474,17 @@
     if (!statusChanged && now - state.localInventoryPublishedAt < publishInterval) return;
     state.localInventoryPublisherPending = true;
     Promise.all([
-      fetchFromHostWithTimeout(runtime.fetchFromHost, "get-global-state", { params: { key: "local-projects" } }),
+      typeof runtime.fetchFromHost === "function"
+        ? fetchFromHostWithTimeout(runtime.fetchFromHost, "get-global-state", { params: { key: "local-projects" } })
+        : Promise.resolve(null),
       sendRequestWithTimeout(runtime.requestClient, "config/read", { cwd: null, includeLayers: true }),
     ]).then(([projectsResult, configResult]) => {
       const codexHome = findCodexHome(configResult);
       if (!codexHome) throw new Error("Local Codex home was not reported");
       state.localCodexHome = codexHome;
-      if (!projectsResult?.value || typeof projectsResult.value !== "object" || Array.isArray(projectsResult.value)) {
-        throw new Error("Local project state did not contain a valid project map");
-      }
-      const values = Object.values(projectsResult.value);
-      const projects = values.flatMap((project) => {
-        if (!project || typeof project !== "object" || !Array.isArray(project.rootPaths) || !project.rootPaths.length) return [];
-        const rootPaths = project.rootPaths.map(canonicalRemotePath).filter(Boolean);
-        if (!rootPaths.length) return [];
-        return [{
-          id: typeof project.id === "string" && project.id ? project.id : `local-path:${normalizePath(rootPaths[0])}`,
-          name: typeof project.name === "string" && project.name.trim() ? project.name.trim() : projectName(rootPaths[0]),
-          rootPaths,
-        }];
-      });
+      const projectSnapshot = publishedLocalProjectSnapshot(projectsResult);
+      if (!projectSnapshot.available) throw new Error("Local project catalogue is not available yet");
+      const projects = projectSnapshot.projects;
       state.localInventoryProjects = projects.flatMap((project) => project.rootPaths.map((cwd) => ({
         cwd,
         hostDisplayName: null,
@@ -1859,7 +1905,7 @@
       #${PANEL_ID} .crmp-dot-unavailable { background:#d95757; }
       #${PANEL_ID} .crmp-project { display:flex; flex-direction:column; gap:1px; }
       #${PANEL_ID} .crmp-project-head { position:relative!important; display:flex!important; align-items:center; width:100%; min-height:var(--height-token-row,30px); }
-      #${PANEL_ID} .crmp-project-toggle { display:grid; flex:1 1 auto; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:6px; min-width:0; height:100%; border:0; padding:5px 8px; color:inherit; background:transparent; text-align:left; cursor:pointer; }
+      #${PANEL_ID} .crmp-project-toggle { display:grid; flex:1 1 auto; grid-template-columns:16px minmax(0,1fr) auto; align-items:center; column-gap:7px; min-width:0; min-height:var(--height-token-row,30px); border:0; padding:5px 8px; color:inherit; background:transparent; line-height:20px; text-align:left; cursor:pointer; }
       #${PANEL_ID} [draggable="true"] { cursor:grab; }
       #${PANEL_ID} [draggable="true"]:active { cursor:grabbing; }
       #${PANEL_ID} .crmp-dragging { opacity:.45; }
@@ -1887,8 +1933,9 @@
       #${CONTEXT_ID} .crmp-context-item:disabled { color:var(--color-text-tertiary,#777); cursor:not-allowed; opacity:.45; }
       #${CONTEXT_ID} .crmp-context-note { padding:6px 8px 8px; color:var(--color-text-tertiary,#888); font-size:10px; line-height:14px; }
       #${CONTEXT_ID} .crmp-context-separator { height:1px; margin:4px 0; background:var(--color-border-default,rgba(127,127,127,.2)); }
-      #${PANEL_ID} .crmp-folder { display:flex; width:16px; height:16px; align-items:center; justify-content:center; font-size:15px; }
-      #${PANEL_ID} .crmp-folder svg { width:16px; height:16px; }
+      #${PANEL_ID} .crmp-folder { position:relative; display:flex; width:16px; height:16px; align-items:center; justify-content:center; align-self:center; font-size:15px; line-height:0; }
+      #${PANEL_ID} .crmp-folder svg { display:block; width:16px; height:16px; flex:none; }
+      #${PANEL_ID} .crmp-folder[data-remote-inventory="true"]::after { position:absolute; right:-2px; bottom:-2px; width:6px; height:6px; border:1px solid var(--color-background-primary,#202020); border-radius:50%; background:#28b8ce; box-sizing:border-box; content:""; }
       #${PANEL_ID} .crmp-project-name { overflow:hidden; font-size:13px; font-weight:600; text-overflow:ellipsis; white-space:nowrap; }
       #${PANEL_ID} .crmp-project-host { max-width:82px; overflow:hidden; color:var(--color-text-tertiary,#888); font-size:9px; text-align:right; text-overflow:ellipsis; white-space:nowrap; transition:opacity 100ms ease; }
       #${PANEL_ID} .crmp-project-head:hover .crmp-project-host, #${PANEL_ID} .crmp-project-head:focus-within .crmp-project-host, #${PANEL_ID} .crmp-project-head[data-actions-open="true"] .crmp-project-host { opacity:0; }
@@ -3489,6 +3536,7 @@
     toggle.setAttribute("aria-expanded", String(!state.collapsed.has(project.key)));
     const folder = document.createElement("span");
     folder.className = "crmp-folder";
+    folder.dataset.remoteInventory = String(project.hostId !== "local" && !nativeProjectItem(project));
     const expanded = !state.collapsed.has(project.key);
     const folderIcon = project.kind === "recent" ? null : nativeFolderIcon(project, expanded);
     if (folderIcon) folder.appendChild(folderIcon);

@@ -6,7 +6,7 @@ In Mobile Projects, **Auto-register: on/off** locally enables or pauses remote-p
 
 macOS already exposes native ChatGPT remote connections. This package adds the optional Mobile projects view.
 
-Renderer version 62 preserves the original folder states, native-backed drag
+Renderer version 63 preserves the original folder states, native-backed drag
 ordering, and the user's **By project**/**By connection** preference. It
 automatically paginates the authoritative active task list for the app-server's
 interactive CLI/VS Code sources used by the desktop UI. Internal exec and subagent runs remain available to
@@ -16,7 +16,11 @@ publishes this Mac's complete active projects, tasks, and working/unread state i
 home. Other devices use direct peer reads plus local per-device cache files if
 a request stalls. No folder opening, **Show more** click, shared catalogue, or
 central storage is required. Empty active projects appear while archived or
-removed projects and stale native rows do not.
+removed projects and stale native rows do not. On app builds that no longer
+expose the project-state bridge, the publisher uses the current native local
+project catalogue and refuses a false empty inventory while that catalogue is
+unavailable. Inventory-only remote folders use the same aligned folder geometry
+and a small remote marker.
 When a connected device is still running an older publisher, its direct
 user-facing task list takes precedence over that cached inventory so internal
 child runs stay hidden during a staggered upgrade.

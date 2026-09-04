@@ -68,7 +68,7 @@ if ((Get-FileHash -LiteralPath $windowsMaintenance -Algorithm SHA256).Hash -ne (
 }
 $renderer = Get-Content -LiteralPath $windowsRenderer -Raw
 $requiredContracts = @(
-    'const VERSION = 62;',
+    'const VERSION = 63;',
     'hostDisplayName: config.localDisplayName || null',
     'codex-remote-mobile-verified-thread-ids-v2',
     'THREAD_VISIBILITY_CONTRACT_VERSION',
@@ -112,6 +112,9 @@ $requiredContracts = @(
     'function nativeProjectNewAction',
     'function nativeGlobalNewChatAction',
     'mode: "native-project-button"'
+    'publishedLocalProjectSnapshot'
+    'Local project catalogue is not available yet'
+    'data-remote-inventory="true"'
 )
 foreach ($contract in $requiredContracts) {
     if (-not $renderer.Contains($contract)) { throw "Renderer contract is missing: $contract" }
@@ -194,7 +197,7 @@ if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
 [pscustomobject]@{
     JavaScriptFiles = $javascript.Count
     PowerShellFiles = $powershell.Count
-    RendererVersion = 62
+    RendererVersion = 63
     RendererParity = $true
     MaintenanceParity = $true
     InjectorVersionProof = $true

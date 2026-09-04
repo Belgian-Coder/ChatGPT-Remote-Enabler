@@ -4,6 +4,11 @@ param()
 $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $preparer = Join-Path $root 'windows\CodexRemoteSimple\runtime\prepare-proxy-runtime.js'
+$preparerSource = Get-Content -LiteralPath $preparer -Raw
+if (-not $preparerSource.Contains('function renameWithRetry(source, destination)') -or
+    -not $preparerSource.Contains('new Set(["EACCES", "EBUSY", "EPERM"])')) {
+    throw 'The proxy runtime preparer does not retry transient antivirus rename locks.'
+}
 $node = (Get-Command node.exe -ErrorAction Stop).Source
 $temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) ('chatgpt-proxy-runtime-test-' + [guid]::NewGuid().ToString('N'))
 $previousLocalAppData = $env:LOCALAPPDATA
@@ -28,7 +33,8 @@ try {
     [IO.File]::WriteAllBytes((Join-Path $source 'chrome.dll'), $chrome.ToArray())
 
     $originalController = 'Tle=class extends n.$t{constructor(e){let t=wC(e.desktopApiOptions),i=e.globalState,a=e.deviceKeyClient;super({envId:e.hostConfig.env_id,connectionGroup:e.appServerClient,connectionKey:t,websocketUrl:n.en(r.H(e.desktopApiOptions,`/codex/remote/control/client`)),getAuthHeaders:({headers:t}={})=>EC({appServerClient:e.appServerClient,desktopApiOptions:e.desktopApiOptions,headers:t}),enrollClient:({headers:n})=>DC({appServerClient:e.appServerClient,deviceKeyClient:a,desktopApiOptions:e.desktopApiOptions,enrollmentKey:t,globalState:i,headers:n,onEnrollmentAuthorizationRequired:e.onEnrollmentAuthorizationRequired,requestRemoteControlEnrollmentStepUpToken:e.requestRemoteControlEnrollmentStepUpToken}),authorizeDeviceKeyChallenge:e=>Yle({challenge:e,deviceKeyClient:a,enrollmentKey:t,globalState:i})})}}'
-    [IO.File]::WriteAllText((Join-Path $resources 'app.asar'), "header${originalController};async function Ele trailer", [Text.UTF8Encoding]::new($false))
+    $originalChallengeValidator = 'function vQ(e,t){let n=new URL(t),r=n.protocol===`wss:`?`https:`:n.protocol===`ws:`?`http:`:null;return r!=null&&e.targetOrigin===`${r}//${n.host}`&&e.targetPath===n.pathname}'
+    [IO.File]::WriteAllText((Join-Path $resources 'app.asar'), "header${originalController};async function Ele;${originalChallengeValidator};trailer", [Text.UTF8Encoding]::new($false))
     $sourceAsarHash = (Get-FileHash -LiteralPath (Join-Path $resources 'app.asar') -Algorithm SHA256).Hash
     $sourceChromeHash = (Get-FileHash -LiteralPath (Join-Path $source 'chrome.dll') -Algorithm SHA256).Hash
 
@@ -47,8 +53,10 @@ try {
         throw 'The proxy runtime preparer modified the installed source app.'
     }
     $patchedAsar = Get-Content -LiteralPath ([string]$result.appAsarPath) -Raw
-    if ($patchedAsar.Contains($originalController) -or -not $patchedAsar.Contains('process.env.CHATGPT_REMOTE_WS_URL??')) {
-        throw 'The private ASAR does not contain only the scoped Remote-control override.'
+    if ($patchedAsar.Contains($originalController) -or $patchedAsar.Contains($originalChallengeValidator) -or
+        -not $patchedAsar.Contains('process.env.CHATGPT_REMOTE_WS_URL??') -or
+        -not $patchedAsar.Contains('process.env.CRWU||t')) {
+        throw 'The private ASAR does not contain the scoped Remote-control URL and challenge-target overrides.'
     }
     if ((Get-Item -LiteralPath ([string]$result.appAsarPath)).Length -ne (Get-Item -LiteralPath (Join-Path $resources 'app.asar')).Length) {
         throw 'The in-place private ASAR patch changed the archive length.'
@@ -67,9 +75,11 @@ try {
     [pscustomobject]@{
         SourceAppPreserved = $true
         ScopedControllerPatched = $true
+        ScopedChallengeTargetPatched = $true
         AsarLengthPreserved = $true
         PrivateFusePatched = $true
         PrivateCliPreserved = $true
+        TransientRenameRetried = $true
         VerifiedRuntimeReused = $true
     } | ConvertTo-Json
 } finally {

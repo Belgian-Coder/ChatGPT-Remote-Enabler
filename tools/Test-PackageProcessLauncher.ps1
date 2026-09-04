@@ -51,7 +51,8 @@ internal static class EnvironmentProbe
             Environment.GetEnvironmentVariable("CODEX_CLI_PATH") ?? "",
             bridgeBoundary,
             Environment.GetEnvironmentVariable("NO_PROXY") ?? "",
-            Environment.GetEnvironmentVariable("no_proxy") ?? ""
+            Environment.GetEnvironmentVariable("no_proxy") ?? "",
+            Environment.GetEnvironmentVariable("CRWU") ?? ""
         });
         return 0;
     }
@@ -78,12 +79,13 @@ internal static class EnvironmentProbe
         throw 'The scoped child process did not produce its environment report.'
     }
     $values = @([IO.File]::ReadAllLines($output))
-    if ($values.Count -ne 11 -or ($values[0..3] | Where-Object { $_ -cne $proxy }).Count -ne 0 -or
+    if ($values.Count -ne 12 -or ($values[0..3] | Where-Object { $_ -cne $proxy }).Count -ne 0 -or
         ($values[4..5] | Where-Object { $_ -cne '' }).Count -ne 0 -or
         $values[6] -cnotmatch '^ws://127\.0\.0\.1:\d+/[a-f0-9]{32}/backend-api/codex/remote/control/client$' -or
         $values[7] -cne $node -or
         $values[8] -cne 'LOCAL_BRIDGE_404' -or
-        ($values[9..10] | Where-Object { $_ -notmatch '(?:^|,)localhost,127\.0\.0\.1,::1$' }).Count -ne 0) {
+        ($values[9..10] | Where-Object { $_ -notmatch '(?:^|,)localhost,127\.0\.0\.1,::1$' }).Count -ne 0 -or
+        $values[11] -cne 'wss://chatgpt.com/backend-api/codex/remote/control/client') {
         throw 'The child process did not receive the scoped proxy and WebSocket bridge environment.'
     }
 
@@ -97,6 +99,7 @@ internal static class EnvironmentProbe
         CanonicalApiBasePreserved = $true
         ElectronNodeProxyDisabled = $true
         LoopbackBypassPreserved = $true
+        PublicChallengeTargetPreserved = $true
         ApiBridgeBoundary = $true
         CredentialProxyRejected = $true
         BackgroundLauncher = $true

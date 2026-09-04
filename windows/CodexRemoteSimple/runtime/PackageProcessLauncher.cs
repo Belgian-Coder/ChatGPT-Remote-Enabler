@@ -212,6 +212,12 @@ internal static class PackageProcessLauncher
                     start.EnvironmentVariables["no_proxy"]);
                 start.EnvironmentVariables["NO_PROXY"] = noProxy;
                 start.EnvironmentVariables["no_proxy"] = noProxy;
+                // CRWU is consumed only by the audited in-place validator patch.
+                // It keeps the signed public target while the socket itself uses
+                // the authenticated loopback bridge URL.
+                start.EnvironmentVariables.Remove("CRWU");
+                start.EnvironmentVariables["CRWU"] = targetUrl.Replace("https://", "wss://") +
+                    "/backend-api/codex/remote/control/client";
                 start.EnvironmentVariables["CHATGPT_REMOTE_WS_URL"] = string.Format(
                     "ws://127.0.0.1:{0}/{1}/backend-api/codex/remote/control/client", bridge.Port, token);
                 start.EnvironmentVariables["CODEX_CLI_PATH"] = codexCliPath;

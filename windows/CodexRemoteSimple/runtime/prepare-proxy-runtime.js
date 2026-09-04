@@ -5,7 +5,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const PATCH_SCHEMA = 1;
+const PATCH_SCHEMA = 2;
 const FUSE_SENTINEL = Buffer.from("dL7pKGdnNz796PbbjQWNKmHXBZaB9tsX", "ascii");
 const ENABLE_EMBEDDED_ASAR_INTEGRITY_VALIDATION = 4;
 const ORIGINAL_CONTROLLER = Buffer.from(
@@ -14,6 +14,14 @@ const ORIGINAL_CONTROLLER = Buffer.from(
 );
 const PATCHED_CONTROLLER = Buffer.from(
   "Tle=class extends n.$t{constructor(e){let t=e.desktopApiOptions,i=e.globalState,a=e.deviceKeyClient,o=e.appServerClient,s=wC(t);super({envId:e.hostConfig.env_id,connectionGroup:o,connectionKey:s,websocketUrl:process.env.CHATGPT_REMOTE_WS_URL??n.en(r.H(t,`/codex/remote/control/client`)),getAuthHeaders:({headers:e}={})=>EC({appServerClient:o,desktopApiOptions:t,headers:e}),enrollClient:({headers:n})=>DC({appServerClient:o,deviceKeyClient:a,desktopApiOptions:t,enrollmentKey:s,globalState:i,headers:n,onEnrollmentAuthorizationRequired:e.onEnrollmentAuthorizationRequired,requestRemoteControlEnrollmentStepUpToken:e.requestRemoteControlEnrollmentStepUpToken}),authorizeDeviceKeyChallenge:e=>Yle({challenge:e,deviceKeyClient:a,enrollmentKey:s,globalState:i})})}}",
+  "utf8",
+);
+const ORIGINAL_CHALLENGE_TARGET_VALIDATOR = Buffer.from(
+  "function vQ(e,t){let n=new URL(t),r=n.protocol===`wss:`?`https:`:n.protocol===`ws:`?`http:`:null;return r!=null&&e.targetOrigin===`${r}//${n.host}`&&e.targetPath===n.pathname}",
+  "utf8",
+);
+const PATCHED_CHALLENGE_TARGET_VALIDATOR = Buffer.from(
+  "function vQ(e,t){let n=new URL(process.env.CRWU||t),r=n.protocol===`wss:`?`https:`:`http:`;return e.targetOrigin===`${r}//${n.host}`&&e.targetPath===n.pathname}",
   "utf8",
 );
 
@@ -79,15 +87,25 @@ function patchFuse(file) {
   fs.writeFileSync(file, contents);
 }
 
+function patchInPlace(contents, original, replacement, label) {
+  if (replacement.length > original.length) fail(`The ${label} patch does not fit in place.`);
+  if (occurrenceCount(contents, original) !== 1 || occurrenceCount(contents, replacement) !== 0) {
+    fail(`This ChatGPT build does not contain the audited ${label} signature.`);
+  }
+  const offset = contents.indexOf(original);
+  replacement.copy(contents, offset);
+  contents.fill(0x20, offset + replacement.length, offset + original.length);
+}
+
 function patchAsar(file) {
   const contents = fs.readFileSync(file);
-  if (PATCHED_CONTROLLER.length > ORIGINAL_CONTROLLER.length) fail("The controller patch does not fit in place.");
-  if (occurrenceCount(contents, ORIGINAL_CONTROLLER) !== 1 || occurrenceCount(contents, PATCHED_CONTROLLER) !== 0) {
-    fail("This ChatGPT build does not contain the audited Remote-control controller signature.");
-  }
-  const offset = contents.indexOf(ORIGINAL_CONTROLLER);
-  PATCHED_CONTROLLER.copy(contents, offset);
-  contents.fill(0x20, offset + PATCHED_CONTROLLER.length, offset + ORIGINAL_CONTROLLER.length);
+  patchInPlace(contents, ORIGINAL_CONTROLLER, PATCHED_CONTROLLER, "Remote-control controller");
+  patchInPlace(
+    contents,
+    ORIGINAL_CHALLENGE_TARGET_VALIDATOR,
+    PATCHED_CHALLENGE_TARGET_VALIDATOR,
+    "Remote-control challenge target validator",
+  );
   fs.writeFileSync(file, contents);
 }
 
@@ -112,6 +130,20 @@ function assertSafeDestination(destination, safeRoot) {
   if (path.normalize(parent).toLowerCase() !== path.normalize(safeRoot).toLowerCase() ||
       !/^proxy-runtime-[a-z0-9._-]+$/iu.test(path.basename(destination))) {
     fail("The private runtime destination is outside its managed directory.");
+  }
+}
+
+function renameWithRetry(source, destination) {
+  const retryable = new Set(["EACCES", "EBUSY", "EPERM"]);
+  const deadline = Date.now() + 15_000;
+  for (;;) {
+    try {
+      fs.renameSync(source, destination);
+      return;
+    } catch (error) {
+      if (!retryable.has(error?.code) || Date.now() >= deadline) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
+    }
   }
 }
 
@@ -174,12 +206,12 @@ function main() {
       `${JSON.stringify(marker, null, 2)}${os.EOL}`,
       { encoding: "utf8", flag: "wx" },
     );
-    if (fs.existsSync(destination)) fs.renameSync(destination, retired);
-    fs.renameSync(staging, destination);
+    if (fs.existsSync(destination)) renameWithRetry(destination, retired);
+    renameWithRetry(staging, destination);
     if (fs.existsSync(retired)) fs.rmSync(retired, { recursive: true, force: true });
   } catch (error) {
     if (fs.existsSync(staging)) fs.rmSync(staging, { recursive: true, force: true });
-    if (!fs.existsSync(destination) && fs.existsSync(retired)) fs.renameSync(retired, destination);
+    if (!fs.existsSync(destination) && fs.existsSync(retired)) renameWithRetry(retired, destination);
     throw error;
   }
 

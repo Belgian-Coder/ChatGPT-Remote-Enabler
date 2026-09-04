@@ -49,7 +49,9 @@ internal static class EnvironmentProbe
             Environment.GetEnvironmentVariable("CODEX_API_BASE_URL") ?? "",
             remoteWebSocketUrl,
             Environment.GetEnvironmentVariable("CODEX_CLI_PATH") ?? "",
-            bridgeBoundary
+            bridgeBoundary,
+            Environment.GetEnvironmentVariable("NO_PROXY") ?? "",
+            Environment.GetEnvironmentVariable("no_proxy") ?? ""
         });
         return 0;
     }
@@ -76,11 +78,13 @@ internal static class EnvironmentProbe
         throw 'The scoped child process did not produce its environment report.'
     }
     $values = @([IO.File]::ReadAllLines($output))
-    if ($values.Count -ne 9 -or ($values[0..5] | Where-Object { $_ -cne '' }).Count -ne 0 -or
+    if ($values.Count -ne 11 -or ($values[0..3] | Where-Object { $_ -cne $proxy }).Count -ne 0 -or
+        ($values[4..5] | Where-Object { $_ -cne '' }).Count -ne 0 -or
         $values[6] -cnotmatch '^ws://127\.0\.0\.1:\d+/[a-f0-9]{32}/backend-api/codex/remote/control/client$' -or
         $values[7] -cne $node -or
-        $values[8] -cne 'LOCAL_BRIDGE_404') {
-        throw 'The child process did not receive the WebSocket-only bridge environment.'
+        $values[8] -cne 'LOCAL_BRIDGE_404' -or
+        ($values[9..10] | Where-Object { $_ -notmatch '(?:^|,)localhost,127\.0\.0\.1,::1$' }).Count -ne 0) {
+        throw 'The child process did not receive the scoped proxy and WebSocket bridge environment.'
     }
 
     & $launcher $probe 'http://user:password@proxy.example.invalid:8080' $node $bridge 'https://chatgpt.com' $node $output 2>$null | Out-Null
@@ -88,9 +92,11 @@ internal static class EnvironmentProbe
     $global:LASTEXITCODE = 0
 
     [pscustomobject]@{
-        ChildEnvironmentScoped = $true
+        ChildHttpProxyScoped = $true
         RemoteWebSocketBridgeScoped = $true
         CanonicalApiBasePreserved = $true
+        ElectronNodeProxyDisabled = $true
+        LoopbackBypassPreserved = $true
         ApiBridgeBoundary = $true
         CredentialProxyRejected = $true
         BackgroundLauncher = $true

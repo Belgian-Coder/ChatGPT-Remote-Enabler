@@ -104,6 +104,13 @@ internal static class PackageProcessLauncher
         return target;
     }
 
+    private static string EnsureLoopbackBypass(string upper, string lower)
+    {
+        const string loopback = "localhost,127.0.0.1,::1";
+        string current = string.IsNullOrWhiteSpace(lower) ? upper : lower;
+        return string.IsNullOrWhiteSpace(current) ? loopback : current + "," + loopback;
+    }
+
     private static string RequireFile(string value, string label)
     {
         string path = Path.GetFullPath(value);
@@ -191,6 +198,20 @@ internal static class PackageProcessLauncher
                     "http_proxy", "https_proxy", "all_proxy",
                     "NODE_USE_ENV_PROXY", "CODEX_API_BASE_URL"
                 }) start.EnvironmentVariables.Remove(inheritedProxyVariable);
+                // The renderer uses the path-scoped WebSocket bridge below.
+                // The Rust Codex app-server is a child of ChatGPT and separately
+                // needs HTTP(S)_PROXY for its server-token refresh and server
+                // WebSocket. Keep NODE_USE_ENV_PROXY absent so Electron/Node UI
+                // traffic is not globally redirected through the company proxy.
+                start.EnvironmentVariables["HTTP_PROXY"] = proxyUrl;
+                start.EnvironmentVariables["HTTPS_PROXY"] = proxyUrl;
+                start.EnvironmentVariables["http_proxy"] = proxyUrl;
+                start.EnvironmentVariables["https_proxy"] = proxyUrl;
+                string noProxy = EnsureLoopbackBypass(
+                    start.EnvironmentVariables["NO_PROXY"],
+                    start.EnvironmentVariables["no_proxy"]);
+                start.EnvironmentVariables["NO_PROXY"] = noProxy;
+                start.EnvironmentVariables["no_proxy"] = noProxy;
                 start.EnvironmentVariables["CHATGPT_REMOTE_WS_URL"] = string.Format(
                     "ws://127.0.0.1:{0}/{1}/backend-api/codex/remote/control/client", bridge.Port, token);
                 start.EnvironmentVariables["CODEX_CLI_PATH"] = codexCliPath;

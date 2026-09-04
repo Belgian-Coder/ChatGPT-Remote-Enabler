@@ -27,6 +27,7 @@ $powershell = @(
     'windows\CodexRemoteMobileProject\MobileProjectStartup.ps1',
     'windows\CodexRemoteMobileProject\ProxyConfiguration.ps1',
     'windows\CodexRemoteMobileProject\ProxyConfiguration.psm1',
+    'windows\CodexRemoteSimple\runtime\PackageProcessLauncher.ps1',
     'tools\Build-Release.ps1',
     'tools\Test-BuildReleaseArchive.ps1',
     'tools\Test-BuildReleasePrivacy.ps1',
@@ -34,6 +35,7 @@ $powershell = @(
     'tools\Test-WindowsUpdaterCompatibility.ps1'
     'tools\Test-WindowsUpdaterNonGit.ps1'
     'tools\Test-WindowsControllerReliability.ps1'
+    'tools\Test-PackageProcessLauncher.ps1'
     'tools\Test-MacOSUpdaterCompatibility.ps1'
     'tools\Test-MacOSSupport.ps1'
     'tools\Test-WindowsNodeProbe.ps1'
@@ -167,6 +169,9 @@ if ($LASTEXITCODE -ne 0) { throw 'Windows packaged updater self-test failed.' }
 & (Join-Path $root 'tools\Test-WindowsControllerReliability.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Windows controller reliability self-test failed.' }
 
+& (Join-Path $root 'tools\Test-PackageProcessLauncher.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Package process launcher self-test failed.' }
+
 & (Join-Path $root 'tools\Test-MacOSUpdaterCompatibility.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'macOS updater compatibility self-test failed.' }
 
@@ -191,6 +196,7 @@ if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
     WindowsPowerShellNodeProbeSelfTest = $true
     WindowsPackagedUpdaterSelfTest = $true
     WindowsControllerReliabilitySelfTest = $true
+    PackageProcessLauncherSelfTest = $true
     MacOSUpdaterCompatibilitySelfTest = $true
     MacOSSupportReliabilitySelfTest = $true
     StableRendererSelfTest = $true

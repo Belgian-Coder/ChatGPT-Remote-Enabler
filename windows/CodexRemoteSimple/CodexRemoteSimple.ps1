@@ -22,6 +22,8 @@ $script:StateRoot = Join-Path $env:LOCALAPPDATA 'CodexRemoteFeatures'
 $script:StatePath = Join-Path $script:StateRoot 'codexremote-simple-session.json'
 $script:LegacyStatePath = Join-Path $script:BundleRoot '.codexremote-simple-session.json'
 $script:PackageActivationLauncher = Join-Path $script:RuntimeRoot 'PackageActivationLauncher.exe'
+$script:PackageProcessLauncher = Join-Path $script:RuntimeRoot 'PackageProcessLauncher.exe'
+$script:PackageProcessWorker = Join-Path $script:RuntimeRoot 'PackageProcessLauncher.ps1'
 $script:LaunchLogPath = Join-Path $env:LOCALAPPDATA 'CodexRemoteFeatures\launch.log'
 
 function Resolve-CrsProxyServer {
@@ -316,6 +318,7 @@ function Start-CrsPackagedCodex {
     param(
         $Package,
         [string[]]$ArgumentList = @(),
+        [string]$EnvironmentProxyServer,
         [int]$ExpectedPort = 0,
         [ValidateRange(1000, 30000)]
         [int]$PortTimeoutMilliseconds = 8000
@@ -328,6 +331,57 @@ function Start-CrsPackagedCodex {
     }
     $argumentString = @($ArgumentList) -join ' '
     $primaryError = ''
+
+    if (-not [string]::IsNullOrWhiteSpace($EnvironmentProxyServer)) {
+        $proxyWorker = $null
+        try {
+            if (-not (Test-Path -LiteralPath $script:PackageProcessLauncher -PathType Leaf)) {
+                throw "The package-context process launcher is missing: $script:PackageProcessLauncher"
+            }
+            if (-not (Test-Path -LiteralPath $script:PackageProcessWorker -PathType Leaf)) {
+                throw "The package-context process worker is missing: $script:PackageProcessWorker"
+            }
+            $payload = [ordered]@{
+                packageFamilyName = [string]$Package.FamilyName
+                applicationId = [string]$Package.ApplicationId
+                helperPath = $script:PackageProcessLauncher
+                executablePath = [string]$Package.ExecutablePath
+                proxyServer = $EnvironmentProxyServer
+                arguments = @($ArgumentList)
+            }
+            $payloadBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($payload | ConvertTo-Json -Compress)))
+            $powerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+            if (-not (Test-Path -LiteralPath $powerShell -PathType Leaf)) { throw 'Windows PowerShell was not found.' }
+            $workerArguments = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}" -PayloadBase64 "{1}"' -f $script:PackageProcessWorker,$payloadBase64
+            $proxyWorker = Start-Process -FilePath $powerShell -ArgumentList $workerArguments -WindowStyle Hidden -PassThru
+
+            $deadline = [DateTime]::UtcNow.AddMilliseconds($PortTimeoutMilliseconds)
+            $portReady = $ExpectedPort -le 0
+            while (-not $portReady -and [DateTime]::UtcNow -lt $deadline) {
+                if ($proxyWorker.HasExited) {
+                    throw "The package-context proxy worker exited before loopback port $ExpectedPort opened."
+                }
+                $portReady = Test-CrsPortOpen -Port $ExpectedPort
+                if (-not $portReady) { Start-Sleep -Milliseconds 100 }
+            }
+            if (-not $portReady) { throw "The package-context proxy launch completed, but loopback port $ExpectedPort did not open." }
+            $workerProcessId = [uint32]$proxyWorker.Id
+            Write-CrsLaunchDiagnostic -Method 'PackageContextEnvironmentProxy' -Succeeded $true -PrimaryError '' -FallbackError ''
+            return [pscustomobject][ordered]@{
+                Method = 'PackageContextEnvironmentProxy'
+                ProcessId = $workerProcessId
+            }
+        } catch {
+            Stop-CrsCodex -ExecutablePath $Package.ExecutablePath
+            if ($null -ne $proxyWorker -and -not $proxyWorker.HasExited) {
+                Stop-Process -Id $proxyWorker.Id -Force -ErrorAction SilentlyContinue
+            }
+            Write-CrsLaunchDiagnostic -Method 'None' -Succeeded $false -PrimaryError $_.Exception.Message -FallbackError ''
+            throw "The package-context environment-proxy launch failed: $($_.Exception.Message)"
+        } finally {
+            if ($null -ne $proxyWorker) { $proxyWorker.Dispose() }
+        }
+    }
 
     try {
         if (-not (Test-Path -LiteralPath $script:PackageActivationLauncher -PathType Leaf)) {
@@ -598,9 +652,6 @@ switch ($Action) {
             }
             Write-Host 'The requested proxy mode differs from the active session; ChatGPT will be relaunched.' -ForegroundColor Yellow
         }
-        if ($bridgeMode -ceq 'native-renderer' -and $UseProxy) {
-            throw 'This ChatGPT build provides native Windows remote-control keys and disables the main-process Inspector required by scoped proxy mode. Reinstall the shortcut without -UseProxy.'
-        }
         if (-not $PSCmdlet.ShouldProcess('the current OpenAI Codex session', 'Close it, relaunch with loopback debug ports, and inject the audited compatibility bridge')) {
             break
         }
@@ -616,14 +667,26 @@ switch ($Action) {
             $resolvedProxyServer = $null
             if ($UseProxy) {
                 $resolvedProxyServer = Resolve-CrsProxyServer -RequestedProxy $ProxyServer
-                Write-Host 'Experimental proxy mode is enabled only for the Remote-control WebSocket.' -ForegroundColor Yellow
+                if ($bridgeMode -ceq 'native-renderer') {
+                    Write-Host 'Experimental proxy mode is enabled for Node networking in this ChatGPT process.' -ForegroundColor Yellow
+                } else {
+                    Write-Host 'Experimental proxy mode is enabled only for the Remote-control WebSocket.' -ForegroundColor Yellow
+                }
             }
             $arguments = @(
                 '--remote-debugging-address=127.0.0.1',
                 "--remote-debugging-port=$rendererPort"
             )
             if ($bridgeMode -ceq 'legacy-main-shim') { $arguments += "--inspect=127.0.0.1:$mainPort" }
-            $launch = Start-CrsPackagedCodex -Package $package -ArgumentList $arguments -ExpectedPort $rendererPort
+            $launchArguments = @{
+                Package = $package
+                ArgumentList = $arguments
+                ExpectedPort = $rendererPort
+            }
+            if ($UseProxy -and $bridgeMode -ceq 'native-renderer') {
+                $launchArguments.EnvironmentProxyServer = $resolvedProxyServer
+            }
+            $launch = Start-CrsPackagedCodex @launchArguments
             $bridge = Invoke-CrsBridge -Node $node -RendererPort $rendererPort -MainPort $mainPort -ProxyServer $(if ($UseProxy) { $resolvedProxyServer } else { $null }) -BridgeMode $bridgeMode
             Write-CrsState -Package $package -RendererPort $rendererPort -MainPort $mainPort -Probe $compatibility -Launch $launch -ProxyMode ([bool]$UseProxy) -BridgeMode $bridgeMode
             Write-Host 'Control other devices and macOS-style connection grouping are active for this Codex session.' -ForegroundColor Green

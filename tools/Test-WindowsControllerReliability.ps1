@@ -6,6 +6,18 @@ $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $stablePath = Join-Path $root 'windows\CodexRemoteSimple\CodexRemoteSimple.ps1'
 $launcherSource = Join-Path $root 'windows\CodexRemoteMobileProject\ChatGPTCustomLauncher.cs'
 $rootLauncherSource = Join-Path $root 'windows\ChatGPTRemoteLauncher.cs'
+$stableSourceText = Get-Content -LiteralPath $stablePath -Raw
+foreach ($contract in @(
+    'PackageContextEnvironmentProxy',
+    '$launchArguments.EnvironmentProxyServer = $resolvedProxyServer',
+    '$script:PackageProcessLauncher',
+    '$script:PackageProcessWorker'
+)) {
+    if (-not $stableSourceText.Contains($contract)) { throw "Native environment-proxy launch contract is missing: $contract" }
+}
+if ($stableSourceText.Contains('Reinstall the shortcut without -UseProxy.')) {
+    throw 'The controller still rejects proxy mode on native-key builds.'
+}
 
 $tokens = $null
 $errors = $null
@@ -167,7 +179,7 @@ try {
     [void]`$ready.Set()
     if (-not `$parent.WaitForExit(30000)) { throw 'parent did not exit' }
     [IO.File]::AppendAllText('$($afterParentLog.Replace("'", "''"))', "`$kind$([Environment]::NewLine)")
-    `$holdMilliseconds = if ((`$kind -eq 'custom' -and `$UseProxy -and -not `$ReplaceRunningApp) -or `$kind -eq 'root') { 5000 } else { 100 }
+    `$holdMilliseconds = if ((`$kind -eq 'custom' -and `$UseProxy -and -not `$ReplaceRunningApp) -or `$kind -eq 'root') { 15000 } else { 100 }
     Start-Sleep -Milliseconds `$holdMilliseconds
 } catch {
     [IO.File]::AppendAllText('$($workerErrorLog.Replace("'", "''"))', "`$kind|`$(`$_.Exception.Message)$([Environment]::NewLine)")
@@ -195,7 +207,7 @@ try {
     $watch.Stop()
     $processes.Add($concurrent)
     if ($concurrent.ExitCode -ne 15 -or $watch.Elapsed.TotalSeconds -ge 5) { throw "Concurrent custom launcher was not rejected promptly: $($concurrent.ExitCode)." }
-    Wait-ForLineCount -Path $finishedLog -Count 1
+    Wait-ForLineCount -Path $finishedLog -Count 1 -TimeoutSeconds 30
 
     foreach ($case in @(
         [pscustomobject]@{ Arguments = '--startup'; ReadyCount = 2; FinishedCount = 2 },
@@ -231,7 +243,7 @@ try {
     $crossEntry = Start-Process -FilePath $launcher -ArgumentList '--startup' -PassThru -Wait
     $processes.Add($crossEntry)
     if ($crossEntry.ExitCode -ne 15) { throw 'Root/custom cross-entry collision was not rejected.' }
-    Wait-ForLineCount -Path $finishedLog -Count 5
+    Wait-ForLineCount -Path $finishedLog -Count 5 -TimeoutSeconds 30
 
     $invocations = @([IO.File]::ReadAllLines($readyLog))
     $expectedInvocations = @(

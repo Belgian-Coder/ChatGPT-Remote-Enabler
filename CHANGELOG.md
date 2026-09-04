@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.5.25
+
+- Restore `-UseProxy` on native-key Windows ChatGPT builds whose Remote-control
+  WebSocket moved from Electron networking to Node networking. The packaged
+  launcher enables Node's environment-proxy support only in the custom
+  ChatGPT child process and keeps loopback traffic direct.
+- Preserve the existing User- and Machine-scope proxy environment exactly as
+  configured. Legacy builds retain the Remote-WebSocket-only Inspector shim;
+  direct startup and ordinary ChatGPT recovery remain unchanged.
+- Add a compiled package-context launcher and a regression that proves its
+  child receives the four proxy aliases, Node opt-in, and loopback bypass while
+  credential-bearing proxy URLs remain rejected. Renderer v62 and macOS
+  runtime behavior are unchanged.
+
 ## v1.5.24
 
 - Detect newer ChatGPT Windows packages that provide native Windows

@@ -1,26 +1,6 @@
 # Changelog
 
-## v1.5.29
-
-- Fix native Windows Remote-control enrollment behind an HTTP(S) proxy by
-  preserving the canonical `https://chatgpt.com` API base and redirecting only
-  the Remote-control WebSocket through the per-launch localhost CONNECT bridge.
-  This removes the enrollment origin mismatch introduced by v1.5.28.
-- Generate a version- and hash-matched private copy of the installed ChatGPT
-  runtime under the current user's local app data. Only that private copy gets
-  the audited WebSocket URL override and Electron ASAR-integrity fuse change;
-  the signed WindowsApps package remains untouched. Inactive older private
-  runtimes are removed after their processes stop.
-- Build the supervising package-context helper as a background Windows
-  executable, so proxy-enabled ChatGPT no longer leaves a console window open.
-  Child-only inherited proxy variables are cleared without modifying User- or
-  Machine-scope environment variables, and any failed launch still restores
-  ordinary ChatGPT.
-
 ## v1.5.28
-
-> Superseded: do not install this version. Its broad API-base override can make
-> native Remote-control enrollment reject an otherwise valid device challenge.
 
 - Route native-key Windows Remote-control API and WebSocket traffic through a
   per-launch localhost bridge when `-UseProxy` is enabled. This fixes repeated

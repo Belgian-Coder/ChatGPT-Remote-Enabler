@@ -25,7 +25,6 @@ $script:PackageActivationLauncher = Join-Path $script:RuntimeRoot 'PackageActiva
 $script:PackageProcessLauncher = Join-Path $script:RuntimeRoot 'PackageProcessLauncher.exe'
 $script:PackageProcessWorker = Join-Path $script:RuntimeRoot 'PackageProcessLauncher.ps1'
 $script:ApiProxyBridge = Join-Path $script:RuntimeRoot 'api-proxy-bridge.js'
-$script:ProxyRuntimePreparer = Join-Path $script:RuntimeRoot 'prepare-proxy-runtime.js'
 $script:LaunchLogPath = Join-Path $env:LOCALAPPDATA 'CodexRemoteFeatures\launch.log'
 
 function Resolve-CrsProxyServer {
@@ -77,8 +76,7 @@ function Get-CrsPackage {
     $executable = [IO.Path]::GetFullPath((Join-Path $installRoot 'app\ChatGPT.exe'))
     $appAsar = [IO.Path]::GetFullPath((Join-Path $installRoot 'app\resources\app.asar'))
     $nativeRoot = [IO.Path]::GetFullPath((Join-Path $installRoot 'app\resources\native'))
-    $cliPath = [IO.Path]::GetFullPath((Join-Path $installRoot 'app\resources\codex.exe'))
-    foreach ($path in @($executable, $appAsar, $nativeRoot, $cliPath)) {
+    foreach ($path in @($executable, $appAsar, $nativeRoot)) {
         if (-not (Test-Path -LiteralPath $path)) {
             throw "The installed Codex package is incomplete: $path"
         }
@@ -102,11 +100,9 @@ function Get-CrsPackage {
         AppUserModelId = "$([string]$package.PackageFamilyName)!$applicationId"
         Version = [string]$package.Version
         InstallRoot = $installRoot
-        AppRoot = [IO.Path]::GetFullPath((Join-Path $installRoot 'app'))
         ExecutablePath = $executable
         AppAsarPath = $appAsar
         NativeRoot = $nativeRoot
-        CliPath = $cliPath
     }
 }
 
@@ -164,43 +160,6 @@ function Test-CrsCompatibility {
         throw 'This Codex build does not match the audited Windows compatibility signature. Refusing to inject.'
     }
     return $result
-}
-
-function New-CrsProxyRuntimePackage {
-    param($Package, $Node)
-
-    if (-not (Test-Path -LiteralPath $script:ProxyRuntimePreparer -PathType Leaf)) {
-        throw "The private proxy-runtime preparer is missing: $script:ProxyRuntimePreparer"
-    }
-    $output = @(& $Node.Path $script:ProxyRuntimePreparer '--source-app' $Package.AppRoot '--package-version' $Package.Version 2>&1)
-    if ($LASTEXITCODE -ne 0 -or $output.Count -ne 1) {
-        throw "Preparing the private ChatGPT proxy runtime failed: $($output -join ' ')"
-    }
-    $runtime = [string]$output[0] | ConvertFrom-Json -ErrorAction Stop
-    $managedRoot = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'ChatGPTRemoteEnabler\patched-chatgpt'))
-    $runtimeRoot = [IO.Path]::GetFullPath([string]$runtime.runtimeRoot)
-    $expectedPrefix = $managedRoot.TrimEnd('\') + '\'
-    if (-not $runtimeRoot.StartsWith($expectedPrefix, [StringComparison]::OrdinalIgnoreCase) -or
-        -not (Test-Path -LiteralPath ([string]$runtime.executablePath) -PathType Leaf) -or
-        -not (Test-Path -LiteralPath ([string]$runtime.appAsarPath) -PathType Leaf)) {
-        throw 'The private ChatGPT proxy runtime returned an invalid managed path.'
-    }
-
-    [pscustomobject][ordered]@{
-        FullName = $Package.FullName
-        FamilyName = $Package.FamilyName
-        ApplicationId = $Package.ApplicationId
-        AppUserModelId = $Package.AppUserModelId
-        Version = $Package.Version
-        InstallRoot = $Package.InstallRoot
-        AppRoot = $runtimeRoot
-        ExecutablePath = [IO.Path]::GetFullPath([string]$runtime.executablePath)
-        AppAsarPath = [IO.Path]::GetFullPath([string]$runtime.appAsarPath)
-        NativeRoot = [IO.Path]::GetFullPath((Join-Path $runtimeRoot 'resources\native'))
-        CliPath = $Package.CliPath
-        OriginalExecutablePath = $Package.ExecutablePath
-        ProxyRuntimeReused = [bool]$runtime.reused
-    }
 }
 
 function Get-CrsFreePort {
@@ -294,7 +253,6 @@ function Get-CrsDiscoverableSession {
             # Renderer-only native sessions cannot contain the legacy scoped
             # proxy shim. Legacy command lines cannot prove whether it ran.
             proxyMode = if ($BridgeMode -ceq 'native-renderer') { $false } else { $null }
-            proxyTransport = $null
             appAsarSha256 = $null
             startedAtUtc = $null
         }
@@ -400,7 +358,6 @@ function Start-CrsPackagedCodex {
                 nodePath = [IO.Path]::GetFullPath($NodePath)
                 bridgePath = $script:ApiProxyBridge
                 targetBaseUrl = 'https://chatgpt.com'
-                originalCliPath = [string]$Package.CliPath
                 arguments = @($ArgumentList)
             }
             $payloadBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($payload | ConvertTo-Json -Compress)))
@@ -584,7 +541,6 @@ function Write-CrsState {
         launchMethod = [string]$Launch.Method
         launchProcessId = $Launch.ProcessId
         proxyMode = $ProxyMode
-        proxyTransport = if ($ProxyMode -and $BridgeMode -ceq 'native-renderer') { 'remote-websocket-bridge-v1' } else { $null }
         appAsarSha256 = [string]$Probe.appAsarSha256
         startedAtUtc = [DateTime]::UtcNow.ToString('o')
     }
@@ -640,34 +596,7 @@ function Test-CrsProxyModeProof {
 
     if ($null -eq $State -or $null -eq $State.PSObject.Properties['proxyMode']) { return $false }
     if ($State.proxyMode -isnot [bool]) { return $false }
-    if ([bool]$State.proxyMode -ne $RequestedProxyMode) { return $false }
-    if ($RequestedProxyMode -and [string]$State.bridgeMode -ceq 'native-renderer') {
-        return ($null -ne $State.PSObject.Properties['proxyTransport'] -and
-            [string]$State.proxyTransport -ceq 'remote-websocket-bridge-v1')
-    }
-    return $true
-}
-
-function Remove-CrsInactiveProxyRuntimes {
-    param([string]$KeepRoot)
-
-    $managedRoot = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'ChatGPTRemoteEnabler\patched-chatgpt'))
-    if (-not (Test-Path -LiteralPath $managedRoot -PathType Container)) { return }
-    $keep = [IO.Path]::GetFullPath($KeepRoot)
-    $expectedPrefix = $managedRoot.TrimEnd('\') + '\'
-    foreach ($directory in @(Get-ChildItem -LiteralPath $managedRoot -Directory -ErrorAction SilentlyContinue)) {
-        $candidate = [IO.Path]::GetFullPath($directory.FullName)
-        if ($candidate -ceq $keep -or
-            -not $candidate.StartsWith($expectedPrefix, [StringComparison]::OrdinalIgnoreCase) -or
-            $directory.Name -cnotmatch '^proxy-runtime-[a-z0-9._-]+$') { continue }
-        $candidateExecutable = Join-Path $candidate 'ChatGPT.exe'
-        if (@(Get-CrsCodexProcesses -ExecutablePath $candidateExecutable).Count -ne 0) { continue }
-        try {
-            Remove-Item -LiteralPath $candidate -Recurse -Force -ErrorAction Stop
-        } catch {
-            Write-Warning "The inactive private proxy runtime could not be removed: $candidate"
-        }
-    }
+    return ([bool]$State.proxyMode -eq $RequestedProxyMode)
 }
 
 function Invoke-CrsRollback {
@@ -677,9 +606,6 @@ function Invoke-CrsRollback {
         return
     }
 
-    if ($null -ne $State -and -not [string]::IsNullOrWhiteSpace([string]$State.executablePath)) {
-        Stop-CrsCodex -ExecutablePath ([string]$State.executablePath)
-    }
     Stop-CrsCodex -ExecutablePath $Package.ExecutablePath
     if ($null -ne $State) {
         foreach ($port in @($State.rendererPort, $State.mainPort) | Where-Object { $null -ne $_ }) {
@@ -756,28 +682,17 @@ switch ($Action) {
         if ($bridgeMode -ceq 'legacy-main-shim') {
             do { $mainPort = Get-CrsFreePort } while ($mainPort -eq $rendererPort)
         }
-        $launchPackage = $package
-        $sessionStopped = $false
+        Stop-CrsCodex -ExecutablePath $package.ExecutablePath
+
         try {
             $resolvedProxyServer = $null
             if ($UseProxy) {
                 $resolvedProxyServer = Resolve-CrsProxyServer -RequestedProxy $ProxyServer
                 if ($bridgeMode -ceq 'native-renderer') {
-                    Write-Host 'Preparing the version-matched private ChatGPT runtime for Remote-control WebSocket proxying.' -ForegroundColor Yellow
-                    $launchPackage = New-CrsProxyRuntimePackage -Package $package -Node $node
-                    Write-Host 'Proxy mode is scoped to the Remote-control WebSocket; signed enrollment remains on the canonical ChatGPT URL.' -ForegroundColor Yellow
+                    Write-Host 'Experimental proxy mode is enabled through a scoped localhost API/WebSocket bridge.' -ForegroundColor Yellow
                 } else {
                     Write-Host 'Experimental proxy mode is enabled only for the Remote-control WebSocket.' -ForegroundColor Yellow
                 }
-            }
-            $sessionStopped = $true
-            if ($null -ne $state -and -not [string]::IsNullOrWhiteSpace([string]$state.executablePath)) {
-                Stop-CrsCodex -ExecutablePath ([string]$state.executablePath)
-            }
-            Stop-CrsCodex -ExecutablePath $package.ExecutablePath
-            if (-not [string]::Equals([string]$launchPackage.ExecutablePath, [string]$package.ExecutablePath, [StringComparison]::OrdinalIgnoreCase)) {
-                Stop-CrsCodex -ExecutablePath $launchPackage.ExecutablePath
-                Remove-CrsInactiveProxyRuntimes -KeepRoot $launchPackage.AppRoot
             }
             $arguments = @(
                 '--remote-debugging-address=127.0.0.1',
@@ -785,7 +700,7 @@ switch ($Action) {
             )
             if ($bridgeMode -ceq 'legacy-main-shim') { $arguments += "--inspect=127.0.0.1:$mainPort" }
             $launchArguments = @{
-                Package = $launchPackage
+                Package = $package
                 ArgumentList = $arguments
                 ExpectedPort = $rendererPort
             }
@@ -795,18 +710,14 @@ switch ($Action) {
             }
             $launch = Start-CrsPackagedCodex @launchArguments
             $bridge = Invoke-CrsBridge -Node $node -RendererPort $rendererPort -MainPort $mainPort -ProxyServer $(if ($UseProxy) { $resolvedProxyServer } else { $null }) -BridgeMode $bridgeMode
-            Write-CrsState -Package $launchPackage -RendererPort $rendererPort -MainPort $mainPort -Probe $compatibility -Launch $launch -ProxyMode ([bool]$UseProxy) -BridgeMode $bridgeMode
+            Write-CrsState -Package $package -RendererPort $rendererPort -MainPort $mainPort -Probe $compatibility -Launch $launch -ProxyMode ([bool]$UseProxy) -BridgeMode $bridgeMode
             Write-Host 'Control other devices and macOS-style connection grouping are active for this Codex session.' -ForegroundColor Green
             Write-Host 'Open Settings > Connections > Control other devices.'
             Write-Host 'In the sidebar, open Project sidebar options and choose By connection when desired.'
             Write-Warning 'By connection groups chats by host but does not preserve nested project headings. Use By project to retain project grouping.'
             Write-Warning 'The renderer debug endpoint remains reachable by processes running as your Windows user until Codex exits or rollback is run.'
         } catch {
-            if (-not $sessionStopped) { throw }
             Write-Warning 'Enable failed. Restoring an ordinary Codex session.'
-            if ($null -ne $launchPackage -and -not [string]::Equals([string]$launchPackage.ExecutablePath, [string]$package.ExecutablePath, [StringComparison]::OrdinalIgnoreCase)) {
-                Stop-CrsCodex -ExecutablePath $launchPackage.ExecutablePath
-            }
             Stop-CrsCodex -ExecutablePath $package.ExecutablePath
             foreach ($port in @($rendererPort, $mainPort) | Where-Object { $null -ne $_ }) { [void](Wait-CrsPortClosed -Port $port) }
             if (Test-Path -LiteralPath $script:StatePath) { Remove-Item -LiteralPath $script:StatePath -Force }

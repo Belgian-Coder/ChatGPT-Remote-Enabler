@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.5.30
+
+- Publish the fully validated native-proxy and complete-project-sync build as a
+  strict successor to pre-release v1.5.29 installations. This ensures automatic
+  update replaces candidate packages that already identify as v1.5.29.
+
 ## v1.5.29
 
 - Fix native Windows Remote-control enrollment behind an HTTP(S) proxy by

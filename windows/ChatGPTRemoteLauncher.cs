@@ -9,8 +9,8 @@ using System.Threading;
 [assembly: AssemblyDescription("Starts ChatGPT with the remote access and Mobile projects injection")]
 [assembly: AssemblyCompany("Community")]
 [assembly: AssemblyProduct("ChatGPT Remote Enabler")]
-[assembly: AssemblyVersion("1.5.29.0")]
-[assembly: AssemblyFileVersion("1.5.29.0")]
+[assembly: AssemblyVersion("1.5.30.0")]
+[assembly: AssemblyFileVersion("1.5.30.0")]
 
 internal static class ChatGPTRemoteLauncher
 {

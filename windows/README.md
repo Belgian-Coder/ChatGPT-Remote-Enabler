@@ -10,7 +10,7 @@ Run `ChatGPT Remote Enabler.exe`, or open PowerShell here and run:
 .\Enable-ChatGPTRemote.ps1
 ```
 
-The compatibility check runs first. Renderer v63 preserves the user's
+The compatibility check runs first. Renderer v64 preserves the user's
 **By project**/**By connection** Native views preference and every folder's
 open/closed state. It automatically paginates the authoritative active task
 list for the app-server's interactive CLI/VS Code sources used by the desktop UI. Internal exec and subagent
@@ -24,7 +24,7 @@ appear while archived/removed projects and stale native rows do not. On app
 builds that no longer expose the project-state bridge, the publisher uses the
 current native local-project catalogue and refuses a false empty inventory
 while that catalogue is unavailable. Inventory-only remote folders use the
-same aligned folder geometry and a small remote marker.
+same aligned folder geometry without an extra decorative marker.
 When a connected device is still running an older publisher, its direct
 user-facing task list takes precedence over that cached inventory so internal
 child runs stay hidden during a staggered upgrade.

@@ -68,7 +68,7 @@ if ((Get-FileHash -LiteralPath $windowsMaintenance -Algorithm SHA256).Hash -ne (
 }
 $renderer = Get-Content -LiteralPath $windowsRenderer -Raw
 $requiredContracts = @(
-    'const VERSION = 63;',
+    'const VERSION = 64;',
     'hostDisplayName: config.localDisplayName || null',
     'codex-remote-mobile-verified-thread-ids-v2',
     'THREAD_VISIBILITY_CONTRACT_VERSION',
@@ -114,7 +114,7 @@ $requiredContracts = @(
     'mode: "native-project-button"'
     'publishedLocalProjectSnapshot'
     'Local project catalogue is not available yet'
-    'data-remote-inventory="true"'
+    'folder.dataset.remoteInventory'
 )
 foreach ($contract in $requiredContracts) {
     if (-not $renderer.Contains($contract)) { throw "Renderer contract is missing: $contract" }
@@ -164,6 +164,11 @@ if ($LASTEXITCODE -ne 0) { throw 'Thread visibility self-test failed.' }
 & $node (Join-Path $root 'windows\CodexRemoteMobileProject\tests\TaskStatus.SelfTest.js')
 if ($LASTEXITCODE -ne 0) { throw 'Task status self-test failed.' }
 
+foreach ($test in @('HostNames', 'SidebarLayout', 'SidebarStatus', 'SidebarBehavior')) {
+    & $node (Join-Path $root "windows\CodexRemoteMobileProject\tests\$test.SelfTest.js")
+    if ($LASTEXITCODE -ne 0) { throw "$test self-test failed." }
+}
+
 & (Join-Path $root 'tools\Test-Maintenance.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Maintenance self-test failed.' }
 
@@ -197,7 +202,7 @@ if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
 [pscustomobject]@{
     JavaScriptFiles = $javascript.Count
     PowerShellFiles = $powershell.Count
-    RendererVersion = 63
+    RendererVersion = 64
     RendererParity = $true
     MaintenanceParity = $true
     InjectorVersionProof = $true
@@ -218,4 +223,8 @@ if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
     TitleProvenanceSelfTest = $true
     ThreadVisibilitySelfTest = $true
     TaskStatusSelfTest = $true
+    HostNamesSelfTest = $true
+    SidebarLayoutSelfTest = $true
+    SidebarStatusSelfTest = $true
+    SidebarBehaviorSelfTest = $true
 } | ConvertTo-Json

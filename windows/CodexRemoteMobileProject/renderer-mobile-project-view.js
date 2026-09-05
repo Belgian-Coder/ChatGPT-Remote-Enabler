@@ -10,6 +10,7 @@
   const STYLE_ID = "codex-remote-mobile-project-style";
   const ROW_SELECTOR = "[data-app-action-sidebar-thread-row]";
   const AUTO_ENABLED_KEY = "codex-remote-mobile-auto-register-enabled-v1";
+  const HOST_NAMES_KEY = "codex-remote-mobile-host-names-v1";
   const AUTO_MANAGED_KEY = "codex-remote-mobile-auto-managed-v1";
   const AUTO_SUPPRESSED_KEY = "codex-remote-mobile-auto-suppressed-v1";
   const AUTO_ARCHIVE_ENABLED_KEY = "codex-remote-mobile-auto-archive-enabled-v1";
@@ -54,7 +55,7 @@
     "unknown",
   ]);
   const PUBLISHER_VERSION = 53;
-  const VERSION = 63;
+  const VERSION = 64;
   const TRUSTED_TITLE_SOURCES = new Set([
     "app-server-displayName",
     "app-server-entry-title",
@@ -131,6 +132,8 @@
     collapsed: new Set(),
     contextPoint: null,
     contextProjectKey: null,
+    overlayFocusReturnKey: null,
+    pendingOverlayFocus: null,
     drag: null,
     dragJustEndedAt: 0,
     disposed: false,
@@ -532,8 +535,9 @@
     let isProjectless = null;
     let projectId = null;
     let projectLabel = null;
-    let statusType = "idle";
-    let unread = false;
+    const nativeStatus = nativeTaskStatusMetadata(row);
+    const statusType = normalizeTaskStatus(nativeStatus?.statusState?.type);
+    const unread = nativeStatus?.statusState?.unread === true;
     const hostNames = new Map();
     let fiber = getFiber(row);
     for (let level = 0; fiber && level < 80; level += 1, fiber = fiber.return) {
@@ -543,11 +547,6 @@
       if (typeof props?.hoverCardProjectLabel === "string" && props.hoverCardProjectLabel.trim()) projectLabel ??= props.hoverCardProjectLabel.trim();
       if (isGrouped === null && typeof props?.isGrouped === "boolean") isGrouped = props.isGrouped;
       if (isProjectless === null && typeof props?.isProjectlessHoverCard === "boolean") isProjectless = props.isProjectlessHoverCard;
-      if (props?.statusState && typeof props.statusState === "object") {
-        if (typeof props.statusState.type === "string" && normalizeTaskStatus(props.statusState.type) === "loading") statusType = "loading";
-        if (props.statusState.unread === true) unread = true;
-      }
-      if (props?.isUnread === true) unread = true;
       if (Array.isArray(props?.connectionGroups)) {
         for (const group of props.connectionGroups) {
           if (typeof group?.hostId === "string" && typeof group?.hostDisplayName === "string") {
@@ -565,7 +564,7 @@
     const conversationId = rawConversationId(conversationKey);
     const title = row.getAttribute("data-app-action-sidebar-thread-title") || "Untitled task";
     const selected = row.getAttribute("data-app-action-sidebar-thread-selected") === "true";
-    return { conversationId, conversationKey, cwd, hostDisplayName, hostId, hostNames, isGrouped, isProjectless, originalRow: row, projectId, projectLabel, selected, statusType: normalizeTaskStatus(statusType), title, titleSource: title === "Untitled task" ? "none" : "native-dom", unread };
+    return { conversationId, conversationKey, cwd, hostDisplayName, hostId, hostNames, isGrouped, isProjectless, originalRow: row, projectId, projectLabel, selected, statusType, title, titleSource: title === "Untitled task" ? "none" : "native-dom", unread, unreadCount: nativeStatus?.statusState?.unreadCount ?? 0, nativeStatusState: nativeStatus?.statusState ?? null, needsAttention: nativeStatus?.needsAttention === true, attentionLabel: nativeStatus?.attentionLabel ?? null, attentionKind: nativeStatus?.attentionKind ?? null };
   }
 
   function commonAncestor(elements) {
@@ -575,6 +574,40 @@
       candidate = candidate.parentElement;
     }
     return candidate;
+  }
+
+  function nativeListContainer(rows, nativeProjectItems) {
+    const elements = [...rows, ...nativeProjectItems]
+      .filter((element) => element instanceof Element && !element.closest(`#${PANEL_ID}`));
+    if (!elements.length) return null;
+    const containsSidebarChrome = (candidate) => [...candidate.querySelectorAll('button,a,[role="button"]')].some((element) => {
+      if (element.closest(`[data-sidebar-project-kind],${ROW_SELECTOR}`)) return false;
+      // A native section's small New chat action belongs to that list, unlike
+      // the global New chat/Explore navigation rows above all sections.
+      if (element.closest('[class*="group/nav-section-title"]')) return false;
+      const label = (element.getAttribute("aria-label") || element.textContent || "").replace(/\s+/gu, " ").trim();
+      return label === "New chat" || label === "Explore";
+    });
+    const isSectionWrapper = (element, depth = 0) => {
+      if (!(element instanceof Element) || depth > 8) return false;
+      if (element.tagName === "SECTION") return true;
+      if (!["DIV", "SPAN"].includes(element.tagName) || !element.children.length) return false;
+      return [...element.children].every((child) => isSectionWrapper(child, depth + 1));
+    };
+    // Current packages keep Projects and Recents in sibling section wrappers.
+    // Include the empty sibling too: task rows alone cannot discover its title.
+    const section = elements[0].closest("section");
+    if (section) {
+      let candidate = section;
+      while (isSectionWrapper(candidate.parentElement) && !containsSidebarChrome(candidate.parentElement)) {
+        candidate = candidate.parentElement;
+      }
+      if (elements.every((element) => candidate.contains(element)) && !containsSidebarChrome(candidate)) return candidate;
+    }
+    // Older packages have one list without section wrappers. Keep the proven
+    // common ancestor, but never replace the sidebar shell or global controls.
+    const fallback = commonAncestor(elements);
+    return fallback && !fallback.matches("body,nav,header") && !containsSidebarChrome(fallback) ? fallback : null;
   }
 
   function discoverHostNames() {
@@ -1529,15 +1562,31 @@
   }
 
   function isSyntheticHostName(value) {
-    return typeof value !== "string" || /^(?:Remote\s+)?(?:remote-control:)?env_/iu.test(value.trim());
+    return typeof value !== "string" || !value.trim() || /^(?:Remote\s+)?(?:remote-control:)?env_/iu.test(value.trim());
   }
 
   function hostName(hostId, discoveredNames, singleRemoteHostId) {
     if (hostId === "local") return config.localDisplayName || "Local";
     const discovered = discoveredNames.get(hostId);
-    if (!isSyntheticHostName(discovered)) return discovered;
-    if (typeof config.hostDisplayNames?.[hostId] === "string") return config.hostDisplayNames[hostId];
-    if (hostId === singleRemoteHostId && typeof config.singleRemoteDisplayName === "string") return config.singleRemoteDisplayName;
+    const remembered = readRecords(HOST_NAMES_KEY);
+    if (!isSyntheticHostName(discovered)) {
+      if (remembered[hostId] !== discovered) {
+        remembered[hostId] = discovered;
+        writeRecords(HOST_NAMES_KEY, remembered);
+      }
+      return discovered;
+    }
+    if (!isSyntheticHostName(remembered[hostId])) return remembered[hostId];
+    if (!isSyntheticHostName(config.hostDisplayNames?.[hostId])) {
+      remembered[hostId] = config.hostDisplayNames[hostId];
+      writeRecords(HOST_NAMES_KEY, remembered);
+      return remembered[hostId];
+    }
+    if (hostId === singleRemoteHostId && !isSyntheticHostName(config.singleRemoteDisplayName)) {
+      remembered[hostId] = config.singleRemoteDisplayName;
+      writeRecords(HOST_NAMES_KEY, remembered);
+      return remembered[hostId];
+    }
     return discovered || hostId.replace(/^remote-control:/u, "Remote ");
   }
 
@@ -1892,20 +1941,22 @@
       #${PANEL_ID} .crmp-modes { display:flex; gap:4px; padding-bottom:2px; }
       #${PANEL_ID} .crmp-mode { border:0; border-radius:5px; padding:3px 6px; color:var(--color-text-tertiary,#888); background:transparent; font-size:10px; cursor:pointer; }
       #${PANEL_ID} .crmp-mode[aria-pressed="true"] { color:var(--color-text,#eee); background:var(--color-background-primary-hover,rgba(127,127,127,.15)); }
+      #${PANEL_ID} button:focus-visible, #${CARD_ID}:focus-visible, #${CARD_ID} button:focus-visible, #${CONTEXT_ID}:focus-visible, #${CONTEXT_ID} button:focus-visible { outline:2px solid var(--color-accent,#74b9ff); outline-offset:-2px; }
       #${PANEL_ID} .crmp-filters { display:flex; flex-wrap:wrap; gap:6px; padding:2px 0 6px; }
       #${PANEL_ID} .crmp-auto-controls { display:flex; align-items:center; flex-wrap:wrap; gap:6px; padding:0 0 4px; }
       #${PANEL_ID} .crmp-inventory-status { padding:2px 4px 6px; color:var(--color-text-tertiary,#888); font-size:11px; line-height:1.35; }
       #${PANEL_ID} .crmp-auto-control { border:1px solid var(--color-border-default,#555); border-radius:6px; padding:3px 7px; color:var(--color-text-tertiary,#888); background:transparent; font-size:10px; cursor:pointer; }
       #${PANEL_ID} .crmp-auto-control[aria-pressed="true"] { color:var(--color-text,#eee); background:var(--color-background-primary-hover,rgba(127,127,127,.15)); }
       #${PANEL_ID} .crmp-auto-control:disabled { cursor:not-allowed; opacity:.5; }
-      #${PANEL_ID} .crmp-title { padding:0 4px 2px; color:var(--color-text,#eee); font-size:12px; font-weight:600; }
+      #${PANEL_ID} .crmp-title { padding:0 8px 2px; }
+      #${PANEL_ID} .crmp-project-list { display:flex; flex-direction:column; gap:1px; }
       #${PANEL_ID} .crmp-chip { flex:0 0 auto; border:1px solid var(--color-border-default,#555); border-radius:999px; padding:4px 9px; color:var(--color-text-secondary,#aaa); background:var(--color-background-secondary,transparent); font-size:11px; line-height:16px; text-align:left; white-space:nowrap; cursor:pointer; }
       #${PANEL_ID} .crmp-chip[aria-pressed="true"] { color:var(--color-text,#fff); background:var(--color-background-inverted,#333); border-color:transparent; }
       #${PANEL_ID} .crmp-dot { display:inline-block; width:7px; height:7px; margin-inline-end:5px; border-radius:50%; background:#24b47e; }
       #${PANEL_ID} .crmp-dot-unavailable { background:#d95757; }
-      #${PANEL_ID} .crmp-project { display:flex; flex-direction:column; gap:1px; }
+      #${PANEL_ID} .crmp-project { display:flex; flex-direction:column; }
       #${PANEL_ID} .crmp-project-head { position:relative!important; display:flex!important; align-items:center; width:100%; min-height:var(--height-token-row,30px); }
-      #${PANEL_ID} .crmp-project-toggle { display:grid; flex:1 1 auto; grid-template-columns:16px minmax(0,1fr) auto; align-items:center; column-gap:7px; min-width:0; min-height:var(--height-token-row,30px); border:0; padding:5px 8px; color:inherit; background:transparent; line-height:20px; text-align:left; cursor:pointer; }
+      #${PANEL_ID} .crmp-project-toggle { display:grid; flex:1 1 auto; grid-template-columns:16px minmax(0,1fr) auto; align-items:center; column-gap:8px; min-width:0; min-height:var(--height-token-row,30px); border:0; padding:4px 8px; color:inherit; background:transparent; font-size:14px; line-height:21px; text-align:left; cursor:pointer; }
       #${PANEL_ID} [draggable="true"] { cursor:grab; }
       #${PANEL_ID} [draggable="true"]:active { cursor:grabbing; }
       #${PANEL_ID} .crmp-dragging { opacity:.45; }
@@ -1935,8 +1986,7 @@
       #${CONTEXT_ID} .crmp-context-separator { height:1px; margin:4px 0; background:var(--color-border-default,rgba(127,127,127,.2)); }
       #${PANEL_ID} .crmp-folder { position:relative; display:flex; width:16px; height:16px; align-items:center; justify-content:center; align-self:center; font-size:15px; line-height:0; }
       #${PANEL_ID} .crmp-folder svg { display:block; width:16px; height:16px; flex:none; }
-      #${PANEL_ID} .crmp-folder[data-remote-inventory="true"]::after { position:absolute; right:-2px; bottom:-2px; width:6px; height:6px; border:1px solid var(--color-background-primary,#202020); border-radius:50%; background:#28b8ce; box-sizing:border-box; content:""; }
-      #${PANEL_ID} .crmp-project-name { overflow:hidden; font-size:13px; font-weight:600; text-overflow:ellipsis; white-space:nowrap; }
+      #${PANEL_ID} .crmp-project-name { overflow:hidden; font-size:inherit; font-weight:inherit; text-overflow:ellipsis; white-space:nowrap; }
       #${PANEL_ID} .crmp-project-host { max-width:82px; overflow:hidden; color:var(--color-text-tertiary,#888); font-size:9px; text-align:right; text-overflow:ellipsis; white-space:nowrap; transition:opacity 100ms ease; }
       #${PANEL_ID} .crmp-project-head:hover .crmp-project-host, #${PANEL_ID} .crmp-project-head:focus-within .crmp-project-host, #${PANEL_ID} .crmp-project-head[data-actions-open="true"] .crmp-project-host { opacity:0; }
       #${PANEL_ID} .crmp-tasks { display:flex; flex-direction:column; }
@@ -1948,8 +1998,13 @@
       #${PANEL_ID} .crmp-task-action { pointer-events:auto; }
       #${PANEL_ID} .crmp-task-status { position:absolute; top:0; right:8px; display:flex; width:20px; height:100%; align-items:center; justify-content:center; color:var(--color-text-secondary,#999); opacity:1; pointer-events:none; transition:opacity 100ms ease; }
       #${PANEL_ID} .crmp-task-row:hover .crmp-task-status, #${PANEL_ID} .crmp-task-row:focus-within .crmp-task-status { opacity:0; }
-      #${PANEL_ID} .crmp-task-status-loading svg { width:16px; height:16px; animation:crmp-task-spin 850ms linear infinite; }
-      #${PANEL_ID} .crmp-task-unread-dot { display:block; width:7px; height:7px; border-radius:50%; background:#74b9ff; }
+      #${PANEL_ID} .crmp-task-status { width:auto; min-width:20px; gap:4px; }
+      #${PANEL_ID} .crmp-task-status-loading svg, #${PANEL_ID} .crmp-project-status-loading svg { width:16px; height:16px; }
+      #${PANEL_ID} .crmp-task-unread-dot { display:block; width:8px; height:8px; border-radius:50%; background:var(--color-background-info-solid,var(--color-text-info,#74b9ff)); }
+      #${PANEL_ID} .crmp-project-status { position:absolute; top:0; right:8px; display:flex; min-width:20px; height:100%; align-items:center; justify-content:center; pointer-events:none; }
+      #${PANEL_ID} .crmp-project-head:hover .crmp-project-status, #${PANEL_ID} .crmp-project-head:focus-within .crmp-project-status, #${PANEL_ID} .crmp-project-head[data-actions-open="true"] .crmp-project-status { visibility:hidden; }
+      @media (prefers-reduced-motion:no-preference) { #${PANEL_ID} .crmp-status-spin { animation:crmp-task-spin 2000ms linear infinite; } }
+      @media (prefers-reduced-motion:reduce) { #${PANEL_ID} .crmp-status-spin { animation:none!important; } }
       @keyframes crmp-task-spin { to { transform:rotate(360deg); } }
       #${PANEL_ID} .crmp-empty { padding:8px 4px; color:var(--color-text-tertiary,#888); font-size:12px; }
     `;
@@ -1964,28 +2019,168 @@
     return element;
   }
 
+  function setFocusKey(element, ...parts) {
+    element.dataset.crmpFocusKey = JSON.stringify(parts);
+    return element;
+  }
+
+  function nativeElementDisabled(element) {
+    return element?.disabled === true || element?.getAttribute("aria-disabled") === "true";
+  }
+
+  function captureSidebarFocus() {
+    const active = document.activeElement;
+    if (!(active instanceof Element)) return null;
+    const overlay = active.closest(`#${CARD_ID},#${CONTEXT_ID}`);
+    if (!state.panel?.contains(active) && !overlay) return null;
+    const group = active.closest(".crmp-project");
+    return {
+      key: active.closest("[data-crmp-focus-key]")?.dataset.crmpFocusKey ?? null,
+      fallbackKey: group?.querySelector(".crmp-project-toggle")?.dataset.crmpFocusKey ?? (overlay ? state.overlayFocusReturnKey : null),
+      overlayId: overlay?.id ?? null,
+    };
+  }
+
+  function focusSidebarElement(element) {
+    if (!element?.isConnected || nativeElementDisabled(element) || !element.getClientRects().length) return false;
+    element.focus({ preventScroll: true });
+    return document.activeElement === element;
+  }
+
+  function restoreSidebarFocus(snapshot) {
+    if (!snapshot) return;
+    const keyed = (key) => key ? document.querySelector(`[data-crmp-focus-key="${CSS.escape(key)}"]`) : null;
+    if (focusSidebarElement(keyed(snapshot.key))) return;
+    const overlay = snapshot.overlayId ? document.getElementById(snapshot.overlayId) : null;
+    if (overlay && focusProjectOverlay(overlay)) return;
+    if (focusSidebarElement(keyed(snapshot.fallbackKey))) return;
+    focusSidebarElement(state.panel?.querySelector('.crmp-mode[aria-pressed="true"]'));
+  }
+
+  function focusProjectOverlay(overlay, last = false) {
+    const items = [...overlay.querySelectorAll("button")].filter((item) => !nativeElementDisabled(item));
+    return focusSidebarElement(last ? items.at(-1) ?? overlay : items[0] ?? overlay);
+  }
+
+  function restoreRenderedFocus(snapshot) {
+    const pending = state.pendingOverlayFocus;
+    state.pendingOverlayFocus = null;
+    const overlay = pending ? document.getElementById(pending.id) : null;
+    if (overlay && focusProjectOverlay(overlay, pending.last)) return;
+    restoreSidebarFocus(snapshot);
+  }
+
+  function closeProjectOverlays(restoreFocus = true) {
+    const returnKey = state.overlayFocusReturnKey;
+    state.actionCardKey = null;
+    state.contextProjectKey = null;
+    state.contextPoint = null;
+    state.pendingOverlayFocus = null;
+    render();
+    if (restoreFocus) restoreSidebarFocus({ key: returnKey });
+    state.overlayFocusReturnKey = null;
+  }
+
+  function bindOverlayKeyboard(overlay, menu = false) {
+    let search = "";
+    let searchAt = 0;
+    overlay.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        closeProjectOverlays();
+        return;
+      }
+      const items = [...overlay.querySelectorAll("button")].filter((item) => !nativeElementDisabled(item));
+      const index = items.indexOf(document.activeElement);
+      if (event.key === "Tab" && (menu || (event.shiftKey ? index <= 0 : index === items.length - 1))) {
+        event.stopPropagation();
+        closeProjectOverlays();
+        return;
+      }
+      if (!menu || event.altKey || event.ctrlKey || event.metaKey || !items.length) return;
+      let next = null;
+      if (event.key === "ArrowDown") next = items[(index + 1) % items.length];
+      else if (event.key === "ArrowUp") next = items[(index - 1 + items.length) % items.length];
+      else if (event.key === "Home") next = items[0];
+      else if (event.key === "End") next = items.at(-1);
+      else if (event.key.length === 1 && event.key.trim()) {
+        const now = Date.now();
+        search = (now - searchAt < 700 ? search : "") + event.key.toLocaleLowerCase();
+        searchAt = now;
+        const prefix = [...search].every((character) => character === search[0]) ? search[0] : search;
+        next = [...items.slice(index + 1), ...items.slice(0, index + 1)]
+          .find((item) => item.getAttribute("aria-label")?.toLocaleLowerCase().startsWith(prefix));
+      }
+      if (next) {
+        event.preventDefault();
+        event.stopPropagation();
+        focusSidebarElement(next);
+      }
+    });
+  }
+
+  function openProjectContextMenu(project, anchor, point = null) {
+    const rect = anchor.getBoundingClientRect();
+    state.actionCardKey = null;
+    state.contextProjectKey = project.key;
+    state.contextPoint = point ?? { x: rect.left, y: rect.bottom };
+    state.overlayFocusReturnKey = anchor.dataset.crmpFocusKey ?? null;
+    state.pendingOverlayFocus = { id: CONTEXT_ID };
+    render();
+  }
+
   function bindActivation(element, handler) {
     let handledByPointer = false;
+    let pressedPointerId = null;
+    let removePointerTracking = null;
+    const clearPointerTracking = () => {
+      pressedPointerId = null;
+      removePointerTracking?.();
+      removePointerTracking = null;
+    };
+    element.addEventListener("pointerdown", (event) => {
+      clearPointerTracking();
+      handledByPointer = false;
+      if (event.button !== 0 || nativeElementDisabled(element)) return;
+      pressedPointerId = event.pointerId;
+      const owner = element.ownerDocument;
+      const clearOutsidePointer = (end) => {
+        if (end.pointerId === pressedPointerId && (end.type === "pointercancel" || !element.contains(end.target))) clearPointerTracking();
+      };
+      owner.addEventListener("pointerup", clearOutsidePointer, true);
+      owner.addEventListener("pointercancel", clearOutsidePointer, true);
+      removePointerTracking = () => {
+        owner.removeEventListener("pointerup", clearOutsidePointer, true);
+        owner.removeEventListener("pointercancel", clearOutsidePointer, true);
+      };
+    });
     element.addEventListener("pointerup", (event) => {
-      if (event.button > 0 || element.disabled) return;
+      if (pressedPointerId === null || event.pointerId !== pressedPointerId) return;
+      clearPointerTracking();
       handledByPointer = true;
       event.preventDefault();
       event.stopImmediatePropagation();
+      const rect = element.getBoundingClientRect();
+      if (event.button > 0 || nativeElementDisabled(element) || event.clientX < rect.left || event.clientX > rect.right
+          || event.clientY < rect.top || event.clientY > rect.bottom) return;
       handler();
     });
     element.addEventListener("click", (event) => {
+      clearPointerTracking();
       event.preventDefault();
       event.stopImmediatePropagation();
-      if (handledByPointer) {
+      if (handledByPointer && event.detail !== 0) {
         handledByPointer = false;
         return;
       }
-      if (!element.disabled) handler();
+      handledByPointer = false;
+      if (!nativeElementDisabled(element)) handler();
     });
   }
 
   function invokeNativeElement(element) {
-    if (!(element instanceof Element)) return false;
+    if (!(element instanceof Element) || nativeElementDisabled(element)) return false;
     element.click();
     return true;
   }
@@ -2090,26 +2285,231 @@
     }, delay);
   }
 
-  function taskStatusIndicator(task) {
-    const working = task.statusType === "loading";
-    if (!working && !task.unread) return null;
-    const status = document.createElement("span");
-    status.className = `crmp-task-status ${working ? "crmp-task-status-loading" : "crmp-task-status-unread"}`;
-    status.setAttribute("aria-hidden", "true");
-    if (working) {
-      const nativeSpinner = [...(task.originalRow?.querySelectorAll("svg") ?? [])]
-        .find((svg) => !svg.closest("button") && svg.classList.contains("icon-xs"));
-      if (nativeSpinner) {
-        status.appendChild(nativeSpinner.cloneNode(true));
-      } else {
-        status.innerHTML = '<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path opacity="0.3" d="M18 12a6 6 0 1 1-6-6 6 6 0 0 1 6 6Zm2 0a8 8 0 1 0-8 8 8 8 0 0 0 8-8Z" fill="currentColor"/><path d="M12 4a8 8 0 0 1 8 8h-2a6 6 0 0 0-6-6V4Z" fill="currentColor"/></svg>';
+  function normalizeSidebarStatus(value) {
+    const count = Number(value?.unreadCount);
+    return {
+      type: value?.type === "error" ? "error" : normalizeTaskStatus(value?.type),
+      unread: value?.unread === true,
+      unreadCount: Number.isFinite(count) && count > 0 ? Math.floor(count) : 0,
+    };
+  }
+
+  function sidebarLabelText(value, depth = 0) {
+    if (typeof value === "string") return value;
+    if (!value || typeof value !== "object" || depth > 4) return null;
+    return typeof value.props?.defaultMessage === "string" ? value.props.defaultMessage
+      : sidebarLabelText(value.props?.children, depth + 1);
+  }
+
+  function nativeTaskStatusMetadata(row) {
+    let result = null;
+    let fallbackUnread = null;
+    const conversationId = rawConversationId(row.getAttribute("data-app-action-sidebar-thread-id") || "");
+    for (let fiber = getFiber(row), level = 0; fiber && level < 24; fiber = fiber.return, level += 1) {
+      const props = fiber.memoizedProps;
+      if (!props || typeof props !== "object") continue;
+      if (!result && props.statusState && typeof props.statusState === "object") {
+        const approval = props.chips?.find?.((chip) => chip?.id === "awaiting-approval");
+        result = {
+          statusState: normalizeSidebarStatus(props.statusState),
+          needsAttention: Boolean(props.statusPill || approval),
+          attentionKind: props.statusPill ? "input" : approval ? "approval" : null,
+          attentionLabel: sidebarLabelText(props.statusPill?.label ?? approval?.label),
+        };
       }
+      if (fallbackUnread === null && typeof props.isUnread === "boolean") fallbackUnread = props.isUnread;
+      // Stop at this task's owner. Group and section status must not leak into a row.
+      if (typeof props.conversationId === "string") {
+        if (rawConversationId(props.conversationId) === conversationId && props.hasPendingChildApproval === true) {
+          result ??= { statusState: normalizeSidebarStatus({ unread: fallbackUnread }), attentionKind: null, attentionLabel: null };
+          result.needsAttention = true;
+          result.attentionKind ??= "approval";
+          result.attentionLabel ??= "Awaiting approval";
+        }
+        break;
+      }
+    }
+    return result ?? { statusState: normalizeSidebarStatus({ unread: fallbackUnread }), needsAttention: false, attentionKind: null, attentionLabel: null };
+  }
+
+  function taskSidebarStatus(task) {
+    const native = normalizeSidebarStatus(task.nativeStatusState);
+    const flags = task.sourceThread?.status?.activeFlags;
+    const waiting = Array.isArray(flags) && flags.some((flag) => flag === "waitingOnApproval" || flag === "waitingOnUserInput");
+    return {
+      type: task.statusType === "loading" ? "loading" : native.type === "error" ? "error" : "idle",
+      unread: task.unread === true,
+      unreadCount: Math.max(native.unreadCount, normalizeSidebarStatus(task).unreadCount),
+      needsAttention: task.needsAttention === true || waiting,
+      attentionKind: task.attentionKind ?? (waiting ? flags.includes("waitingOnUserInput") ? "input" : "approval" : null),
+      attentionLabel: task.attentionLabel ?? (waiting ? flags.includes("waitingOnUserInput") ? "Needs input" : "Awaiting approval" : null),
+    };
+  }
+
+  function sidebarStatusKind(status) {
+    if ((status?.unreadCount ?? 0) > 0) return "count";
+    if (status?.type === "loading") return "loading";
+    if (status?.unread === true) return "unread";
+    if (status?.type === "error") return "error";
+    return null;
+  }
+
+  function aggregateSidebarStatus(tasks) {
+    const statuses = tasks.map(taskSidebarStatus);
+    // Native folders prioritize waiting/unread descendants over active descendants.
+    if (statuses.some((status) => status.needsAttention || status.unread || status.unreadCount > 0)) return normalizeSidebarStatus({ unread: true });
+    if (statuses.some((status) => status.type === "loading")) return normalizeSidebarStatus({ type: "loading" });
+    return null;
+  }
+
+  function nativeProjectStatus(project) {
+    const item = nativeProjectItem(project);
+    const row = item?.querySelector('[data-app-action-sidebar-project-row],[data-app-action-sidebar-project-collapsed]');
+    for (let fiber = row && getFiber(row), level = 0; fiber && level < 12; fiber = fiber.return, level += 1) {
+      const props = fiber.memoizedProps;
+      for (const candidate of [props, props?.actions?.props]) {
+        if (!candidate || !Object.prototype.hasOwnProperty.call(candidate, "collapsedStatusState")) continue;
+        return { known: true, row, statusState: candidate.collapsedStatusState == null ? null : normalizeSidebarStatus(candidate.collapsedStatusState) };
+      }
+      if (props?.group) break;
+    }
+    return { known: false, row, statusState: null };
+  }
+
+  function sidebarStatusTemplate(root, status) {
+    if (!root) return null;
+    const targetKind = sidebarStatusKind(status);
+    const stack = [getFiber(root)?.child];
+    for (let remaining = 1200; stack.length && remaining > 0; remaining -= 1) {
+      const fiber = stack.pop();
+      if (!fiber) continue;
+      if (fiber.sibling) stack.push(fiber.sibling);
+      if (fiber.child) stack.push(fiber.child);
+      const nativeStatus = fiber.memoizedProps?.statusState;
+      if (!nativeStatus || sidebarStatusKind(nativeStatus) !== targetKind || (targetKind === "count" && nativeStatus.unreadCount !== status.unreadCount)) continue;
+      // The native status component takes statusState alone; task row components also
+      // take it, but cloning their whole DOM would duplicate a title and actions.
+      if (Object.keys(fiber.memoizedProps).some((key) => key !== "statusState" && key !== "className")) continue;
+      let content = fiber.child;
+      for (let depth = 0; content && depth < 12; depth += 1, content = content.child) {
+        if (!(content.stateNode instanceof Element)) continue;
+        if (root.contains(content.stateNode)) return content.stateNode.cloneNode(true);
+        break;
+      }
+    }
+    return null;
+  }
+
+  function sidebarStatusContent(status, nativeRoot) {
+    const kind = sidebarStatusKind(status);
+    if (!kind) return null;
+    const native = sidebarStatusTemplate(nativeRoot, status);
+    if (native) {
+      for (const spinner of [native, ...native.querySelectorAll('[class*="animate-spin"]')]) {
+        if (!spinner.className?.includes?.("animate-spin")) continue;
+        spinner.classList.add("crmp-status-spin");
+        spinner.style.animationDuration = "2000ms";
+      }
+      return native;
+    }
+    const content = document.createElement("span");
+    content.className = "relative flex size-5 shrink-0 items-center justify-center";
+    if (kind === "loading") {
+      content.classList.add("text-text/70");
+      const spinner = document.createElement("span");
+      spinner.className = "inline-flex h-fit w-fit items-center justify-center leading-none contain-layout contain-paint contain-style crmp-status-spin";
+      spinner.style.animationDuration = "2000ms";
+      spinner.style.animationDelay = `-${Date.now() % 1000}ms`;
+      spinner.innerHTML = '<svg class="icon-xs shrink-0" width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path opacity="0.3" d="M18 12C18 8.68629 15.3137 6 12 6C8.68629 6 6 8.68629 6 12C6 15.3137 8.68629 18 12 18C15.3137 18 18 15.3137 18 12ZM20 12C20 16.4183 16.4183 20 12 20C7.58172 20 4 16.4183 4 12C4 7.58172 7.58172 4 12 4C16.4183 4 20 7.58172 20 12Z" fill="currentColor"/><path d="M12 4C16.4183 4 20 7.58172 20 12C20 16.4183 16.4183 20 12 20C7.58172 20 4 16.4183 4 12H6C6 15.3137 8.68629 18 12 18C15.3137 18 18 15.3137 18 12C18 8.68629 15.3137 6 12 6V4Z" fill="currentColor"/></svg>';
+      content.appendChild(spinner);
+    } else if (kind === "count") {
+      content.className = "relative flex h-5 min-w-5 shrink-0 items-center justify-center";
+      const badge = document.createElement("span");
+      badge.className = "flex h-5 min-w-5 items-center justify-center rounded-full px-1.5 text-[11px] leading-none font-semibold";
+      badge.style.backgroundColor = "color-mix(in srgb, var(--color-text-info) 18%, transparent)";
+      badge.style.boxShadow = "inset 0 0 0 1px color-mix(in srgb, var(--color-text-info) 72%, transparent)";
+      badge.style.color = "var(--color-text-info)";
+      badge.textContent = status.unreadCount > 99 ? "99+" : String(status.unreadCount);
+      content.appendChild(badge);
+    } else if (kind === "error") {
+      content.classList.add("text-danger");
+      content.innerHTML = '<svg class="icon-xs shrink-0" width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M8 7.48633C8.28351 7.48633 8.51367 7.71649 8.51367 8V10.667C8.5135 10.9503 8.2834 11.1797 8 11.1797C7.7166 11.1797 7.4865 10.9503 7.48633 10.667V8C7.48633 7.71649 7.71649 7.48633 8 7.48633Z" fill="currentColor"/><path d="M8 4.90137C8.37814 4.9015 8.68544 5.20779 8.68555 5.58594C8.68528 5.96395 8.37804 6.27135 8 6.27148C7.62194 6.27138 7.31569 5.96396 7.31543 5.58594C7.31554 5.20778 7.62184 4.90147 8 4.90137Z" fill="currentColor"/><path fill-rule="evenodd" clip-rule="evenodd" d="M8 1.48633C11.5972 1.48633 14.5137 4.40279 14.5137 8C14.5137 11.5972 11.5972 14.5137 8 14.5137C4.40279 14.5137 1.48633 11.5972 1.48633 8C1.48633 4.40279 4.40279 1.48633 8 1.48633ZM8 2.51367C4.9698 2.51367 2.51367 4.9698 2.51367 8C2.51367 11.0302 4.9698 13.4863 8 13.4863C11.0302 13.4863 13.4863 11.0302 13.4863 8C13.4863 4.9698 11.0302 2.51367 8 2.51367Z" fill="currentColor"/></svg>';
     } else {
       const dot = document.createElement("span");
-      dot.className = "crmp-task-unread-dot";
-      status.appendChild(dot);
+      dot.className = "crmp-task-unread-dot bg-info-solid";
+      content.appendChild(dot);
     }
+    return content;
+  }
+
+  function taskStatusLabel(task) {
+    const status = taskSidebarStatus(task);
+    if (status.attentionLabel) return status.attentionLabel;
+    if (status.unreadCount > 0) return `${status.unreadCount} unread updates`;
+    if (status.type === "loading") return "working";
+    if (status.unread) return "unread";
+    if (status.type === "error") return "error";
+    return null;
+  }
+
+  function taskStatusIndicator(task) {
+    const taskState = taskSidebarStatus(task);
+    const status = document.createElement("span");
+    let attention = null;
+    if (taskState.attentionLabel && task.originalRow) {
+      const candidates = [...task.originalRow.querySelectorAll("button,span")];
+      attention = (taskState.attentionKind === "input" ? candidates.find((element) => element.className?.includes?.("bg-chart-blue/15")) : null)
+        ?? candidates.find((element) => element.textContent?.trim() === taskState.attentionLabel && !element.querySelector("button,span")) ?? null;
+      if (attention) {
+        const nativeButton = attention.closest("button");
+        const template = nativeButton && (taskState.attentionKind === "input" || nativeButton.textContent?.trim() === taskState.attentionLabel) ? nativeButton : attention;
+        const clone = template.cloneNode(true);
+        if (template.tagName === "BUTTON") {
+          clone.style.pointerEvents = "auto";
+          bindActivation(clone, () => template.click());
+        }
+        status.appendChild(clone);
+      }
+    }
+    if (!attention && taskState.attentionKind === "input") {
+      attention = document.createElement("span");
+      attention.className = "relative inline-grid max-w-[150px] shrink-0 items-center overflow-hidden rounded-full bg-chart-blue/15 py-0.5 pe-2.5 ps-2 text-sm text-chart-blue";
+      attention.textContent = taskState.attentionLabel || "Needs input";
+      status.appendChild(attention);
+    }
+    const kind = taskState.attentionKind === "input" && attention ? "attention" : sidebarStatusKind(taskState);
+    const content = kind === "attention" ? null : sidebarStatusContent(taskState, task.originalRow);
+    if (content) status.appendChild(content);
+    if (!attention && !content && taskState.needsAttention) status.appendChild(sidebarStatusContent({ unread: true }));
+    if (!status.children.length) return null;
+    status.className = `crmp-task-status crmp-task-status-${kind || "attention"}`;
+    if (attention) status.classList.add("crmp-task-status-has-attention");
+    if (!status.querySelector("button")) status.setAttribute("aria-hidden", "true");
     return status;
+  }
+
+  function projectStatusIndicator(project, expanded) {
+    if (expanded || project.flatRecent) return null;
+    const native = nativeProjectStatus(project);
+    const statusState = native.known ? native.statusState : aggregateSidebarStatus(project.tasks);
+    const kind = sidebarStatusKind(statusState);
+    if (!kind) return null;
+    const status = document.createElement("span");
+    status.className = `crmp-project-status crmp-project-status-${kind}`;
+    status.setAttribute("aria-hidden", "true");
+    status.appendChild(sidebarStatusContent(statusState, native.row));
+    return status;
+  }
+
+  function reserveTaskStatusSpace(taskButton, statusIndicator) {
+    if (!taskButton.isConnected || !statusIndicator.isConnected) return;
+    const width = statusIndicator.getBoundingClientRect().width;
+    if (!Number.isFinite(width) || width <= 0) return;
+    const currentPadding = Number.parseFloat(getComputedStyle(taskButton).paddingRight) || 0;
+    const trailingInset = Number.parseFloat(getComputedStyle(statusIndicator).right) || 0;
+    // Native task rows reserve intrinsic status width with a 3px gap before the
+    // trailing rail. Keep enough room for the custom row's hover actions as well.
+    taskButton.style.paddingRight = `${Math.ceil(Math.max(currentPadding, width + trailingInset + 3))}px`;
   }
 
   function isolateOverlay(element) {
@@ -2268,9 +2668,23 @@
   }
 
   function bindReorder(sourceElement, dropZone, reference) {
-    const canDrag = !state.reorderPending && Boolean(nativeKeyboardReorder(reorderElement(reference)) && sortableSnapshot(reorderElement(reference)));
+    const canDrag = !state.reorderPending && !nativeElementDisabled(sourceElement)
+      && Boolean(nativeKeyboardReorder(reorderElement(reference)) && sortableSnapshot(reorderElement(reference)));
     sourceElement.draggable = canDrag;
     if (!canDrag) return;
+    sourceElement.addEventListener("keydown", (event) => {
+      if (event.defaultPrevented || !event.altKey || event.ctrlKey || event.metaKey || event.shiftKey
+          || !["ArrowUp", "ArrowDown"].includes(event.key) || nativeElementDisabled(sourceElement)) return;
+      const nativeElement = reorderElement(reference);
+      const target = nativeElement?.matches('[role="button"]') ? nativeElement : nativeElement?.querySelector('[role="button"]');
+      const handler = nativeKeyboardReorder(nativeElement);
+      if (!target || !handler || nativeElementDisabled(target)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      handler({ altKey: true, ctrlKey: false, defaultPrevented: false, key: event.key, metaKey: false,
+        preventDefault() {}, shiftKey: false, stopPropagation() {}, target });
+      schedule();
+    });
     sourceElement.addEventListener("dragstart", (event) => {
       if (!event.dataTransfer || state.reorderPending) {
         event.preventDefault();
@@ -2344,6 +2758,8 @@
     clone.type = "button";
     clone.removeAttribute("id");
     clone.removeAttribute("data-state");
+    clone.removeAttribute("aria-controls");
+    clone.removeAttribute("aria-describedby");
     clone.classList.add(customClass);
     return clone;
   }
@@ -2372,13 +2788,17 @@
     const row = nativeProjectRowTemplate(project);
     const ownIcon = folderIconFromRow(row);
     if (!ownIcon) return plainFolderIcon(expanded);
+    // Use the current package's actual glyph when its state matches.
+    // Do not overwrite native path data with an older release's icon.
+    if (row.getAttribute("aria-expanded") === String(expanded)) return ownIcon.cloneNode(true);
     const item = row.closest("[data-sidebar-project-kind]");
     const nativeKind = item?.getAttribute("data-sidebar-project-kind");
     const desiredCollapsed = String(!expanded);
     const template = [...document.querySelectorAll(`[data-sidebar-project-kind="${CSS.escape(nativeKind || "local")}"] [data-app-action-sidebar-project-collapsed="${desiredCollapsed}"]`)]
       .map(folderIconFromRow)
       .find(Boolean);
-    const icon = (template ?? ownIcon).cloneNode(true);
+    if (template) return template.cloneNode(true);
+    const icon = ownIcon.cloneNode(true);
     const paths = [...icon.querySelectorAll("path")];
     const folderPath = paths.at(-1);
     folderPath?.setAttribute("d", expanded ? LOCAL_FOLDER_PATH.open : LOCAL_FOLDER_PATH.closed);
@@ -2477,8 +2897,8 @@
       return;
     }
     try {
-      action.click();
-      state.lastAction = { actionName, found: true, hostId: task.hostId, invoked: true, task: task.title };
+      const invoked = invokeNativeElement(action);
+      state.lastAction = { actionName, found: true, hostId: task.hostId, invoked, task: task.title };
     } catch (error) {
       state.lastAction = { actionName, error: error?.message || String(error), found: true, hostId: task.hostId, invoked: false, task: task.title };
     }
@@ -2487,8 +2907,7 @@
   async function openNativeTask(task) {
     const nativeRow = nativeThreadRow(task) ?? task.originalRow;
     if (nativeRow?.isConnected) {
-      nativeRow.click();
-      return true;
+      return invokeNativeElement(nativeRow);
     }
     const conversationId = task.conversationId || rawConversationId(task.conversationKey);
     const manager = state.threadManagers.get(task.hostId);
@@ -3363,8 +3782,8 @@
     if (state.pendingNewThreads.has(project.key)) return;
     const nativeAction = nativeProjectNewAction(project);
     if (nativeAction) {
-      invokeNativeElement(nativeAction);
-      state.lastAction = { commandId: "start-new-thread", found: true, hostId: project.hostId, invoked: true, mode: "native-project-button", project: project.name };
+      const invoked = invokeNativeElement(nativeAction);
+      state.lastAction = { commandId: "start-new-thread", found: true, hostId: project.hostId, invoked, mode: "native-project-button", project: project.name };
       return;
     }
     const localCallback = project.hostId === "local" ? nativeProjectCallback(project, "onStartNewThread") : null;
@@ -3398,11 +3817,16 @@
   }
 
   function projectCard(project) {
-    const hasNativeActions = Boolean(nativeProjectAction(project));
+    const commands = new Map(nativeProjectCommands(project).map((command) => [command.id, command]));
+    const enabled = (id) => commands.get(id)?.enabled !== false && typeof commands.get(id)?.onSelect === "function";
     const card = document.createElement("div");
     card.id = CARD_ID;
     card.className = "crmp-project-card";
+    card.setAttribute("role", "dialog");
+    card.setAttribute("aria-label", `Project details for ${project.name}`);
+    card.tabIndex = -1;
     isolateOverlay(card);
+    bindOverlayKeyboard(card);
     const head = document.createElement("div");
     head.className = "crmp-project-card-row crmp-project-card-head";
     const icon = document.createElement("span");
@@ -3413,9 +3837,11 @@
     const spacer = document.createElement("span");
     spacer.className = "crmp-project-card-spacer";
     const pin = button("crmp-project-card-row crmp-project-card-pin", "⌖");
-    pin.setAttribute("aria-label", `Pin or unpin ${project.name}`);
-    pin.title = "Pin or unpin project";
-    pin.disabled = !hasNativeActions;
+    setFocusKey(pin, "card", project.key, "pin-project");
+    const pinLabel = typeof commands.get("pin-project")?.label === "string" ? commands.get("pin-project").label : "Pin or unpin project";
+    pin.setAttribute("aria-label", pinLabel);
+    pin.title = pinLabel;
+    pin.disabled = !enabled("pin-project");
     bindActivation(pin, () => invokeNativeProjectCommand(project, "pin-project"));
     head.append(icon, label, spacer, pin);
     card.appendChild(head);
@@ -3426,8 +3852,9 @@
     card.append(count, divider());
 
     const path = button("crmp-project-card-row crmp-project-card-path", "");
+    setFocusKey(path, "card", project.key, "reveal-project-folder");
     path.title = "Open in Explorer";
-    path.disabled = !hasNativeActions;
+    path.disabled = !enabled("reveal-project-folder");
     path.innerHTML = '<span class="crmp-project-card-icon">▱</span>';
     const pathText = document.createElement("span");
     pathText.textContent = project.cwd || "Project folder unavailable";
@@ -3436,9 +3863,10 @@
     card.append(path, divider());
 
     const edit = button("crmp-project-card-row", "");
+    setFocusKey(edit, "card", project.key, "edit-project");
     edit.innerHTML = '<span class="crmp-project-card-icon">⚙</span><span>Edit project</span>';
-    edit.disabled = !hasNativeActions;
-    if (!hasNativeActions) edit.title = "Remote project editing is not exposed by the native desktop sidebar";
+    edit.disabled = !enabled("edit-project");
+    if (edit.disabled) edit.title = "Project editing is unavailable in the native sidebar";
     bindActivation(edit, () => invokeNativeProjectCommand(project, "edit-project"));
     card.appendChild(edit);
     return card;
@@ -3456,7 +3884,10 @@
     const menu = document.createElement("div");
     menu.id = CONTEXT_ID;
     menu.setAttribute("role", "menu");
+    menu.setAttribute("aria-label", `Project actions for ${project.name}`);
+    menu.tabIndex = -1;
     isolateOverlay(menu);
+    bindOverlayKeyboard(menu, true);
     if (!commands.size && !suppressed) {
       const note = document.createElement("div");
       note.className = "crmp-context-note";
@@ -3484,12 +3915,17 @@
       }
       const [id, icon, label] = definition;
       const item = button("crmp-context-item", "");
+      setFocusKey(item, "context", project.key, id);
       item.setAttribute("role", "menuitem");
       item.innerHTML = `<span aria-hidden="true">${icon}</span><span>${label}</span>`;
       const custom = id === "allow-auto-registration";
       const command = commands.get(id);
-      item.disabled = !custom && (!command || command.enabled === false);
-      if (item.disabled) item.title = "This command is not exposed for this remote project";
+      const commandLabel = typeof command?.label === "string" && command.label.trim() ? command.label : label;
+      item.lastElementChild.textContent = commandLabel;
+      item.setAttribute("aria-label", commandLabel);
+      item.tabIndex = -1;
+      item.disabled = !custom && (!command || command.enabled === false || typeof command.onSelect !== "function");
+      if (item.disabled) item.title = "This command is unavailable in the native sidebar";
       bindActivation(item, () => custom ? allowAutoRegistration(project) : invokeNativeProjectCommand(project, id));
       menu.appendChild(item);
     }
@@ -3522,7 +3958,30 @@
     menu.style.top = `${top}px`;
   }
 
+  function appendEmptyProjectState(tasks, project) {
+    if (project.kind !== "project" || project.tasks.length || state.collapsed.has(project.key)) return;
+    const nativeItem = nativeProjectItem(project);
+    const nativeEmpty = [...(nativeItem?.querySelectorAll("div.text-codex-description.opacity-50") ?? [])]
+      .find((element) => element.children.length === 0);
+    const wrapper = document.createElement("div");
+    wrapper.className = "pt-0.5 pb-2 crmp-empty-project";
+    const content = document.createElement("div");
+    const empty = nativeEmpty?.cloneNode(true) ?? document.createElement("div");
+    if (!nativeEmpty) {
+      empty.className = "text-codex-description opacity-50 px-8 py-1 text-base";
+      empty.textContent = nativeItem ? "No chats" : "No loaded chats";
+    }
+    content.appendChild(empty);
+    wrapper.appendChild(content);
+    tasks.appendChild(wrapper);
+  }
+
   function appendGroup(fragment, project) {
+    const nativeToggle = nativeProjectItem(project)?.querySelector('[data-app-action-sidebar-project-collapsed]');
+    if (nativeToggle) {
+      if (nativeToggle.getAttribute("data-app-action-sidebar-project-collapsed") === "true") state.collapsed.add(project.key);
+      else state.collapsed.delete(project.key);
+    }
     const section = document.createElement("section");
     section.className = "crmp-project";
     section.dataset.hostId = project.hostId;
@@ -3532,6 +3991,7 @@
     head.className = `${nativeHeadClass || "sidebar-item group relative"} crmp-project-head`;
     head.dataset.actionsOpen = String(state.actionCardKey === project.key || state.contextProjectKey === project.key);
     const toggle = button("crmp-project-toggle", "");
+    setFocusKey(toggle, "project", project.key, "toggle");
     toggle.title = project.cwd || project.name;
     toggle.setAttribute("aria-expanded", String(!state.collapsed.has(project.key)));
     const folder = document.createElement("span");
@@ -3550,51 +4010,83 @@
     toggle.append(folder, name, suffix);
     toggle.addEventListener("click", () => {
       if (performance.now() - state.dragJustEndedAt < 250) return;
+      if (nativeToggle) {
+        nativeToggle.click();
+        schedule();
+        return;
+      }
       if (state.collapsed.has(project.key)) state.collapsed.delete(project.key); else state.collapsed.add(project.key);
       render();
     });
     bindReorder(toggle, head, reorderReference("project", project));
+    toggle.addEventListener("keydown", (event) => {
+      if (project.kind !== "project" || (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10"))) return;
+      event.preventDefault();
+      event.stopPropagation();
+      openProjectContextMenu(project, toggle);
+    });
     head.addEventListener("contextmenu", (event) => {
       if (project.kind !== "project") return;
       if (event.target.closest(".crmp-project-action,.crmp-project-new")) return;
       event.preventDefault();
       event.stopPropagation();
-      state.actionCardKey = null;
-      state.contextProjectKey = project.key;
-      state.contextPoint = { x: event.clientX, y: event.clientY };
-      render();
+      openProjectContextMenu(project, toggle, { x: event.clientX, y: event.clientY });
     });
     head.appendChild(toggle);
+    const groupStatus = projectStatusIndicator(project, expanded);
+    if (groupStatus) head.appendChild(groupStatus);
     if (project.kind === "project") {
       const create = cloneNativeButton(nativeProjectButtonTemplate(project, "new"), "crmp-project-new", "✎");
+      setFocusKey(create, "project", project.key, "new");
       create.setAttribute("aria-label", `Start new chat in ${project.name}`);
       create.title = `Start new chat in ${project.name}`;
       const exactNativeNewAction = nativeProjectNewAction(project);
-      create.disabled = state.pendingNewThreads.has(project.key) || (!exactNativeNewAction && (project.hostId === "local"
+      create.disabled = state.pendingNewThreads.has(project.key) || nativeElementDisabled(exactNativeNewAction) || (!exactNativeNewAction && (project.hostId === "local"
         ? !nativeProjectCallback(project, "onStartNewThread") && !(project.projectId && (nativeStartThreadDispatcher() || (typeof state.localFetchFromHost === "function" && nativeGlobalNewChatAction())))
         : !project.cwd || !(project.projectId ? nativeStartThreadDispatcher() || (typeof state.localFetchFromHost === "function" && nativeGlobalNewChatAction()) : nativeNavigationDispatcher())));
       bindActivation(create, () => startNativeProjectThread(project));
       head.appendChild(create);
       const actions = cloneNativeButton(nativeProjectButtonTemplate(project, "actions"), "crmp-project-action", "⋯");
+      setFocusKey(actions, "project", project.key, "details");
       actions.setAttribute("aria-label", `Open project details for ${project.name}`);
+      actions.setAttribute("aria-haspopup", "dialog");
       actions.setAttribute("aria-expanded", String(state.actionCardKey === project.key));
+      if (state.actionCardKey === project.key) actions.setAttribute("aria-controls", CARD_ID);
       actions.title = "Project details and settings";
       bindActivation(actions, () => {
-        state.actionCardKey = state.actionCardKey === project.key ? null : project.key;
+        if (state.actionCardKey === project.key) {
+          closeProjectOverlays();
+          return;
+        }
+        state.contextProjectKey = null;
+        state.contextPoint = null;
+        state.actionCardKey = project.key;
+        state.overlayFocusReturnKey = actions.dataset.crmpFocusKey;
+        state.pendingOverlayFocus = { id: CARD_ID };
         render();
       });
       head.appendChild(actions);
     }
-    section.appendChild(head);
-    if (!state.collapsed.has(project.key)) {
+    if (!project.flatRecent) section.appendChild(head);
+    if (project.flatRecent || !state.collapsed.has(project.key)) {
       const tasks = document.createElement("div");
       tasks.className = "crmp-tasks";
+      if (project.tasks.length && !project.flatRecent) tasks.style.padding = "2px 0 8px";
+      appendEmptyProjectState(tasks, project);
       for (const task of project.tasks) {
         const taskRow = document.createElement("div");
         taskRow.className = "crmp-task-row group";
         const taskButton = button(`${task.originalRow?.className || ""} crmp-task`, task.title);
+        setFocusKey(taskButton, "task", task.hostId, task.conversationKey);
+        taskButton.disabled = nativeElementDisabled(task.originalRow);
+        if (project.flatRecent) taskButton.style.paddingInlineStart = "8px";
+        if (task.originalRow) {
+          const nativeStyle = getComputedStyle(task.originalRow);
+          for (const property of ["fontSize", "fontWeight", "lineHeight", "color"]) taskButton.style[property] = nativeStyle[property];
+          if (task.selected) taskButton.style.backgroundColor = nativeStyle.backgroundColor;
+        }
         const working = task.statusType === "loading";
-        const stateLabel = working ? "working" : task.unread ? "completed, unread" : null;
+        const stateLabel = taskStatusLabel(task);
         if (stateLabel) taskButton.setAttribute("aria-label", `${task.title}, ${stateLabel}`);
         taskButton.title = `${task.title}\n${task.cwd || project.cwd || "No project folder"}\n${project.hostName}`;
         taskButton.dataset.appActionSidebarThreadSelected = String(task.selected);
@@ -3621,7 +4113,10 @@
         bindReorder(taskButton, taskRow, reorderReference("task", task, project.key));
         taskRow.appendChild(taskButton);
         const statusIndicator = taskStatusIndicator(task);
-        if (statusIndicator) taskRow.appendChild(statusIndicator);
+        if (statusIndicator) {
+          taskRow.appendChild(statusIndicator);
+          queueMicrotask(() => reserveTaskStatusSpace(taskButton, statusIndicator));
+        }
         const taskActions = document.createElement("div");
         const railTemplate = nativeThreadAction(task, "pin")?.closest('div[class*="absolute"][class*="end-0"]')
           ?? nativeThreadAction(task, "archive")?.closest('div[class*="absolute"][class*="end-0"]');
@@ -3631,6 +4126,7 @@
           if (!nativeAction) continue;
           const actionLabel = nativeAction.getAttribute("aria-label") || (actionName === "pin" ? "Pin chat" : "Archive chat");
           const actionButton = cloneNativeButton(nativeAction, "crmp-task-action", actionName === "pin" ? "⌖" : "▣");
+          setFocusKey(actionButton, "task", task.hostId, task.conversationKey, actionName);
           actionButton.setAttribute("aria-label", actionLabel);
           actionButton.title = actionLabel;
           bindActivation(actionButton, () => invokeNativeThreadAction(task, actionName));
@@ -3645,12 +4141,15 @@
   }
 
   function render() {
+    const focus = captureSidebarFocus();
     state.scheduledFrame = null;
     document.getElementById(CARD_ID)?.remove();
     document.getElementById(CONTEXT_ID)?.remove();
     if (!state.active) return probe();
     const model = collectModel();
-    const nextNative = commonAncestor(model.rows.length ? model.rows : model.nativeProjectItems);
+    // Current Codex separates Projects and Recents into sibling sections.
+    // Include both sets so the replacement covers the complete native list.
+    const nextNative = nativeListContainer(model.rows, model.nativeProjectItems);
     if (!nextNative) {
       if (state.mountRetryTimer === null) {
         state.mountRetryTimer = setTimeout(() => {
@@ -3675,6 +4174,7 @@
     modes.className = "crmp-modes";
     for (const [id, label] of [["mobile", "Mobile projects"], ["native", "Native views"]]) {
       const mode = button("crmp-mode", label);
+      setFocusKey(mode, "mode", id);
       mode.setAttribute("aria-pressed", String(state.view === id));
       mode.addEventListener("click", () => setView(id));
       modes.appendChild(mode);
@@ -3693,6 +4193,7 @@
     if (state.view === "native") {
       state.nativeContainer.style.display = state.originalDisplay;
       state.panel.replaceChildren(fragment);
+      restoreRenderedFocus(focus);
       return probe(model);
     }
     state.nativeContainer.style.setProperty("display", "none", "important");
@@ -3700,14 +4201,24 @@
     if (state.filter !== "all" && !model.hosts.some((host) => host.id === state.filter)) state.filter = "all";
     const filters = document.createElement("div");
     filters.className = "crmp-filters";
+    filters.setAttribute("role", "group");
     filters.setAttribute("aria-label", "Filter tasks by device");
     const filterItems = [{ id: "all", name: "All" }, ...model.hosts];
     for (const host of filterItems) {
       const chip = button("crmp-chip", host.name);
+      setFocusKey(chip, "filter", host.id);
+      chip.style.maxWidth = "100%";
+      chip.style.overflow = "hidden";
+      chip.style.textOverflow = "ellipsis";
+      chip.title = host.name;
       chip.setAttribute("aria-pressed", String(state.filter === host.id));
       if (host.id !== "all") {
         const dot = document.createElement("span");
-        dot.className = `crmp-dot${host.available === false ? " crmp-dot-unavailable" : ""}`;
+        dot.className = `crmp-dot${host.availabilityKnown && host.available === false ? " crmp-dot-unavailable" : ""}`;
+        if (!host.availabilityKnown) {
+          dot.style.background = "#888";
+          chip.title = `${host.name} — connection status unknown`;
+        }
         chip.prepend(dot);
       }
       chip.addEventListener("click", () => { state.filter = host.id; render(); });
@@ -3719,12 +4230,14 @@
     autoControls.className = "crmp-auto-controls";
     const autoEnabled = readBoolean(AUTO_ENABLED_KEY);
     const autoToggle = button("crmp-auto-control", autoEnabled ? "Auto-register: on" : "Auto-register: off");
+    setFocusKey(autoToggle, "auto", "register");
     autoToggle.setAttribute("aria-pressed", String(autoEnabled));
     autoToggle.title = "Mirror active projects published by connected injected devices";
     autoToggle.addEventListener("click", () => setAutoRegistration(!autoEnabled));
     autoControls.appendChild(autoToggle);
     const managedCount = Object.keys(readRecords(AUTO_MANAGED_KEY)).length;
     const removeManaged = button("crmp-auto-control", `Remove auto projects (${managedCount})`);
+    setFocusKey(removeManaged, "auto", "remove-projects");
     removeManaged.disabled = managedCount === 0;
     removeManaged.title = managedCount
       ? "Remove only projects created by this client's automatic registration"
@@ -3737,6 +4250,7 @@
     autoControls.appendChild(removeManaged);
     const autoArchiveEnabled = readOptionalBoolean(AUTO_ARCHIVE_ENABLED_KEY);
     const autoArchive = button("crmp-auto-control", autoArchiveEnabled ? "Auto-cleanup: on" : "Auto-cleanup: off");
+    setFocusKey(autoArchive, "auto", "cleanup");
     autoArchive.setAttribute("aria-pressed", String(autoArchiveEnabled));
     autoArchive.title = autoArchiveEnabled
       ? "Archive inactive local chats after 7 days and permanently delete them after 7 more archived days; click to disable"
@@ -3760,18 +4274,24 @@
       fragment.appendChild(status);
     }
     const panelTitle = document.createElement("div");
-    panelTitle.className = "crmp-title";
+    panelTitle.className = "crmp-title text-base font-medium text-tertiary opacity-75";
     panelTitle.textContent = "Projects";
     fragment.appendChild(panelTitle);
     const visibleProjects = model.projects.filter((project) => state.filter === "all" || project.hostId === state.filter);
     const visibleRecents = model.recents.filter((project) => state.filter === "all" || project.hostId === state.filter);
-    for (const project of visibleProjects) appendGroup(fragment, project);
+    const projectList = document.createElement("div");
+    projectList.className = "crmp-project-list";
+    for (const project of visibleProjects) appendGroup(projectList, project);
+    fragment.appendChild(projectList);
     if (visibleRecents.length) {
       const recentsTitle = document.createElement("div");
-      recentsTitle.className = "crmp-title";
+      recentsTitle.className = "crmp-title text-base font-medium text-tertiary opacity-75";
       recentsTitle.textContent = "Recents";
       fragment.appendChild(recentsTitle);
-      for (const recent of visibleRecents) appendGroup(fragment, recent);
+      const recentList = document.createElement("div");
+      recentList.className = "crmp-project-list";
+      for (const recent of visibleRecents) appendGroup(recentList, { ...recent, flatRecent: visibleRecents.length === 1 });
+      fragment.appendChild(recentList);
     }
     if (!visibleProjects.length && !visibleRecents.length) {
       const empty = document.createElement("div");
@@ -3786,6 +4306,7 @@
     if (contextProject) document.body.appendChild(projectContextMenu(contextProject));
     positionProjectCard();
     positionProjectContextMenu();
+    restoreRenderedFocus(focus);
     return probe(model);
   }
 
@@ -3812,10 +4333,9 @@
 
   function dismissOnEscape(event) {
     if (event.key !== "Escape" || (!state.actionCardKey && !state.contextProjectKey)) return;
-    state.actionCardKey = null;
-    state.contextProjectKey = null;
-    state.contextPoint = null;
-    render();
+    event.preventDefault();
+    event.stopPropagation();
+    closeProjectOverlays();
   }
 
   function probe(model = null) {
@@ -3930,7 +4450,7 @@
     if (!state.observer) {
       state.observer = new MutationObserver(schedule);
       state.observer.observe(document.body, {
-        attributeFilter: ["data-app-action-sidebar-thread-selected", "data-app-action-sidebar-thread-title"],
+        attributeFilter: ["data-app-action-sidebar-thread-selected", "data-app-action-sidebar-thread-title", "data-app-action-sidebar-project-collapsed", "aria-expanded", "disabled"],
         attributes: true,
         childList: true,
         subtree: true,

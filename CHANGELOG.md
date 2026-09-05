@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.5.31
+
+- Match native project row spacing, headings, open/closed folder icons, and
+  expanded empty-project placeholders. Mount Projects and Recents together,
+  and omit the artificial folder layer for single-device Recents.
+- Preserve confirmed device names across renderer reinjection and temporary
+  metadata gaps. Unknown connectivity is neutral rather than reported offline.
+- Honor native task indicators and collapsed-project aggregation, including
+  working, unread, and waiting states, with reduced-motion support.
+- Preserve keyboard focus during sidebar refreshes and support keyboard
+  navigation and dismissal of custom menus. Unavailable native actions remain
+  disabled instead of appearing actionable.
+- Add focused host-name, layout, status, and keyboard regression suites.
+  Windows and macOS share renderer v64; existing remote authorization,
+  inventory filtering, and maintenance safeguards remain unchanged.
+
 ## v1.5.30
 
 - Publish the fully validated native-proxy and complete-project-sync build as a

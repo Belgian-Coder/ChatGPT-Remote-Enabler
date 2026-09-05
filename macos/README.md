@@ -20,7 +20,7 @@ removed projects and stale native rows do not. On app builds that no longer
 expose the project-state bridge, the publisher uses the current native local
 project catalogue and refuses a false empty inventory while that catalogue is
 unavailable. Inventory-only remote folders use the same aligned folder geometry
-and a small remote marker.
+without an extra decorative marker.
 When a connected device is still running an older publisher, its direct
 user-facing task list takes precedence over that cached inventory so internal
 child runs stay hidden during a staggered upgrade.

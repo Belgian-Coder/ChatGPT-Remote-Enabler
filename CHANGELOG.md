@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.5.34 (prerelease)
+
+- Add device health with timestamped connection/inventory evidence, optional peer helper version, and coalesced refresh.
+- Add local device aliases without changing identity, reported names, cache keys, or publication.
+- Add read-only cleanup previews that fail closed on incomplete task/pin information, plus bounded local operation history.
+- Add persistent update details/history, validated release-note links, and a read-only history refresh that can pick up late relaunch results.
+- Add allowlisted diagnostic JSON preview with explicit copy/save and no automatic upload.
+- Cover alias reload/caret retention, preview safety, history retention/privacy, real browser exports, and CDP metadata/history requests.
+- Keep native macOS, assistive technology, real sign-in, and full live-app update acceptance pending.
+
 ## v1.5.33 (prerelease)
 
 - Rename the enhanced view to Device projects and preserve stored view preferences.

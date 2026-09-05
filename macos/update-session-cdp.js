@@ -13,7 +13,7 @@ const STATUS_STATES = new Set([
   "checking", "current", "available", "queued", "preparing", "closing",
   "updating", "restarting", "error", "unavailable",
 ]);
-const REQUEST_ACTIONS = new Set(["check", "queue", "cancel"]);
+const REQUEST_ACTIONS = new Set(["check", "queue", "cancel", "history"]);
 const TERMINAL_ATTACH_CODES = new Set([
   "BOOTSTRAP_FAILED",
   "PERSISTENT_SCRIPT_INVALID",
@@ -33,8 +33,25 @@ function cleanMessage(value, fallback = null) {
   return cleaned || fallback;
 }
 
+const HISTORY_STATES = new Set([...STATUS_STATES, "restart-confirmed", "cancelled", "checked"]);
+function normalizeUpdateDetails(value) {
+  if (!value || typeof value !== "object") return null;
+  const version = input => typeof input === "string" && /^v\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/u.test(input) && input.length <= 64 ? input : null;
+  const now = Date.now();
+  return {
+    installedVersion: version(value.installedVersion),
+    availableVersion: version(value.availableVersion),
+    lastCheckedAt: Number.isFinite(value.lastCheckedAt) && value.lastCheckedAt > 0 && value.lastCheckedAt <= now + 60000 ? value.lastCheckedAt : null,
+    historyAvailable: value.historyAvailable !== false,
+    history: (Array.isArray(value.history) ? value.history : []).filter(entry => entry && HISTORY_STATES.has(entry.state)
+      && Number.isFinite(entry.at) && entry.at > now - 90 * 86400000 && entry.at <= now + 60000)
+      .slice(-100).map(entry => ({ at: entry.at, state: entry.state, version: version(entry.version) })),
+  };
+}
+
 function canonicalStatus(value) {
   return {
+    ...(value?.details ? { details: normalizeUpdateDetails(value.details) } : {}),
     canCancel: value?.canCancel === true,
     canQueue: value?.canQueue === true,
     message: cleanMessage(value?.message),
@@ -61,11 +78,11 @@ function bootstrapSource(nonce, initialStatus) {
     const internalName = ${encodedInternal};
     const nonce = ${encodedNonce};
     const publicName = ${encodedPublic};
-    const allowed = new Set(["check", "queue", "cancel"]);
+    const allowed = new Set(["check", "queue", "cancel", "history"]);
     const pending = new Map();
     let disposed = false;
     let status = ${encodedStatus};
-    const clone = (value) => ({ state: value.state, version: value.version, message: value.message, canCancel: value.canCancel, canQueue: value.canQueue });
+    const clone = (value) => ({ ...(value.details ? { details: JSON.parse(JSON.stringify(value.details)) } : {}), state: value.state, version: value.version, message: value.message, canCancel: value.canCancel, canQueue: value.canQueue });
     try { globalThis[internalName]?.dispose?.("The update controller was replaced."); } catch {}
     let api;
     const internal = {
@@ -497,4 +514,5 @@ class CdpTransport {
   }
 }
 
-module.exports = { BINDING_NAME, TARGET_URL, CdpTransport, bootstrapSource };
+module.exports = {
+  normalizeUpdateDetails, BINDING_NAME, TARGET_URL, CdpTransport, bootstrapSource };

@@ -4,7 +4,7 @@ You need Windows 11 x64, the ChatGPT/Codex desktop app installed and signed in w
 
 ## 1. Download and extract
 
-1. Download **ChatGPT-Remote-Enabler-Windows-x64-v1.5.33.zip** from [v1.5.33 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.33). Read the prerelease testing limitations.
+1. Download **ChatGPT-Remote-Enabler-Windows-x64-v1.5.34.zip** from [v1.5.34 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.34). Read the prerelease testing limitations.
 2. Right-click the ZIP in File Explorer, choose **Properties**, select **Unblock** if offered, and click **OK**. Then choose **Extract All**.
 3. Enter `%LOCALAPPDATA%\Programs` in File Explorer's address bar. Create a **ChatGPTRemoteEnabler** folder and copy the extracted package contents into it.
 4. **ChatGPT Remote Enabler.exe**, **README.md**, and **CodexRemoteMobileProject** must be directly inside that folder. Keep the whole package together.
@@ -290,8 +290,12 @@ their included C# source files.
 
 These screenshots show the shared renderer in a browser fixture; they are not native macOS acceptance evidence.
 
-![Device projects](screenshots/device-projects-v1.5.33.png)
+![Device projects](screenshots/device-projects-v1.5.34.png)
 
-![Settings and update status](screenshots/settings-v1.5.33.png)
+![Settings and update status](screenshots/settings-v1.5.34.png)
 
-![Windows setup assistant](screenshots/setup-v1.5.33.png)
+![Windows setup assistant](screenshots/setup-v1.5.34.png)
+
+## Health, history, and diagnostics
+
+Settings now includes cleanup preview/history, update details/history, and an explicit diagnostic export preview. Device health includes refresh, reported helper versions, and aliases that stay on this client. See the [feature guide](FEATURES.md) for retention and privacy boundaries.

@@ -224,7 +224,12 @@ async function main(argv = process.argv.slice(2)) {
         const localEntry = Object.entries(peers).find(([name, value]) => name.localeCompare(options.localName, undefined, { sensitivity: "base" }) === 0 && typeof value === "string");
         if (!singleRemoteDisplayName && localEntry) singleRemoteDisplayName = localEntry[1];
       } catch {}
-      const prefix = `globalThis.__CODEX_REMOTE_MOBILE_CONFIG__ = Object.freeze(${JSON.stringify({ hostDisplayNames, localDisplayName: options.localName, singleRemoteDisplayName })});\n`;
+      let helperVersion = null;
+      try {
+        const candidate = fs.readFileSync(path.join(__dirname, "VERSION"), "utf8").trim();
+        if (/^v\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/u.test(candidate) && candidate.length <= 64) helperVersion = candidate;
+      } catch {}
+      const prefix = `globalThis.__CODEX_REMOTE_MOBILE_CONFIG__ = Object.freeze(${JSON.stringify({ hostDisplayNames, localDisplayName: options.localName, singleRemoteDisplayName, helperVersion })});\n`;
       const source = prefix + payload;
       const persistent = await client.call("Page.addScriptToEvaluateOnNewDocument", { source }, 5000);
       if (typeof persistent?.identifier !== "string" || !persistent.identifier) throw new Error("CDP did not return a persistent script identifier");

@@ -127,13 +127,24 @@ async function main() {
       return { state: "current", version: "v-real", message: null, canQueue: false, canCancel: false };
     });
     await transport.attach();
-    await transport.publish({ state: "available", version: "v-real", message: "ready", canQueue: true });
+    await transport.publish({ state: "available", version: "v-real", message: "ready", canQueue: true,
+      details: { installedVersion: "v1.5.34", lastCheckedAt: Date.now(), historyAvailable: true, history: [{ state: "restart-confirmed", at: Date.now(), version: "v1.5.34", secret: "discard" }] } });
+    assert.equal(await page.evaluate(() => __CHATGPT_REMOTE_UPDATE__.getStatus().details.installedVersion), "v1.5.34");
+    assert.equal(await page.evaluate(() => {
+      const first = __CHATGPT_REMOTE_UPDATE__.getStatus();
+      first.details.history[0].state = "modified";
+      return __CHATGPT_REMOTE_UPDATE__.getStatus().details.history[0].state;
+    }), "restart-confirmed");
 
     const reply = await page.evaluate(() => globalThis.__CHATGPT_REMOTE_UPDATE__.request("check"));
     assert.equal(reply.state, "current");
     assert.equal(requests.length, 1);
     assert.equal(requests[0].action, "check");
     assert.match(requests[0].id, /^[A-Za-z0-9._:-]{1,128}$/u);
+
+    const historyReply = await page.evaluate(() => globalThis.__CHATGPT_REMOTE_UPDATE__.request("history"));
+    assert.equal(historyReply.state, "current");
+    assert.equal(requests.at(-1).action, "history");
 
     await page.evaluate(() => {
       globalThis.__activityCalls = 0;

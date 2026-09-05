@@ -10,7 +10,7 @@ const { chromium } = require("playwright");
 
 const sourcePath = path.join(__dirname, "..", "windows", "CodexRemoteMobileProject", "renderer-mobile-project-view.js");
 const source = fs.readFileSync(sourcePath, "utf8").replace(/\r\n/gu, "\n");
-const fixtureSource = source.replace("  return install();\n})();", "  globalThis.__crmpBrowserFixture = { state, install, render, collectModel, emptyInventoryMessage };\n})();");
+const fixtureSource = source.replace("  return install();\n})();", "  globalThis.__crmpBrowserFixture = { state, install, render, collectModel, emptyInventoryMessage, refreshDeviceHealth, diagnosticSnapshot };\n})();");
 assert.notEqual(fixtureSource, source, "The fixture must expose the real renderer entrypoints.");
 
 async function main() {
@@ -166,6 +166,69 @@ async function main() {
     assert.match(emptyStates.filtered, /Choose All/);
     assert.match(emptyStates.stale, /out of date/);
 
+    // Exercise aliases through actual controls, preserving both caret and verified identity.
+    await panel.locator(".crmp-devices > summary").click();
+    let aliasInput = panel.getByRole("textbox", { name: "Local alias for Peer desktop", exact: true });
+    await aliasInput.fill("My local alias");
+    await aliasInput.press("Home");
+    await aliasInput.press("ArrowRight");
+    await page.evaluate(() => __crmpBrowserFixture.render());
+    aliasInput = panel.getByRole("textbox", { name: "Local alias for Peer desktop", exact: true });
+    assert.equal(await aliasInput.inputValue(), "My local alias");
+    assert.equal(await aliasInput.evaluate(element => element.selectionStart), 1);
+    await aliasInput.press("Enter");
+    await chips.filter({ hasText: "My local alias" }).waitFor();
+    assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem("codex-remote-mobile-host-names-v1"))[__fixtureHost]), "Peer desktop");
+    await page.evaluate(() => __CODEX_REMOTE_MOBILE_PROJECT_VIEW__.uninstall());
+    await page.evaluate(fixtureSource);
+    await page.evaluate(() => {
+      __crmpBrowserFixture.state.remoteProjectInventories.set(__fixtureHost, __fixtureInventory(null, "/fixture/design"));
+      __crmpBrowserFixture.state.remoteProjectInventories.set(__fixtureOlderHost, __fixtureInventory(null, "/fixture/older"));
+      __crmpBrowserFixture.install();
+    });
+    await chips.filter({ hasText: "My local alias" }).waitFor();
+    await panel.locator(".crmp-devices > summary").click();
+    await panel.locator(".crmp-device-card").filter({ hasText: "My local alias" }).getByRole("button", {name:"Reset alias", exact:true}).click();
+    await chips.filter({ hasText: "Peer desktop" }).waitFor();
+    const refreshed = await page.evaluate(() => {
+      const a = __crmpBrowserFixture.refreshDeviceHealth();
+      const b = __crmpBrowserFixture.refreshDeviceHealth();
+      return [a, b];
+    });
+    assert.deepEqual(refreshed, [true, false], "health refresh must coalesce repeated clicks");
+    await panel.getByRole("button", { name: "Settings", exact: true }).click();
+    await panel.locator(".crmp-feature > summary").filter({ hasText: "Cleanup preview and history" }).click();
+    await panel.getByRole("button", { name: "Refresh cleanup preview", exact: true }).click();
+    await panel.getByText(/Preview is unavailable/).waitFor();
+    assert.equal(await page.evaluate(() => localStorage.getItem("codex-remote-mobile-auto-archive-enabled-v1")), "false");
+    await page.evaluate(() => {
+      __fixtureUpdateStatus = { state:"current", version:"v1.5.34", details: {
+        installedVersion:"v1.5.34", availableVersion:null, lastCheckedAt:Date.now(), historyAvailable:true,
+        history:[{state:"restart-confirmed",version:"v1.5.34",at:Date.now()}]
+      } };
+      __crmpBrowserFixture.state.featureOpen.updates = true;
+      __crmpBrowserFixture.state.featureOpen.diagnostics = true;
+      globalThis.dispatchEvent(new CustomEvent("chatgpt-remote-update-status", { detail: __fixtureUpdateStatus }));
+      Object.defineProperty(navigator, "clipboard", { configurable:true, value:{writeText:async text => { globalThis.__copiedDiagnostic = text; }} });
+    });
+    await panel.getByText(/Relaunch confirmed/).waitFor();
+    assert.equal(await panel.getByRole("link", {name:"Installed release notes: v1.5.34", exact:true}).getAttribute("href"), "https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.34");
+    await panel.getByRole("button", { name: "Generate diagnostic preview", exact: true }).click();
+    const json = await panel.getByRole("textbox", {name:"Diagnostic JSON preview", exact:true}).inputValue();
+    assert.doesNotMatch(json, /Peer desktop|My local alias|primary_fixture|older_fixture|Design project|\/fixture\//);
+    await panel.getByRole("button", { name: "Copy preview", exact: true }).click();
+    await page.waitForFunction(() => typeof globalThis.__copiedDiagnostic === "string");
+    assert.equal(await page.evaluate(() => __copiedDiagnostic), json);
+    const downloadEvent = page.waitForEvent("download");
+    await panel.getByRole("button", { name: "Save JSON", exact: true }).click();
+    const download = await downloadEvent;
+    assert.equal(fs.readFileSync(await download.path(), "utf8"), json, "download must exactly match the visible preview");
+    await page.evaluate(() => {
+      __crmpBrowserFixture.state.featureOpen = {};
+      __crmpBrowserFixture.state.cleanupPreviewError = null;
+      __crmpBrowserFixture.render();
+    });
+
     const screenshotIndex = process.argv.indexOf("--screenshot");
     const screenshotPath = screenshotIndex >= 0 ? path.resolve(process.argv[screenshotIndex + 1]) : null;
     for (const theme of ["dark", "light"]) {
@@ -206,6 +269,17 @@ async function main() {
       }
       if (screenshotPath) await panel.screenshot({ path: screenshotPath.replace(/\.png$/u, `-${theme}.png`) });
     }
+    if (screenshotPath) {
+      await page.evaluate(() => {
+        __crmpBrowserFixture.state.settingsOpen = true;
+        __crmpBrowserFixture.state.deviceDetailsOpen = false;
+        __crmpBrowserFixture.state.featureOpen = { cleanup: true, updates: true, diagnostics: true };
+        __fixtureUpdateStatus = { state: "current", version: "v1.5.34", details: { installedVersion: "v1.5.34", lastCheckedAt: Date.now(), historyAvailable: true, history: [{ at: Date.now(), state: "checked", version: "v1.5.34" }] } };
+        globalThis.dispatchEvent(new CustomEvent("chatgpt-remote-update-status", { detail: __fixtureUpdateStatus }));
+      });
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await panel.screenshot({ path: screenshotPath.replace(/\.png$/u, "-features.png") });
+    }
     await page.emulateMedia({ reducedMotion: "reduce" });
     assert.ok(await page.evaluate(() => matchMedia("(prefers-reduced-motion: reduce)").matches));
     await page.evaluate(() => {
@@ -217,7 +291,7 @@ async function main() {
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     if (screenshotPath) await panel.screenshot({ path: screenshotPath });
     assert.deepEqual(errors, [], "the real renderer must not raise browser errors");
-    console.log(JSON.stringify({ uxStates: 10, themes: 2, sidebarWidths: [280,320,400], scaling: [1,2], fixtureTextContrast: true, stableAnnouncements: true, focusRestored: true, realChromium: true, realModelAndRender: true, neutralName: true, metadataArrival: true, reinjection: true, updateEventBothTargets: true, keyboardQueue: true, nativeViewUpdate: true, cancel: true, unrelatedMutations: 200, extraRenders: after.renders - before.renders, extraHostScans: after.hostDiscoveryScans - before.hostDiscoveryScans }));
+    console.log(JSON.stringify({ featureControls: true, aliasReload: true, caretPreserved: true, healthRefreshCoalesced: true, diagnosticCopyAndDownload: true, uxStates: 10, themes: 2, sidebarWidths: [280,320,400], scaling: [1,2], fixtureTextContrast: true, stableAnnouncements: true, focusRestored: true, realChromium: true, realModelAndRender: true, neutralName: true, metadataArrival: true, reinjection: true, updateEventBothTargets: true, keyboardQueue: true, nativeViewUpdate: true, cancel: true, unrelatedMutations: 200, extraRenders: after.renders - before.renders, extraHostScans: after.hostDiscoveryScans - before.hostDiscoveryScans }));
   } finally { await browser.close(); }
 }
 

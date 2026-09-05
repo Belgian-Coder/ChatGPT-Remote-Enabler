@@ -1,15 +1,13 @@
-# Potential next features
+# Feature roadmap
 
-These are suggestions, not implemented capabilities or automatic commitments.
+Implemented in v1.5.34: device health with refresh/version evidence, cleanup preview/history, local device aliases, update details/history, and diagnostic export preview. See FEATURES.md for exact scope.
 
-1. Search known project names and task titles, with an explicit unloaded-content boundary.
-2. Working, Needs input, and Unread filters that do not modify native task state.
-3. Device health expansion: helper version when verified and a coalesced refresh action.
-4. Cleanup preview/history, with restore only where native support exists.
-5. Local device aliases stored separately from verified identity.
-6. Update details/history with verified release links and the previous outcome.
-7. Diagnostic export preview with explicit saving and sanitization.
+Potential next features, in suggested order:
 
-The setup assistant already provides a limited status-only clipboard preview. Full diagnostic export is still a separate feature.
+1. Search loaded project names and task titles, clearly indicating that unloaded content is not searched.
+2. Working, Needs input, and Unread filters, plus saved views, without modifying native task state.
+3. Opt-in completion/input notifications with per-device controls and deduplication.
+4. Portable preferences export/import with a review step, excluding credentials, identities, and task content.
+5. Guided connection troubleshooting using observable evidence and explicit user-triggered checks.
 
-Native macOS, real sign-in, full real-app update/relaunch, and assistive-technology validation remain acceptance work. They must not be inferred from static checks or browser fixtures.
+These are suggestions, not implemented capabilities or automatic commitments. Native macOS, real sign-in, full live-app update/relaunch, and assistive-technology acceptance remain separate validation work.

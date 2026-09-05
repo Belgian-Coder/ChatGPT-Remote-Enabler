@@ -2,11 +2,11 @@
 
 You need an Apple Silicon Mac (arm64), the ChatGPT/Codex desktop app installed and signed in with Remote available on your account, and Node.js 22 or newer. This helper does not install the app or unlock account features.
 
-**Testing status:** native macOS installation, startup, and update/relaunch acceptance remains pending. Shared JavaScript and static checks pass. v1.5.33 is a prerelease.
+**Testing status:** native macOS installation, startup, and update/relaunch acceptance remains pending. Shared JavaScript and static checks pass. v1.5.34 is a prerelease.
 
 ## 1. Download and extract
 
-1. Download **ChatGPT-Remote-Enabler-macOS-arm64-v1.5.33.zip** from [v1.5.33 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.33).
+1. Download **ChatGPT-Remote-Enabler-macOS-arm64-v1.5.34.zip** from [v1.5.34 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.34).
 2. Double-click the ZIP in Finder. Create **ChatGPTRemoteEnabler** in your home folder and move the extracted package contents into it.
 3. `MobileProjectView-macOS-arm64.sh` must be directly inside that folder. Keep the complete package together in this writable per-user location.
 
@@ -200,7 +200,7 @@ Drag the revealed app to the Dock. The startup launcher waits 60 seconds by defa
 ```
 
 Requires Apple Silicon and Node.js 22 or newer with built-in WebSocket support.
-The v1.5.33 candidate shares the Windows renderer and automated fixtures.
+The v1.5.34 candidate shares the Windows renderer and automated fixtures.
 Native macOS startup, graceful quit, and update/relaunch validation remains a
 separate acceptance step on an available Mac; a future ChatGPT update can
 still break the private renderer integration.
@@ -209,6 +209,10 @@ still break the private renderer integration.
 
 These screenshots show the shared renderer in a browser fixture; they are not native macOS acceptance evidence.
 
-![Device projects](screenshots/device-projects-v1.5.33.png)
+![Device projects](screenshots/device-projects-v1.5.34.png)
 
-![Settings and update status](screenshots/settings-v1.5.33.png)
+![Settings and update status](screenshots/settings-v1.5.34.png)
+
+## Health, history, and diagnostics
+
+Settings now includes cleanup preview/history, update details/history, and an explicit diagnostic export preview. Device health includes refresh, reported helper versions, and aliases that stay on this client. See the [feature guide](FEATURES.md) for retention and privacy boundaries.

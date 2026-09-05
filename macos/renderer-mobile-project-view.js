@@ -16,6 +16,9 @@
   const AUTO_ARCHIVE_ENABLED_KEY = "codex-remote-mobile-auto-archive-enabled-v1";
   const AUTO_ARCHIVED_RECORDS_KEY = "codex-remote-mobile-auto-archived-records-v1";
   const AUTO_ARCHIVE_LOCK_KEY = "codex-remote-mobile-auto-archive-lock-v1";
+  const DEVICE_ALIASES_KEY = "codex-remote-mobile-device-aliases-v1";
+  const CLEANUP_HISTORY_KEY = "codex-remote-mobile-cleanup-history-v1";
+  const HISTORY_MAX_AGE_MS = 90 * 86400000;
   const UPDATE_SLOT = "__CHATGPT_REMOTE_UPDATE__";
   const UPDATE_EVENT = "chatgpt-remote-update-status";
   const AUTO_ARCHIVE_DAYS = 7;
@@ -58,7 +61,7 @@
     "unknown",
   ]);
   const PUBLISHER_VERSION = 53;
-  const VERSION = 66;
+  const VERSION = 67;
   const UPDATE_STATES = new Set(["checking", "current", "available", "queued", "preparing", "closing", "updating", "restarting", "error", "unavailable"]);
   const ACTIVITY_BUSY_STATUSES = new Set(["active", "generating", "inprogress", "loading", "pending", "queued", "running", "working"]);
   const ACTIVITY_IDLE_STATUSES = new Set(["complete", "completed", "idle", "notloaded"]);
@@ -216,6 +219,19 @@
     view: "mobile",
     updateStatus: null,
     settingsOpen: false,
+    featureOpen: {},
+    aliasDrafts: new Map(),
+    aliasFeedback: new Map(),
+    healthRefreshUntil: 0,
+    healthRefreshTimer: null,
+    cleanupPreview: null,
+    cleanupPreviewPending: null,
+    cleanupPreviewError: null,
+    cleanupHistoryUnavailable: false,
+    diagnosticPreview: null,
+    diagnosticFeedback: null,
+    historyRefreshError: null,
+    historyRefreshPending: false,
     deviceDetailsOpen: false,
     updateDetailsOpen: false,
     liveRegion: null,
@@ -1218,13 +1234,14 @@
         } catch {}
       }
     }
-    return { generatedAt, hostDisplayName, peers, projects: [...projects.values()].sort((left, right) => left.name.localeCompare(right.name)), projectsAuthoritative: !projectsTruncated, projectsTruncated, publisherVersion, tasks, tasksTruncated, threadScope, threadScopeGeneratedAt, threads, threadsAuthoritative, threadsTruncated };
+    return { generatedAt, hostDisplayName, helperVersion: releaseVersion(value.helperVersion), peers, projects: [...projects.values()].sort((left, right) => left.name.localeCompare(right.name)), projectsAuthoritative: !projectsTruncated, projectsTruncated, publisherVersion, tasks, tasksTruncated, threadScope, threadScopeGeneratedAt, threads, threadsAuthoritative, threadsTruncated };
   }
 
   function serializePeerInventory(inventory) {
     const payload = {
       generatedAt: new Date(inventory.generatedAt).toISOString(),
       hostDisplayName: inventory.hostDisplayName,
+      helperVersion: releaseVersion(inventory.helperVersion),
       projects: (inventory.projects ?? []).map((project) => ({
         name: project.name,
         rootPaths: [...new Set([...(project.rootPaths ?? []), project.cwd].filter(Boolean))],
@@ -1248,7 +1265,7 @@
     return parseInventoryPayload(JSON.parse(decodeText(result.dataBase64)), true);
   }
 
-  function scheduleRemoteProjectInventory(runtimes) {
+  function scheduleRemoteProjectInventory(runtimes, force = false) {
     if (state.disposed) return;
     const now = Date.now();
     for (const hostId of new Set([...state.remoteProjectInventories.keys(), ...state.hostConnectivity.keys()])) {
@@ -1263,7 +1280,7 @@
     for (const [hostId, runtime] of runtimes) {
       const current = state.remoteProjectInventories.get(hostId) ?? { projects: [], tasks: new Map(), threads: [] };
       const refreshTtl = current.tasks?.size ? REMOTE_INVENTORY_ACTIVE_TTL_MS : REMOTE_INVENTORY_IDLE_TTL_MS;
-      if (current.pending || current.retryAt > now || current.fetchedAt && now - current.fetchedAt < refreshTtl) continue;
+      if (current.pending || !force && (current.retryAt > now || current.fetchedAt && now - current.fetchedAt < refreshTtl)) continue;
       if (typeof runtime?.requestClient?.sendRequest !== "function") continue;
       state.remoteProjectInventories.set(hostId, { ...current, pending: true });
       let connectionProven = false;
@@ -1292,6 +1309,7 @@
           fetchedAt: Date.now(),
           generatedAt: parsed.generatedAt,
           hostDisplayName: parsed.hostDisplayName,
+          helperVersion: parsed.helperVersion,
           pending: false,
           projects: parsed.projects,
           projectsAuthoritative: parsed.projectsAuthoritative,
@@ -1321,6 +1339,7 @@
             fetchedAt: Date.now(),
             generatedAt: peer.generatedAt,
             hostDisplayName: peer.hostDisplayName,
+            helperVersion: peer.helperVersion,
             pending: false,
             projects: peer.projects,
             projectsAuthoritative: peer.projectsAuthoritative,
@@ -1416,6 +1435,7 @@
             fetchedAt: Date.now(),
             generatedAt: parsed.generatedAt,
             hostDisplayName: parsed.hostDisplayName,
+          helperVersion: parsed.helperVersion,
             pending: false,
             projects: parsed.projects,
             projectsAuthoritative: parsed.projectsAuthoritative,
@@ -1571,7 +1591,7 @@
       removeGossipedLocalInventoryDuplicates();
       const generatedAt = new Date().toISOString();
       const threadScopeGeneratedAt = new Date(currentThreadInventory.fetchedAt).toISOString();
-      const payload = JSON.stringify({ generatedAt, hostDisplayName: config.localDisplayName || null, peers, projects, publisherVersion: PUBLISHER_VERSION, schemaVersion: 1, tasks, threadScope: "user-visible", threadScopeGeneratedAt, threads });
+      const payload = JSON.stringify({ generatedAt, hostDisplayName: config.localDisplayName || null, helperVersion: releaseVersion(config.helperVersion), peers, projects, publisherVersion: PUBLISHER_VERSION, schemaVersion: 1, tasks, threadScope: "user-visible", threadScopeGeneratedAt, threads });
       const dataBase64 = encodeText(payload);
       return sendRequestWithTimeout(runtime.requestClient, "fs/writeFile", { dataBase64, path: inventoryPath(codexHome) })
         .then(() => pushLocalInventoryToPeers(dataBase64));
@@ -2098,6 +2118,13 @@
         #${PANEL_ID} .crmp-project-action, #${PANEL_ID} .crmp-project-new, #${PANEL_ID} .crmp-task-actions { opacity:1; pointer-events:auto; }
         #${PANEL_ID} .crmp-project-host { margin-right:52px; }
       }
+
+      #${PANEL_ID} .crmp-feature { margin-top:8px; border-top:1px solid var(--color-border-default,#777); }
+      #${PANEL_ID} .crmp-device-card { margin-top:8px; padding-top:8px; border-top:1px solid var(--color-border-default,#777); overflow-wrap:anywhere; font-size:13px; }
+      #${PANEL_ID} .crmp-input { display:block; box-sizing:border-box; width:100%; min-width:0; min-height:30px; padding:5px; border:1px solid var(--color-border-default,#777); border-radius:5px; font:inherit; color:var(--color-text,inherit); background:var(--color-background-primary,transparent); }
+      #${PANEL_ID} .crmp-input:focus-visible { outline:2px solid var(--color-accent,#74b9ff); }
+      #${PANEL_ID} .crmp-diagnostic-preview { min-height:180px; font-size:12px; resize:vertical; }
+      #${PANEL_ID} .crmp-release-link { display:block; padding:5px 0; min-height:24px; font-size:12px; color:var(--color-text,inherit); overflow-wrap:anywhere; text-decoration:underline; }
       @keyframes crmp-task-spin { to { transform:rotate(360deg); } }
       #${PANEL_ID} .crmp-empty { padding:8px 4px; color:var(--color-text-tertiary,#888); font-size:12px; }
     `;
@@ -2115,6 +2142,7 @@
   function normalizeUpdateStatus(value) {
     const stateValue = UPDATE_STATES.has(value?.state) ? value.state : "unavailable";
     return {
+      details: normalizeUpdateDetails(value?.details),
       canCancel: value?.canCancel === true,
       canQueue: value?.canQueue === true,
       message: typeof value?.message === "string" && value.message.trim() ? value.message.trim().slice(0, 240) : null,
@@ -2142,8 +2170,10 @@
   }
 
   async function requestUpdateAction(action) {
-    if (!["check", "queue", "cancel"].includes(action)) return;
+    if (!["check", "queue", "cancel", "history"].includes(action)) return;
+    if (action === "history" && state.historyRefreshPending) return;
     const updater = globalThis[UPDATE_SLOT];
+    if (action === "history" && typeof updater?.request !== "function") return;
     if (typeof updater?.request !== "function") {
       state.updateStatus = normalizeUpdateStatus({ state: "unavailable", message: "Update service is unavailable" });
       schedule();
@@ -2152,12 +2182,14 @@
     if (action === "check") state.updateStatus = normalizeUpdateStatus({ ...readUpdateStatus(), state: "checking" });
     if (action === "queue") state.updateStatus = normalizeUpdateStatus({ ...readUpdateStatus(), state: "queued", canCancel: true });
     schedule();
+    if (action === "history") { state.historyRefreshPending = true; state.historyRefreshError = null; }
     try {
       await updater.request(action);
       readUpdateStatus();
     } catch (error) {
-      state.updateStatus = normalizeUpdateStatus({ state: "error", message: String(error?.message ?? error).slice(0, 240) });
-    }
+      if (action === "history") state.historyRefreshError = "History could not be refreshed; the update state is unchanged.";
+      else state.updateStatus = normalizeUpdateStatus({ state: "error", message: String(error?.message ?? error).slice(0, 240) });
+    } finally { if (action === "history") state.historyRefreshPending = false; }
     schedule();
   }
 
@@ -2210,6 +2242,352 @@
       control.disabled = true;
     }
     return control;
+  }
+
+  function releaseVersion(value) {
+    return typeof value === "string" && value.length <= 64 && /^v\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/u.test(value) ? value : null;
+  }
+
+  function displayDeviceName(hostId, verifiedName) {
+    const aliases = readRecords(DEVICE_ALIASES_KEY);
+    const value = aliases[normalizeHostId(hostId)];
+    return typeof value === "string" && value.trim() && value.length <= 60 ? value : verifiedName;
+  }
+
+  function saveDeviceAlias(hostId, value) {
+    const id = normalizeHostId(hostId);
+    if (!state.displayedHosts.some(host => normalizeHostId(host.id) === id)) return false;
+    const alias = String(value ?? "").trim();
+    if (alias.length > 60 || /[\u0000-\u001f\u007f]/u.test(alias)) {
+      state.aliasFeedback.set(id, "Use up to 60 characters without control characters.");
+      return false;
+    }
+    const aliases = Object.assign(Object.create(null), readRecords(DEVICE_ALIASES_KEY));
+    if (alias) aliases[id] = alias; else delete aliases[id];
+    try {
+      localStorage.setItem(DEVICE_ALIASES_KEY, JSON.stringify(aliases));
+      state.aliasDrafts.delete(id);
+      state.aliasFeedback.set(id, alias ? "Alias saved on this device only." : "Using the verified device name.");
+      return true;
+    } catch { state.aliasFeedback.set(id, "The alias could not be saved in local storage."); return false; }
+  }
+
+  function featureDetails(label, key) {
+    const details = document.createElement("details");
+    details.className = "crmp-feature";
+    details.open = state.featureOpen[key] === true;
+    details.addEventListener("toggle", () => { if (details.isConnected) state.featureOpen[key] = details.open; });
+    const summary = document.createElement("summary");
+    summary.textContent = label;
+    summary.addEventListener("click", () => { state.featureOpen[key] = !details.open; });
+    setFocusKey(summary, "feature", key);
+    details.appendChild(summary);
+    return details;
+  }
+
+  function helpText(parent, text) {
+    const paragraph = document.createElement("p");
+    paragraph.className = "crmp-help";
+    paragraph.textContent = text;
+    parent.appendChild(paragraph);
+    return paragraph;
+  }
+
+  function timeLabel(value) {
+    return Number.isFinite(value) && value > 0 ? new Date(value).toLocaleString() : "Not recorded";
+  }
+
+  function ageSeconds(value) {
+    return Number.isFinite(value) && value > 0 && value <= Date.now() + 60000 ? Math.max(0, Math.floor((Date.now() - value) / 1000)) : null;
+  }
+
+  function refreshDeviceHealth() {
+    if (state.disposed || Date.now() < state.healthRefreshUntil) return false;
+    state.healthRefreshUntil = Date.now() + 10000;
+    state.hostDiscoveryDirty = true;
+    state.inventoryHydrationDirty = true;
+    scheduleNativeInventoryHydration();
+    const model = collectModel();
+    scheduleRemoteProjectInventory(model.remoteRuntimes, true);
+    if (state.healthRefreshTimer !== null) clearTimeout(state.healthRefreshTimer);
+    state.healthRefreshTimer = setTimeout(() => { state.healthRefreshTimer = null; if (!state.disposed) schedule(); }, 10000);
+    schedule();
+    return true;
+  }
+
+  function appendDeviceHealth(parent, model) {
+    const details = document.createElement("details");
+    details.className = "crmp-devices";
+    details.open = state.deviceDetailsOpen;
+    details.addEventListener("toggle", () => { if (details.isConnected) state.deviceDetailsOpen = details.open; });
+    const summary = document.createElement("summary");
+    summary.textContent = "Device health";
+    summary.addEventListener("click", () => { state.deviceDetailsOpen = !details.open; });
+    setFocusKey(summary, "devices");
+    details.appendChild(summary);
+    const refresh = button("crmp-auto-control", "Refresh devices");
+    refresh.disabled = Date.now() < state.healthRefreshUntil;
+    setFocusKey(refresh, "health", "refresh");
+    refresh.addEventListener("click", refreshDeviceHealth);
+    details.appendChild(refresh);
+    if (refresh.disabled) helpText(details, "Refresh requested. Requests already in progress are reused.");
+    if (!model.hosts.length) helpText(details, "No devices have been discovered. Connect a device through Remote.");
+    for (const host of model.hosts) {
+      const card = document.createElement("section");
+      card.className = "crmp-device-card";
+      const title = document.createElement("strong");
+      title.textContent = displayDeviceName(host.id, host.name);
+      card.appendChild(title);
+      helpText(card, `Reported name: ${host.name}. ${connectionLabel(host)}.`);
+      const inventory = state.remoteProjectInventories.get(host.id);
+      const connectivity = state.hostConnectivity.get(host.id);
+      helpText(card, inventoryLabel(host.id));
+      if (host.id === "local") {
+        const ready = readiness();
+        helpText(card, `Local inventory: ${ready.authoritativeInventoryReady ? "ready" : "waiting for authoritative information"}. Project publisher: ${ready.publisherReady ? "ready" : "not ready"}.`);
+      }
+      if (host.id !== "local") {
+        helpText(card, `Connection checked: ${timeLabel(connectivity?.checkedAt)}. Inventory received: ${timeLabel(inventory?.fetchedAt)}.`);
+        const age = ageSeconds(inventory?.generatedAt);
+        helpText(card, `Inventory age: ${age === null ? "unknown" : `${age} seconds`}. Source: ${inventory?.sourcePeerCache ? "local peer cache" : inventory?.sourcePeerHostId ? "forwarded by a peer" : inventory ? "direct device read" : "not received"}.`);
+      }
+      const version = host.id === "local" ? releaseVersion(config.helperVersion) : releaseVersion(inventory?.helperVersion);
+      helpText(card, `Helper version: ${version || "not reported"}${Number.isInteger(inventory?.publisherVersion) ? `; publisher protocol ${inventory.publisherVersion}` : ""}.`);
+      const id = normalizeHostId(host.id);
+      const label = document.createElement("label");
+      label.className = "crmp-help";
+      label.textContent = "Local alias";
+      const input = document.createElement("input");
+      input.type = "text";
+      input.maxLength = 60;
+      input.className = "crmp-input";
+      input.setAttribute("aria-label", `Local alias for ${host.name}`);
+      input.value = state.aliasDrafts.get(id) ?? readRecords(DEVICE_ALIASES_KEY)[id] ?? "";
+      input.addEventListener("input", () => state.aliasDrafts.set(id, input.value));
+      setFocusKey(input, "alias", id);
+      const save = button("crmp-auto-control", "Save alias");
+      setFocusKey(save, "alias-save", id);
+      const apply = () => { saveDeviceAlias(id, input.value); render(); };
+      save.addEventListener("click", apply);
+      input.addEventListener("keydown", event => {
+        if (event.key === "Enter") { event.preventDefault(); event.stopPropagation(); apply(); }
+        if (event.key === "Escape") { event.stopPropagation(); state.aliasDrafts.delete(id); render(); }
+      });
+      const reset = button("crmp-auto-control", "Reset alias");
+      reset.disabled = !readRecords(DEVICE_ALIASES_KEY)[id];
+      setFocusKey(reset, "alias-reset", id);
+      reset.addEventListener("click", () => { saveDeviceAlias(id, ""); render(); });
+      label.appendChild(input);
+      card.append(label, save, reset);
+      if (state.aliasFeedback.has(id)) helpText(card, state.aliasFeedback.get(id));
+      details.appendChild(card);
+    }
+    parent.appendChild(details);
+  }
+
+  function cleanupTaskTitle(thread) {
+    return typeof thread?.title === "string" && thread.title.trim() ? thread.title.trim().replace(/[\u0000-\u001f\u007f]/gu, " ").slice(0, 160) : "Untitled task";
+  }
+
+  function readCleanupHistory() {
+    try {
+      const entries = JSON.parse(localStorage.getItem(CLEANUP_HISTORY_KEY) || "[]");
+      if (!Array.isArray(entries)) throw new Error("Invalid history");
+      return entries.filter(entry => entry && ["archived", "deleted", "incomplete"].includes(entry.action)
+        && Number.isFinite(entry.at) && entry.at > Date.now() - HISTORY_MAX_AGE_MS && entry.at <= Date.now() + 60000)
+        .slice(-100).map(entry => ({ action: entry.action, at: entry.at, title: cleanupTaskTitle(entry) }));
+    } catch { state.cleanupHistoryUnavailable = true; return []; }
+  }
+
+  function recordCleanupEvent(action, thread = null) {
+    const entries = [...readCleanupHistory(), { action, at: Date.now(), title: thread ? cleanupTaskTitle(thread) : "Cleanup could not complete" }].slice(-100);
+    try { localStorage.setItem(CLEANUP_HISTORY_KEY, JSON.stringify(entries)); }
+    catch { state.cleanupHistoryUnavailable = true; }
+  }
+
+  function cleanupExclusions(active, archived, archiveCandidates, deleteCandidates, pinned, records) {
+    const eligible = new Set([...archiveCandidates, ...deleteCandidates].map(thread => thread.id));
+    const counts = {};
+    for (const [threads, isArchived] of [[active, false], [archived, true]]) {
+      for (const thread of threads) {
+        if (eligible.has(thread.id)) continue;
+        const status = typeof thread.status === "string" ? thread.status : thread.status?.type;
+        const reason = !maintenanceThreadPathManaged(thread, isArchived) ? "Unmanaged or unknown task path"
+          : pinned.has(thread.id) || thread.isPinned || thread.pinned ? "Pinned tasks"
+          : thread.selected || thread.isSelected ? "Selected tasks"
+          : status !== "notLoaded" ? "Active, loaded, or unknown activity"
+          : isArchived && !Number.isFinite(Number(records[thread.id])) ? "Untracked archive recovery window"
+          : !isArchived && !Number.isFinite(threadActivityTime(thread)) ? "Missing activity date"
+          : "Age, recovery window, or related-task safety checks";
+        counts[reason] = (counts[reason] || 0) + 1;
+      }
+    }
+    return Object.entries(counts).map(([reason, count]) => ({ reason, count }));
+  }
+
+  function requestCleanupPreview() {
+    if (state.cleanupPreviewPending) return state.cleanupPreviewPending;
+    state.cleanupPreviewError = null;
+    state.cleanupPreviewPending = previewAutoArchive().then(result => {
+      if (!state.disposed) state.cleanupPreview = result;
+      return result;
+    }).catch(() => {
+      if (!state.disposed) state.cleanupPreviewError = "Preview is unavailable. Current task and pinned-task information is required; no cleanup action was taken by this preview.";
+      return null;
+    }).finally(() => { state.cleanupPreviewPending = null; if (!state.disposed) schedule(); });
+    schedule();
+    return state.cleanupPreviewPending;
+  }
+
+  function appendCleanupPanel(parent) {
+    const details = featureDetails("Cleanup preview and history", "cleanup");
+    helpText(details, "Preview is read-only. Cleanup remains controlled by Auto-cleanup above; eligibility is checked again before every operation.");
+    const preview = button("crmp-auto-control", state.cleanupPreviewPending ? "Loading preview…" : "Refresh cleanup preview");
+    preview.disabled = Boolean(state.cleanupPreviewPending);
+    setFocusKey(preview, "cleanup-preview");
+    preview.addEventListener("click", () => { void requestCleanupPreview(); });
+    details.appendChild(preview);
+    if (state.cleanupPreviewError) helpText(details, state.cleanupPreviewError);
+    const snapshot = state.cleanupPreview;
+    if (snapshot) {
+      helpText(details, `Snapshot: ${timeLabel(snapshot.capturedAt)}. ${snapshot.archiveEligible} eligible for archiving; ${snapshot.deleteEligible} eligible for permanent deletion.`);
+      helpText(details, "Enabling cleanup restarts archive recovery tracking. This preview is not a promise of future deletion.");
+      for (const [label, candidates] of [["Archive", snapshot.archiveCandidates], ["Permanently delete", snapshot.deleteCandidates]]) {
+        for (const item of candidates ?? []) helpText(details, `${label}: ${item.title} — ${timeLabel(item.activityAt ?? item.archivedAt)}`);
+      }
+      if (snapshot.archiveEligible > 100 || snapshot.deleteEligible > 100) helpText(details, "Only the first 100 candidates for each action are displayed.");
+      for (const item of snapshot.exclusions ?? []) helpText(details, `Skipped: ${item.reason} (${item.count}).`);
+    }
+    const history = readCleanupHistory();
+    helpText(details, "History contains up to 100 recorded local operations from the last 90 days, starting with this feature. Restore archived tasks through the native Archived chats controls; permanently deleted tasks cannot be restored here.");
+    if (state.cleanupHistoryUnavailable) helpText(details, "Local history storage is unavailable or incomplete.");
+    if (!history.length) helpText(details, "No cleanup operations recorded yet.");
+    for (const entry of [...history].reverse()) helpText(details, `${timeLabel(entry.at)} — ${entry.action === "archived" ? "Archived" : entry.action === "deleted" ? "Permanently deleted" : "Incomplete cleanup"}: ${entry.title}`);
+    parent.appendChild(details);
+  }
+
+  function normalizeUpdateDetails(value) {
+    if (!value || typeof value !== "object") return null;
+    return {
+      installedVersion: releaseVersion(value.installedVersion),
+      availableVersion: releaseVersion(value.availableVersion),
+      lastCheckedAt: Number.isFinite(value.lastCheckedAt) && value.lastCheckedAt > 0 && value.lastCheckedAt <= Date.now() + 60000 ? value.lastCheckedAt : null,
+      historyAvailable: value.historyAvailable !== false,
+      history: (Array.isArray(value.history) ? value.history : []).filter(entry => entry && (UPDATE_STATES.has(entry.state) || ["restart-confirmed", "cancelled", "checked"].includes(entry.state))
+        && Number.isFinite(entry.at) && entry.at > Date.now() - HISTORY_MAX_AGE_MS && entry.at <= Date.now() + 60000)
+        .slice(-100).map(entry => ({ at: entry.at, state: entry.state, version: releaseVersion(entry.version) })),
+    };
+  }
+
+  function appendReleaseLink(parent, version, label) {
+    if (!releaseVersion(version)) return;
+    const link = document.createElement("a");
+    link.href = `https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/${encodeURIComponent(version)}`;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = `${label} ${version}`;
+    link.className = "crmp-release-link";
+    parent.appendChild(link);
+  }
+
+  function appendUpdateDetails(parent, status) {
+    const details = featureDetails("Update details and history", "updates");
+    const metadata = status.details;
+    details.querySelector("summary").addEventListener("click", () => { if (!details.open && metadata) void requestUpdateAction("history"); });
+    const refresh = button("crmp-auto-control", "Refresh update history");
+    refresh.disabled = !metadata || state.historyRefreshPending;
+    setFocusKey(refresh, "update-history-refresh");
+    refresh.addEventListener("click", () => { void requestUpdateAction("history"); });
+    details.appendChild(refresh);
+    if (state.historyRefreshError) helpText(details, state.historyRefreshError);
+    const installed = metadata?.installedVersion || releaseVersion(config.helperVersion) || (status.state === "current" ? releaseVersion(status.version) : null);
+    const available = metadata?.availableVersion || (["available", "queued", "preparing"].includes(status.state) ? releaseVersion(status.version) : null);
+    helpText(details, `Installed helper: ${installed || "not reported"}. Last reported available release: ${available || "none reported"}.`);
+    helpText(details, `Last successful update check: ${timeLabel(metadata?.lastCheckedAt)}.`);
+    appendReleaseLink(details, installed, "Installed release notes:");
+    appendReleaseLink(details, available, "Available release notes:");
+    const labels = { checked: "Update check completed", current: "Up-to-date check", available: "Update offered", queued: "Waiting for idle activity", preparing: "Preparation started", closing: "Graceful close requested", updating: "File replacement started", restarting: "Installed files verified; restart requested", "restart-confirmed": "Relaunch confirmed", cancelled: "Update cancelled", error: "Error recorded", unavailable: "Service unavailable", checking: "Check started" };
+    helpText(details, "Up to 100 events from the latest 20 recorded sessions within 90 days. An unfinished stage is the last recorded state, not proof of success.");
+    if (!metadata) helpText(details, "This session helper does not report persistent update history.");
+    else if (!metadata.historyAvailable) helpText(details, "Update history could not be fully saved in this session.");
+    if (!metadata?.history.length) helpText(details, "No update events recorded yet.");
+    for (const entry of [...(metadata?.history ?? [])].reverse()) helpText(details, `${timeLabel(entry.at)} — ${labels[entry.state]}${entry.version ? ` (${entry.version})` : ""}.`);
+    parent.appendChild(details);
+  }
+
+  function diagnosticSnapshot(model) {
+    const update = readUpdateStatus();
+    return {
+      schemaVersion: 1,
+      capturedAt: new Date().toISOString(),
+      helperVersion: releaseVersion(config.helperVersion),
+      rendererVersion: VERSION,
+      view: state.view === "native" ? "native" : "mobile",
+      devices: model.hosts.map((host, index) => {
+        const inventory = state.remoteProjectInventories.get(host.id);
+        return { label: `Device ${index + 1}`, local: host.id === "local", connection: connectionLabel(host),
+          inventoryAgeSeconds: ageSeconds(inventory?.generatedAt), inventoryPending: inventory?.pending === true,
+          inventoryError: Boolean(inventory?.error), inventoryFresh: host.id === "local" ? readiness().authoritativeInventoryReady : Boolean(freshInventory(host.id)),
+          helperVersion: host.id === "local" ? releaseVersion(config.helperVersion) : releaseVersion(inventory?.helperVersion),
+          projects: model.projects.filter(project => project.hostId === host.id).length,
+          tasks: model.tasks.filter(task => task.hostId === host.id).length };
+      }),
+      cleanup: { enabled: readOptionalBoolean(AUTO_ARCHIVE_ENABLED_KEY), pending: state.autoArchivePending, error: Boolean(state.autoArchiveError), recordedOperations: readCleanupHistory().length },
+      updates: { state: update.state, installedVersion: update.details?.installedVersion || releaseVersion(config.helperVersion), availableVersion: update.details?.availableVersion || null, recordedEvents: update.details?.history.length ?? 0 },
+    };
+  }
+
+  async function copyDiagnosticPreview() {
+    const text = state.diagnosticPreview;
+    if (!text) return false;
+    try {
+      if (typeof navigator.clipboard?.writeText !== "function") throw new Error("Clipboard unavailable");
+      await navigator.clipboard.writeText(text);
+      state.diagnosticFeedback = "The displayed preview was copied.";
+      return true;
+    } catch { state.diagnosticFeedback = "Clipboard access was unavailable. Select the preview text or save the JSON file."; return false; }
+    finally { if (!state.disposed) schedule(); }
+  }
+
+  function saveDiagnosticPreview() {
+    if (!state.diagnosticPreview) return false;
+    const url = URL.createObjectURL(new Blob([state.diagnosticPreview], { type: "application/json" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "remote-enabler-diagnostics.json";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    state.diagnosticFeedback = "JSON download requested for the displayed preview.";
+    schedule();
+    return true;
+  }
+
+  function appendDiagnosticsPanel(parent, model) {
+    const details = featureDetails("Diagnostic export preview", "diagnostics");
+    helpText(details, "Generate and inspect a status-only snapshot before copying or saving it. Device names, aliases, IDs, task titles, paths, logs, and credentials are excluded. Nothing is uploaded.");
+    const generate = button("crmp-auto-control", "Generate diagnostic preview");
+    setFocusKey(generate, "diagnostic-generate");
+    generate.addEventListener("click", () => { state.diagnosticPreview = JSON.stringify(diagnosticSnapshot(collectModel()), null, 2); state.diagnosticFeedback = null; render(); });
+    details.appendChild(generate);
+    if (state.diagnosticPreview) {
+      const preview = document.createElement("textarea");
+      preview.readOnly = true;
+      preview.className = "crmp-input crmp-diagnostic-preview";
+      preview.value = state.diagnosticPreview;
+      preview.setAttribute("aria-label", "Diagnostic JSON preview");
+      setFocusKey(preview, "diagnostic-preview");
+      const copy = button("crmp-auto-control", "Copy preview");
+      setFocusKey(copy, "diagnostic-copy");
+      copy.addEventListener("click", () => { void copyDiagnosticPreview(); });
+      const save = button("crmp-auto-control", "Save JSON");
+      setFocusKey(save, "diagnostic-save");
+      save.addEventListener("click", saveDiagnosticPreview);
+      details.append(preview, copy, save);
+    }
+    if (state.diagnosticFeedback) helpText(details, state.diagnosticFeedback);
+    parent.appendChild(details);
   }
 
   function connectionLabel(host) {
@@ -2273,9 +2651,10 @@
     if (status.message && ["error", "unavailable"].includes(status.state)) {
       const details = document.createElement("details");
       details.open = state.updateDetailsOpen;
-      details.addEventListener("toggle", () => { state.updateDetailsOpen = details.open; });
+      details.addEventListener("toggle", () => { if (details.isConnected) state.updateDetailsOpen = details.open; });
       const summary = document.createElement("summary");
       summary.textContent = "Technical details";
+      summary.addEventListener("click", () => { state.updateDetailsOpen = !details.open; });
       setFocusKey(summary, "update-details");
       const message = document.createElement("p");
       message.className = "crmp-help";
@@ -2305,6 +2684,8 @@
       key: active.closest("[data-crmp-focus-key]")?.dataset.crmpFocusKey ?? null,
       fallbackKey: group?.querySelector(".crmp-project-toggle")?.dataset.crmpFocusKey ?? (overlay ? state.overlayFocusReturnKey : null),
       overlayId: overlay?.id ?? null,
+      selectionStart: active.selectionStart,
+      selectionEnd: active.selectionEnd,
     };
   }
 
@@ -2317,7 +2698,11 @@
   function restoreSidebarFocus(snapshot) {
     if (!snapshot) return;
     const keyed = (key) => key ? document.querySelector(`[data-crmp-focus-key="${CSS.escape(key)}"]`) : null;
-    if (focusSidebarElement(keyed(snapshot.key))) return;
+    if (focusSidebarElement(keyed(snapshot.key))) {
+      const element = keyed(snapshot.key);
+      if (Number.isInteger(snapshot.selectionStart) && typeof element?.setSelectionRange === "function") element.setSelectionRange(snapshot.selectionStart, snapshot.selectionEnd);
+      return;
+    }
     const overlay = snapshot.overlayId ? document.getElementById(snapshot.overlayId) : null;
     if (overlay && focusProjectOverlay(overlay)) return;
     if (focusSidebarElement(keyed(snapshot.fallbackKey))) return;
@@ -3601,7 +3986,10 @@
 
   async function listAllLocalThreads(requestClient, archived = false, deadline = Number.POSITIVE_INFINITY, includeInternalSources = true, phase = "local thread listing", runtimeGeneration = state.localRuntimeGeneration) {
     return listAllLocalThreadInventory(requestClient, archived, deadline, includeInternalSources, phase, runtimeGeneration)
-      .then((result) => result.threads);
+      .then((result) => {
+        if (result.truncated) throw new Error("Complete task inventory is required for cleanup");
+        return result.threads;
+      });
   }
 
   function updateActivityFailureReason(error) {
@@ -3728,14 +4116,21 @@
     if (typeof requestClient?.sendRequest !== "function") throw new Error("Local app-server bridge is unavailable");
     const activeThreads = await listAllLocalThreads(requestClient, false, deadline, true, "maintenance preview active snapshot", runtimeGeneration);
     const archivedThreads = await listAllLocalThreads(requestClient, true, deadline, true, "maintenance preview archived snapshot", runtimeGeneration);
-    const pinnedResult = typeof state.localFetchFromHost === "function"
-      ? await fetchFromHostWithTimeout(state.localFetchFromHost, "get-global-state", { params: { key: "pinned-thread-ids" } }).catch(() => ({ value: [] }))
-      : { value: [] };
-    const pinnedThreadIds = new Set(Array.isArray(pinnedResult?.value) ? pinnedResult.value : []);
-    const archiveEligible = eligibleAutoArchiveThreads(activeThreads, pinnedThreadIds, [...activeThreads, ...archivedThreads]).length;
+    if (typeof state.localFetchFromHost !== "function") throw new Error("Pinned task information is unavailable");
+    const pinnedResult = await fetchFromHostWithTimeout(state.localFetchFromHost, "get-global-state", { params: { key: "pinned-thread-ids" } }, remainingRequestTimeout(deadline, "maintenance preview pinned snapshot"));
+    if (!Array.isArray(pinnedResult?.value) || pinnedResult.value.some(id => typeof id !== "string")) throw new Error("Pinned task information is unavailable");
+    if (state.disposed || state.localRuntime?.requestClient !== requestClient || state.localRuntimeGeneration !== runtimeGeneration) throw new Error("Local runtime changed during cleanup preview");
+    const pinnedThreadIds = new Set(pinnedResult.value);
+    const archiveCandidates = eligibleAutoArchiveThreads(activeThreads, pinnedThreadIds, [...activeThreads, ...archivedThreads]);
+    const archiveEligible = archiveCandidates.length;
     const archiveRecords = readRecords(AUTO_ARCHIVED_RECORDS_KEY);
-    const deleteEligible = eligibleAutoDeleteThreads(archivedThreads, activeThreads, archiveRecords, AUTO_DELETE_AFTER_ARCHIVE_DAYS * 24 * 60 * 60 * 1000, pinnedThreadIds).length;
+    const deleteCandidates = eligibleAutoDeleteThreads(archivedThreads, activeThreads, archiveRecords, AUTO_DELETE_AFTER_ARCHIVE_DAYS * 24 * 60 * 60 * 1000, pinnedThreadIds);
+    const deleteEligible = deleteCandidates.length;
     return {
+      capturedAt: Date.now(),
+      archiveCandidates: archiveCandidates.slice(0, 100).map(thread => ({ title: cleanupTaskTitle(thread), activityAt: threadActivityTime(thread) })),
+      deleteCandidates: deleteCandidates.slice(0, 100).map(thread => ({ title: cleanupTaskTitle(thread), archivedAt: Number(archiveRecords[thread.id]) })),
+      exclusions: cleanupExclusions(activeThreads, archivedThreads, archiveCandidates, deleteCandidates, pinnedThreadIds, archiveRecords),
       archiveEligible,
       archivedScanned: archivedThreads.length,
       deleteEligible,
@@ -3827,6 +4222,7 @@
               } else {
                 assertCapturedRuntime("before delete");
                 await sendRequestWithTimeout(requestClient, "thread/delete", { threadId: deleteThread.id }, remainingRequestTimeout(runDeadline, "maintenance delete"));
+                recordCleanupEvent("deleted", deleteThread);
                 assertCapturedRuntime("after delete");
                 delete archiveRecords[deleteThread.id];
                 deleted = 1;
@@ -3866,6 +4262,7 @@
               } else {
                 assertCapturedRuntime("before archive");
                 await sendRequestWithTimeout(requestClient, "thread/archive", { threadId: archiveThread.id }, remainingRequestTimeout(runDeadline, "maintenance archive"));
+                recordCleanupEvent("archived", archiveThread);
                 assertCapturedRuntime("after archive");
                 archiveRecords[archiveThread.id] = Date.now();
                 archived = 1;
@@ -3903,12 +4300,14 @@
         ? "Automatic cleanup lost its cross-window lease and will retry"
         : timeLimitReached ? "Automatic cleanup reached its bounded run limit and will continue on retry"
         : failureCount ? `${firstOperationError} (${failureCount} failed operation${failureCount === 1 ? "" : "s"})` : null;
+      if (state.autoArchiveError) recordCleanupEvent("incomplete");
       state.lastAction = { commandId: "auto-maintain-old-chats", found: true, invoked: true, ...state.autoArchiveLastResult };
       void state.queryClient?.invalidateQueries?.();
       return state.autoArchiveLastResult;
     } catch (error) {
       state.autoArchiveError = String(error?.message ?? error).slice(0, 240);
       state.autoArchiveLastResult = { archived, deleted, eligible: 0, error: state.autoArchiveError };
+      recordCleanupEvent("incomplete");
       state.lastAction = { commandId: "auto-maintain-old-chats", error: state.autoArchiveError, found: true, invoked: false };
       return state.autoArchiveLastResult;
     } finally {
@@ -4387,7 +4786,7 @@
     name.textContent = project.name;
     const suffix = document.createElement("span");
     suffix.className = "crmp-project-host";
-    suffix.textContent = state.filter === "all" ? project.hostName : (state.collapsed.has(project.key) ? "›" : "⌄");
+    suffix.textContent = state.filter === "all" ? displayDeviceName(project.hostId, project.hostName) : (state.collapsed.has(project.key) ? "›" : "⌄");
     toggle.append(folder, name, suffix);
     toggle.addEventListener("click", () => {
       if (performance.now() - state.dragJustEndedAt < 250) return;
@@ -4671,6 +5070,10 @@
     setFocusKey(check, "settings", "check");
     check.addEventListener("click", () => { void requestUpdateAction("check"); });
     settings.appendChild(check);
+    appendCleanupPanel(settings);
+    appendUpdateDetails(settings, update);
+    appendDiagnosticsPanel(settings, model);
+    if (state.view === "native") appendDeviceHealth(settings, model);
     fragment.appendChild(settings);
 
     scheduleLocalProjectInventoryPublication();
@@ -4697,13 +5100,13 @@
     filters.setAttribute("aria-label", "Filter tasks by device");
     const filterItems = [{ id: "all", name: "All" }, ...model.hosts];
     for (const host of filterItems) {
-      const chip = button("crmp-chip", host.name);
+      const chip = button("crmp-chip", host.id === "all" ? host.name : displayDeviceName(host.id, host.name));
       setFocusKey(chip, "filter", host.id);
       chip.style.maxWidth = "100%";
       chip.style.overflow = "hidden";
       chip.style.textOverflow = "ellipsis";
       chip.title = host.name;
-      chip.setAttribute("aria-label", host.id === "all" ? "All devices" : `${host.name}, ${connectionLabel(host)}`);
+      chip.setAttribute("aria-label", host.id === "all" ? "All devices" : `${displayDeviceName(host.id, host.name)}, ${connectionLabel(host)}`);
       chip.setAttribute("aria-pressed", String(state.filter === host.id));
       if (host.id !== "all") {
         const dot = document.createElement("span");
@@ -4719,21 +5122,7 @@
     }
 
     fragment.appendChild(filters);
-    const devices = document.createElement("details");
-    devices.className = "crmp-devices";
-    devices.open = state.deviceDetailsOpen;
-    devices.addEventListener("toggle", () => { state.deviceDetailsOpen = devices.open; });
-    const deviceSummary = document.createElement("summary");
-    deviceSummary.textContent = "Device details";
-    setFocusKey(deviceSummary, "devices");
-    devices.appendChild(deviceSummary);
-    for (const host of model.hosts) {
-      const entry = document.createElement("p");
-      entry.className = "crmp-help";
-      entry.textContent = `${host.name} — ${connectionLabel(host)}. ${inventoryLabel(host.id)}`;
-      devices.appendChild(entry);
-    }
-    fragment.appendChild(devices);
+    appendDeviceHealth(fragment, model);
     const unavailableInventoryHosts = model.hosts.filter((host) => host.id !== "local" && state.remoteProjectInventories.get(host.id)?.error);
     if (unavailableInventoryHosts.length) {
       const status = document.createElement("div");
@@ -5023,6 +5412,8 @@
     state.localInventoryPublisherTimer = null;
     if (state.inventoryHydrationTimer !== null) clearTimeout(state.inventoryHydrationTimer);
     state.inventoryHydrationTimer = null;
+    if (state.healthRefreshTimer !== null) clearTimeout(state.healthRefreshTimer);
+    state.healthRefreshTimer = null;
     if (state.mountRetryTimer !== null) clearTimeout(state.mountRetryTimer);
     state.mountRetryTimer = null;
     if (state.nativeContainer?.isConnected) state.nativeContainer.style.display = state.originalDisplay;

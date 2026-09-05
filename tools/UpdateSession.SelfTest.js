@@ -111,6 +111,42 @@ async function waitOperation(controller) {
   if (controller.operationPromise) await controller.operationPromise;
 }
 
+function testPersistentHistory() {
+  const first = path.join(stateRoot, "sessions", "history-first");
+  const second = path.join(stateRoot, "sessions", "history-second");
+  fs.mkdirSync(first); fs.mkdirSync(second);
+  const now = Date.now();
+  session.appendUpdateHistory(config({ sessionDirectory: first }), { at: now - 10, state: "checked", version: "v1.0.0", privateMessage: "must not persist" });
+  session.appendUpdateHistory(config({ sessionDirectory: first }), { at: now - 9, state: "updating", version: "v2.0.0" });
+  session.appendUpdateHistory(config({ sessionDirectory: second }), { at: now - 8, state: "restart-confirmed", version: "v2.0.0" });
+  const entries = session.readUpdateHistory(config({ sessionDirectory: second }));
+  assert.ok(entries.some(entry => entry.state === "updating"));
+  assert.ok(entries.some(entry => entry.state === "restart-confirmed"));
+  assert.doesNotMatch(JSON.stringify(entries), /privateMessage|must not persist/);
+  assert.throws(() => session.appendUpdateHistory(config({ sessionDirectory: tempRoot }), { at: now, state: "current" }), /owned session/);
+  fs.writeFileSync(path.join(first, "update-history-v1.json"), "broken JSON");
+  assert.ok(session.readUpdateHistory(config()).some(entry => entry.state === "restart-confirmed"), "a corrupt session must not hide good history");
+  for (let index = 0; index < 105; index++) session.appendUpdateHistory(config({ sessionDirectory: second }), { at: now + index, state: "available", version: "v2.0.0" });
+  assert.equal(JSON.parse(fs.readFileSync(path.join(second, "update-history-v1.json"), "utf8")).length, 100);
+  assert.equal(session.readUpdateHistory(config()).length, 100);
+  fs.rmSync(first, {recursive:true}); fs.rmSync(second, {recursive:true});
+}
+
+async function testReadOnlyHistoryRefresh() {
+  const h = harness();
+  const historyPath = path.join(sessionDirectory, "update-history-v1.json");
+  const existed = fs.existsSync(historyPath);
+  await h.controller.request("history", "history-initial");
+  assert.equal(fs.existsSync(historyPath), existed, "opening initial history must not create an event file");
+  const late = { at: Date.now(), state: "restart-confirmed", version: "v8.7.6" };
+  session.appendUpdateHistory(config(), late);
+  const before = fs.readFileSync(historyPath, "utf8");
+  const status = await h.controller.request("history", "history-late");
+  assert.ok(status.details.history.some(entry => entry.version === late.version));
+  assert.equal(fs.readFileSync(historyPath, "utf8"), before, "refresh must not write history");
+  for (const key of ["check", "prepare", "apply", "close", "relaunch"]) assert.equal(h.calls[key], 0);
+}
+
 async function testPinnedIdleFlow() {
   const h = harness({ activities: [
     { known: false, busy: false, reason: "Inventory is still loading." },
@@ -128,6 +164,8 @@ async function testPinnedIdleFlow() {
   assert.equal(h.calls.apply, 1);
   assert.equal(h.calls.recover, 1);
   assert.equal(h.calls.relaunch, 1);
+  assert.ok(h.controller.history.some(entry => entry.state === "restart-confirmed" && entry.version === h.release.version));
+  assert.equal(h.controller.status.details.installedVersion, h.release.version);
   assert.ok(h.statuses.some((value) => value.state === "queued" && /Inventory/u.test(value.message)));
   assert.ok(h.statuses.some((value) => value.state === "closing" && value.canCancel === false));
 }
@@ -148,6 +186,7 @@ async function testCancelDuringPrepare() {
   assert.equal(h.calls.apply, 0);
   assert.equal(h.controller.status.state, "available");
   assert.equal(h.controller.status.canQueue, true);
+  assert.ok(h.controller.history.some(entry => entry.state === "cancelled"));
 }
 
 async function testDuplicateQueueGuard() {
@@ -384,6 +423,8 @@ async function testActualWindowsCheck() {
 
 (async () => {
   try {
+    testPersistentHistory();
+    await testReadOnlyHistoryRefresh();
     await testPinnedIdleFlow();
     await testCancelDuringPrepare();
     await testDuplicateQueueGuard();
@@ -399,7 +440,7 @@ async function testActualWindowsCheck() {
     await testExactRelaunchArguments();
     await testUpdaterMappingsAndPrettyJson();
     await testActualWindowsCheck();
-    process.stdout.write(`${JSON.stringify({ ok: true, controllerFlows: 8, monitorSingleflight: true, malformedLockFailClosed: true, concurrentLockReclaim: true, timeoutTreeContained: true, exactRelaunch: true, prettyJson: true, actualWindowsCheck: process.platform === "win32" && !process.argv.includes("--skip-actual-updater") })}\n`);
+    process.stdout.write(`${JSON.stringify({ ok: true, persistentHistory: true, controllerFlows: 8, monitorSingleflight: true, malformedLockFailClosed: true, concurrentLockReclaim: true, timeoutTreeContained: true, exactRelaunch: true, prettyJson: true, actualWindowsCheck: process.platform === "win32" && !process.argv.includes("--skip-actual-updater") })}\n`);
   } finally {
     fs.rmSync(tempRoot, { force: true, recursive: true });
   }

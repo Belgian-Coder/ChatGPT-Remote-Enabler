@@ -7,14 +7,14 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
-const { BINDING_NAME, CdpTransport, TARGET_URL, bootstrapSource } = require("./update-session-cdp.js");
+const { BINDING_NAME, CdpTransport, TARGET_URL, bootstrapSource, normalizeUpdateDetails } = require("./update-session-cdp.js");
 
 const UPDATE_INTERVAL_MS = 30 * 60 * 1000;
 const STATUS_STATES = new Set([
   "checking", "current", "available", "queued", "preparing", "closing",
   "updating", "restarting", "error", "unavailable",
 ]);
-const REQUEST_ACTIONS = new Set(["check", "queue", "cancel"]);
+const REQUEST_ACTIONS = new Set(["check", "queue", "cancel", "history"]);
 
 function cleanMessage(value, fallback = null) {
   if (typeof value !== "string") return fallback;
@@ -26,6 +26,7 @@ function canonicalStatus(value) {
   const state = STATUS_STATES.has(value?.state) ? value.state : "unavailable";
   return Object.freeze({
     state,
+    ...(value?.details ? { details: normalizeUpdateDetails(value.details) } : {}),
     version: typeof value?.version === "string" && value.version ? value.version : null,
     message: cleanMessage(value?.message),
     canCancel: value?.canCancel === true,
@@ -390,6 +391,49 @@ class UpdaterAdapter {
   recover() { return this.#invoke("Recover"); }
 }
 
+function historyFile(directory) { return path.join(directory, "update-history-v1.json"); }
+
+function safeHistoryEntries(file) {
+  try {
+    const stat = fs.lstatSync(file);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 65536) return [];
+    const value = JSON.parse(fs.readFileSync(file, "utf8"));
+    return normalizeUpdateDetails({ history: value })?.history ?? [];
+  } catch { return []; }
+}
+
+function readUpdateHistory(config) {
+  try {
+    const root = path.join(config.stateRoot, "sessions");
+    if (fs.lstatSync(root).isSymbolicLink()) return [];
+    const directories = fs.readdirSync(root, { withFileTypes: true }).filter(item => item.isDirectory() && !item.isSymbolicLink() && fs.existsSync(historyFile(path.join(root, item.name))))
+      .map(item => { try { return { directory: path.join(root, item.name), time: fs.statSync(path.join(root, item.name)).mtimeMs }; } catch { return null; } }).filter(Boolean)
+      .sort((a, b) => b.time - a.time).slice(0, 20);
+    return directories.flatMap(item => safeHistoryEntries(historyFile(item.directory))).sort((a,b) => a.at - b.at).slice(-100);
+  } catch { return []; }
+}
+
+function appendUpdateHistory(config, entry) {
+  const directory = path.resolve(config.sessionDirectory);
+  const root = path.resolve(config.stateRoot, "sessions");
+  if (path.dirname(directory) !== root || fs.lstatSync(root).isSymbolicLink() || fs.lstatSync(directory).isSymbolicLink()) throw new Error("Update history directory is not an owned session directory.");
+  const file = historyFile(directory);
+  if (fs.existsSync(file) && fs.lstatSync(file).isSymbolicLink()) throw new Error("Update history cannot replace a linked file.");
+  const entries = normalizeUpdateDetails({ history: [...safeHistoryEntries(file), entry] }).history;
+  const temporary = `${file}.${process.pid}.${crypto.randomBytes(8).toString("hex")}.tmp`;
+  let descriptor;
+  try {
+    descriptor = fs.openSync(temporary, "wx", 0o600);
+    fs.writeFileSync(descriptor, JSON.stringify(entries) + "\n");
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor); descriptor = null;
+    fs.renameSync(temporary, file);
+  } finally {
+    if (descriptor != null) fs.closeSync(descriptor);
+    try { fs.unlinkSync(temporary); } catch {}
+  }
+}
+
 class UpdateSessionController {
   constructor(config, dependencies) {
     this.config = config;
@@ -401,6 +445,16 @@ class UpdateSessionController {
     this.isWritable = dependencies.isWritable ?? (() => testWritable(config.installRoot));
     this.status = canonicalStatus({ state: "unavailable", message: "Update status is starting." });
     this.release = null;
+    this.installedVersion = null;
+    try {
+      const version = fs.readFileSync(path.join(config.installRoot, "VERSION"), "utf8").trim();
+      if (validVersion(version)) this.installedVersion = version;
+    } catch {}
+    this.lastCheckedAt = null;
+    this.history = readUpdateHistory(config);
+    this.lastCheckedAt = this.history.findLast(entry => entry.state === "checked")?.at ?? null;
+    this.historyAvailable = true;
+    this.historyStateKey = null;
     this.checkPromise = null;
     this.operationPromise = null;
     this.queueRequestPromise = null;
@@ -412,8 +466,25 @@ class UpdateSessionController {
     this.monitorPromise = null;
   }
 
-  async setStatus(value) {
-    this.status = canonicalStatus(value);
+  recordHistory(state, version = null) {
+    const entry = { at: Date.now(), state, version };
+    try { appendUpdateHistory(this.config, entry); this.history = readUpdateHistory(this.config); }
+    catch { this.historyAvailable = false; }
+  }
+
+  async setStatus(value, record = true) {
+    const key = `${value.state}:${value.version ?? ""}`;
+    if (record && key !== this.historyStateKey && value.state !== "checking") {
+      this.recordHistory(value.state, value.version);
+      this.historyStateKey = key;
+    }
+    this.status = canonicalStatus({ ...value, details: {
+      installedVersion: this.installedVersion,
+      availableVersion: this.release?.version ?? null,
+      lastCheckedAt: this.lastCheckedAt,
+      historyAvailable: this.historyAvailable,
+      history: this.history,
+    } });
     try { await this.transport.publish(this.status); }
     catch (error) {
       if (!this.closingInitiated) throw error;
@@ -437,6 +508,9 @@ class UpdateSessionController {
             (result.available && (!validVersion(result.latestVersion) || !validSha256(result.archiveSha256)))) {
           throw new Error("The updater returned an invalid check result.");
         }
+        this.installedVersion = result.localVersion;
+        this.lastCheckedAt = Date.now();
+        this.recordHistory("checked", result.localVersion);
         if (!result.available) {
           this.release = null;
           return this.setStatus({ state: "current", version: result.localVersion, message: "The installed version is current." });
@@ -462,6 +536,11 @@ class UpdateSessionController {
     if (!REQUEST_ACTIONS.has(action)) throw new Error("Unsupported update action.");
     if (this.handledRequests.has(requestId)) return this.handledRequests.get(requestId);
     const promise = (async () => {
+      if (action === "history") {
+        this.history = readUpdateHistory(this.config);
+        this.lastCheckedAt = this.history.findLast(entry => entry.state === "checked")?.at ?? this.lastCheckedAt;
+        return this.setStatus(this.status, false);
+      }
       if (action === "check") return this.check(true);
       if (action === "queue") return this.queue();
       return this.cancel();
@@ -527,6 +606,7 @@ class UpdateSessionController {
       if (generation !== this.generation || this.stopping) {
         this.removePrepared(retainedDirectory);
         if (!this.stopping) {
+          this.recordHistory("cancelled", release.version);
           await this.setStatus({ state: "available", version: release.version, message: "The queued update was cancelled.", canQueue: true });
         }
         return;
@@ -553,6 +633,7 @@ class UpdateSessionController {
       if (generation !== this.generation || this.stopping) {
         this.removePrepared(retainedDirectory);
         if (!this.stopping) {
+          this.recordHistory("cancelled", release.version);
           await this.setStatus({ state: "available", version: release.version, message: "The queued update was cancelled.", canQueue: true });
         }
         return;
@@ -579,9 +660,11 @@ class UpdateSessionController {
       const recovery = await this.updater.recover();
       if (recovery?.integrityValid !== true) throw new Error("Post-update integrity verification failed; relaunch was blocked.");
       recovered = true;
+      this.installedVersion = release.version;
       await this.setStatus({ state: "restarting", version: release.version, message: "Restarting ChatGPT…" });
       relaunchAttempted = true;
       await this.platform.relaunch();
+      this.recordHistory("restart-confirmed", release.version);
       this.stopping = true;
     } catch (error) {
       if (!appClosed) {
@@ -832,6 +915,8 @@ module.exports = {
   acquireLock,
   bootstrapSource,
   canonicalStatus,
+  readUpdateHistory,
+  appendUpdateHistory,
   ensureConfig,
   parseLastJson,
   runCommand,

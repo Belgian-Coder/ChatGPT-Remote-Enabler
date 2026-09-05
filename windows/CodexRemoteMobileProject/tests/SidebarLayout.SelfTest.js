@@ -262,10 +262,10 @@ const expandedFragment = document.createDocumentFragment();
 layout.appendGroup(expandedFragment, project("empty-open"));
 const expandedGroup = expandedFragment.firstElementChild;
 assert.equal(expandedGroup.querySelector(".crmp-project-toggle").getAttribute("aria-expanded"), "true");
-const empty = expandedGroup.querySelector(".crmp-tasks .text-codex-description");
+const empty = expandedGroup.querySelector(".crmp-tasks .crmp-help");
 assert.ok(empty, "an expanded empty project must show the native empty-chat placeholder");
-assert.equal(empty.textContent, "No chats");
-for (const name of ["opacity-50", "px-8", "py-1", "text-base"]) assert.ok(empty.classList.contains(name), `native empty class ${name} must survive`);
+assert.equal(empty.textContent, "No tasks in this project yet.");
+assert.ok(empty.classList.contains("crmp-help"), "empty states must use readable secondary text");
 assert.ok(empty.closest('[class*="pt-0.5"][class*="pb-2"]'), "native child-list vertical spacing must survive");
 assert.notEqual(empty, opened.querySelector(".text-codex-description"), "native DOM must be cloned, never moved");
 assert.ok(opened.querySelector(".text-codex-description"), "rendering must preserve the native empty state");
@@ -379,8 +379,8 @@ assert.equal(layout.nativeListContainer([legacyRow, otherRow], []), null, "a nav
 nativeContainer.remove();
 const remoteEmpty = element("div", "crmp-tasks");
 layout.appendEmptyProjectState(remoteEmpty, { ...project("unregistered"), hostId: "fixture-peer" });
-assert.equal(remoteEmpty.textContent, "No loaded chats", "missing remote inventory must not be represented as an authoritative empty project");
-for (const name of ["opacity-50", "px-8", "py-1", "text-base"]) assert.ok(remoteEmpty.querySelector(".text-codex-description").classList.contains(name), `fallback empty class ${name} must match native`);
+assert.equal(remoteEmpty.textContent, "Loading tasks from this device…", "missing remote inventory must not be represented as an authoritative empty project");
+assert.ok(remoteEmpty.querySelector(".crmp-help"), "missing inventories must have a readable status");
 
 layout.ensureStyle();
 const stylesheet = document.getElementById("codex-remote-mobile-project-style").textContent;

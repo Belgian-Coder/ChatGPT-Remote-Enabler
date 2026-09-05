@@ -4,7 +4,7 @@
 
 | Feature | Behavior | Default or limit |
 | --- | --- | --- |
-| Mobile projects / Native views | Switch between device-aware project grouping and native views. | Preserves native grouping and expansion; synchronization continues in both views. |
+| Device projects / Native sidebar | Switch between device-aware project grouping and native views. | Preserves native grouping and expansion; synchronization continues in both views. |
 | Device filters | Show all devices or one selected device. | A cached inventory does not prove a device is online. |
 | Device names | Remember verified names across reloads/restarts. | Unknown peers say **Remote device**; internal environment IDs are never the fallback. |
 | Project rows | Include active empty projects, native folder styling/order and new-chat actions. | New-chat requires a usable command in the installed app. |
@@ -12,9 +12,17 @@
 | Auto-register | Mirror active remote project registrations locally. | Only fresh complete inventory can drive changes; no chat or source-folder deletion. |
 | Remove auto projects | Remove registrations made by Auto-register and suppress immediate recreation. | Keeps manual registrations/chats/folders; **Allow auto-registration** reverses suppression. |
 
+## Settings and device information
+
+**Settings** is available in both views. It contains Auto-register, removal of automation-created registrations, Auto-cleanup, its permanent-deletion schedule, and update checks. Moving these controls does not change stored preferences. Cleanup stays active in Native sidebar if previously enabled.
+
+**Device details** shows full device names, connection availability, and inventory freshness separately. Device filter buttons also expose their connection state to assistive technology. Empty projects distinguish loading, disconnected devices, stale inventory, and verified empty results.
+
+Keyboard focus and sidebar scroll position are retained during refreshes. Update announcements use a persistent polite status region. Controls have larger targets and support reduced motion. Browser fixtures cover light/dark themes and 200% scaling; this is not a claim of complete screen-reader or WCAG certification.
+
 ## Updates
 
-Checks run asynchronously at launch and every 30 minutes while open. **Update available** appears beside the view controls in both views. Installation requires a click.
+Checks run asynchronously at launch and every 30 minutes while open. **Update available** appears in its own status row in both views. Queued updates explain the wait directly; technical errors have a details disclosure and a **Check again** action. Installation requires a click.
 
 Clicking pins the selected release/checksum and prepares it while the app remains open. The helper waits for authoritative idle activity, including internal tasks. Unknown activity keeps it queued. **Cancel** is available until shutdown starts. Resumed work makes it continue waiting.
 

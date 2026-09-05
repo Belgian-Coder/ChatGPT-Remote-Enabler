@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.5.33 (prerelease)
+
+- Rename the enhanced view to Device projects and preserve stored view preferences.
+- Move automation into Settings in both views, with readable cleanup consequences and update checks.
+- Add visible update wait reasons, technical error details, stable status announcements, device details, and evidence-based empty states.
+- Increase control/text sizes and preserve focus/scroll through refreshes; add light/dark, narrow-layout, and scaling coverage.
+- Add per-user Windows and macOS setup assistants. New shortcuts share the Remote Enabler name; installation retains legacy shortcuts.
+- Keep native macOS and assistive-technology acceptance explicitly pending. Potential feature ideas are tracked separately in UX-ROADMAP.md.
+
+
 ## v1.5.32 (prerelease)
 
 - Add step-by-step per-user Windows 11 and Apple Silicon installation guides,

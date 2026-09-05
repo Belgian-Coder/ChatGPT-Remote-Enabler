@@ -10,7 +10,7 @@ const { chromium } = require("playwright");
 
 const sourcePath = path.join(__dirname, "..", "windows", "CodexRemoteMobileProject", "renderer-mobile-project-view.js");
 const source = fs.readFileSync(sourcePath, "utf8").replace(/\r\n/gu, "\n");
-const fixtureSource = source.replace("  return install();\n})();", "  globalThis.__crmpBrowserFixture = { state, install, render, collectModel };\n})();");
+const fixtureSource = source.replace("  return install();\n})();", "  globalThis.__crmpBrowserFixture = { state, install, render, collectModel, emptyInventoryMessage };\n})();");
 assert.notEqual(fixtureSource, source, "The fixture must expose the real renderer entrypoints.");
 
 async function main() {
@@ -81,9 +81,9 @@ async function main() {
     await updateButton.focus();
     await page.keyboard.press("Enter");
     assert.deepEqual(await page.evaluate(() => __fixtureRequests), ["queue"]);
-    await panel.getByRole("button", { name: "Native views", exact: true }).click();
+    await panel.getByRole("button", { name: "Native sidebar", exact: true }).click();
     await updateButton.waitFor();
-    await panel.getByRole("button", { name: "Mobile projects", exact: true }).click();
+    await panel.getByRole("button", { name: "Device projects", exact: true }).click();
 
     await page.evaluate(() => {
       __fixtureUpdateStatus = { state: "queued", version: "v1.5.33", message: "Waiting for active tasks.", canQueue: false, canCancel: true };
@@ -114,20 +114,110 @@ async function main() {
       globalThis.dispatchEvent(new CustomEvent("chatgpt-remote-update-status", { detail: __fixtureUpdateStatus }));
     });
     await updateButton.waitFor();
-    for (const width of [280, 320]) {
-      await page.locator("nav").evaluate((element, value) => { element.style.width = `${value}px`; }, width);
-      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
-      const controls = await panel.locator("button").evaluateAll(elements => elements.filter(element => element.getBoundingClientRect().width > 0).map(element => ({ text: element.textContent, client: element.clientWidth, scroll: element.scrollWidth, left: element.getBoundingClientRect().left, right: element.getBoundingClientRect().right })));
-      for (const control of controls) {
-        assert.ok(control.scroll <= control.client + 1, `Button text clipped at ${width}px: ${control.text}`);
-        assert.ok(control.left >= 0 && control.right <= width, `Button exceeds sidebar at ${width}px: ${control.text}`);
-      }
+    // Settings stays reachable in both views, with no preference mutation.
+    await panel.getByRole("button", { name: "Settings", exact: true }).click();
+    await panel.getByRole("button", { name: "Auto-cleanup: off", exact: true }).waitFor();
+    await panel.getByRole("button", { name: "Native sidebar", exact: true }).click();
+    assert.match(await panel.innerText(), /permanently deletes/);
+    await panel.getByRole("button", { name: "Device projects", exact: true }).click();
+    assert.equal(await page.evaluate(() => localStorage.getItem("codex-remote-mobile-auto-archive-enabled-v1")), "false");
+    await panel.getByRole("button", { name: "Settings", exact: true }).click();
+
+    for (const state of ["checking", "available", "queued", "preparing", "closing", "updating", "restarting", "error", "unavailable", "current"]) {
+      await page.evaluate(state => {
+        __fixtureUpdateStatus = { state, version: "v1.5.33", canQueue: state === "available", canCancel: ["queued", "preparing"].includes(state), message: state === "queued" ? "Unknown activity" : "Fixture detail" };
+        globalThis.dispatchEvent(new CustomEvent("chatgpt-remote-update-status", { detail: __fixtureUpdateStatus }));
+      }, state);
+      await page.waitForFunction(state => __crmpBrowserFixture.state.updateStatus.state === state, state);
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      assert.equal(await panel.locator(".crmp-update-panel").count(), state === "current" ? 0 : 1);
+      if (state === "queued") assert.match(await panel.innerText(), /Waiting for activity information/);
+      if (state === "error") await panel.getByRole("button", { name: "Check again", exact: true }).waitFor();
+      if (["queued", "preparing"].includes(state)) await panel.getByRole("button", { name: "Cancel", exact: true }).waitFor();
     }
-    await page.locator("nav").evaluate(element => { element.style.width = "288px"; });
+    assert.equal(await page.locator('[role="status"][aria-live="polite"]').count(), 1);
+    const liveStable = await page.evaluate(() => {
+      const node = document.querySelector('[role="status"][aria-live="polite"]');
+      const text = node.textContent;
+      __crmpBrowserFixture.render(); __crmpBrowserFixture.render();
+      return node === document.querySelector('[role="status"][aria-live="polite"]') && text === node.textContent;
+    });
+    assert.ok(liveStable, "status region must survive background rerenders");
+    await panel.getByRole("button", { name: "Settings", exact: true }).focus();
+    await page.evaluate(() => __crmpBrowserFixture.render());
+    assert.equal(await page.evaluate(() => document.activeElement.textContent), "Settings");
+    const emptyStates = await page.evaluate(() => {
+      const f = __crmpBrowserFixture, id = "ux-fixture";
+      f.state.displayedHosts.push({ id, name: "UX device", availabilityKnown: true, available: false });
+      const offline = f.emptyInventoryMessage(id);
+      f.state.displayedHosts.at(-1).available = true;
+      const loading = f.emptyInventoryMessage(id);
+      f.state.remoteProjectInventories.set(id, __fixtureInventory("UX device", "/ux"));
+      const empty = f.emptyInventoryMessage(id);
+      const filtered = f.emptyInventoryMessage(id, true);
+      f.state.remoteProjectInventories.get(id).generatedAt = Date.now() - 200000;
+      const stale = f.emptyInventoryMessage(id);
+      f.state.remoteProjectInventories.delete(id);
+      return { offline, loading, empty, filtered, stale };
+    });
+    assert.match(emptyStates.offline, /disconnected/);
+    assert.match(emptyStates.loading, /Loading/);
+    assert.match(emptyStates.empty, /No tasks in this project/);
+    assert.match(emptyStates.filtered, /Choose All/);
+    assert.match(emptyStates.stale, /out of date/);
+
     const screenshotIndex = process.argv.indexOf("--screenshot");
-    if (screenshotIndex >= 0) await page.screenshot({ path: path.resolve(process.argv[screenshotIndex + 1]), clip: { x: 0, y: 0, width: 300, height: 650 } });
+    const screenshotPath = screenshotIndex >= 0 ? path.resolve(process.argv[screenshotIndex + 1]) : null;
+    for (const theme of ["dark", "light"]) {
+      await page.evaluate(theme => {
+        document.documentElement.style.colorScheme = theme;
+        const dark = theme === "dark";
+        document.documentElement.style.setProperty("--color-text", dark ? "#eeeeee" : "#202020");
+        document.documentElement.style.setProperty("--color-text-secondary", dark ? "#cccccc" : "#444444");
+        document.documentElement.style.setProperty("--color-background-inverted", dark ? "#333333" : "#dedede");
+        document.body.style.color = dark ? "#eeeeee" : "#202020";
+        document.querySelector("nav").style.background = dark ? "#1b222f" : "#ffffff";
+        __fixtureUpdateStatus = { state: "queued", version: "v1.5.33", canCancel: true, message: "Waiting for active tasks" };
+        __crmpBrowserFixture.state.settingsOpen = true;
+        __crmpBrowserFixture.state.deviceDetailsOpen = true;
+        __crmpBrowserFixture.state.remoteProjectInventories.get(__fixtureHost).hostDisplayName = "Peer desktop with a very long device name";
+        globalThis.dispatchEvent(new CustomEvent("chatgpt-remote-update-status", { detail: __fixtureUpdateStatus }));
+      }, theme);
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      for (const width of [280, 320, 400]) {
+        for (const zoom of [1, 2]) {
+          await page.locator("nav").evaluate((element, values) => { element.style.width = `${values.width}px`; element.style.zoom = values.zoom; }, {width, zoom});
+          const controls = await panel.locator("button").evaluateAll(elements => elements.filter(element => element.getBoundingClientRect().width > 0).map(element => ({ text: element.textContent, client: element.clientWidth, scroll: element.scrollWidth, height: element.getBoundingClientRect().height, left: element.getBoundingClientRect().left, right: element.getBoundingClientRect().right, project: element.classList.contains("crmp-project-toggle") })));
+          for (const control of controls) {
+            if (!control.project) assert.ok(control.scroll <= control.client + 1, `Button text clipped at ${width}px: ${control.text}`);
+            assert.ok(control.left >= 0 && control.right <= width * zoom, `Button exceeds sidebar at ${width}px: ${control.text}`);
+            assert.ok(control.height / zoom >= 24, `Undersized control: ${control.text}`);
+          }
+        }
+      }
+      await page.locator("nav").evaluate(element => { element.style.width = "320px"; element.style.zoom = 1; });
+      const colors = await panel.locator(".crmp-help,.crmp-mode,.crmp-chip").evaluateAll(elements => elements.filter(el => el.getBoundingClientRect().height).map(el => ({ text: el.textContent, color: getComputedStyle(el).color })));
+      const luminance = rgb => rgb.map(value => { value /= 255; return value <= .04045 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4; }).reduce((sum, value, index) => sum + value * [.2126,.7152,.0722][index], 0);
+      const background = luminance(theme === "dark" ? [27,34,47] : [255,255,255]);
+      for (const item of colors) {
+        const foreground = luminance(item.color.match(/[\d.]+/g).slice(0,3).map(Number));
+        const contrast = (Math.max(foreground, background) + .05) / (Math.min(foreground, background) + .05);
+        assert.ok(contrast >= 4.5, `Low fixture text contrast (${contrast}): ${item.text}`);
+      }
+      if (screenshotPath) await panel.screenshot({ path: screenshotPath.replace(/\.png$/u, `-${theme}.png`) });
+    }
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    assert.ok(await page.evaluate(() => matchMedia("(prefers-reduced-motion: reduce)").matches));
+    await page.evaluate(() => {
+      __crmpBrowserFixture.state.settingsOpen = false;
+      __crmpBrowserFixture.state.deviceDetailsOpen = false;
+      __fixtureUpdateStatus = { state: "available", version: "v1.5.33", canQueue: true };
+      globalThis.dispatchEvent(new CustomEvent("chatgpt-remote-update-status", { detail: __fixtureUpdateStatus }));
+    });
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    if (screenshotPath) await panel.screenshot({ path: screenshotPath });
     assert.deepEqual(errors, [], "the real renderer must not raise browser errors");
-    console.log(JSON.stringify({ realChromium: true, realModelAndRender: true, neutralName: true, metadataArrival: true, reinjection: true, updateEventBothTargets: true, keyboardQueue: true, nativeViewUpdate: true, cancel: true, unrelatedMutations: 200, extraRenders: after.renders - before.renders, extraHostScans: after.hostDiscoveryScans - before.hostDiscoveryScans }));
+    console.log(JSON.stringify({ uxStates: 10, themes: 2, sidebarWidths: [280,320,400], scaling: [1,2], fixtureTextContrast: true, stableAnnouncements: true, focusRestored: true, realChromium: true, realModelAndRender: true, neutralName: true, metadataArrival: true, reinjection: true, updateEventBothTargets: true, keyboardQueue: true, nativeViewUpdate: true, cancel: true, unrelatedMutations: 200, extraRenders: after.renders - before.renders, extraHostScans: after.hostDiscoveryScans - before.hostDiscoveryScans }));
   } finally { await browser.close(); }
 }
 

@@ -32,6 +32,8 @@ foreach ($contract in @('TRANSIENT_RENDERER_CODES', 'installRendererPayloadWithR
 }
 
 $powershell = @(
+    'windows\Setup-ChatGPTRemote.ps1',
+    'tools\Test-SetupAssistant.ps1',
     'windows\Update-ChatGPTRemote.ps1',
     'windows\CodexRemoteMobileProject\UpdateSessionLauncher.ps1',
     'windows\CodexRemoteMobileProject\UpdateSessionPlatform.ps1',
@@ -93,7 +95,7 @@ foreach ($pair in @(
 }
 $renderer = Get-Content -LiteralPath $windowsRenderer -Raw
 $requiredContracts = @(
-    'const VERSION = 65;',
+    'const VERSION = 66;',
     'hostDisplayName: config.localDisplayName || null',
     'codex-remote-mobile-verified-thread-ids-v2',
     'THREAD_VISIBILITY_CONTRACT_VERSION',
@@ -243,13 +245,17 @@ if ($LASTEXITCODE -ne 0) { throw 'macOS updater compatibility self-test failed.'
 & (Join-Path $root 'tools\Test-MacOSSupport.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'macOS support reliability self-test failed.' }
 
+& powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File (Join-Path $root 'tools\Test-SetupAssistant.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Setup assistant construction test failed.' }
+
 git -C $root diff --check
 if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
 
 [pscustomobject]@{
     JavaScriptFiles = $javascript.Count
     PowerShellFiles = $powershell.Count
-    RendererVersion = 65
+    RendererVersion = 66
+    SetupAssistantSelfTest = $true
     RendererParity = $true
     MaintenanceParity = $true
     InjectorVersionProof = $true

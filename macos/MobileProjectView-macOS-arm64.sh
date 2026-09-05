@@ -393,7 +393,33 @@ remove_startup() {
   print "Removed $label; the previous plist was preserved in $rollback_root"
 }
 
+setup_check() {
+  local candidate="" node_bin="" temporary="$bundle_root/.setup-write-$$-$RANDOM"
+  for candidate in "/Applications/$app_name.app" "$HOME/Applications/$app_name.app"; do
+    if [[ -d "$candidate" ]]; then break; fi
+    candidate=""
+  done
+  if [[ -n "$candidate" ]]; then print 'App: Installed'; else print 'App: Not found in Applications'; fi
+  if node_bin="$(resolve_node 2>/dev/null)"; then print "Node: Compatible ($("$node_bin" --version))"; else print 'Node: Missing or incompatible; Node.js 22+ is required'; fi
+  if (print probe > "$temporary") 2>/dev/null && mv -- "$temporary" "$temporary.renamed" 2>/dev/null; then
+    print 'Folder: Writable for this user'
+  else
+    print 'Folder: Not writable; move the package to your home folder'
+  fi
+  rm -f -- "$temporary" "$temporary.renamed"
+  if [[ -f "$injector" && -f "$bundle_root/renderer-mobile-project-view.js" && -f "$bundle_root/MacOSShortcut.sh" ]]; then
+    print 'Integration: Package present; live readiness is checked at launch'
+  else
+    print 'Integration: Package incomplete'
+  fi
+  if [[ -d "$HOME/Applications/ChatGPT Remote Enabler.app" ]]; then print 'Shortcut: Installed';
+  elif [[ -d "$HOME/Applications/ChatGPT Mobile Projects.app" ]]; then print 'Shortcut: Legacy shortcut retained';
+  else print 'Shortcut: Not installed'; fi
+  if [[ -f "$plist" ]]; then print 'Startup: Installed; sign-in execution not verified'; else print 'Startup: Not installed'; fi
+}
+
 case "$action" in
+  setup-check) setup_check ;;
   enable) enable_view ;;
   startup) startup_view ;;
   disable) run_injector "$(resolve_node)" disable ;;

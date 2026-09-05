@@ -24,12 +24,14 @@ $primaryDescription = if ($UseProxy) {
     'Restart ChatGPT/Codex with the audited remote Mobile projects injection.'
 }
 $primaryShortcutTargets = @(
-    [ordered]@{ kind = 'Desktop'; path = Join-Path $DesktopPath 'ChatGPT Custom.lnk'; arguments = $primaryArguments; description = $primaryDescription },
-    [ordered]@{ kind = 'StartMenu'; path = Join-Path $StartMenuPath 'ChatGPT Custom.lnk'; arguments = $primaryArguments; description = $primaryDescription }
+    [ordered]@{ kind = 'Desktop'; path = Join-Path $DesktopPath 'ChatGPT Remote Enabler.lnk'; arguments = $primaryArguments; description = $primaryDescription },
+    [ordered]@{ kind = 'StartMenu'; path = Join-Path $StartMenuPath 'ChatGPT Remote Enabler.lnk'; arguments = $primaryArguments; description = $primaryDescription }
 )
 $shortcutTargets = @($primaryShortcutTargets)
 $summaryTargets = @($primaryShortcutTargets)
 $legacyShortcutTargets = @(
+    [ordered]@{ kind = 'LegacyDesktop'; path = Join-Path $DesktopPath 'ChatGPT Custom.lnk' },
+    [ordered]@{ kind = 'LegacyStartMenu'; path = Join-Path $StartMenuPath 'ChatGPT Custom.lnk' },
     [ordered]@{ kind = 'LegacyStartMenuProxyTest'; path = Join-Path $StartMenuPath 'ChatGPT Custom (Proxy Test).lnk' },
     [ordered]@{ kind = 'LegacyStartMenuProxy'; path = Join-Path $StartMenuPath 'ChatGPT Custom (Proxy).lnk' }
 )
@@ -76,14 +78,7 @@ switch ($Action) {
             throw "Launcher is missing: $launcherPath"
         }
         $backups = @()
-        foreach ($legacy in $legacyShortcutTargets) {
-            $backup = Backup-Shortcut -Path $legacy.path -Kind $legacy.kind
-            if ($backup) { $backups += $backup }
-            if ((Test-Path -LiteralPath $legacy.path -PathType Leaf) -and
-                $PSCmdlet.ShouldProcess($legacy.path, 'remove obsolete ChatGPT Custom shortcut')) {
-                Remove-Item -LiteralPath $legacy.path -Force
-            }
-        }
+        # Installation preserves all legacy shortcuts. Removal remains explicit.
         foreach ($target in $shortcutTargets) {
             $parent = Split-Path -Parent $target.path
             if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
@@ -91,7 +86,7 @@ switch ($Action) {
             }
             $backup = Backup-Shortcut -Path $target.path -Kind $target.kind
             if ($backup) { $backups += $backup }
-            if ($PSCmdlet.ShouldProcess($target.path, 'create ChatGPT Custom shortcut')) {
+            if ($PSCmdlet.ShouldProcess($target.path, 'create ChatGPT Remote Enabler shortcut')) {
                 $shell = New-Object -ComObject WScript.Shell
                 $shortcut = $shell.CreateShortcut($target.path)
                 $shortcut.TargetPath = $launcherPath

@@ -4,7 +4,7 @@ You need Windows 11 x64, the ChatGPT/Codex desktop app installed and signed in w
 
 ## 1. Download and extract
 
-1. Download **ChatGPT-Remote-Enabler-Windows-x64-v1.5.32.zip** from [v1.5.32 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.32). Read the prerelease testing limitations.
+1. Download **ChatGPT-Remote-Enabler-Windows-x64-v1.5.33.zip** from [v1.5.33 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.33). Read the prerelease testing limitations.
 2. Right-click the ZIP in File Explorer, choose **Properties**, select **Unblock** if offered, and click **OK**. Then choose **Extract All**.
 3. Enter `%LOCALAPPDATA%\Programs` in File Explorer's address bar. Create a **ChatGPTRemoteEnabler** folder and copy the extracted package contents into it.
 4. **ChatGPT Remote Enabler.exe**, **README.md**, and **CodexRemoteMobileProject** must be directly inside that folder. Keep the whole package together.
@@ -25,23 +25,26 @@ This portable location is detected automatically, including at sign-in. No PATH,
 
 1. Finish active tasks and quit the ordinary ChatGPT/Codex app.
 2. Double-click **ChatGPT Remote Enabler.exe** in your package folder.
-3. Wait for the app to open with **Mobile projects** and **Native views** in its sidebar.
+3. Wait for the app to open with **Device projects** and **Native sidebar** in its sidebar.
 4. Set up the helper on each participating device, then connect devices through the app's normal Remote controls.
 
 Unknown peers initially appear as **Remote device** until a verified name is available. The Windows launchers are unsigned: review their origin and release checksums if Windows blocks them. Organization policies may require IT approval independently of this helper. The normal workflow should not request UAC elevation.
 
-## 4. Optional Desktop/Start-menu shortcuts and sign-in startup
+## 4. Setup assistant: shortcuts and sign-in startup
 
-Open the package folder in File Explorer, type `powershell` in its address bar, and press Enter. Paste these commands one at a time into that ordinary PowerShell window:
+Double-click **Setup.exe** in the extracted package. Choose **Recheck** to inspect app discovery, Node compatibility, package write access, integration files, and existing startup settings. The diagnostic preview contains status information rather than conversation content or credentials.
+
+Select **Create Desktop and Start menu shortcuts** and/or **Start at sign-in**, then choose **Apply selected options**. Both are optional and unchecked initially. Existing legacy shortcuts and unchecked settings are preserved. Setup does not launch or restart the app. New shortcuts are called **ChatGPT Remote Enabler**; their underlying executable retains its compatibility filename.
+
+**Open installation guide** opens this guide. **Copy diagnostic summary** copies the displayed preview. A successful package check does not prove live injection; launch readiness is checked when the enhanced app starts. Sign-in startup waits 60 seconds by default.
+
+For a script-based setup, open ordinary PowerShell in the package folder and run:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\CodexRemoteMobileProject\DesktopShortcut.ps1 -Action Install
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\CodexRemoteMobileProject\StartupShortcut.ps1 -Action Install
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Setup-ChatGPTRemote.ps1
 ```
 
-The first creates **ChatGPT Custom** on your Desktop and Start menu. The second creates a shortcut in your Startup folder. They do not need administrator rights. `-ExecutionPolicy Bypass` applies to that process only and does not change system policy.
-
-Keep using **ChatGPT Custom** to open the enhanced app. Sign-in startup waits 60 seconds by default and leaves an ordinary running app alone. The separate legacy scheduled-task installer is unnecessary for this per-user setup.
+The existing DesktopShortcut and StartupShortcut scripts remain available for automation. No administrator access or system execution-policy change is required.
 
 ## 5. Updates and removal
 
@@ -62,7 +65,7 @@ Once stopped, you can delete the package folder. Your conversations and projects
 | What you see | What to do |
 | --- | --- |
 | Node.js missing | Check the location in step 2; `node.exe` must be directly inside `nodejs`. |
-| No enhanced sidebar | Finish work, quit the ordinary app, and launch **ChatGPT Custom**. Read any compatibility error. |
+| No enhanced sidebar | Finish work, quit the ordinary app, and launch **ChatGPT Remote Enabler**. Read any compatibility error. |
 | Update cannot write | Move the complete package to the per-user folder above and recreate shortcuts. |
 | Startup does nothing | Allow the initial delay; an ordinary running app is left alone. |
 | Update stays queued | Finish active tasks or Cancel. Unknown activity also keeps it queued. |
@@ -73,9 +76,9 @@ Logs live in `%LOCALAPPDATA%\CodexRemoteFeatures` and `%LOCALAPPDATA%\ChatGPTRem
 
 ## Advanced reference
 
-Mobile Projects mirrors the native task-state indicators: a spinner while a task is working and a blue dot after it finishes until that task is viewed. Opening a remote task acknowledges that completion locally until its owning device reports the next state transition.
+Device Projects mirrors the native task-state indicators: a spinner while a task is working and a blue dot after it finishes until that task is viewed. Opening a remote task acknowledges that completion locally until its owning device reports the next state transition.
 
-In Mobile Projects, **Auto-register: on/off** locally enables or pauses remote-project mirroring. It adds registrations and removes only automation-created registrations after a fresh, complete direct inventory confirms the source project was removed. It never deletes chats or folders. **Remove auto projects (N)** removes those registrations now and suppresses immediate recreation; it stays visible but disabled at `(0)`. Right-click a suppressed project and choose **Allow auto-registration** to permit it again.
+In Device Projects, **Auto-register: on/off** locally enables or pauses remote-project mirroring. It adds registrations and removes only automation-created registrations after a fresh, complete direct inventory confirms the source project was removed. It never deletes chats or folders. **Remove auto projects (N)** removes those registrations now and suppresses immediate recreation; it stays visible but disabled at `(0)`. Right-click a suppressed project and choose **Allow auto-registration** to permit it again.
 
 Run `ChatGPT Remote Enabler.exe`, or open PowerShell here and run:
 
@@ -83,8 +86,8 @@ Run `ChatGPT Remote Enabler.exe`, or open PowerShell here and run:
 .\Enable-ChatGPTRemote.ps1
 ```
 
-The compatibility check runs first. Renderer v65 preserves the user's
-**By project**/**By connection** Native views preference and every folder's
+The compatibility check runs first. Renderer v66 preserves the user's
+**By project**/**By connection** Native sidebar preference and every folder's
 open/closed state. It automatically paginates the authoritative active task
 list for the app-server's interactive CLI/VS Code sources used by the desktop UI. Internal exec and subagent
 runs remain available to maintenance safety checks but are not published as
@@ -110,7 +113,7 @@ Cached peer inventory alone cannot mark an offline device as online; an online
 device can remain green while its inventory service retries independently.
 Renderer requests are time-bounded and retry after transient bridge failures;
 cached projects remain visible with an offline dot while the owning device is unavailable.
-Synchronization continues automatically when **Native views** is selected.
+Synchronization continues automatically when **Native sidebar** is selected.
 Controllers read their complete registered-project state directly and verify
 new registrations before recording success. Remote chats match projects by
 device and normalized path, so they remain under the registered project.
@@ -118,7 +121,7 @@ The complete task inventory refreshes on startup and every 60 seconds, with
 debounced refreshes after native task rows change. Working/unread status is
 published separately at the existing fast cadence. Refresh does not open the
 grouping menu or change its value. Hovering a
-Mobile Projects folder opens the exact native project composer when available;
+Device Projects folder opens the exact native project composer when available;
 registered projects retain a native global-composer fallback when their folder
 row is not mounted by the selected grouping.
 
@@ -165,8 +168,8 @@ For a persistent local shortcut, keep the extracted folder in place and run:
 .\CodexRemoteMobileProject\DesktopShortcut.ps1 -Action Install
 ```
 
-This creates one **ChatGPT Custom** shortcut on the Desktop and one in the
-Start menu. It always runs the sibling stable and Mobile Projects bundles, so
+This creates one **ChatGPT Remote Enabler** shortcut on the Desktop and one in the
+Start menu. It always runs the sibling stable and Device Projects bundles, so
 future clicks load the injected view rather than the normal app. Use
 `-UseProxy` only when this device needs proxy mode; it configures those same
 shortcuts with `--proxy`. The installer never creates a separate proxy
@@ -215,7 +218,7 @@ The installer replaces a disabled legacy startup shortcut after preserving a
 rollback copy. Use `-Action Remove` to remove the active shortcut. The target is
 the versioned `ChatGPT Custom.exe` in this folder. The launcher exits after
 handing off startup, so a later user-requested update can replace it.
-A manual **ChatGPT Custom** click is explicit
+A manual **ChatGPT Remote Enabler** click is explicit
 permission to replace an ordinary running ChatGPT session. Unattended startup
 uses `--startup`, never terminates an active ordinary session, and records the
 reason in `%LOCALAPPDATA%\CodexRemoteFeatures\startup.log`.
@@ -282,3 +285,13 @@ Node.js 22 or newer is required. The launchers do not modify WindowsApps, the
 registry, firewall rules, or services. `ChatGPT Remote Enabler.exe` and
 `CodexRemoteMobileProject\ChatGPT Custom.exe` are unsigned and compiled from
 their included C# source files.
+
+## Revised sidebar
+
+These screenshots show the shared renderer in a browser fixture; they are not native macOS acceptance evidence.
+
+![Device projects](screenshots/device-projects-v1.5.33.png)
+
+![Settings and update status](screenshots/settings-v1.5.33.png)
+
+![Windows setup assistant](screenshots/setup-v1.5.33.png)

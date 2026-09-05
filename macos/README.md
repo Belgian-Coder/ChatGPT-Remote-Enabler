@@ -2,11 +2,11 @@
 
 You need an Apple Silicon Mac (arm64), the ChatGPT/Codex desktop app installed and signed in with Remote available on your account, and Node.js 22 or newer. This helper does not install the app or unlock account features.
 
-**Testing status:** native macOS installation, startup, and update/relaunch acceptance remains pending. Shared JavaScript and static checks pass. v1.5.32 is a prerelease.
+**Testing status:** native macOS installation, startup, and update/relaunch acceptance remains pending. Shared JavaScript and static checks pass. v1.5.33 is a prerelease.
 
 ## 1. Download and extract
 
-1. Download **ChatGPT-Remote-Enabler-macOS-arm64-v1.5.32.zip** from [v1.5.32 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.32).
+1. Download **ChatGPT-Remote-Enabler-macOS-arm64-v1.5.33.zip** from [v1.5.33 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.33).
 2. Double-click the ZIP in Finder. Create **ChatGPTRemoteEnabler** in your home folder and move the extracted package contents into it.
 3. `MobileProjectView-macOS-arm64.sh` must be directly inside that folder. Keep the complete package together in this writable per-user location.
 
@@ -29,19 +29,19 @@ cd "$HOME/ChatGPTRemoteEnabler"
 
 If you used a different folder, type `cd `, drag that folder from Finder into Terminal, and press Return before the second command.
 
-The app should open with **Mobile projects** and **Native views**. Set up each participating device and use the app's normal Remote controls to connect it. Review any per-user consent prompt to control the app. Do not use sudo or disable Gatekeeper. Organization policies may require IT approval independently of this helper.
+The app should open with **Device projects** and **Native sidebar**. Set up each participating device and use the app's normal Remote controls to connect it. Review any per-user consent prompt to control the app. Do not use sudo or disable Gatekeeper. Organization policies may require IT approval independently of this helper.
 
-## 4. Optional Dock shortcut and sign-in startup
+## 4. Setup assistant: Dock shortcut and sign-in startup
 
-In Terminal, still in the package folder, run:
+In Terminal, still in the extracted package folder, run:
 
 ```zsh
-/bin/zsh ./MacOSShortcut.sh install
-/bin/zsh ./MacOSShortcut.sh reveal
-/bin/zsh ./MobileProjectView-macOS-arm64.sh install-startup
+/bin/zsh ./Setup.command
 ```
 
-Drag the revealed **ChatGPT Mobile Projects.app** to your Dock. It lives in `~/Applications`. Sign-in startup uses your own `~/Library/LaunchAgents` and waits 60 seconds by default. Keep using the custom shortcut to open the enhanced app.
+The native setup dialog shows separate app, Node, folder, integration-file, shortcut, and startup checks. Choose **Create Dock shortcut** or **Enable sign-in startup** only if wanted. New shortcuts are called **ChatGPT Remote Enabler** and live in `~/Applications`; drag the revealed app to your Dock. Existing **ChatGPT Mobile Projects** shortcuts are preserved.
+
+Use **Recheck**, **Open installation guide**, or **Copy diagnostic summary** as needed. Setup does not launch or quit the desktop app. Checks establish package readiness; live injection is checked on launch. Startup installation does not prove next-sign-in execution. Native macOS execution of this assistant remains pending validation.
 
 ## 5. Updates and removal
 
@@ -74,13 +74,13 @@ Logs/state live under `~/Library/Application Support/CodexRemoteFeatures` and `~
 
 ## Advanced reference
 
-Mobile Projects mirrors the native task-state indicators: a spinner while a task is working and a blue dot after it finishes until that task is viewed. Opening a remote task acknowledges that completion locally until its owning device reports the next state transition.
+Device Projects mirrors the native task-state indicators: a spinner while a task is working and a blue dot after it finishes until that task is viewed. Opening a remote task acknowledges that completion locally until its owning device reports the next state transition.
 
-In Mobile Projects, **Auto-register: on/off** locally enables or pauses remote-project mirroring. It adds registrations and removes only automation-created registrations after a fresh, complete direct inventory confirms the source project was removed. It never deletes chats or folders. **Remove auto projects (N)** removes those registrations now and suppresses immediate recreation; it stays visible but disabled at `(0)`. Right-click a suppressed project and choose **Allow auto-registration** to permit it again.
+In Device Projects, **Auto-register: on/off** locally enables or pauses remote-project mirroring. It adds registrations and removes only automation-created registrations after a fresh, complete direct inventory confirms the source project was removed. It never deletes chats or folders. **Remove auto projects (N)** removes those registrations now and suppresses immediate recreation; it stays visible but disabled at `(0)`. Right-click a suppressed project and choose **Allow auto-registration** to permit it again.
 
-macOS already exposes native ChatGPT remote connections. This package adds the optional Mobile projects view.
+macOS already exposes native ChatGPT remote connections. This package adds the optional Device projects view.
 
-Renderer version 65 preserves the original folder states, native-backed drag
+Renderer version 66 preserves the original folder states, native-backed drag
 ordering, and the user's **By project**/**By connection** preference. It
 automatically paginates the authoritative active task list for the app-server's
 interactive CLI/VS Code sources used by the desktop UI. Internal exec and subagent runs remain available to
@@ -107,7 +107,7 @@ Cached peer inventory alone cannot mark an offline device as online; an online
 device can remain green while its inventory service retries independently.
 Renderer requests are time-bounded and retry after transient bridge failures;
 cached projects remain visible with an offline dot while the owning device is unavailable.
-Synchronization continues automatically when **Native views** is selected.
+Synchronization continues automatically when **Native sidebar** is selected.
 Controllers read their complete registered-project state directly and verify
 new registrations before recording success. Remote chats match projects by
 device and normalized path, so they remain under the registered project.
@@ -115,7 +115,7 @@ The complete task inventory refreshes on startup and every 60 seconds, with
 debounced refreshes after native task rows change. Working/unread status is
 published separately at the existing fast cadence. Refresh does not open the
 grouping menu or change its value. Hovering a
-Mobile Projects folder opens the exact native project composer when available;
+Device Projects folder opens the exact native project composer when available;
 registered projects retain a native global-composer fallback when their folder
 row is not mounted by the selected grouping.
 
@@ -200,7 +200,15 @@ Drag the revealed app to the Dock. The startup launcher waits 60 seconds by defa
 ```
 
 Requires Apple Silicon and Node.js 22 or newer with built-in WebSocket support.
-The v1.5.32 candidate shares the Windows renderer and automated fixtures.
+The v1.5.33 candidate shares the Windows renderer and automated fixtures.
 Native macOS startup, graceful quit, and update/relaunch validation remains a
 separate acceptance step on an available Mac; a future ChatGPT update can
 still break the private renderer integration.
+
+## Revised sidebar
+
+These screenshots show the shared renderer in a browser fixture; they are not native macOS acceptance evidence.
+
+![Device projects](screenshots/device-projects-v1.5.33.png)
+
+![Settings and update status](screenshots/settings-v1.5.33.png)

@@ -373,7 +373,10 @@ function Invoke-UserWorker {
         $startupScript = Join-Path $mobileRoot 'StartupShortcut.ps1'
         $launcherPath = [IO.Path]::GetFullPath((Join-Path $mobileRoot 'ChatGPT Custom.exe'))
 
+        $legacyShortcut = Join-Path $desktopPath 'ChatGPT Custom.lnk'
+        [IO.File]::WriteAllText($legacyShortcut, 'legacy-fixture-preserve')
         $desktopInstall = (& $desktopScript -Action Install -DesktopPath $desktopPath -StartMenuPath $startMenuPath -Confirm:$false | ConvertFrom-Json)
+        Assert-Condition ([IO.File]::ReadAllText($legacyShortcut) -eq 'legacy-fixture-preserve') 'Installing the new shortcut changed a legacy shortcut.'
         Assert-Condition ($desktopInstall.launcherPresent -and @($desktopInstall.shortcuts).Count -eq 2) 'Desktop/Start-menu install did not report the expected launcher and two shortcuts.'
         foreach ($shortcut in @($desktopInstall.shortcuts)) {
             Assert-Condition ($shortcut.installed) "$($shortcut.kind) shortcut was not installed."
@@ -403,6 +406,12 @@ function Invoke-UserWorker {
         $portableResolverResults = @(Test-PortableNodeResolvers -ReleaseRoot $releaseRoot -SourceNodePath $resolvedNode -IsolationRoot (Join-Path $fixtureFull 'resolver-isolation'))
         Assert-Condition ($portableResolverResults.Count -eq 3) 'Not all three production portable Node resolvers were exercised.'
 
+        $setupActions = (& (Join-Path $PSScriptRoot 'Test-SetupAssistant.ps1') -PackageRoot $releaseRoot | ConvertFrom-Json)
+        Assert-Condition ($setupActions.SelectedOptionsApplied -and $setupActions.ProxyPreferencePreserved -and $setupActions.LegacyShortcutPreserved) 'Medium-token setup actions failed.'
+        $setupProbe = (& (Join-Path $releaseRoot 'Setup-ChatGPTRemote.ps1') -Action Probe | ConvertFrom-Json)
+        Assert-Condition ($setupProbe.Folder -eq 'Writable for this user') 'Setup assistant failed its medium-token write/rename check.'
+        Assert-Condition ($setupProbe.Node -like 'Compatible*') 'Setup assistant did not detect the compatible runtime.'
+        Assert-Condition ($setupProbe.Integration -like 'Package files present*') 'Setup assistant did not recognize the extracted package.'
         $stableProbe = Join-Path $releaseRoot 'CodexRemoteSimple\CodexRemoteSimple.ps1'
         $isolatedLocalAppData = Join-Path $fixtureFull 'probe-localappdata'
         New-Item -ItemType Directory -Path $isolatedLocalAppData -Force | Out-Null
@@ -436,6 +445,9 @@ function Invoke-UserWorker {
             WritableFilesRenamed = $writableFiles
             ReleaseManifestRenamed = $manifestWritable
             PortableNodeResolvers = @($portableResolverResults)
+            LegacyShortcutPreserved = $true
+            SetupAssistantActions = $setupActions
+            SetupAssistantProbe = $setupProbe
             DesktopStartMenuInstallProbeRemove = $true
             StartupInstallProbeRemove = $true
             StableReadOnlyProbe = [pscustomobject][ordered]@{
@@ -661,6 +673,9 @@ try {
     WritableFilesRenamed = $workerResult.WritableFilesRenamed
     ReleaseManifestRenamed = $workerResult.ReleaseManifestRenamed
     PortableNodeResolvers = @($workerResult.PortableNodeResolvers)
+    LegacyShortcutPreserved = $workerResult.LegacyShortcutPreserved
+    SetupAssistantActions = $workerResult.SetupAssistantActions
+    SetupAssistantProbe = $workerResult.SetupAssistantProbe
     DesktopStartMenuInstallProbeRemove = $workerResult.DesktopStartMenuInstallProbeRemove
     StartupInstallProbeRemove = $workerResult.StartupInstallProbeRemove
     StableReadOnlyProbe = $workerResult.StableReadOnlyProbe

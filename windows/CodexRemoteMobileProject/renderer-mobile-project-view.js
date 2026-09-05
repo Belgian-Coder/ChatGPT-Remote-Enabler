@@ -58,7 +58,7 @@
     "unknown",
   ]);
   const PUBLISHER_VERSION = 53;
-  const VERSION = 65;
+  const VERSION = 66;
   const UPDATE_STATES = new Set(["checking", "current", "available", "queued", "preparing", "closing", "updating", "restarting", "error", "unavailable"]);
   const ACTIVITY_BUSY_STATUSES = new Set(["active", "generating", "inprogress", "loading", "pending", "queued", "running", "working"]);
   const ACTIVITY_IDLE_STATUSES = new Set(["complete", "completed", "idle", "notloaded"]);
@@ -215,6 +215,12 @@
     verifiedThreadIds: new Map(),
     view: "mobile",
     updateStatus: null,
+    settingsOpen: false,
+    deviceDetailsOpen: false,
+    updateDetailsOpen: false,
+    liveRegion: null,
+    lastAnnouncement: "",
+    displayedHosts: [],
   };
 
   function assignLocalRuntime(fetchFromHost, requestClient) {
@@ -2073,6 +2079,25 @@
       #${PANEL_ID} .crmp-project-head:hover .crmp-project-status, #${PANEL_ID} .crmp-project-head:focus-within .crmp-project-status, #${PANEL_ID} .crmp-project-head[data-actions-open="true"] .crmp-project-status { visibility:hidden; }
       @media (prefers-reduced-motion:no-preference) { #${PANEL_ID} .crmp-status-spin { animation:crmp-task-spin 2000ms linear infinite; } }
       @media (prefers-reduced-motion:reduce) { #${PANEL_ID} .crmp-status-spin { animation:none!important; } }
+
+      #${PANEL_ID} .crmp-mode, #${PANEL_ID} .crmp-auto-control, #${PANEL_ID} .crmp-update-control, #${PANEL_ID} .crmp-update-cancel { min-height:30px; font-size:12px; line-height:18px; }
+      #${PANEL_ID} .crmp-mode, #${PANEL_ID} .crmp-auto-control, #${PANEL_ID} .crmp-update-status, #${PANEL_ID} .crmp-update-group, #${PANEL_ID} .crmp-inventory-status, #${PANEL_ID} .crmp-project-host { color:var(--color-text-secondary,inherit); }
+      #${PANEL_ID} .crmp-chip { min-height:30px; font-size:12px; white-space:normal; overflow-wrap:anywhere; }
+      #${PANEL_ID} .crmp-project-host { font-size:12px; max-width:90px; }
+      #${PANEL_ID} .crmp-task { font-size:13px; min-height:30px; }
+      #${PANEL_ID} .crmp-update-group { flex-wrap:wrap; white-space:normal; font-size:12px; margin:0; }
+      #${PANEL_ID} .crmp-update-control, #${PANEL_ID} .crmp-update-status { margin:0; white-space:normal; font-size:12px; }
+      #${PANEL_ID} .crmp-update-panel, #${PANEL_ID} .crmp-settings, #${PANEL_ID} .crmp-devices { min-width:0; padding:6px; border:1px solid var(--color-border-default,#777); border-radius:8px; }
+      #${PANEL_ID} .crmp-settings[hidden] { display:none; }
+      #${PANEL_ID} .crmp-help { margin:6px 0; font-size:12px; line-height:1.5; color:var(--color-text-secondary,inherit); overflow-wrap:anywhere; }
+      #${PANEL_ID} summary { min-height:28px; font-size:12px; line-height:28px; cursor:pointer; overflow-wrap:anywhere; }
+      #${PANEL_ID} summary:focus-visible { outline:2px solid var(--color-accent,#74b9ff); }
+      #${PANEL_ID} .crmp-project-action, #${PANEL_ID} .crmp-project-new, #${PANEL_ID} .crmp-task-action { min-width:24px; min-height:24px; }
+      .crmp-sr-only { position:absolute!important; width:1px!important; height:1px!important; overflow:hidden!important; clip-path:inset(50%)!important; white-space:nowrap!important; }
+      @media (hover:none), (pointer:coarse) {
+        #${PANEL_ID} .crmp-project-action, #${PANEL_ID} .crmp-project-new, #${PANEL_ID} .crmp-task-actions { opacity:1; pointer-events:auto; }
+        #${PANEL_ID} .crmp-project-host { margin-right:52px; }
+      }
       @keyframes crmp-task-spin { to { transform:rotate(360deg); } }
       #${PANEL_ID} .crmp-empty { padding:8px 4px; color:var(--color-text-tertiary,#888); font-size:12px; }
     `;
@@ -2154,7 +2179,7 @@
       closing: "Closing for update…",
       updating: "Updating…",
       restarting: "Restarting…",
-      error: "Update error · Retry",
+      error: "Check again",
       unavailable: "Updates unavailable",
     };
     if (["queued", "preparing"].includes(status.state) && status.canCancel) {
@@ -2185,6 +2210,80 @@
       control.disabled = true;
     }
     return control;
+  }
+
+  function connectionLabel(host) {
+    if (host.id === "local") return "This device";
+    return !host.availabilityKnown ? "Connection unknown" : host.available === false ? "Disconnected" : "Connected";
+  }
+
+  function inventoryLabel(hostId) {
+    if (hostId === "local") return state.inventoryHydrationPending ? "Loading local inventory." : "Local projects.";
+    const inventory = state.remoteProjectInventories.get(hostId);
+    if (!inventory) return "Inventory not received yet.";
+    const fresh = freshInventory(hostId);
+    if (inventory.pending) return fresh ? "Refreshing inventory; current information is shown." : "Loading inventory; previous information may be out of date.";
+    if (!fresh) return "Inventory is unavailable or out of date; cached information may be shown.";
+    return "Current inventory received.";
+  }
+
+  function emptyInventoryMessage(hostId, filtered = false) {
+    if (hostId === "local") return state.inventoryHydrationPending || state.inventoryHydrationError
+      ? "Loading local tasks. Waiting for current inventory." : (filtered ? "No projects or tasks on this device." : "No tasks in this project yet.");
+    const host = state.displayedHosts.find(item => item.id === hostId);
+    if (host?.availabilityKnown && host.available === false) return "Device disconnected. Reconnect it using Remote to load tasks.";
+    const inventory = state.remoteProjectInventories.get(hostId);
+    if (!inventory || inventory.pending) return "Loading tasks from this device…";
+    if (!freshInventory(hostId) || inventory.error) return "Task information is out of date. Waiting for the device to refresh.";
+    if (!inventory.threadsAuthoritative) return "Waiting for a complete task inventory.";
+    return filtered ? "No projects or tasks match this device. Choose All to see other devices." : "No tasks in this project yet.";
+  }
+
+  function updateExplanation(status) {
+    if (status.state === "queued") return /unknown|authoritative|unavailable|information/i.test(status.message || "")
+      ? "Waiting for activity information. The app will stay open until it is safe to update."
+      : "Waiting for tasks to finish. The app will restart when it is safe to update.";
+    if (status.state === "preparing") return status.canCancel
+      ? "Downloading and verifying the update. You can cancel before shutdown starts."
+      : /cancell/i.test(status.message || "") ? "Finishing preparation before cancellation completes. The app will stay open." : "Preparing the verified update…";
+    return ({
+      available: "Install when tasks finish; the app will close and reopen automatically.",
+      checking: "Checking for a new release…", closing: "Closing the app normally before updating…",
+      updating: "Installing the verified update…", restarting: "Reopening the app with your saved settings…",
+      error: "The update could not complete. Review the details, then check again.",
+      unavailable: "The update service is unavailable in this session." })[status.state] || "";
+  }
+
+  function announceUpdate(status) {
+    const announcement = `${status.state}: ${updateExplanation(status)}`;
+    if (announcement === state.lastAnnouncement) return;
+    state.lastAnnouncement = announcement;
+    if (state.liveRegion) state.liveRegion.textContent = status.state === "current" ? "Remote Enabler is up to date." : updateExplanation(status);
+  }
+
+  function updateStatusPanel(status) {
+    const panel = document.createElement("section");
+    panel.className = "crmp-update-panel";
+    panel.setAttribute("aria-label", "Remote Enabler update");
+    panel.appendChild(updateStatusControl());
+    const explanation = document.createElement("p");
+    explanation.className = "crmp-help";
+    explanation.textContent = updateExplanation(status);
+    panel.appendChild(explanation);
+    if (status.message && ["error", "unavailable"].includes(status.state)) {
+      const details = document.createElement("details");
+      details.open = state.updateDetailsOpen;
+      details.addEventListener("toggle", () => { state.updateDetailsOpen = details.open; });
+      const summary = document.createElement("summary");
+      summary.textContent = "Technical details";
+      setFocusKey(summary, "update-details");
+      const message = document.createElement("p");
+      message.className = "crmp-help";
+      message.textContent = status.message;
+      details.append(summary, message);
+      panel.appendChild(details);
+    }
+    return panel;
   }
 
   function setFocusKey(element, ...parts) {
@@ -2231,6 +2330,7 @@
   }
 
   function restoreRenderedFocus(snapshot) {
+    for (const [element, top] of state.scrollSnapshot ?? []) if (element.isConnected) element.scrollTop = top;
     const pending = state.pendingOverlayFocus;
     state.pendingOverlayFocus = null;
     const overlay = pending ? document.getElementById(pending.id) : null;
@@ -4250,10 +4350,8 @@
     wrapper.className = "pt-0.5 pb-2 crmp-empty-project";
     const content = document.createElement("div");
     const empty = nativeEmpty?.cloneNode(true) ?? document.createElement("div");
-    if (!nativeEmpty) {
-      empty.className = "text-codex-description opacity-50 px-8 py-1 text-base";
-      empty.textContent = nativeItem ? "No chats" : "No loaded chats";
-    }
+    empty.className = "crmp-help";
+    empty.textContent = emptyInventoryMessage(project.hostId);
     content.appendChild(empty);
     wrapper.appendChild(content);
     tasks.appendChild(wrapper);
@@ -4458,11 +4556,16 @@
   function render() {
     state.counters.renders += 1;
     const focus = captureSidebarFocus();
+    state.scrollSnapshot = [];
+    for (let parent = state.panel?.parentElement; parent; parent = parent.parentElement) {
+      if (parent.scrollHeight > parent.clientHeight) state.scrollSnapshot.push([parent, parent.scrollTop]);
+    }
     state.scheduledFrame = null;
     document.getElementById(CARD_ID)?.remove();
     document.getElementById(CONTEXT_ID)?.remove();
     if (!state.active) return renderReport();
     const model = collectModel();
+    state.displayedHosts = model.hosts;
     // Current Codex separates Projects and Recents into sibling sections.
     // Include both sets so the replacement covers the complete native list.
     const nextNative = nativeListContainer(model.rows, model.nativeProjectItems);
@@ -4489,61 +4592,28 @@
     const fragment = document.createDocumentFragment();
     const modes = document.createElement("div");
     modes.className = "crmp-modes";
-    for (const [id, label] of [["mobile", "Mobile projects"], ["native", "Native views"]]) {
+    for (const [id, label] of [["mobile", "Device projects"], ["native", "Native sidebar"]]) {
       const mode = button("crmp-mode", label);
       setFocusKey(mode, "mode", id);
       mode.setAttribute("aria-pressed", String(state.view === id));
       mode.addEventListener("click", () => setView(id));
       modes.appendChild(mode);
     }
-    modes.appendChild(updateStatusControl());
+    const settingsToggle = button("crmp-mode", "Settings");
+    settingsToggle.setAttribute("aria-expanded", String(state.settingsOpen));
+    settingsToggle.setAttribute("aria-controls", `${PANEL_ID}-settings`);
+    setFocusKey(settingsToggle, "settings");
+    settingsToggle.addEventListener("click", () => { state.settingsOpen = !state.settingsOpen; render(); });
+    modes.appendChild(settingsToggle);
     fragment.appendChild(modes);
-
-    scheduleLocalProjectInventoryPublication();
-    scheduleLocalPeerCacheInventory(model.hosts);
-    scheduleLocalRegisteredProjectsRefresh();
-    scheduleRemoteProjectInventory(model.remoteRuntimes);
-    scheduleAutoRegistration(model);
-    scheduleAutoReconciliation(model);
-    scheduleAutoArchive();
-    scheduleNativeInventoryHydration();
-
-    if (state.view === "native") {
-      state.nativeContainer.style.display = state.originalDisplay;
-      state.panel.replaceChildren(fragment);
-      restoreRenderedFocus(focus);
-      return renderReport(model);
-    }
-    state.nativeContainer.style.setProperty("display", "none", "important");
-
-    if (state.filter !== "all" && !model.hosts.some((host) => host.id === state.filter)) state.filter = "all";
-    const filters = document.createElement("div");
-    filters.className = "crmp-filters";
-    filters.setAttribute("role", "group");
-    filters.setAttribute("aria-label", "Filter tasks by device");
-    const filterItems = [{ id: "all", name: "All" }, ...model.hosts];
-    for (const host of filterItems) {
-      const chip = button("crmp-chip", host.name);
-      setFocusKey(chip, "filter", host.id);
-      chip.style.maxWidth = "100%";
-      chip.style.overflow = "hidden";
-      chip.style.textOverflow = "ellipsis";
-      chip.title = host.name;
-      chip.setAttribute("aria-pressed", String(state.filter === host.id));
-      if (host.id !== "all") {
-        const dot = document.createElement("span");
-        dot.className = `crmp-dot${host.availabilityKnown && host.available === false ? " crmp-dot-unavailable" : ""}`;
-        if (!host.availabilityKnown) {
-          dot.style.background = "#888";
-          chip.title = `${host.name} — connection status unknown`;
-        }
-        chip.prepend(dot);
-      }
-      chip.addEventListener("click", () => { state.filter = host.id; render(); });
-      filters.appendChild(chip);
-    }
-
-    fragment.appendChild(filters);
+    const update = readUpdateStatus();
+    announceUpdate(update);
+    if (update.state !== "current") fragment.appendChild(updateStatusPanel(update));
+    const settings = document.createElement("section");
+    settings.id = `${PANEL_ID}-settings`;
+    settings.className = "crmp-settings";
+    settings.setAttribute("aria-label", "Remote Enabler settings");
+    settings.hidden = !state.settingsOpen;
     const autoControls = document.createElement("div");
     autoControls.className = "crmp-auto-controls";
     const autoEnabled = readBoolean(AUTO_ENABLED_KEY);
@@ -4583,7 +4653,87 @@
       }
     });
     autoControls.appendChild(autoArchive);
-    fragment.appendChild(autoControls);
+    settings.appendChild(autoControls);
+
+    const cleanupSummary = document.createElement("p");
+    cleanupSummary.className = "crmp-help";
+    cleanupSummary.textContent = autoArchiveEnabled
+      ? "Cleanup is enabled on this device: inactive local chats are archived after 7 days, then permanently deleted after 7 more archived days."
+      : "Cleanup is off. Enabling it archives inactive local chats after 7 days, then permanently deletes them after 7 more archived days.";
+    settings.appendChild(cleanupSummary);
+    const maintenanceSummary = document.createElement("p");
+    maintenanceSummary.className = "crmp-help";
+    maintenanceSummary.textContent = "Startup maintenance runs only while the app is closed. It maintains local databases and diagnostic logs.";
+    settings.appendChild(maintenanceSummary);
+    if (update.state === "current") settings.appendChild(updateStatusControl());
+    const check = button("crmp-auto-control", "Check for updates");
+    check.disabled = !["current", "error", "unavailable"].includes(update.state) || typeof globalThis[UPDATE_SLOT]?.request !== "function";
+    setFocusKey(check, "settings", "check");
+    check.addEventListener("click", () => { void requestUpdateAction("check"); });
+    settings.appendChild(check);
+    fragment.appendChild(settings);
+
+    scheduleLocalProjectInventoryPublication();
+    scheduleLocalPeerCacheInventory(model.hosts);
+    scheduleLocalRegisteredProjectsRefresh();
+    scheduleRemoteProjectInventory(model.remoteRuntimes);
+    scheduleAutoRegistration(model);
+    scheduleAutoReconciliation(model);
+    scheduleAutoArchive();
+    scheduleNativeInventoryHydration();
+
+    if (state.view === "native") {
+      state.nativeContainer.style.display = state.originalDisplay;
+      state.panel.replaceChildren(fragment);
+      restoreRenderedFocus(focus);
+      return renderReport(model);
+    }
+    state.nativeContainer.style.setProperty("display", "none", "important");
+
+    if (state.filter !== "all" && !model.hosts.some((host) => host.id === state.filter)) state.filter = "all";
+    const filters = document.createElement("div");
+    filters.className = "crmp-filters";
+    filters.setAttribute("role", "group");
+    filters.setAttribute("aria-label", "Filter tasks by device");
+    const filterItems = [{ id: "all", name: "All" }, ...model.hosts];
+    for (const host of filterItems) {
+      const chip = button("crmp-chip", host.name);
+      setFocusKey(chip, "filter", host.id);
+      chip.style.maxWidth = "100%";
+      chip.style.overflow = "hidden";
+      chip.style.textOverflow = "ellipsis";
+      chip.title = host.name;
+      chip.setAttribute("aria-label", host.id === "all" ? "All devices" : `${host.name}, ${connectionLabel(host)}`);
+      chip.setAttribute("aria-pressed", String(state.filter === host.id));
+      if (host.id !== "all") {
+        const dot = document.createElement("span");
+        dot.className = `crmp-dot${host.availabilityKnown && host.available === false ? " crmp-dot-unavailable" : ""}`;
+        if (!host.availabilityKnown) {
+          dot.style.background = "#888";
+          chip.title = `${host.name} — connection status unknown`;
+        }
+        chip.prepend(dot);
+      }
+      chip.addEventListener("click", () => { state.filter = host.id; render(); });
+      filters.appendChild(chip);
+    }
+
+    fragment.appendChild(filters);
+    const devices = document.createElement("details");
+    devices.className = "crmp-devices";
+    devices.open = state.deviceDetailsOpen;
+    devices.addEventListener("toggle", () => { state.deviceDetailsOpen = devices.open; });
+    const deviceSummary = document.createElement("summary");
+    deviceSummary.textContent = "Device details";
+    setFocusKey(deviceSummary, "devices");
+    devices.appendChild(deviceSummary);
+    for (const host of model.hosts) {
+      const entry = document.createElement("p");
+      entry.className = "crmp-help";
+      entry.textContent = `${host.name} — ${connectionLabel(host)}. ${inventoryLabel(host.id)}`;
+      devices.appendChild(entry);
+    }
+    fragment.appendChild(devices);
     const unavailableInventoryHosts = model.hosts.filter((host) => host.id !== "local" && state.remoteProjectInventories.get(host.id)?.error);
     if (unavailableInventoryHosts.length) {
       const status = document.createElement("div");
@@ -4614,7 +4764,9 @@
     if (!visibleProjects.length && !visibleRecents.length) {
       const empty = document.createElement("div");
       empty.className = "crmp-empty";
-      empty.textContent = "No loaded tasks for this device.";
+      empty.textContent = state.filter === "all"
+        ? "No projects or tasks to show yet. Connect a device using Remote to load its projects."
+        : emptyInventoryMessage(state.filter, true);
       fragment.appendChild(empty);
     }
     state.panel.replaceChildren(fragment);
@@ -4796,6 +4948,12 @@
     ensureStyle();
     state.panel ??= document.createElement("div");
     state.panel.id = PANEL_ID;
+    state.liveRegion ??= document.createElement("div");
+    state.liveRegion.className = "crmp-sr-only";
+    state.liveRegion.setAttribute("role", "status");
+    state.liveRegion.setAttribute("aria-live", "polite");
+    state.liveRegion.setAttribute("aria-atomic", "true");
+    document.body.appendChild(state.liveRegion);
     state.active = true;
     state.disposed = false;
     document.addEventListener("pointerdown", dismissOverlays);
@@ -4870,6 +5028,7 @@
     if (state.nativeContainer?.isConnected) state.nativeContainer.style.display = state.originalDisplay;
     state.nativeContainer = null;
     state.panel?.remove();
+    state.liveRegion?.remove();
     document.getElementById(CARD_ID)?.remove();
     document.getElementById(CONTEXT_ID)?.remove();
     document.getElementById(STYLE_ID)?.remove();

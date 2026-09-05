@@ -6,9 +6,9 @@ action="${action:l}"
 script_path="${0:A}"
 launcher="${script_path:h}/MobileProjectView-macOS-arm64.sh"
 source_root="$HOME/Library/Application Support/CodexRemoteFeatures/launchers"
-source_file="$source_root/ChatGPT Mobile Projects.applescript"
+source_file="$source_root/ChatGPT Remote Enabler.applescript"
 app_root="$HOME/Applications"
-app_path="$app_root/ChatGPT Mobile Projects.app"
+app_path="$app_root/ChatGPT Remote Enabler.app"
 rollback_root="$source_root/rollback"
 
 if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
@@ -30,7 +30,7 @@ escape_applescript_string() {
 probe_shortcut() {
   local checked_app="${1:-$app_path}"
   local checked_source="${2:-$source_file}"
-  [[ -x "$launcher" ]] || { print -u2 "Installed launcher is missing or not executable: $launcher"; return 1; }
+  [[ -f "$launcher" ]] || { print -u2 "Installed launcher is missing: $launcher"; return 1; }
   [[ -f "$checked_source" ]] || { print -u2 "AppleScript source is missing: $checked_source"; return 1; }
   [[ -d "$checked_app" ]] || { print -u2 "Application wrapper is missing: $checked_app"; return 1; }
   /usr/bin/codesign --verify --deep --strict "$checked_app"
@@ -40,12 +40,12 @@ probe_shortcut() {
 }
 
 install_shortcut() {
-  [[ -x "$launcher" ]] || { print -u2 "Installed launcher is missing or not executable: $launcher"; return 1; }
+  [[ -f "$launcher" ]] || { print -u2 "Installed launcher is missing: $launcher"; return 1; }
   mkdir -p "$source_root" "$app_root" "$rollback_root"
   local stamp
   stamp="$(date +%Y%m%d-%H%M%S)-$$"
-  local candidate_source="$source_root/.ChatGPT Mobile Projects.applescript.tmp.$$"
-  local candidate_app="$app_root/.ChatGPT Mobile Projects.app.tmp.$$"
+  local candidate_source="$source_root/.ChatGPT Remote Enabler.applescript.tmp.$$"
+  local candidate_app="$app_root/.ChatGPT Remote Enabler.app.tmp.$$"
   rm -rf -- "$candidate_source" "$candidate_app"
   local escaped_launcher="$(escape_applescript_string "$launcher")"
   /bin/cat > "$candidate_source" <<APPLESCRIPT
@@ -54,12 +54,12 @@ on run
     try
         set runningCount to do shell script "{ /usr/bin/pgrep -x ChatGPT; /usr/bin/pgrep -x Codex; } | /usr/bin/sort -u | /usr/bin/wc -l | /usr/bin/tr -d ' '"
         if runningCount is not "0" then
-            display alert "ChatGPT is already running" message "Quit ChatGPT with Command-Q when no task is active, then click ChatGPT Mobile Projects again. The launcher will not terminate it automatically." as warning
+            display alert "ChatGPT is already running" message "Quit ChatGPT with Command-Q when no task is active, then click ChatGPT Remote Enabler again. The launcher will not terminate it automatically." as warning
             return
         end if
         do shell script "/bin/zsh " & quoted form of launcherPath & " enable"
     on error errorMessage number errorNumber
-        display alert "ChatGPT Mobile Projects failed to start" message (errorMessage & " (error " & (errorNumber as text) & ")") as critical
+        display alert "ChatGPT Remote Enabler failed to start" message (errorMessage & " (error " & (errorNumber as text) & ")") as critical
     end try
 end run
 APPLESCRIPT
@@ -70,8 +70,8 @@ APPLESCRIPT
     print -u2 "Shortcut candidate failed validation; the installed shortcut was left unchanged."
     return 1
   fi
-  local previous_source="$rollback_root/ChatGPT Mobile Projects-$stamp.applescript"
-  local previous_app="$rollback_root/ChatGPT Mobile Projects-$stamp.app"
+  local previous_source="$rollback_root/ChatGPT Remote Enabler-$stamp.applescript"
+  local previous_app="$rollback_root/ChatGPT Remote Enabler-$stamp.app"
   local source_preserved=0 app_preserved=0
   if [[ -f "$source_file" ]]; then
     if ! mv -- "$source_file" "$previous_source"; then
@@ -109,10 +109,10 @@ remove_shortcut() {
   local stamp
   stamp="$(date +%Y%m%d-%H%M%S)-$$"
   if [[ -e "$app_path" ]]; then
-    mv "$app_path" "$rollback_root/ChatGPT Mobile Projects-removed-$stamp.app"
+    mv "$app_path" "$rollback_root/ChatGPT Remote Enabler-removed-$stamp.app"
   fi
   if [[ -f "$source_file" ]]; then
-    mv "$source_file" "$rollback_root/ChatGPT Mobile Projects-removed-$stamp.applescript"
+    mv "$source_file" "$rollback_root/ChatGPT Remote Enabler-removed-$stamp.applescript"
   fi
   print "Shortcut files were preserved under $rollback_root. Remove the stale Dock icon manually if present."
 }

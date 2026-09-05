@@ -56,6 +56,15 @@ try {
         throw 'Atomic state writer left a temporary file after success.'
     }
 
+    Write-CrsState -Package $package -RendererPort 24548 -MainPort $null -Probe $probe -Launch $launch -ProxyMode $false -BridgeMode 'native-renderer'
+    $replaced = Read-CrsState
+    if (-not $replaced -or $replaced.rendererPort -ne 24548) {
+        throw 'Atomic state writer did not replace an existing durable session record.'
+    }
+    if (@(Get-ChildItem -LiteralPath $temporaryRoot -Filter '.codexremote-simple-session.*').Count -ne 0) {
+        throw 'Atomic state replacement left a temporary or replacement-backup file after success.'
+    }
+
     $beforeFailedWrite = [IO.File]::ReadAllText($script:StatePath)
     $lock = [IO.File]::Open($script:StatePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
     $failedAsExpected = $false
@@ -181,6 +190,7 @@ try {
 
     [pscustomobject]@{
         AtomicWrite = $true
+        ExistingStateReplaced = $true
         FailedReplacePreservedPriorState = $true
         TemporaryFilesCleaned = $true
         TruncatedStateQuarantined = $true

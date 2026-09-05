@@ -663,6 +663,7 @@ function Write-CrsState {
     $json = $state | ConvertTo-Json -Depth 4
     New-Item -ItemType Directory -Path $script:StateRoot -Force | Out-Null
     $temporaryPath = Join-Path $script:StateRoot ('.codexremote-simple-session.{0}.{1}.tmp' -f $PID,[guid]::NewGuid().ToString('N'))
+    $replacementBackupPath = Join-Path $script:StateRoot ('.codexremote-simple-session.{0}.{1}.replace-backup' -f $PID,[guid]::NewGuid().ToString('N'))
     $stream = $null
     try {
         $encoding = [Text.UTF8Encoding]::new($false)
@@ -681,7 +682,11 @@ function Write-CrsState {
         $stream = $null
 
         if (Test-Path -LiteralPath $script:StatePath -PathType Leaf) {
-            [IO.File]::Replace($temporaryPath, $script:StatePath, $null)
+            # Windows PowerShell binds the null third argument to an empty path,
+            # which makes File.Replace fail whenever a prior session record exists.
+            # A unique same-volume backup keeps the replacement atomic; the old
+            # state remains untouched if the replace cannot complete.
+            [IO.File]::Replace($temporaryPath, $script:StatePath, $replacementBackupPath)
         } else {
             [IO.File]::Move($temporaryPath, $script:StatePath)
         }
@@ -689,6 +694,9 @@ function Write-CrsState {
         if ($null -ne $stream) { $stream.Dispose() }
         if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
             Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+        }
+        if (Test-Path -LiteralPath $replacementBackupPath -PathType Leaf) {
+            Remove-Item -LiteralPath $replacementBackupPath -Force -ErrorAction SilentlyContinue
         }
     }
 }

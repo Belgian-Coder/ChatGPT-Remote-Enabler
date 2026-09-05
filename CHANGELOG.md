@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.5.41
+
+- Replace an existing Windows session record atomically with a valid same-volume backup path. Windows PowerShell otherwise bound the absent backup argument as an empty path, falsely failed a healthy launch, and could tear it down during the guarded retry.
+- Discover the React root from stable app/sidebar anchors and mount Device projects from the native Projects/Recents section markers even when a fresh sidebar has no task or project rows. This removes the empty-sidebar readiness dependency while retaining the guard against hiding global navigation.
+- Accept additional device-name fields only when they accompany a real environment host ID, and cover existing-state replacement, empty-sidebar mounting, and row-free React-root discovery in deterministic regressions.
+
 ## v1.5.40
 
 - Accept the renderer's current nested `report.readiness` envelope in both Windows startup coordinators while retaining the former flat-report format for compatibility. This fixes the live v1.5.39 launch failure that reported incomplete readiness proof even though the same renderer later became ready.

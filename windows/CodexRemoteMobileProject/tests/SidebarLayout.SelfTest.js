@@ -165,7 +165,7 @@ const testSource = originalSource
   bindReorder = () => {};
   probe = () => ({});
   nativeThreadAction = () => null;
-  return { appendEmptyProjectState, appendGroup, commonAncestor, ensureStyle, install, nativeFolderIcon, nativeListContainer, plainFolderIcon, render, state,
+  return { appendEmptyProjectState, appendGroup, commonAncestor, ensureStyle, install, nativeFolderIcon, nativeListContainer, plainFolderIcon, reactRootFibers, render, state,
     useModel(model) { collectModel = () => model; }
   };
 })();`);
@@ -247,6 +247,8 @@ nav.appendChild(element("button", "native-global-control", "Explore"));
 const nativeContainer = nav.appendChild(element("div", "contents"));
 const projectsSection = nativeContainer.appendChild(element("div")).appendChild(element("section"));
 const recentsSection = nativeContainer.appendChild(element("div")).appendChild(element("section"));
+projectsSection.setAttribute("data-app-action-sidebar-section", "projects");
+recentsSection.setAttribute("data-app-action-sidebar-section", "recents");
 const recentHeading = recentsSection.appendChild(element("div", "group/nav-section-title"));
 const recentNewChat = recentHeading.appendChild(element("button", "sidebar-icon-button"));
 recentNewChat.setAttribute("aria-label", "New chat");
@@ -255,6 +257,9 @@ const closed = projectsSection.appendChild(nativeProject("empty-closed", false))
 const populated = projectsSection.appendChild(nativeProject("populated", true, null));
 const nativeRecentRow = recentsSection.appendChild(element("button", "native-recent-row"));
 nativeRecentRow.setAttribute("data-app-action-sidebar-thread-row", "true");
+const reactRoot = { return: null };
+const sectionFiber = { return: { return: reactRoot } };
+projectsSection["__reactFiber$fixture"] = sectionFiber;
 layout.state.filter = "local";
 
 // Empty folders retain native text, indentation and spacing only while open.
@@ -299,6 +304,11 @@ assert.notEqual(layout.plainFolderIcon(true).querySelector("path").getAttribute(
 assert.equal(layout.commonAncestor([nativeRecentRow, opened, closed]), nativeContainer);
 assert.equal(layout.nativeListContainer([nativeRecentRow], [opened, closed]), nativeContainer);
 assert.equal(layout.nativeListContainer([], [opened, closed]), nativeContainer, "empty Recents must not leave the native Projects heading and Recents sibling outside the replacement");
+assert.equal(layout.nativeListContainer([], []), nativeContainer, "stable Projects/Recents section markers must mount safely when all native rows are absent");
+const discoveredReactRoots = layout.reactRootFibers();
+assert.equal(discoveredReactRoots.length, 2, "stable sidebar anchors must expose only the distinct React anchor and root fibers");
+assert.equal(discoveredReactRoots[0], sectionFiber, "stable sidebar anchors must expose their React fiber without a row");
+assert.equal(discoveredReactRoots[1], reactRoot, "stable sidebar anchors must expose the React root without a row");
 layout.state.panel = element("div");
 layout.state.panel.id = "codex-remote-mobile-project-panel";
 layout.state.view = "native";

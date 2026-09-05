@@ -9,6 +9,7 @@
   const PANEL_ID = "codex-remote-mobile-project-panel";
   const STYLE_ID = "codex-remote-mobile-project-style";
   const ROW_SELECTOR = "[data-app-action-sidebar-thread-row]";
+  const SIDEBAR_SECTION_SELECTOR = "[data-app-action-sidebar-section]";
   const AUTO_ENABLED_KEY = "codex-remote-mobile-auto-register-enabled-v1";
   const HOST_NAMES_KEY = "codex-remote-mobile-host-names-v1";
   const NATIVE_HOST_NAMES_KEY = "codex-remote-mobile-native-host-names-v1";
@@ -62,7 +63,7 @@
     "unknown",
   ]);
   const PUBLISHER_VERSION = 53;
-  const VERSION = 71;
+  const VERSION = 72;
   // Keep outstanding writes locked across renderer reinjection until the underlying RPC settles.
   const peerWriteLocks = globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ instanceof Map
     ? globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ : (globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ = new Map());
@@ -649,6 +650,35 @@
     return key ? element[key] : null;
   }
 
+  function reactRootFibers() {
+    const roots = [];
+    const seen = new Set();
+    // A fresh sidebar can have no task or project rows yet. Use stable app and
+    // sidebar anchors to reach React without walking every rendered element on
+    // every discovery pass. Keep both the anchor fiber (useful state is often
+    // on its ancestor chain) and its root (needed for a complete fiber walk).
+    const elements = [
+      document.getElementById("root"),
+      ...document.querySelectorAll("[data-app-action-sidebar-scroll],[data-app-action-sidebar-section],nav,main"),
+    ].filter((element) => element instanceof Element);
+    for (const element of elements) {
+      let keys;
+      try { keys = Object.keys(element); } catch { continue; }
+      for (const key of keys) {
+        if (!key.startsWith("__reactContainer$") && !key.startsWith("__reactFiber$")) continue;
+        let fiber;
+        try { fiber = element[key]; } catch { fiber = null; }
+        fiber = fiber?.current ?? fiber;
+        if (!fiber || typeof fiber !== "object") continue;
+        if (!seen.has(fiber)) { seen.add(fiber); roots.push(fiber); }
+        let root = fiber;
+        while (root?.return) root = root.return;
+        if (root && !seen.has(root)) { seen.add(root); roots.push(root); }
+      }
+    }
+    return roots;
+  }
+
   function cwdFromProps(props) {
     if (!props || typeof props !== "object") return null;
     const candidates = [
@@ -711,7 +741,6 @@
   function nativeListContainer(rows, nativeProjectItems) {
     const elements = [...rows, ...nativeProjectItems]
       .filter((element) => element instanceof Element && !element.closest(`#${PANEL_ID}`));
-    if (!elements.length) return null;
     const containsSidebarChrome = (candidate) => [...candidate.querySelectorAll('button,a,[role="button"]')].some((element) => {
       if (element.closest(`[data-sidebar-project-kind],${ROW_SELECTOR}`)) return false;
       // A native section's small New chat action belongs to that list, unlike
@@ -720,6 +749,20 @@
       const label = (element.getAttribute("aria-label") || element.textContent || "").replace(/\s+/gu, " ").trim();
       return label === "New chat" || label === "Explore";
     });
+    if (!elements.length) {
+      // Empty Projects/Recents lists have no row to anchor on. The native
+      // renderer marks those stable section containers explicitly; only use
+      // them when they are inside the sidebar chrome and not our own panel.
+      const sections = [...document.querySelectorAll(SIDEBAR_SECTION_SELECTOR)]
+        .filter((element) => !element.closest(`#${PANEL_ID}`)
+          && element.closest("nav")
+          && element.getAttribute("aria-hidden") !== "true");
+      if (sections.length) {
+        const candidate = commonAncestor(sections) ?? sections[0];
+        if (candidate && !candidate.matches("body,nav,header") && !containsSidebarChrome(candidate)) return candidate;
+      }
+      return null;
+    }
     const isSectionWrapper = (element, depth = 0) => {
       if (!(element instanceof Element) || depth > 8) return false;
       if (element.tagName === "SECTION") return true;
@@ -849,7 +892,9 @@
       }
       const connectionHost = typeof value.host === "string" ? value.host : null;
       const hostId = value.hostId ?? value.host_id ?? value.environmentId ?? value.environment_id ?? connectionHost;
-      const displayName = value.displayName ?? value.display_name ?? value.hostDisplayName ?? (connectionHost ? value.name : null);
+      const displayName = value.displayName ?? value.display_name ?? value.hostDisplayName
+        ?? value.hostName ?? value.hostname
+        ?? (connectionHost || hostId ? (value.name ?? value.label) : null);
       if (typeof hostId === "string" && /^(?:remote-control:)?env_/iu.test(hostId) && typeof displayName === "string" && !isSyntheticHostName(displayName)) {
         const normalizedHostId = hostId.startsWith("remote-control:") ? hostId : `remote-control:${hostId}`;
         names.set(normalizedHostId, displayName.trim());
@@ -935,9 +980,9 @@
         scan(item, depth + 1);
       }
     };
-    const candidates = [...document.querySelectorAll(`${ROW_SELECTOR},[aria-label]`)];
+    const candidates = [...document.querySelectorAll(`${ROW_SELECTOR},[aria-label]`), ...reactRootFibers()];
     for (const element of candidates) {
-      let fiber = getFiber(element);
+      let fiber = element?.memoizedProps ? element : getFiber(element);
       for (let level = 0; fiber && level < 80; level += 1, fiber = fiber.return) {
         const group = fiber.memoizedProps?.group;
         if (typeof group?.hostId === "string" && !isSyntheticHostName(group?.hostDisplayName)) {
@@ -987,6 +1032,7 @@
     const fibers = [];
     const seenFibers = new Set();
     const queue = root ? [root] : [];
+    for (const rootFiber of reactRootFibers()) queue.push(rootFiber);
     for (let queueIndex = 0; queueIndex < queue.length && fibers.length < 20000; queueIndex += 1) {
       const fiber = queue[queueIndex];
       if (!fiber || seenFibers.has(fiber)) continue;

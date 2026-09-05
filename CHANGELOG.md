@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.5.36
+
+- Put update controls, device health, cleanup, diagnostics, and connection troubleshooting behind Settings in both views. Keep only navigation and device filters before projects, with a small update-attention indicator on Settings.
+- Replace the unsupported blob-download action with the native Save As service. Save the exact preview, prevent duplicate dialogs, and report saved, cancelled, and failed outcomes.
+- Recover the local state bridge from the app's own loaded module exports when React-based discovery misses it. Verify a read before use, exclude RPC proxies, share discovery, and dispose pending requests. This restores pin-aware cleanup preview and local project-state access on the current desktop build.
+- Explain specific cleanup failures, clear stale failed previews, and distinguish earlier incomplete history from current state. Record only allowlisted failure reasons.
+- Report when a connection refresh cannot start because a listed device has no exposed runtime.
+- Verify native bridge discovery, read-only preview recovery, Unicode save payloads, cancellation/error handling, and compact Settings layouts in browser fixtures. Native macOS and full live-app quit/update/relaunch remain pending.
+
 ## v1.5.35
 
 - Publish as a normal release discoverable by existing automatic updaters. Earlier prerelease flags had blocked v1.5.31 clients. Verify the legacy Auto action and bootstrap the new Windows update helper during that first upgrade, preserving the recorded proxy mode.

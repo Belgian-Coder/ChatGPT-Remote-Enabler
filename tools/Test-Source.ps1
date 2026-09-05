@@ -96,7 +96,7 @@ foreach ($pair in @(
 }
 $renderer = Get-Content -LiteralPath $windowsRenderer -Raw
 $requiredContracts = @(
-    'const VERSION = 68;',
+    'const VERSION = 69;',
     'hostDisplayName: config.localDisplayName || null',
     'codex-remote-mobile-verified-thread-ids-v2',
     'THREAD_VISIBILITY_CONTRACT_VERSION',
@@ -202,7 +202,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Thread visibility self-test failed.' }
 & $node (Join-Path $root 'windows\CodexRemoteMobileProject\tests\TaskStatus.SelfTest.js')
 if ($LASTEXITCODE -ne 0) { throw 'Task status self-test failed.' }
 
-foreach ($test in @('HostNames', 'SidebarLayout', 'SidebarStatus', 'SidebarBehavior', 'RendererReliability', 'FeatureState', 'PeerTransfer')) {
+foreach ($test in @('HostNames', 'SidebarLayout', 'SidebarStatus', 'SidebarBehavior', 'RendererReliability', 'FeatureState', 'PeerTransfer', 'NativeStateBridge')) {
     & $node (Join-Path $root "windows\CodexRemoteMobileProject\tests\$test.SelfTest.js")
     if ($LASTEXITCODE -ne 0) { throw "$test self-test failed." }
 }
@@ -258,7 +258,7 @@ if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
 [pscustomobject]@{
     JavaScriptFiles = $javascript.Count
     PowerShellFiles = $powershell.Count
-    RendererVersion = 68
+    RendererVersion = 69
     LegacyUpdateBootstrapSelfTest = $true
     SetupAssistantSelfTest = $true
     RendererParity = $true
@@ -273,6 +273,7 @@ if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
     UpdateSessionCdpSelfTest = $true
     NativeWindowsUpdateSessionSelfTest = $true
     PeerTransferSelfTest = $true
+    NativeStateBridgeSelfTest = $true
     FeatureStateSelfTest = $true
     RendererReliabilitySelfTest = $true
     WindowsSessionStateSelfTest = $true

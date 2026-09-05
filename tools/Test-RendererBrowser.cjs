@@ -36,7 +36,7 @@ async function main() {
     await page.evaluate(() => {
       globalThis.__fixtureHost = "remote-control:" + "env" + "_" + "primary_fixture";
       globalThis.__fixtureOlderHost = "remote-control:" + "env" + "_" + "older_fixture";
-      globalThis.__CODEX_REMOTE_MOBILE_CONFIG__ = { localDisplayName: "Local device", helperVersion: "v1.5.35", hostDisplayNames: {} };
+      globalThis.__CODEX_REMOTE_MOBILE_CONFIG__ = { localDisplayName: "Local device", helperVersion: "v1.5.36", hostDisplayNames: {} };
       localStorage.setItem("codex-remote-mobile-auto-register-enabled-v1", "false");
       localStorage.setItem("codex-remote-mobile-auto-archive-enabled-v1", "false");
       const project = document.getElementById("native-project");
@@ -62,10 +62,17 @@ async function main() {
       __crmpBrowserFixture.install();
     });
     const panel = page.locator("#codex-remote-mobile-project-panel");
+    const settingsButton = panel.getByRole("button", { name: "Settings", exact: true });
+    const setSettingsOpen = async open => { if (await settingsButton.getAttribute("aria-expanded") !== String(open)) await settingsButton.click(); };
+    assert.equal(await panel.locator(".crmp-settings").isVisible(), false);
+    assert.equal(await panel.locator(".crmp-version").isVisible(), false, "update details must stay behind Settings");
+    assert.equal(await panel.locator(".crmp-devices").isVisible(), false, "device health must stay behind Settings");
+    assert.equal(await panel.locator(":scope > .crmp-update-panel,:scope > .crmp-devices").count(), 0);
+    await setSettingsOpen(true);
     await panel.locator(".crmp-version").waitFor();
-    assert.match(await panel.locator(".crmp-version").innerText(), /Remote Enabler · v1\.5\.35/u);
+    assert.match(await panel.locator(".crmp-version").innerText(), /Remote Enabler · v1\.5\.36/u);
     assert.equal(await panel.locator(".crmp-version svg").count(), 1);
-    assert.equal(await panel.locator(".crmp-settings").isVisible(), false, "version must be visible while Settings is closed");
+    assert.equal(await panel.locator(".crmp-settings").isVisible(), true, "version is available inside Settings");
     if (screenshotPath) await panel.locator(".crmp-update-panel").screenshot({ path: screenshotPath.replace(/\.png$/u, "-version.png") });
     await panel.locator(".crmp-version").click();
     assert.equal(await page.evaluate(() => __fixtureRequests.pop()), "check");
@@ -77,7 +84,7 @@ async function main() {
       __crmpBrowserFixture.render();
     });
     assert.match(await panel.locator(".crmp-update-panel").innerText(), /update service is not attached/u);
-    assert.match(await panel.locator(".crmp-version").innerText(), /v1\.5\.35/u);
+    assert.match(await panel.locator(".crmp-version").innerText(), /v1\.5\.36/u);
     assert.equal(await panel.locator(".crmp-version").isDisabled(), true);
     if (screenshotPath) await panel.locator(".crmp-update-panel").screenshot({ path: screenshotPath.replace(/\.png$/u, "-missing-updater.png") });
     assert.equal(await panel.getByRole("link", { name: "Release notes and downloads" }).count(), 1);
@@ -103,11 +110,13 @@ async function main() {
       globalThis.dispatchEvent(new CustomEvent("chatgpt-remote-update-status", { detail: __fixtureUpdateStatus }));
     });
     const updateButton = panel.getByRole("button", { name: "Update available · v1.5.33", exact: true });
+    await setSettingsOpen(true);
     await updateButton.waitFor();
     await updateButton.focus();
     await page.keyboard.press("Enter");
     assert.deepEqual(await page.evaluate(() => __fixtureRequests), ["queue"]);
     await panel.getByRole("button", { name: "Native sidebar", exact: true }).click();
+    await setSettingsOpen(true);
     await updateButton.waitFor();
     await panel.getByRole("button", { name: "Device projects", exact: true }).click();
 
@@ -139,15 +148,16 @@ async function main() {
       __fixtureUpdateStatus = { state: "available", version: "v1.5.33", message: "An update is available.", canQueue: true, canCancel: false };
       globalThis.dispatchEvent(new CustomEvent("chatgpt-remote-update-status", { detail: __fixtureUpdateStatus }));
     });
+    await setSettingsOpen(true);
     await updateButton.waitFor();
     // Settings stays reachable in both views, with no preference mutation.
-    await panel.getByRole("button", { name: "Settings", exact: true }).click();
+    await setSettingsOpen(true);
     await panel.getByRole("button", { name: "Auto-cleanup: off", exact: true }).waitFor();
     await panel.getByRole("button", { name: "Native sidebar", exact: true }).click();
     assert.match(await panel.innerText(), /permanently deletes/);
     await panel.getByRole("button", { name: "Device projects", exact: true }).click();
     assert.equal(await page.evaluate(() => localStorage.getItem("codex-remote-mobile-auto-archive-enabled-v1")), "false");
-    await panel.getByRole("button", { name: "Settings", exact: true }).click();
+    await setSettingsOpen(true);
 
     for (const state of ["checking", "available", "queued", "preparing", "closing", "updating", "restarting", "error", "unavailable", "current"]) {
       await page.evaluate(state => {
@@ -193,6 +203,7 @@ async function main() {
     assert.match(emptyStates.stale, /out of date/);
 
     // Exercise aliases through actual controls, preserving both caret and verified identity.
+    await setSettingsOpen(true);
     await panel.locator(".crmp-devices > summary").click();
     let aliasInput = panel.getByRole("textbox", { name: "Local alias for Peer desktop", exact: true });
     await aliasInput.fill("My local alias");
@@ -213,6 +224,7 @@ async function main() {
       __crmpBrowserFixture.install();
     });
     await chips.filter({ hasText: "My local alias" }).waitFor();
+    await setSettingsOpen(true);
     await panel.locator(".crmp-devices > summary").click();
     await panel.locator(".crmp-device-card").filter({ hasText: "My local alias" }).getByRole("button", {name:"Reset alias", exact:true}).click();
     await chips.filter({ hasText: "Peer desktop" }).waitFor();
@@ -222,7 +234,7 @@ async function main() {
       return [a, b];
     });
     assert.deepEqual(refreshed, [true, false], "health refresh must coalesce repeated clicks");
-    await panel.getByRole("button", { name: "Settings", exact: true }).click();
+    await setSettingsOpen(true);
     await panel.locator(".crmp-feature > summary").filter({ hasText: "Cleanup preview and history" }).click();
     await panel.getByRole("button", { name: "Refresh cleanup preview", exact: true }).click();
     await panel.getByText(/Preview is unavailable/).waitFor();
@@ -245,13 +257,31 @@ async function main() {
     await panel.getByRole("button", { name: "Copy preview", exact: true }).click();
     await page.waitForFunction(() => typeof globalThis.__copiedDiagnostic === "string");
     assert.equal(await page.evaluate(() => __copiedDiagnostic), json);
-    const downloadEvent = page.waitForEvent("download");
+    await page.evaluate(() => {
+      globalThis.electronBridge = { sendMessageFromView: async () => {} };
+      __crmpBrowserFixture.state.localFetchFromHost = async (action, options) => {
+        if (action !== "save-file") return { value: [] };
+        globalThis.__savedDiagnostic = options.params;
+        return { path: "/chosen/diagnostics.json" };
+      };
+    });
     await panel.getByRole("button", { name: "Save JSON", exact: true }).click();
-    const download = await downloadEvent;
-    assert.equal(fs.readFileSync(await download.path(), "utf8"), json, "download must exactly match the visible preview");
+    await panel.getByText("JSON saved to /chosen/diagnostics.json", {exact:true}).waitFor();
+    const saved = await page.evaluate(() => __savedDiagnostic);
+    assert.equal(saved.kind, "contents");
+    assert.equal(saved.suggestedFilename, "remote-enabler-diagnostics.json");
+    assert.equal(Buffer.from(saved.contentsBase64, "base64").toString("utf8"), json, "native save must exactly match the displayed preview");
+    await page.evaluate(() => { __crmpBrowserFixture.state.localFetchFromHost = async () => ({ path: null }); });
+    await panel.getByRole("button", { name: "Save JSON", exact: true }).click();
+    await panel.getByText("Save cancelled. No file was saved.", {exact:true}).waitFor();
+    await page.evaluate(() => { __crmpBrowserFixture.state.localFetchFromHost = async () => { throw Error("fixture save failed"); }; });
+    await panel.getByRole("button", { name: "Save JSON", exact: true }).click();
+    await panel.getByText(/JSON could not be saved/).waitFor();
+    await page.evaluate(() => { delete globalThis.electronBridge; __crmpBrowserFixture.state.localFetchFromHost = null; });
     await page.evaluate(() => {
       __crmpBrowserFixture.state.featureOpen = {};
       __crmpBrowserFixture.state.cleanupPreviewError = null;
+      __crmpBrowserFixture.state.diagnosticFeedback = null;
       __crmpBrowserFixture.render();
     });
 
@@ -317,7 +347,7 @@ async function main() {
         __crmpBrowserFixture.state.settingsOpen = true;
         __crmpBrowserFixture.state.deviceDetailsOpen = false;
         __crmpBrowserFixture.state.featureOpen = { cleanup: true, updates: true, diagnostics: true };
-        __fixtureUpdateStatus = { state: "current", version: "v1.5.35", details: { installedVersion: "v1.5.35", lastCheckedAt: Date.now(), historyAvailable: true, history: [{ at: Date.now(), state: "checked", version: "v1.5.35" }] } };
+        __fixtureUpdateStatus = { state: "current", version: "v1.5.36", details: { installedVersion: "v1.5.36", lastCheckedAt: Date.now(), historyAvailable: true, history: [{ at: Date.now(), state: "checked", version: "v1.5.36" }] } };
         globalThis.dispatchEvent(new CustomEvent("chatgpt-remote-update-status", { detail: __fixtureUpdateStatus }));
       });
       await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
@@ -328,13 +358,13 @@ async function main() {
     await page.evaluate(() => {
       __crmpBrowserFixture.state.settingsOpen = false;
       __crmpBrowserFixture.state.deviceDetailsOpen = false;
-      __fixtureUpdateStatus = { state: "current", version: "v1.5.35", canQueue: false };
+      __fixtureUpdateStatus = { state: "current", version: "v1.5.36", canQueue: false };
       globalThis.dispatchEvent(new CustomEvent("chatgpt-remote-update-status", { detail: __fixtureUpdateStatus }));
     });
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     if (screenshotPath) await panel.screenshot({ path: screenshotPath });
     assert.deepEqual(errors, [], "the real renderer must not raise browser errors");
-    console.log(JSON.stringify({ alwaysVisibleVersionAndIcon: true, missingUpdaterRecoveryBothViews: true, guidedConnectionTroubleshooting: true, transferDiagnosticsAllowlisted: true, featureControls: true, aliasReload: true, caretPreserved: true, healthRefreshCoalesced: true, diagnosticCopyAndDownload: true, uxStates: 10, themes: 2, sidebarWidths: [280,320,400], scaling: [1,2], fixtureTextContrast: true, stableAnnouncements: true, focusRestored: true, realChromium: true, realModelAndRender: true, neutralName: true, metadataArrival: true, reinjection: true, updateEventBothTargets: true, keyboardQueue: true, nativeViewUpdate: true, cancel: true, unrelatedMutations: 200, extraRenders: after.renders - before.renders, extraHostScans: after.hostDiscoveryScans - before.hostDiscoveryScans }));
+    console.log(JSON.stringify({ settingsContainUpdatesAndHealth: true, missingUpdaterRecoveryBothViews: true, guidedConnectionTroubleshooting: true, transferDiagnosticsAllowlisted: true, featureControls: true, aliasReload: true, caretPreserved: true, healthRefreshCoalesced: true, diagnosticCopyAndNativeSave: true, diagnosticCancelAndError: true, uxStates: 10, themes: 2, sidebarWidths: [280,320,400], scaling: [1,2], fixtureTextContrast: true, stableAnnouncements: true, focusRestored: true, realChromium: true, realModelAndRender: true, neutralName: true, metadataArrival: true, reinjection: true, updateEventBothTargets: true, keyboardQueue: true, nativeViewUpdate: true, cancel: true, unrelatedMutations: 200, extraRenders: after.renders - before.renders, extraHostScans: after.hostDiscoveryScans - before.hostDiscoveryScans }));
   } finally { await browser.close(); }
 }
 

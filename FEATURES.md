@@ -16,22 +16,22 @@
 
 **Settings** is available in both views. It contains Auto-register, removal of automation-created registrations, Auto-cleanup, its permanent-deletion schedule, and update checks. Moving these controls does not change stored preferences. Cleanup stays active in Native sidebar if previously enabled.
 
-**Device health** shows reported device names, connection availability, and inventory freshness separately. Device filter buttons also expose their connection state to assistive technology. Empty projects distinguish loading, disconnected devices, stale inventory, and verified empty results.
+**Device health**, inside Settings, shows reported device names, connection availability, and inventory freshness separately. Device filter buttons also expose their connection state to assistive technology. Empty projects distinguish loading, disconnected devices, stale inventory, and verified empty results.
 
 Keyboard focus and sidebar scroll position are retained during refreshes. Update announcements use a persistent polite status region. Controls have larger targets and support reduced motion. Browser fixtures cover light/dark themes and 200% scaling; this is not a claim of complete screen-reader or WCAG certification.
 
 ## Updates
 
-![Always-visible helper version and update icon](assets/screenshots/version-v1.5.35.png)
+![Helper version and update icon inside Settings](assets/screenshots/version-v1.5.36.png)
 
-The update icon and **loaded helper version** remain visible above Settings in both views, including when Settings is closed and no update is queued. Click the version button for a manual update check. A missing update sidecar leaves the version visible with recovery instructions; an unavailable version is explicitly labeled rather than guessed.
+The update icon and **loaded helper version** are inside Settings in both views. The main sidebar keeps only the view switch, device filters, and projects; a small Settings indicator appears when an update needs attention. Click the version button for a manual update check. A missing update sidecar leaves the version visible with recovery instructions; an unavailable version is explicitly labeled rather than guessed.
 
-**v1.5.35 is a normal release available to the existing automatic updater.** Earlier v1.5.32-v1.5.34 releases were incorrectly published as prereleases, which kept v1.5.31 clients from discovering them. The first Windows upgrade now bootstraps the new update helper even when the old launcher is finishing its startup code.
+**v1.5.36 is a normal release available to the existing automatic updater.** Earlier v1.5.32-v1.5.34 releases were incorrectly published as prereleases, which kept v1.5.31 clients from discovering them. The first Windows upgrade now bootstraps the new update helper even when the old launcher is finishing its startup code.
 
 If a downloaded version is not visible, fully quit and launch from that extracted version's Remote Enabler launcher. A legacy **ChatGPT Custom** shortcut can still point at an older installation. A running app can also retain its older injected sidebar until relaunched.
 
 
-Checks run asynchronously at launch and every 30 minutes while open. **Update available** appears in its own status row in both views. Queued updates explain the wait directly; technical errors have a details disclosure and a **Check again** action. Installation requires a click.
+Checks run asynchronously at launch and every 30 minutes while open. **Update available** appears inside Settings in both views. Queued updates explain the wait directly; technical errors have a details disclosure and a **Check again** action. Installation requires a click.
 
 Clicking pins the selected release/checksum and prepares it while the app remains open. The helper waits for authoritative idle activity, including internal tasks. Unknown activity keeps it queued. **Cancel** is available until shutdown starts. Resumed work makes it continue waiting.
 
@@ -64,7 +64,7 @@ Set or reset a device alias in that panel. Aliases are stored only in this clien
 
 In Settings, expand **Cleanup preview and history** and select **Refresh cleanup preview**. It lists archive and permanent-deletion counts, up to 100 candidate titles per action, and a snapshot time. Preview does not enable cleanup, archive/delete tasks, or start recovery timers. Complete task and pinned-task information is required; missing information makes preview unavailable. Actual cleanup always checks eligibility again.
 
-Local history begins with this version and retains up to 100 operations from the last 90 days, including incomplete runs. Entries contain a title, action, and time, without task IDs or paths. A recorded operation follows a native command acknowledgement. Storage failure is shown and does not block cleanup. Restore archived tasks through native **Archived chats**; permanently deleted tasks cannot be restored here.
+Local history begins with this version and retains up to 100 operations from the last 90 days, including incomplete runs. Entries contain a title, action, and time, without task IDs or paths. New incomplete entries also contain an allowlisted reason; older entries explicitly lack detailed reasons. Earlier failures remain in history after recovery. Preview failures identify the missing service, pin information, timeout, or runtime change and clear stale preview results. A recorded operation follows a native command acknowledgement. Storage failure is shown and does not block cleanup. Restore archived tasks through native **Archived chats**; permanently deleted tasks cannot be restored here.
 
 ## Update details and history
 
@@ -74,7 +74,7 @@ History contains up to 100 events from the latest 20 recorded sessions within 90
 
 ## Diagnostic export preview
 
-In Settings, expand **Diagnostic export preview** and generate a snapshot. Review the JSON before choosing Copy or Save; both use exactly the displayed snapshot. Nothing is uploaded automatically. Regenerate explicitly to refresh it.
+In Settings, expand **Diagnostic export preview** and generate a snapshot. Review the JSON before choosing Copy or Save; both use exactly the displayed snapshot. Save JSON opens the desktop app's native Save As dialog and saves the exact displayed UTF-8 JSON. The UI confirms the chosen path, cancellation, or failure, and allows only one save dialog at a time. Compatible browser environments use their file picker; unsupported environments explicitly offer Copy preview. Nothing is uploaded automatically. Regenerate explicitly to refresh it.
 
 The allowlist includes helper/renderer versions, pseudonymous device labels, connection and inventory age/counts, cleanup settings/history count, and update status/version/event count. It excludes real device names and aliases, device/task IDs, task titles, paths, raw logs/errors, and credentials. This deliberately limited report is not a complete support log.
 
@@ -83,11 +83,11 @@ The allowlist includes helper/renderer versions, pseudonymous device labels, con
 
 Open **Settings → Connection troubleshooting** in either sidebar view. Each discovered device gets an evidence-based finding and next step: disconnected, no recent check, publisher unavailable, stale/incomplete inventory, cached fallback, outgoing-write retry, or healthy direct reads. Local findings cover bridge, inventory, and publisher readiness.
 
-**Refresh connection evidence** requests the existing read-only discovery/inventory checks. Pending reads are reused and refresh is limited to once every ten seconds. It does not change Remote configuration, sign in, elevate, install, or restart anything. Follow the suggested step on the affected device and refresh again. Recent cached projects alone never prove a direct connection; status heartbeats do not renew old task membership.
+**Refresh connection evidence** requests the existing read-only discovery/inventory checks. Pending reads are reused and refresh is limited to once every ten seconds. If the app has not exposed a runtime for a listed device, refresh explicitly reports that a direct check could not start. It does not change Remote configuration, sign in, elevate, install, or restart anything. Follow the suggested step on the affected device and refresh again. Recent cached projects alone never prove a direct connection; status heartbeats do not renew old task membership.
 
 The panel also shows per-session read/write-attempt counts, failures, base64 payload bytes, and last successful request timings. These figures cover the helper's inventory exchange, excluding transport overhead, native chat, and model streaming. The diagnostic preview includes only the finding code and status-only transfer counts/timings under pseudonymous device labels.
 
-![Connection troubleshooting in a dark browser fixture](assets/screenshots/connection-dark-v1.5.35.png)
+![Connection troubleshooting in a dark browser fixture](assets/screenshots/connection-dark-v1.5.36.png)
 
 ## More efficient inventory transfer
 

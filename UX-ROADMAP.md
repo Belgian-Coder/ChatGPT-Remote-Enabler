@@ -1,5 +1,7 @@
 # Feature roadmap
 
+Implemented in v1.5.36: compact main sidebar, utility controls behind Settings, native diagnostic Save As, local state-bridge recovery, and clearer cleanup/connection-refresh feedback.
+
 Implemented in v1.5.34: device health with refresh/version evidence, cleanup preview/history, local device aliases, update details/history, and diagnostic export preview. See FEATURES.md for exact scope.
 
 Implemented in v1.5.35: guided connection troubleshooting and a compatible inventory-transfer optimization pass (recipient echo removal, compact nullable fields, serialized latest-snapshot writes, and bounded retry). Live network speed measurements remain separate acceptance work.

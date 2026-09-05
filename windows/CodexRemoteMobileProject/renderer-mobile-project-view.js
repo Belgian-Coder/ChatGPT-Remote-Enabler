@@ -61,7 +61,7 @@
     "unknown",
   ]);
   const PUBLISHER_VERSION = 53;
-  const VERSION = 68;
+  const VERSION = 69;
   // Keep outstanding writes locked across renderer reinjection until the underlying RPC settles.
   const peerWriteLocks = globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ instanceof Map
     ? globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ : (globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ = new Map());
@@ -234,6 +234,11 @@
     cleanupPreviewPending: null,
     cleanupPreviewError: null,
     cleanupHistoryUnavailable: false,
+    nativeStateBridgePending: null,
+    nativeStateBridgeRetryAt: 0,
+    nativeStateBridgeControllers: new Set(),
+    healthRefreshOutcomes: new Map(),
+    diagnosticSavePending: false,
     diagnosticPreview: null,
     diagnosticFeedback: null,
     historyRefreshError: null,
@@ -263,6 +268,78 @@
     if (state.localRuntime?.requestClient && state.localRuntime.requestClient !== requestClient) return;
     if (state.localRuntime?.requestClient !== requestClient) state.localRuntimeGeneration += 1;
     state.localRuntime = { fetchFromHost, requestClient };
+  }
+
+  function nativeStateModuleUrls() {
+    if (typeof globalThis.electronBridge?.sendMessageFromView !== "function") return [];
+    const location = globalThis.location;
+    if (!["app:", "file:"].includes(location?.protocol)) return [];
+    const sources = [
+      ...[...document.querySelectorAll('link[rel="modulepreload"]')].map(node => node.href),
+      ...[...document.querySelectorAll('script[type="module"][src]')].map(node => node.src),
+    ];
+    return [...new Set(sources)].filter(source => {
+      try {
+        const url = new URL(source);
+        return url.protocol === location.protocol && url.host === location.host
+          && /\/assets\/(?:app-initial|app-main|index|main)-[^/]+\.js$/u.test(url.pathname);
+      } catch { return false; }
+    }).sort((a, b) => Number(!a.includes("/app-initial-")) - Number(!b.includes("/app-initial-"))).slice(0, 6);
+  }
+
+  function nativeStateClientClass(value) {
+    if (typeof value !== "function") return false;
+    // RPC proxies report arbitrary properties as functions. Inspect own descriptors
+    // so probing a remote proxy cannot accidentally invoke a native request.
+    const prototype = Object.getOwnPropertyDescriptor(value, "prototype")?.value;
+    return Boolean(prototype && typeof Object.getOwnPropertyDescriptor(value, "getInstance")?.value === "function"
+      && typeof Object.getOwnPropertyDescriptor(prototype, "post")?.value === "function"
+      && typeof Object.getOwnPropertyDescriptor(prototype, "onFetchResponse")?.value === "function");
+  }
+
+  function ensureLocalStateBridge(importModule = url => import(url)) {
+    if (state.disposed) return Promise.resolve(null);
+    if (typeof state.localFetchFromHost === "function") return Promise.resolve(state.localFetchFromHost);
+    if (state.nativeStateBridgePending) return state.nativeStateBridgePending;
+    if (Date.now() < state.nativeStateBridgeRetryAt) return Promise.resolve(null);
+    state.nativeStateBridgeRetryAt = Date.now() + 10000;
+    state.nativeStateBridgePending = (async () => {
+      for (const url of nativeStateModuleUrls()) {
+        try {
+          const module = await importModule(url);
+          if (state.disposed) return null;
+          const candidates = [...new Set(Object.values(module).filter(nativeStateClientClass))];
+          if (candidates.length !== 1) continue;
+          const client = candidates[0].getInstance();
+          if (!client || typeof client.post !== "function") continue;
+          const fetchFromHost = async (action, options = {}) => {
+            if (state.disposed) throw new Error("Local state bridge was disposed");
+            if (!["get-global-state", "set-global-state", "save-file"].includes(action)) throw new Error("Unsupported local state request");
+            const controller = new AbortController();
+            state.nativeStateBridgeControllers.add(controller);
+            const timer = action === "save-file" ? null : setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+            try {
+              const response = await client.post(`vscode://codex/${action}`, JSON.stringify(options.params), undefined, controller.signal);
+              if (state.disposed) throw new Error("Local state bridge was disposed");
+              if (!(response?.status >= 200 && response.status < 300)) throw new Error("Local state request failed");
+              return response.body;
+            } finally {
+              if (timer !== null) clearTimeout(timer);
+              state.nativeStateBridgeControllers.delete(controller);
+            }
+          };
+          // Confirm a read through this client before using it for local state.
+          const probe = await fetchFromHost("get-global-state", { params: { key: "pinned-thread-ids" } });
+          if (!probe || typeof probe !== "object" || !Object.prototype.hasOwnProperty.call(probe, "value")) continue;
+          if (state.disposed) return null;
+          state.localFetchFromHost = fetchFromHost;
+          if (state.localRuntime?.requestClient) assignLocalRuntime(fetchFromHost, state.localRuntime.requestClient);
+          return fetchFromHost;
+        } catch { if (state.disposed) return null; }
+      }
+      return null;
+    })().finally(() => { state.nativeStateBridgePending = null; if (!state.disposed) schedule(); });
+    return state.nativeStateBridgePending;
   }
 
   function readBoolean(key) {
@@ -2412,6 +2489,14 @@
     state.inventoryHydrationDirty = true;
     scheduleNativeInventoryHydration();
     const model = collectModel();
+    state.healthRefreshOutcomes = new Map(model.hosts.filter(host => host.id !== "local").map(host => [host.id, model.remoteRuntimes.has(host.id) ? "requested" : "no-runtime"]));
+    void ensureLocalStateBridge().then(() => {
+      if (state.disposed) return;
+      state.hostDiscoveryDirty = true;
+      scheduleLocalRegisteredProjectsRefresh();
+      scheduleLocalProjectInventoryPublication();
+      schedule();
+    });
     scheduleRemoteProjectInventory(model.remoteRuntimes, true);
     if (state.healthRefreshTimer !== null) clearTimeout(state.healthRefreshTimer);
     state.healthRefreshTimer = setTimeout(() => { state.healthRefreshTimer = null; if (!state.disposed) schedule(); }, 10000);
@@ -2431,7 +2516,9 @@
     const connectivity = state.hostConnectivity.get(host.id);
     const checkedRecently = ageSeconds(connectivity?.checkedAt) !== null && ageSeconds(connectivity.checkedAt) <= 30;
     const fresh = Boolean(freshInventory(host.id));
-    if (host.availabilityKnown && host.available === false) return { code: "disconnected", summary: "The app currently reports this device as disconnected.", next: "Keep the other device awake with the app open, check its network and Remote connection, then refresh here. Cached projects do not prove it is online." };
+    if (host.availabilityKnown && host.available === false) return { code: "disconnected", summary: "This device is currently unavailable to the helper.", next: "Keep the other device awake with the app open, check its network and Remote connection, then refresh here. Cached projects do not prove it is online." };
+    if (state.healthRefreshOutcomes.get(host.id) === "no-runtime" && !checkedRecently) return { code: "no-runtime", summary: "Refresh could not start a direct check: the app has not exposed a connection for this device.", next: "Open the app's Remote controls, confirm this device is connected, then refresh here. A saved device name or cached inventory alone is not a live connection." };
+    if (inventory?.pending) return { code: "checking", summary: "A direct inventory check is still in progress.", next: "Wait for this check to finish. Repeated refreshes reuse the same pending request." };
     if (!checkedRecently || connectivity?.available !== true) return { code: "unknown", summary: "A recent successful connection check is not available.", next: "Refresh the evidence. If it remains unknown, inspect the app's Remote connection on both devices; this helper cannot determine account or network health from cached data." };
     if (!inventory || inventory.error) return { code: "publisher-unavailable", summary: "The device responded, but its project inventory could not be read or validated.", next: "On that device, launch through Remote Enabler and inspect its Device health panel. Confirm local inventory/publication is ready, then refresh here." };
     if (!fresh || !scopedThreadsAreFresh(inventory)) return { code: "stale", summary: "Connection evidence exists, but the project/task inventory is stale or incomplete.", next: "Check the other device's local inventory status and helper version. Refresh there and here; old membership is not renewed by status-only updates." };
@@ -2547,18 +2634,40 @@
     return typeof thread?.title === "string" && thread.title.trim() ? thread.title.trim().replace(/[\u0000-\u001f\u007f]/gu, " ").slice(0, 160) : "Untitled task";
   }
 
+  const CLEANUP_FAILURE_TEXT = Object.freeze({
+    "state-bridge": "The local state service could not be reached. Refresh the preview after the app finishes loading.",
+    "pins": "Pinned-task information could not be verified. Cleanup stopped to protect pinned tasks.",
+    "runtime-changed": "The app connection changed during the check. Refresh the preview.",
+    "runtime": "The local task service is not ready. Wait for the app to finish loading, then refresh.",
+    "timeout": "The task or state request did not finish in time. Wait briefly, then refresh.",
+    "lease": "Another window or a changing cleanup lock interrupted this run. Cleanup will retry.",
+    "request": "A task operation or required safety check failed. Refresh the preview to check current eligibility.",
+    "unknown": "This older entry did not record a detailed reason. Refresh the preview to check the current state.",
+  });
+
+  function cleanupFailureReason(error) {
+    const message = String(error?.message ?? error ?? "").toLowerCase();
+    if (/runtime changed|connection changed/u.test(message)) return "runtime-changed";
+    if (/project-state bridge|local state bridge|state service/u.test(message)) return "state-bridge";
+    if (/pinned/u.test(message)) return "pins";
+    if (/timed out|timeout|run limit/u.test(message)) return "timeout";
+    if (/lease|lock/u.test(message)) return "lease";
+    if (/app-server bridge|runtime.*unavailable|runtime.*not ready/u.test(message)) return "runtime";
+    return message ? "request" : "unknown";
+  }
+
   function readCleanupHistory() {
     try {
       const entries = JSON.parse(localStorage.getItem(CLEANUP_HISTORY_KEY) || "[]");
       if (!Array.isArray(entries)) throw new Error("Invalid history");
       return entries.filter(entry => entry && ["archived", "deleted", "incomplete"].includes(entry.action)
         && Number.isFinite(entry.at) && entry.at > Date.now() - HISTORY_MAX_AGE_MS && entry.at <= Date.now() + 60000)
-        .slice(-100).map(entry => ({ action: entry.action, at: entry.at, title: cleanupTaskTitle(entry) }));
+        .slice(-100).map(entry => ({ action: entry.action, at: entry.at, title: cleanupTaskTitle(entry), ...(entry.action === "incomplete" ? { reason: Object.prototype.hasOwnProperty.call(CLEANUP_FAILURE_TEXT, entry.reason) ? entry.reason : "unknown" } : {}) }));
     } catch { state.cleanupHistoryUnavailable = true; return []; }
   }
 
-  function recordCleanupEvent(action, thread = null) {
-    const entries = [...readCleanupHistory(), { action, at: Date.now(), title: thread ? cleanupTaskTitle(thread) : "Cleanup could not complete" }].slice(-100);
+  function recordCleanupEvent(action, thread = null, error = null) {
+    const entries = [...readCleanupHistory(), { action, at: Date.now(), title: thread ? cleanupTaskTitle(thread) : "Cleanup could not complete", ...(action === "incomplete" ? { reason: cleanupFailureReason(error) } : {}) }].slice(-100);
     try { localStorage.setItem(CLEANUP_HISTORY_KEY, JSON.stringify(entries)); }
     catch { state.cleanupHistoryUnavailable = true; }
   }
@@ -2589,8 +2698,11 @@
     state.cleanupPreviewPending = previewAutoArchive().then(result => {
       if (!state.disposed) state.cleanupPreview = result;
       return result;
-    }).catch(() => {
-      if (!state.disposed) state.cleanupPreviewError = "Preview is unavailable. Current task and pinned-task information is required; no cleanup action was taken by this preview.";
+    }).catch(error => {
+      if (!state.disposed) {
+        state.cleanupPreview = null;
+        state.cleanupPreviewError = `Preview is unavailable. ${CLEANUP_FAILURE_TEXT[cleanupFailureReason(error)]} No cleanup action was taken by this preview.`;
+      }
       return null;
     }).finally(() => { state.cleanupPreviewPending = null; if (!state.disposed) schedule(); });
     schedule();
@@ -2620,7 +2732,8 @@
     helpText(details, "History contains up to 100 recorded local operations from the last 90 days, starting with this feature. Restore archived tasks through the native Archived chats controls; permanently deleted tasks cannot be restored here.");
     if (state.cleanupHistoryUnavailable) helpText(details, "Local history storage is unavailable or incomplete.");
     if (!history.length) helpText(details, "No cleanup operations recorded yet.");
-    for (const entry of [...history].reverse()) helpText(details, `${timeLabel(entry.at)} — ${entry.action === "archived" ? "Archived" : entry.action === "deleted" ? "Permanently deleted" : "Incomplete cleanup"}: ${entry.title}`);
+    if (history.some(entry => entry.action === "incomplete")) helpText(details, "Earlier failures remain in history after recovery; the preview above shows the current check.");
+    for (const entry of [...history].reverse()) helpText(details, `${timeLabel(entry.at)} — ${entry.action === "archived" ? "Archived" : entry.action === "deleted" ? "Permanently deleted" : "Incomplete cleanup"}: ${entry.action === "incomplete" ? CLEANUP_FAILURE_TEXT[entry.reason] : entry.title}`);
     parent.appendChild(details);
   }
 
@@ -2709,25 +2822,46 @@
     finally { if (!state.disposed) schedule(); }
   }
 
-  function saveDiagnosticPreview() {
-    if (!state.diagnosticPreview) return false;
-    const url = URL.createObjectURL(new Blob([state.diagnosticPreview], { type: "application/json" }));
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "remote-enabler-diagnostics.json";
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-    state.diagnosticFeedback = "JSON download requested for the displayed preview.";
+  async function saveDiagnosticPreview() {
+    const text = state.diagnosticPreview;
+    if (!text || state.diagnosticSavePending) return false;
+    state.diagnosticSavePending = true;
+    state.diagnosticFeedback = "Choose a location in the Save As dialog.";
     schedule();
-    return true;
+    try {
+      if (typeof globalThis.electronBridge?.sendMessageFromView === "function") {
+        const fetchFromHost = await ensureLocalStateBridge();
+        if (typeof fetchFromHost !== "function") throw new Error("Native save service unavailable");
+        const result = await fetchFromHost("save-file", { params: {
+          kind: "contents", suggestedFilename: "remote-enabler-diagnostics.json", contentsBase64: encodeText(text),
+        } });
+        if (result?.path === null) { state.diagnosticFeedback = "Save cancelled. No file was saved."; return false; }
+        if (typeof result?.path !== "string" || !result.path.trim()) throw new Error("Save was not confirmed");
+        state.diagnosticFeedback = `JSON saved to ${result.path}`;
+      } else if (typeof globalThis.showSaveFilePicker === "function") {
+        const handle = await globalThis.showSaveFilePicker({ suggestedName: "remote-enabler-diagnostics.json", types: [{ description: "JSON", accept: { "application/json": [".json"] } }] });
+        const writable = await handle.createWritable();
+        try { await writable.write(text); await writable.close(); }
+        catch (error) { try { await writable.abort(); } catch {} throw error; }
+        state.diagnosticFeedback = `JSON saved as ${handle.name || "remote-enabler-diagnostics.json"}.`;
+      } else throw new Error("Save dialog unavailable");
+      return true;
+    } catch (error) {
+      state.diagnosticFeedback = error?.name === "AbortError"
+        ? "Save cancelled. No file was saved."
+        : "JSON could not be saved. Try again, or use Copy preview and save the text in an editor.";
+      return false;
+    } finally {
+      state.diagnosticSavePending = false;
+      if (!state.disposed) schedule();
+    }
   }
 
   function appendDiagnosticsPanel(parent, model) {
     const details = featureDetails("Diagnostic export preview", "diagnostics");
     helpText(details, "Generate and inspect a status-only snapshot before copying or saving it. Device names, aliases, IDs, task titles, paths, logs, and credentials are excluded. Nothing is uploaded.");
     const generate = button("crmp-auto-control", "Generate diagnostic preview");
+    generate.disabled = state.diagnosticSavePending;
     setFocusKey(generate, "diagnostic-generate");
     generate.addEventListener("click", () => { state.diagnosticPreview = JSON.stringify(diagnosticSnapshot(collectModel()), null, 2); state.diagnosticFeedback = null; render(); });
     details.appendChild(generate);
@@ -2741,12 +2875,17 @@
       const copy = button("crmp-auto-control", "Copy preview");
       setFocusKey(copy, "diagnostic-copy");
       copy.addEventListener("click", () => { void copyDiagnosticPreview(); });
-      const save = button("crmp-auto-control", "Save JSON");
+      const save = button("crmp-auto-control", state.diagnosticSavePending ? "Saving…" : "Save JSON");
+      save.disabled = state.diagnosticSavePending;
       setFocusKey(save, "diagnostic-save");
-      save.addEventListener("click", saveDiagnosticPreview);
+      save.addEventListener("click", () => { void saveDiagnosticPreview(); });
       details.append(preview, copy, save);
     }
-    if (state.diagnosticFeedback) helpText(details, state.diagnosticFeedback);
+    if (state.diagnosticFeedback) {
+      const feedback = helpText(details, state.diagnosticFeedback);
+      feedback.setAttribute("role", "status");
+      feedback.setAttribute("aria-live", "polite");
+    }
     parent.appendChild(details);
   }
 
@@ -4295,6 +4434,7 @@
   }
 
   async function previewAutoArchive() {
+    await ensureLocalStateBridge();
     const requestClient = state.localRuntime?.requestClient;
     const runtimeGeneration = state.localRuntimeGeneration;
     const deadline = Date.now() + AUTO_MAINTENANCE_RUN_LIMIT_MS;
@@ -4332,7 +4472,7 @@
     if (!readOptionalBoolean(AUTO_ARCHIVE_ENABLED_KEY)) return { archived: 0, eligible: 0, skipped: "auto-archive-disabled" };
     const requestClient = state.localRuntime?.requestClient;
     const runtimeGeneration = state.localRuntimeGeneration;
-    const fetchFromHost = state.localFetchFromHost;
+    const fetchFromHost = await ensureLocalStateBridge();
     if (typeof requestClient?.sendRequest !== "function") {
       state.autoArchiveError = "Local app-server bridge is unavailable";
       scheduleAutoArchive(AUTO_ARCHIVE_RETRY_MS);
@@ -4485,14 +4625,14 @@
         ? "Automatic cleanup lost its cross-window lease and will retry"
         : timeLimitReached ? "Automatic cleanup reached its bounded run limit and will continue on retry"
         : failureCount ? `${firstOperationError} (${failureCount} failed operation${failureCount === 1 ? "" : "s"})` : null;
-      if (state.autoArchiveError) recordCleanupEvent("incomplete");
+      if (state.autoArchiveError) recordCleanupEvent("incomplete", null, state.autoArchiveError);
       state.lastAction = { commandId: "auto-maintain-old-chats", found: true, invoked: true, ...state.autoArchiveLastResult };
       void state.queryClient?.invalidateQueries?.();
       return state.autoArchiveLastResult;
     } catch (error) {
       state.autoArchiveError = String(error?.message ?? error).slice(0, 240);
       state.autoArchiveLastResult = { archived, deleted, eligible: 0, error: state.autoArchiveError };
-      recordCleanupEvent("incomplete");
+      recordCleanupEvent("incomplete", null, state.autoArchiveError);
       state.lastAction = { commandId: "auto-maintain-old-chats", error: state.autoArchiveError, found: true, invoked: false };
       return state.autoArchiveLastResult;
     } finally {
@@ -5192,12 +5332,21 @@
     fragment.appendChild(modes);
     const update = readUpdateStatus();
     announceUpdate(update);
-    fragment.appendChild(updateStatusPanel(update));
+    const updateNeedsAttention = ["available", "queued", "preparing", "closing", "updating", "restarting", "error"].includes(update.state);
+    if (updateNeedsAttention) {
+      const indicator = document.createElement("span");
+      indicator.className = "crmp-settings-indicator";
+      indicator.textContent = " •";
+      indicator.setAttribute("aria-hidden", "true");
+      settingsToggle.appendChild(indicator);
+      settingsToggle.title = update.state === "available" ? "An update is available" : "Update status needs attention";
+    }
     const settings = document.createElement("section");
     settings.id = `${PANEL_ID}-settings`;
     settings.className = "crmp-settings";
     settings.setAttribute("aria-label", "Remote Enabler settings");
     settings.hidden = !state.settingsOpen;
+    settings.appendChild(updateStatusPanel(update));
     const autoControls = document.createElement("div");
     autoControls.className = "crmp-auto-controls";
     const autoEnabled = readBoolean(AUTO_ENABLED_KEY);
@@ -5258,7 +5407,7 @@
     appendUpdateDetails(settings, update);
     appendDiagnosticsPanel(settings, model);
     appendConnectionTroubleshooting(settings, model);
-    if (state.view === "native") appendDeviceHealth(settings, model);
+    appendDeviceHealth(settings, model);
     fragment.appendChild(settings);
 
     scheduleLocalProjectInventoryPublication();
@@ -5307,7 +5456,7 @@
     }
 
     fragment.appendChild(filters);
-    appendDeviceHealth(fragment, model);
+
     const unavailableInventoryHosts = model.hosts.filter((host) => host.id !== "local" && state.remoteProjectInventories.get(host.id)?.error);
     if (unavailableInventoryHosts.length) {
       const status = document.createElement("div");
@@ -5533,6 +5682,7 @@
     document.addEventListener("pointerdown", dismissOverlays);
     document.addEventListener("keydown", dismissOnEscape);
     document.addEventListener(UPDATE_EVENT, handleUpdateStatus);
+    void ensureLocalStateBridge();
     if (globalThis !== document && typeof globalThis.addEventListener === "function") globalThis.addEventListener(UPDATE_EVENT, handleUpdateStatus);
     if (!state.mountObserver) {
       state.mountObserver = new MutationObserver((mutations) => {
@@ -5612,6 +5762,9 @@
     state.active = false;
     const report = renderReport();
     for (const collection of [state.autoRegistrationFailures, state.collapsed, state.hostConnectivity, state.localRegisteredProjects, state.localRuntimeHostIds, state.peerCacheStates, state.peerTransfers, state.transferStats, state.remoteHomeRequests, state.remoteCodexHomes, state.remoteProjectInventories, state.remoteRuntimeCache, state.threadInventories, state.threadManagers, state.verifiedThreadIds]) collection.clear();
+    for (const controller of state.nativeStateBridgeControllers) controller.abort();
+    state.nativeStateBridgeControllers.clear();
+    state.healthRefreshOutcomes.clear();
     state.localFetchFromHost = null;
     state.hostDiscoveryCache = null;
     state.hostDiscoveryDirty = true;

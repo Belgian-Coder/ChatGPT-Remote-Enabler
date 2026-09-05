@@ -14,6 +14,9 @@ const TRANSIENT_RENDERER_CODES = new Set([
   "ECONNREFUSED",
   "ECONNRESET",
   "EPIPE",
+  "DISCOVERY_ABORTED",
+  "DISCOVERY_RESPONSE_FAILED",
+  "DISCOVERY_TIMEOUT",
   "TARGET_NOT_FOUND",
   "TARGET_NOT_READY",
   "WEBSOCKET_CLOSED",
@@ -22,6 +25,18 @@ const TRANSIENT_RENDERER_CODES = new Set([
   "WEBSOCKET_NOT_OPEN",
   "WEBSOCKET_SEND_FAILED",
 ]);
+
+function isTransientRendererError(error) {
+  if (TRANSIENT_RENDERER_CODES.has(error?.code)) return true;
+  return error?.code === "CDP_PROTOCOL_ERROR"
+    && error?.protocolCode === -32_000
+    && /(?:context.*destroyed|cannot find context|execution context)/iu.test(error?.message ?? "");
+}
+
+function isMissingPersistentScriptError(error) {
+  return error?.code === "CDP_PROTOCOL_ERROR"
+    && /(?:no script|script.*not found|invalid.*(?:identifier|script)|unknown.*(?:identifier|script))/iu.test(error?.message ?? "");
+}
 
 function cliError(code, message) {
   const error = new Error(message);
@@ -294,15 +309,33 @@ async function installRendererPayload(options, source, deadline, dependencies = 
   const waitForRendererTarget = dependencies.waitForTarget ?? waitForTarget;
   const connectRendererTarget = dependencies.connectTarget ?? connectTarget;
   const evaluateRenderer = dependencies.evaluate ?? evaluate;
+  const staleIdentifiers = dependencies.staleIdentifiers ?? new Set();
   const target = await waitForRendererTarget(options.rendererPort, "renderer", deadline);
   if (target?.url !== "app://-/index.html" || (target?.type !== "page" && target?.type !== "webview")) {
     throw cliError("TARGET_NOT_FOUND", "Renderer target must be the exact Codex page or webview URL");
   }
   const client = await connectRendererTarget(target, options.rendererPort, remaining(deadline));
+  let persistentIdentifier = null;
   try {
     await client.call("Runtime.enable", {}, remaining(deadline));
     await client.call("Page.enable", {}, remaining(deadline));
+    for (const identifier of [...staleIdentifiers]) {
+      try {
+        await client.call("Page.removeScriptToEvaluateOnNewDocument", { identifier }, remaining(deadline));
+        staleIdentifiers.delete(identifier);
+      } catch (error) {
+        if (isMissingPersistentScriptError(error)) {
+          staleIdentifiers.delete(identifier);
+          continue;
+        }
+        throw error;
+      }
+    }
     const persistent = await client.call("Page.addScriptToEvaluateOnNewDocument", { source }, remaining(deadline));
+    if (typeof persistent?.identifier !== "string" || persistent.identifier.length === 0) {
+      throw cliError("PERSISTENT_SCRIPT_INVALID", "Debugger did not return a persistent renderer script identifier");
+    }
+    persistentIdentifier = persistent.identifier;
     const installReport = await evaluateRenderer(client, source, remaining(deadline));
     const probe = await waitForRendererProof(client, deadline, dependencies);
     return {
@@ -310,10 +343,26 @@ async function installRendererPayload(options, source, deadline, dependencies = 
         installed: installReport?.targetGate === "782640499"
           && installReport?.remoteConnectionsGate === "4114442250",
       },
-      newDocumentScriptInstalled: typeof persistent.identifier === "string",
+      newDocumentScriptInstalled: true,
       probe,
       targetUrl: target.url,
     };
+  } catch (error) {
+    if (persistentIdentifier !== null) {
+      try {
+        const cleanupTimeoutMs = Math.max(25, Math.min(1_000, deadline - Date.now()));
+        await client.call(
+          "Page.removeScriptToEvaluateOnNewDocument",
+          { identifier: persistentIdentifier },
+          cleanupTimeoutMs,
+        );
+        staleIdentifiers.delete(persistentIdentifier);
+      } catch (cleanupError) {
+        if (isMissingPersistentScriptError(cleanupError)) staleIdentifiers.delete(persistentIdentifier);
+        else staleIdentifiers.add(persistentIdentifier);
+      }
+    }
+    throw error;
   } finally {
     client.close();
   }
@@ -321,11 +370,13 @@ async function installRendererPayload(options, source, deadline, dependencies = 
 
 async function installRendererPayloadWithRetry(options, source, deadline, dependencies = {}) {
   let lastTransientError = null;
+  const staleIdentifiers = new Set();
+  const attemptDependencies = { ...dependencies, staleIdentifiers };
   while (Date.now() < deadline) {
     try {
-      return await installRendererPayload(options, source, deadline, dependencies);
+      return await installRendererPayload(options, source, deadline, attemptDependencies);
     } catch (error) {
-      if (!TRANSIENT_RENDERER_CODES.has(error?.code)) throw error;
+      if (!isTransientRendererError(error)) throw error;
       lastTransientError = error;
       const waitMs = Math.min(100, Math.max(0, deadline - Date.now()));
       if (waitMs === 0) break;
@@ -335,15 +386,17 @@ async function installRendererPayloadWithRetry(options, source, deadline, depend
   throw lastTransientError ?? cliError("RENDERER_PROBE_FAILED", "Renderer payload did not become stable before timeout");
 }
 
-async function runBridge(options) {
+async function runBridge(options, dependencies = {}) {
   const deadline = Date.now() + options.timeoutMs;
-  const mainSource = readPayload(options.mainPayload);
-  const rendererSource = readPayload(path.join(__dirname, "renderer-payload.js"));
+  const loadPayload = dependencies.readPayload ?? readPayload;
+  const installMain = dependencies.installMainPayload ?? installMainPayload;
+  const mainSource = loadPayload(options.mainPayload);
+  const rendererSource = loadPayload(path.join(__dirname, "renderer-payload.js"));
   let stage = "main-install";
   try {
-    const main = await installMainPayload(options, mainSource, deadline);
+    const main = await installMain(options, mainSource, deadline);
     stage = "renderer-install";
-    const renderer = await installRendererPayload(options, rendererSource, deadline);
+    const renderer = await installRendererPayloadWithRetry(options, rendererSource, deadline, dependencies);
     return {
       main: {
         inspectorPortClosed: main.closure,
@@ -548,6 +601,7 @@ module.exports = {
   runBridge,
   runRendererBridge,
   installRendererPayloadWithRetry,
+  isTransientRendererError,
   waitForTarget,
   waitForExplicitRefusal,
 };

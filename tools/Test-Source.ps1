@@ -11,6 +11,12 @@ $javascript = @(
     'windows\CodexRemoteSimple\runtime\orchestrator.js',
     'windows\CodexRemoteSimple\runtime\api-proxy-bridge.js',
     'windows\CodexRemoteSimple\runtime\prepare-proxy-runtime.js',
+    'windows\CodexRemoteMobileProject\update-session.js',
+    'windows\CodexRemoteMobileProject\update-session-cdp.js',
+    'windows\update-transaction.js',
+    'macos\update-session.js',
+    'macos\update-session-cdp.js',
+    'macos\update-transaction.js',
     'macos\renderer-mobile-project-view.js',
     'macos\inject.js'
     'windows\CodexRemoteMobileProject\maintenance.js'
@@ -27,6 +33,9 @@ foreach ($contract in @('TRANSIENT_RENDERER_CODES', 'installRendererPayloadWithR
 
 $powershell = @(
     'windows\Update-ChatGPTRemote.ps1',
+    'windows\CodexRemoteMobileProject\UpdateSessionLauncher.ps1',
+    'windows\CodexRemoteMobileProject\UpdateSessionPlatform.ps1',
+    'tools\Test-UpdateSessionWindows.ps1',
     'windows\CodexRemoteMobileProject\MobileProjectView.ps1',
     'windows\CodexRemoteMobileProject\DesktopShortcut.ps1',
     'windows\CodexRemoteMobileProject\StartupShortcut.ps1',
@@ -45,8 +54,11 @@ $powershell = @(
     'tools\Test-ProxyRuntimePreparer.ps1'
     'tools\Test-MacOSUpdaterCompatibility.ps1'
     'tools\Test-MacOSSupport.ps1'
+    'tools\Test-UserInstallWindows.ps1'
     'tools\Test-WindowsNodeProbe.ps1'
     'tools\Test-Maintenance.ps1',
+    'tools\Test-WindowsSessionState.ps1',
+    'tools\Test-UpdateTransaction.ps1',
     'tools\Test-ProxyConfiguration.ps1'
 )
 foreach ($relative in $powershell) {
@@ -56,6 +68,9 @@ foreach ($relative in $powershell) {
     if ($errors.Count) { throw "PowerShell syntax validation failed: $relative - $($errors[0].Message)" }
 }
 
+foreach ($platform in @('windows','macos')) {
+    if ((Get-FileHash -LiteralPath (Join-Path $root 'FEATURES.md')).Hash -ne (Get-FileHash -LiteralPath (Join-Path $root "$platform\FEATURES.md")).Hash) { throw "Packaged feature guide differs: $platform" }
+}
 $windowsRenderer = Join-Path $root 'windows\CodexRemoteMobileProject\renderer-mobile-project-view.js'
 $macRenderer = Join-Path $root 'macos\renderer-mobile-project-view.js'
 if ((Get-FileHash -LiteralPath $windowsRenderer -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $macRenderer -Algorithm SHA256).Hash) {
@@ -66,9 +81,19 @@ $macMaintenance = Join-Path $root 'macos\maintenance.js'
 if ((Get-FileHash -LiteralPath $windowsMaintenance -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $macMaintenance -Algorithm SHA256).Hash) {
     throw 'Windows and macOS maintenance sources differ.'
 }
+foreach ($pair in @(
+    @('windows\CodexRemoteMobileProject\update-session.js', 'macos\update-session.js'),
+    @('windows\CodexRemoteMobileProject\update-session-cdp.js', 'macos\update-session-cdp.js'),
+    @('windows\update-transaction.js', 'macos\update-transaction.js'),
+    @('windows\CodexRemoteSimple\runtime\lib\cdp.js', 'macos\runtime\lib\cdp.js')
+)) {
+    if ((Get-FileHash -LiteralPath (Join-Path $root $pair[0])).Hash -ne (Get-FileHash -LiteralPath (Join-Path $root $pair[1])).Hash) {
+        throw "Shared source parity failed: $($pair[0])"
+    }
+}
 $renderer = Get-Content -LiteralPath $windowsRenderer -Raw
 $requiredContracts = @(
-    'const VERSION = 64;',
+    'const VERSION = 65;',
     'hostDisplayName: config.localDisplayName || null',
     'codex-remote-mobile-verified-thread-ids-v2',
     'THREAD_VISIBILITY_CONTRACT_VERSION',
@@ -135,7 +160,7 @@ if (Test-Path -LiteralPath (Join-Path $root '.github\workflows')) {
 
 foreach ($relative in @('windows\CodexRemoteMobileProject\inject.js', 'macos\inject.js')) {
     $injector = Get-Content -LiteralPath (Join-Path $root $relative) -Raw
-    foreach ($contract in @('const PROBE_TIMEOUT_MS = 10000;', 'version: report.version')) {
+    foreach ($contract in @('const PROBE_TIMEOUT_MS = 10000;', 'registration.version = report.version')) {
         if (-not $injector.Contains($contract)) { throw "Injector reliability contract is missing in ${relative}: $contract" }
     }
     if ($injector.Contains('version: 55') -or $injector -match 'probe\?\.\(\).*?, 5000\)') {
@@ -152,6 +177,16 @@ if ($LASTEXITCODE -ne 0) { throw 'Build release archive self-test failed.' }
 & $node (Join-Path $root 'windows\CodexRemoteSimple\tests\RendererOverrides.SelfTest.js')
 if ($LASTEXITCODE -ne 0) { throw 'Stable renderer self-test failed.' }
 
+foreach ($relative in @(
+    'windows\CodexRemoteSimple\tests\RuntimeTransport.SelfTest.js',
+    'windows\CodexRemoteSimple\tests\ProxyBridge.SelfTest.js',
+    'windows\CodexRemoteMobileProject\tests\InjectorRuntime.SelfTest.js',
+    'windows\CodexRemoteMobileProject\tests\UpdateSessionCdp.SelfTest.js'
+)) {
+    & $node (Join-Path $root $relative)
+    if ($LASTEXITCODE -ne 0) { throw "Runtime reliability self-test failed: $relative" }
+}
+
 & $node (Join-Path $root 'windows\CodexRemoteSimple\tests\PackageCompatibility.SelfTest.mjs')
 if ($LASTEXITCODE -ne 0) { throw 'Windows package compatibility self-test failed.' }
 
@@ -164,7 +199,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Thread visibility self-test failed.' }
 & $node (Join-Path $root 'windows\CodexRemoteMobileProject\tests\TaskStatus.SelfTest.js')
 if ($LASTEXITCODE -ne 0) { throw 'Task status self-test failed.' }
 
-foreach ($test in @('HostNames', 'SidebarLayout', 'SidebarStatus', 'SidebarBehavior')) {
+foreach ($test in @('HostNames', 'SidebarLayout', 'SidebarStatus', 'SidebarBehavior', 'RendererReliability')) {
     & $node (Join-Path $root "windows\CodexRemoteMobileProject\tests\$test.SelfTest.js")
     if ($LASTEXITCODE -ne 0) { throw "$test self-test failed." }
 }
@@ -172,10 +207,22 @@ foreach ($test in @('HostNames', 'SidebarLayout', 'SidebarStatus', 'SidebarBehav
 & (Join-Path $root 'tools\Test-Maintenance.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Maintenance self-test failed.' }
 
+& (Join-Path $root 'tools\Test-UpdateTransaction.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Update transaction self-test failed.' }
+
+& $node (Join-Path $root 'tools\UpdateSession.SelfTest.js')
+if ($LASTEXITCODE -ne 0) { throw 'Update session self-test failed.' }
+
+& (Join-Path $root 'tools\Test-UpdateSessionWindows.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Native Windows update session self-test failed.' }
+
+& (Join-Path $root 'tools\Test-WindowsSessionState.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Windows session-state self-test failed.' }
+
 & (Join-Path $root 'tools\Test-ProxyConfiguration.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Proxy configuration self-test failed.' }
 
-& (Join-Path $root 'tools\Test-WindowsNodeProbe.ps1') -NodePath $node
+& (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'tools\Test-WindowsNodeProbe.ps1') -NodePath $node
 if ($LASTEXITCODE -ne 0) { throw 'Windows PowerShell Node capability probe self-test failed.' }
 
 & (Join-Path $root 'tools\Test-WindowsUpdaterNonGit.ps1')
@@ -202,7 +249,7 @@ if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
 [pscustomobject]@{
     JavaScriptFiles = $javascript.Count
     PowerShellFiles = $powershell.Count
-    RendererVersion = 64
+    RendererVersion = 65
     RendererParity = $true
     MaintenanceParity = $true
     InjectorVersionProof = $true
@@ -210,6 +257,12 @@ if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
     BuildReleasePrivacySelfTest = $true
     BuildReleaseArchiveSelfTest = $true
     MaintenanceSelfTest = $true
+    UpdateTransactionSelfTest = $true
+    UpdateSessionSelfTest = $true
+    UpdateSessionCdpSelfTest = $true
+    NativeWindowsUpdateSessionSelfTest = $true
+    RendererReliabilitySelfTest = $true
+    WindowsSessionStateSelfTest = $true
     ProxyConfigurationSelfTest = $true
     WindowsPowerShellNodeProbeSelfTest = $true
     WindowsPackagedUpdaterSelfTest = $true
@@ -219,6 +272,9 @@ if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
     MacOSUpdaterCompatibilitySelfTest = $true
     MacOSSupportReliabilitySelfTest = $true
     StableRendererSelfTest = $true
+    RuntimeTransportSelfTest = $true
+    ProxyBridgeSelfTest = $true
+    InjectorRuntimeSelfTest = $true
     PackageCompatibilitySelfTest = $true
     TitleProvenanceSelfTest = $true
     ThreadVisibilitySelfTest = $true

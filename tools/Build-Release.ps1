@@ -106,6 +106,20 @@ try {
             Copy-Item -LiteralPath $source -Destination $destination -Force
         }
 
+        $requiredUpdateFiles = if ($platform.Source -eq 'windows') {
+            @('Update-ChatGPTRemote.ps1', 'update-transaction.js', 'CodexRemoteMobileProject/update-session.js',
+              'CodexRemoteMobileProject/update-session-cdp.js', 'CodexRemoteMobileProject/UpdateSessionLauncher.ps1',
+              'CodexRemoteMobileProject/UpdateSessionPlatform.ps1', 'CodexRemoteSimple/runtime/lib/cdp.js')
+        } else {
+            @('Update-ChatGPTRemote.sh', 'update-transaction.js', 'update-session.js', 'update-session-cdp.js',
+              'UpdateSessionPlatform.sh', 'runtime/lib/cdp.js')
+        }
+        foreach ($required in $requiredUpdateFiles) {
+            if (-not (Test-Path -LiteralPath (Join-Path $stageRoot $required) -PathType Leaf)) {
+                throw "Required update-session dependency is missing from tracked release files: $($platform.Source)/$required"
+            }
+        }
+
         $manifestLines = foreach ($file in Get-ChildItem -LiteralPath $stageRoot -File -Recurse | Sort-Object FullName) {
             $relative = $file.FullName.Substring($stageRoot.Length + 1).Replace('\', '/')
             "{0} *{1}" -f (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant(),$relative

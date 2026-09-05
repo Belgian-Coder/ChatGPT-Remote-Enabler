@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('Auto', 'Check', 'Update', 'EnableAutoUpdate', 'DisableAutoUpdate', 'Probe')]
+    [ValidateSet('Auto', 'Check', 'Update', 'Prepare', 'ApplyPrepared', 'Recover', 'EnableAutoUpdate', 'DisableAutoUpdate', 'Probe')]
     [string]$Action = 'Check',
     [string]$Repository = $(if ($env:CHATGPT_REMOTE_UPDATE_REPOSITORY) { $env:CHATGPT_REMOTE_UPDATE_REPOSITORY } else { 'Belgian-Coder/ChatGPT-Remote-Enabler' }),
     [string]$ApiBaseUrl = $(if ($env:CHATGPT_REMOTE_UPDATE_API_BASE) { $env:CHATGPT_REMOTE_UPDATE_API_BASE } else { 'https://api.github.com' }),
@@ -8,6 +8,12 @@ param(
     [string]$InstallRoot,
     [ValidateRange(0, 720)]
     [int]$CheckIntervalHours = $(if ($env:CHATGPT_REMOTE_UPDATE_INTERVAL_HOURS) { [int]$env:CHATGPT_REMOTE_UPDATE_INTERVAL_HOURS } else { 0 }),
+    [string]$TargetVersion,
+    [string]$ExpectedArchiveSha256,
+    [string]$PreparedDirectory,
+    [ValidateRange(1, 600)]
+    [int]$LockTimeoutSeconds = 120,
+    [switch]$LaunchLockHeld,
     [switch]$AllowInsecureTransport
 )
 
@@ -18,6 +24,9 @@ $stateRoot = Join-Path $env:LOCALAPPDATA 'ChatGPTRemoteEnabler\update'
 $disabledMarker = Join-Path $stateRoot 'auto-update-disabled'
 $lastCheckPath = Join-Path $stateRoot 'last-check.json'
 $rollbackRoot = Join-Path $stateRoot 'rollback'
+$lockPath = Join-Path $stateRoot 'update.lock'
+$journalPath = Join-Path $stateRoot 'transaction.json'
+$transactionHelper = Join-Path $PSScriptRoot 'update-transaction.js'
 $InstallRoot = [IO.Path]::GetFullPath($InstallRoot)
 
 function Assert-SafeHttpsUrl {
@@ -30,6 +39,7 @@ function Assert-SafeHttpsUrl {
 }
 
 function Get-ReleaseUrl {
+    param([string]$Tag)
     if ($LatestReleaseUrl) {
         Assert-SafeHttpsUrl $LatestReleaseUrl
         return $LatestReleaseUrl
@@ -37,6 +47,10 @@ function Get-ReleaseUrl {
     if ($Repository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') { throw 'Repository must use owner/name form.' }
     $base = $ApiBaseUrl.TrimEnd('/')
     Assert-SafeHttpsUrl $base
+    if ($Tag) {
+        if ($Tag -notmatch '^v\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$') { throw "Invalid release tag: $Tag" }
+        return "$base/repos/$Repository/releases/tags/$([Uri]::EscapeDataString($Tag))"
+    }
     return "$base/repos/$Repository/releases/latest"
 }
 
@@ -66,17 +80,34 @@ function Test-CheckDue {
 function Write-LastCheck {
     param([string]$Tag)
     New-Item -ItemType Directory -Path $stateRoot -Force | Out-Null
-    [ordered]@{ checkedAt = [DateTime]::UtcNow.ToString('o'); repository = $Repository; tag = $Tag } |
-        ConvertTo-Json | Set-Content -LiteralPath $lastCheckPath -Encoding UTF8
+    $temporary = "$lastCheckPath.tmp-$PID-$([guid]::NewGuid().ToString('N'))"
+    try {
+        [ordered]@{ checkedAt = [DateTime]::UtcNow.ToString('o'); repository = $Repository; tag = $Tag } |
+            ConvertTo-Json | Set-Content -LiteralPath $temporary -Encoding UTF8
+        if (Test-Path -LiteralPath $lastCheckPath -PathType Leaf) {
+            $replacedBackup = "$lastCheckPath.replace-old-$PID-$([guid]::NewGuid().ToString('N'))"
+            try {
+                [IO.File]::Replace($temporary, $lastCheckPath, $replacedBackup, $true)
+            } finally {
+                if (Test-Path -LiteralPath $replacedBackup -PathType Leaf) { Remove-Item -LiteralPath $replacedBackup -Force }
+            }
+        } else {
+            [IO.File]::Move($temporary, $lastCheckPath)
+        }
+    } finally {
+        if (Test-Path -LiteralPath $temporary -PathType Leaf) { Remove-Item -LiteralPath $temporary -Force }
+    }
 }
 
 function Get-LatestRelease {
-    $url = Get-ReleaseUrl
+    param([string]$RequestedTag)
+    $url = Get-ReleaseUrl -Tag $RequestedTag
     $headers = @{ Accept = 'application/vnd.github+json'; 'User-Agent' = 'ChatGPT-Remote-Enabler-Updater' }
     $release = Invoke-RestMethod -Uri $url -Headers $headers -UseBasicParsing -TimeoutSec 20
     if ($release.draft -eq $true -or $release.prerelease -eq $true) { throw 'The latest endpoint returned a draft or prerelease.' }
     $tag = [string]$release.tag_name
     if ($tag -notmatch '^v\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$') { throw "Invalid release tag: $tag" }
+    if ($RequestedTag -and $tag -cne $RequestedTag) { throw "Pinned release $RequestedTag resolved to unexpected tag $tag." }
     $archiveName = "ChatGPT-Remote-Enabler-$platformName-$tag.zip"
     $checksumsName = "SHA256SUMS-$tag.txt"
     $archive = @($release.assets | Where-Object { $_.name -eq $archiveName }) | Select-Object -First 1
@@ -90,6 +121,259 @@ function Get-LatestRelease {
         archiveUrl = [string]$archive.browser_download_url
         checksumsName = $checksumsName
         checksumsUrl = [string]$checksums.browser_download_url
+        assetDigest = [string]$archive.digest
+    }
+}
+
+function Assert-PinnedReleaseArguments {
+    if ($TargetVersion -notmatch '^v\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$') {
+        throw 'TargetVersion must be an exact vMAJOR.MINOR.PATCH release tag.'
+    }
+    if ($ExpectedArchiveSha256 -notmatch '^[0-9a-fA-F]{64}$') {
+        throw 'ExpectedArchiveSha256 must contain exactly 64 hexadecimal characters.'
+    }
+    if ([string]::IsNullOrWhiteSpace($PreparedDirectory)) { throw 'PreparedDirectory is required.' }
+}
+
+function Resolve-UpdateNode {
+    $command = Get-Command node.exe -ErrorAction SilentlyContinue
+    foreach ($candidate in @(
+        $(if ($command) { $command.Source }),
+        (Join-Path $env:USERPROFILE '.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe'),
+        (Join-Path $env:LOCALAPPDATA 'Programs\nodejs\node.exe'),
+        (Join-Path $env:ProgramFiles 'nodejs\node.exe')
+    ) | Where-Object { $_ } | Select-Object -Unique) {
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
+        $version = @(& $candidate --version 2>$null | Select-Object -First 1)
+        if ($version.Count -eq 1 -and [string]$version[0] -match '^v(?<major>\d+)\.' -and [int]$Matches.major -ge 22) {
+            return [IO.Path]::GetFullPath($candidate)
+        }
+    }
+    throw 'Node.js 22 or newer was not found for the transactional updater.'
+}
+
+function Invoke-TransactionHelper {
+    param([string]$Operation, [string[]]$Arguments)
+    if (-not (Test-Path -LiteralPath $transactionHelper -PathType Leaf)) {
+        throw "Transactional update helper is missing: $transactionHelper"
+    }
+    $node = Resolve-UpdateNode
+    $previousPowerShellHost = $env:CHATGPT_REMOTE_POWERSHELL_HOST
+    try {
+        $env:CHATGPT_REMOTE_POWERSHELL_HOST = (Get-Process -Id $PID).Path
+        $output = @(& $node $transactionHelper $Operation @Arguments 2>&1)
+        $exitCode = $LASTEXITCODE
+    } finally {
+        if ($null -eq $previousPowerShellHost) { Remove-Item Env:\CHATGPT_REMOTE_POWERSHELL_HOST -ErrorAction SilentlyContinue }
+        else { $env:CHATGPT_REMOTE_POWERSHELL_HOST = $previousPowerShellHost }
+    }
+    if ($exitCode -ne 0 -or $output.Count -ne 1) {
+        $detail = ($output | ForEach-Object { [string]$_ }) -join ' '
+        if ($detail -match 'UNSAFE_MIXED_INSTALL|UPDATE_BUSY') { throw $detail }
+        throw "Transactional update helper failed during ${Operation}: $detail"
+    }
+    return ([string]$output[0] | ConvertFrom-Json -ErrorAction Stop)
+}
+
+function Get-PublishedArchiveHash {
+    param($Release, [string]$TemporaryRoot)
+    if ([string]$Release.assetDigest -match '^sha256:(?<hash>[0-9a-fA-F]{64})$') {
+        return $Matches.hash.ToLowerInvariant()
+    }
+    $checksumsPath = Join-Path $TemporaryRoot $Release.checksumsName
+    Invoke-WebRequest -Uri $Release.checksumsUrl -OutFile $checksumsPath -UseBasicParsing -TimeoutSec 20
+    $escapedName = [regex]::Escape($Release.archiveName)
+    $checksumLine = Get-Content -LiteralPath $checksumsPath | Where-Object { $_ -match "^([0-9a-fA-F]{64})\s+(?:\*)?$escapedName$" } | Select-Object -First 1
+    if (-not $checksumLine) { throw "Published checksum for $($Release.archiveName) is missing." }
+    return ([regex]::Match($checksumLine, '^[0-9a-fA-F]{64}')).Value.ToLowerInvariant()
+}
+
+function Assert-SafePreparedDirectory {
+    param([string]$Path)
+    $resolved = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+    $installPrefix = $InstallRoot.TrimEnd('\') + '\'
+    $preparedPrefix = $resolved + '\'
+    if ($resolved -eq $InstallRoot -or $resolved.StartsWith($installPrefix, [StringComparison]::OrdinalIgnoreCase) -or
+        $InstallRoot.StartsWith($preparedPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'PreparedDirectory must be separate from the install root.'
+    }
+    if ([string]::IsNullOrWhiteSpace((Split-Path -Leaf $resolved))) { throw 'PreparedDirectory cannot be a filesystem root.' }
+    $parent = Split-Path -Parent $resolved
+    New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    $current = [IO.Path]::GetPathRoot($parent)
+    foreach ($component in $parent.Substring($current.Length).Split('\') | Where-Object { $_ }) {
+        $current = Join-Path $current $component
+        if ((Get-Item -LiteralPath $current).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw "PreparedDirectory must not traverse a reparse point: $resolved"
+        }
+    }
+    if ((Test-Path -LiteralPath $resolved) -and -not (Test-Path -LiteralPath $resolved -PathType Container)) {
+        throw 'PreparedDirectory exists and is not a directory.'
+    }
+    return $resolved
+}
+
+function Test-ZipHeader {
+    param([string]$Path)
+    $stream = [IO.File]::OpenRead($Path)
+    try {
+        if ($stream.Length -lt 4) { return $false }
+        return $stream.ReadByte() -eq 0x50 -and $stream.ReadByte() -eq 0x4b
+    } finally {
+        $stream.Dispose()
+    }
+}
+
+function New-PreparedRelease {
+    param([string]$RequestedVersion, [string]$ExpectedHash, [string]$Destination)
+    $Destination = Assert-SafePreparedDirectory $Destination
+    $ExpectedHash = $ExpectedHash.ToLowerInvariant()
+    $helperArguments = @('--prepared-root', $Destination, '--platform', $platformName, '--version', $RequestedVersion, '--archive-sha256', $ExpectedHash)
+    if (Test-Path -LiteralPath $Destination -PathType Container) {
+        return Invoke-TransactionHelper -Operation 'validate-prepared' -Arguments $helperArguments
+    }
+
+    $temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) ("chatgpt-remote-prepare-" + [guid]::NewGuid().ToString('N'))
+    $staging = "$Destination.prepare-$PID-$([guid]::NewGuid().ToString('N'))"
+    try {
+        New-Item -ItemType Directory -Path $temporaryRoot -Force | Out-Null
+        $release = Get-LatestRelease -RequestedTag $RequestedVersion
+        $publishedHash = Get-PublishedArchiveHash -Release $release -TemporaryRoot $temporaryRoot
+        if ($publishedHash -ne $ExpectedHash) { throw "Pinned archive hash $ExpectedHash does not match the published hash $publishedHash." }
+        $archivePath = Join-Path $temporaryRoot $release.archiveName
+        Invoke-WebRequest -Uri $release.archiveUrl -OutFile $archivePath -UseBasicParsing -TimeoutSec 120
+        if (-not (Test-ZipHeader $archivePath)) {
+            throw 'The release download is not a ZIP archive. A proxy or network security gateway may have replaced it with a block page.'
+        }
+        $actualHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($actualHash -ne $ExpectedHash) { throw 'Downloaded release archive failed its pinned SHA-256 verification.' }
+        $extractRoot = Join-Path $temporaryRoot 'extract'
+        Expand-Archive -LiteralPath $archivePath -DestinationPath $extractRoot
+        $releaseRoot = if (Test-Path -LiteralPath (Join-Path $extractRoot 'VERSION') -PathType Leaf) {
+            $extractRoot
+        } else {
+            $releaseRoots = @(Get-ChildItem -LiteralPath $extractRoot -Directory)
+            if ($releaseRoots.Count -ne 1) { throw 'Release archive must be flat or contain exactly one top-level directory.' }
+            $releaseRoots[0].FullName
+        }
+        if ((Get-Content -LiteralPath (Join-Path $releaseRoot 'VERSION') -Raw).Trim() -cne $RequestedVersion) {
+            throw 'Prepared archive VERSION does not match the pinned release.'
+        }
+        New-Item -ItemType Directory -Path $staging | Out-Null
+        Get-ChildItem -LiteralPath $releaseRoot -Force | Copy-Item -Destination $staging -Recurse -Force
+        Copy-Item -LiteralPath $archivePath -Destination (Join-Path $staging '.chatgpt-remote-release.zip')
+        $stagingArguments = @('--prepared-root', $staging, '--platform', $platformName, '--version', $RequestedVersion, '--archive-sha256', $ExpectedHash)
+        [void](Invoke-TransactionHelper -Operation 'seal-prepared' -Arguments $stagingArguments)
+        try {
+            [IO.Directory]::Move($staging, $Destination)
+        } catch [IO.IOException] {
+            if (-not (Test-Path -LiteralPath $Destination -PathType Container)) { throw }
+        }
+        return Invoke-TransactionHelper -Operation 'validate-prepared' -Arguments $helperArguments
+    } catch {
+        if ($_.Exception.Message -match 'UNSAFE_MIXED_INSTALL|UPDATE_BUSY') { throw }
+        throw "UPDATE_PREPARE_FAILED: $($_.Exception.Message)"
+    } finally {
+        if (Test-Path -LiteralPath $temporaryRoot) { Remove-Item -LiteralPath $temporaryRoot -Recurse -Force }
+        if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
+    }
+}
+
+function Invoke-PreparedRelease {
+    param([string]$RequestedVersion, [string]$ExpectedHash, [string]$Source)
+    $Source = Assert-SafePreparedDirectory $Source
+    $safeVersion = $RequestedVersion -replace '[^A-Za-z0-9._-]', '_'
+    $backupRoot = Join-Path $rollbackRoot ((Get-Date -Format 'yyyyMMdd-HHmmss-fff') + '-' + $safeVersion)
+    $arguments = @(
+        '--install-root', $InstallRoot, '--prepared-root', $Source,
+        '--journal-path', $journalPath, '--backup-root', $backupRoot,
+        '--platform', $platformName, '--version', $RequestedVersion,
+        '--archive-sha256', $ExpectedHash.ToLowerInvariant()
+    )
+    return Invoke-TransactionHelper -Operation 'apply' -Arguments $arguments
+}
+
+function Invoke-PendingRecovery {
+    if (-not (Test-Path -LiteralPath $journalPath -PathType Leaf)) {
+        $sourceCheckout = Get-SourceCheckout
+        if ($sourceCheckout) {
+            return [pscustomobject][ordered]@{
+                recovered = $false
+                integrityValid = $true
+                version = Get-LocalVersion
+                installKind = 'git-checkout'
+            }
+        }
+    }
+    $arguments = @('--journal-path', $journalPath, '--install-root', $InstallRoot)
+    try {
+        return Invoke-TransactionHelper -Operation 'recover' -Arguments $arguments
+    } catch {
+        if ($_.Exception.Message -match 'UNSAFE_MIXED_INSTALL|UPDATE_BUSY') { throw }
+        throw "UNSAFE_MIXED_INSTALL: installed integrity or transaction recovery failed: $($_.Exception.Message)"
+    }
+}
+
+function Get-ReleaseArchiveHash {
+    param($Release)
+    $temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) ("chatgpt-remote-check-" + [guid]::NewGuid().ToString('N'))
+    try {
+        New-Item -ItemType Directory -Path $temporaryRoot -Force | Out-Null
+        return Get-PublishedArchiveHash -Release $Release -TemporaryRoot $temporaryRoot
+    } finally {
+        if (Test-Path -LiteralPath $temporaryRoot) { Remove-Item -LiteralPath $temporaryRoot -Recurse -Force }
+    }
+}
+
+function Install-VerifiedRelease {
+    param($Release, [string]$ArchiveHash)
+    $safeVersion = $Release.tag -replace '[^A-Za-z0-9._-]', '_'
+    $preparedRoot = Join-Path $stateRoot ("prepared\$safeVersion-$($ArchiveHash.Substring(0, 16))")
+    try {
+        [void](New-PreparedRelease -RequestedVersion $Release.tag -ExpectedHash $ArchiveHash -Destination $preparedRoot)
+        return Invoke-PreparedRelease -RequestedVersion $Release.tag -ExpectedHash $ArchiveHash -Source $preparedRoot
+    } finally {
+        if (-not (Test-Path -LiteralPath $journalPath -PathType Leaf) -and
+            (Test-Path -LiteralPath $preparedRoot -PathType Container)) {
+            Remove-Item -LiteralPath $preparedRoot -Recurse -Force
+        }
+    }
+}
+
+function Enter-UpdateLock {
+    New-Item -ItemType Directory -Path $stateRoot -Force | Out-Null
+    $deadline = [DateTime]::UtcNow.AddSeconds($LockTimeoutSeconds)
+    do {
+        try {
+            $stream = [IO.FileStream]::new($lockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+            $stream.SetLength(0)
+            $bytes = [Text.Encoding]::UTF8.GetBytes("pid=$PID checkedAt=$([DateTime]::UtcNow.ToString('o'))`n")
+            $stream.Write($bytes, 0, $bytes.Length)
+            $stream.Flush($true)
+            return $stream
+        } catch [IO.IOException] {
+            if ([DateTime]::UtcNow -ge $deadline) { throw "UPDATE_BUSY: another updater still owns the lock after $LockTimeoutSeconds seconds." }
+            Start-Sleep -Milliseconds 100
+        }
+    } while ($true)
+}
+
+function Enter-LaunchGuard {
+    $mutex = [Threading.Mutex]::new($false, 'Local\ChatGPTCustomInjectionLauncher')
+    try {
+        $acquired = $false
+        try {
+            $acquired = $mutex.WaitOne([TimeSpan]::FromSeconds($LockTimeoutSeconds))
+        } catch [Threading.AbandonedMutexException] {
+            $acquired = $true
+        }
+        if (-not $acquired) {
+            throw "UPDATE_BUSY: launcher injection still owns the launch guard after $LockTimeoutSeconds seconds."
+        }
+        return $mutex
+    } catch {
+        $mutex.Dispose()
+        throw
     }
 }
 
@@ -204,129 +488,6 @@ function Install-SourceCheckout {
     return [ordered]@{ updated = $true; version = $RemoteState.version; method = 'git-fast-forward'; files = $null }
 }
 
-function Assert-SafeInstallDestination {
-    param([string]$RelativePath)
-    if ((Get-Item -LiteralPath $InstallRoot).Attributes -band [IO.FileAttributes]::ReparsePoint) {
-        throw 'Install root must not be a reparse point.'
-    }
-    $current = $InstallRoot
-    foreach ($component in $RelativePath.Split([IO.Path]::DirectorySeparatorChar)) {
-        $current = Join-Path $current $component
-        if ((Test-Path -LiteralPath $current) -and ((Get-Item -LiteralPath $current).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-            throw "Install destination must not traverse a reparse point: $RelativePath"
-        }
-    }
-}
-
-function Install-Release {
-    param($Release)
-    $temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) ("chatgpt-remote-update-" + [guid]::NewGuid().ToString('N'))
-    $safeLocalVersion = ((Get-LocalVersion) -replace '[^A-Za-z0-9._-]', '_')
-    if ($safeLocalVersion.Length -gt 48) { $safeLocalVersion = $safeLocalVersion.Substring(0, 48) }
-    $backupRoot = Join-Path $rollbackRoot ((Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + $safeLocalVersion)
-    $copied = [Collections.Generic.List[object]]::new()
-    try {
-        New-Item -ItemType Directory -Path $temporaryRoot -Force | Out-Null
-        $archivePath = Join-Path $temporaryRoot $Release.archiveName
-        $checksumsPath = Join-Path $temporaryRoot $Release.checksumsName
-        Invoke-WebRequest -Uri $Release.archiveUrl -OutFile $archivePath -UseBasicParsing -TimeoutSec 120
-        Invoke-WebRequest -Uri $Release.checksumsUrl -OutFile $checksumsPath -UseBasicParsing -TimeoutSec 20
-        $archiveBytes = [IO.File]::ReadAllBytes($archivePath)
-        if ($archiveBytes.Length -lt 4 -or $archiveBytes[0] -ne 0x50 -or $archiveBytes[1] -ne 0x4b) {
-            throw 'The release download is not a ZIP archive. A proxy or network security gateway may have replaced it with a block page.'
-        }
-        $escapedName = [regex]::Escape($Release.archiveName)
-        $checksumLine = Get-Content -LiteralPath $checksumsPath | Where-Object { $_ -match "^([0-9a-fA-F]{64})\s+(?:\*)?$escapedName$" } | Select-Object -First 1
-        if (-not $checksumLine) { throw "Published checksum for $($Release.archiveName) is missing." }
-        $expectedArchiveHash = ([regex]::Match($checksumLine, '^[0-9a-fA-F]{64}')).Value
-        $actualArchiveHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash
-        if ($actualArchiveHash -ne $expectedArchiveHash) { throw 'Downloaded release archive failed SHA-256 verification.' }
-        $extractRoot = Join-Path $temporaryRoot 'extract'
-        Expand-Archive -LiteralPath $archivePath -DestinationPath $extractRoot
-        $releaseRoot = if (Test-Path -LiteralPath (Join-Path $extractRoot 'VERSION') -PathType Leaf) {
-            $extractRoot
-        } else {
-            $releaseRoots = @(Get-ChildItem -LiteralPath $extractRoot -Directory)
-            if ($releaseRoots.Count -ne 1) { throw 'Release archive must be flat or contain exactly one top-level directory.' }
-            $releaseRoots[0].FullName
-        }
-        $archiveVersion = (Get-Content -LiteralPath (Join-Path $releaseRoot 'VERSION') -Raw).Trim()
-        if ($archiveVersion -ne $Release.tag) { throw "Archive version $archiveVersion does not match release $($Release.tag)." }
-        $entries = Get-ManifestEntries $releaseRoot
-        $previousEntries = try { @(Get-ManifestEntries $InstallRoot) } catch { @() }
-        $newRelativePaths = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-        foreach ($entry in $entries) { [void]$newRelativePaths.Add($entry.relative) }
-        New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null
-        $ordered = @($entries | Sort-Object @{ Expression = { if ($_.relative -ieq 'Update-ChatGPTRemote.ps1') { 1 } else { 0 } } }, relative)
-        foreach ($entry in $ordered) {
-            Assert-SafeInstallDestination $entry.relative
-            $destination = [IO.Path]::GetFullPath((Join-Path $InstallRoot $entry.relative))
-            $installPrefix = $InstallRoot.TrimEnd('\') + '\'
-            if (-not $destination.StartsWith($installPrefix, [StringComparison]::OrdinalIgnoreCase)) { throw "Install path escapes its root: $($entry.relative)" }
-            $backup = Join-Path $backupRoot $entry.relative
-            $existed = Test-Path -LiteralPath $destination -PathType Leaf
-            if ($existed) {
-                New-Item -ItemType Directory -Path (Split-Path -Parent $backup) -Force | Out-Null
-                Copy-Item -LiteralPath $destination -Destination $backup -Force
-            }
-            $copied.Add([pscustomobject]@{ destination = $destination; backup = $backup; existed = $existed })
-            New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
-            Copy-Item -LiteralPath $entry.source -Destination $destination -Force
-        }
-        foreach ($entry in $previousEntries) {
-            if ($newRelativePaths.Contains($entry.relative)) { continue }
-            Assert-SafeInstallDestination $entry.relative
-            $destination = [IO.Path]::GetFullPath((Join-Path $InstallRoot $entry.relative))
-            $backup = Join-Path $backupRoot $entry.relative
-            if (-not (Test-Path -LiteralPath $destination -PathType Leaf)) { continue }
-            New-Item -ItemType Directory -Path (Split-Path -Parent $backup) -Force | Out-Null
-            Copy-Item -LiteralPath $destination -Destination $backup -Force
-            $copied.Add([pscustomobject]@{ destination = $destination; backup = $backup; existed = $true })
-            Remove-Item -LiteralPath $destination -Force
-        }
-        $manifestDestination = Join-Path $InstallRoot 'RELEASE-MANIFEST.sha256'
-        Assert-SafeInstallDestination 'RELEASE-MANIFEST.sha256'
-        $manifestBackup = Join-Path $backupRoot 'RELEASE-MANIFEST.sha256'
-        $manifestExisted = Test-Path -LiteralPath $manifestDestination -PathType Leaf
-        if ($manifestExisted) { Copy-Item -LiteralPath $manifestDestination -Destination $manifestBackup -Force }
-        $copied.Add([pscustomobject]@{ destination = $manifestDestination; backup = $manifestBackup; existed = $manifestExisted })
-        Copy-Item -LiteralPath (Join-Path $releaseRoot 'RELEASE-MANIFEST.sha256') -Destination $manifestDestination -Force
-        if (-not (Test-InstalledIntegrity)) { throw 'Installed release failed its final manifest verification.' }
-        return [ordered]@{ updated = $true; version = $Release.tag; rollbackPath = $backupRoot; files = $entries.Count }
-    } catch {
-        $installError = $_
-        $rollbackErrors = [Collections.Generic.List[string]]::new()
-        $restoreEntries = @($copied)
-        [array]::Reverse($restoreEntries)
-        foreach ($entry in $restoreEntries) {
-            try {
-                if ($entry.existed) {
-                    $restoreNeeded = -not (Test-Path -LiteralPath $entry.destination -PathType Leaf)
-                    if (-not $restoreNeeded) {
-                        $restoreNeeded = (Get-FileHash -LiteralPath $entry.destination -Algorithm SHA256).Hash -ne
-                            (Get-FileHash -LiteralPath $entry.backup -Algorithm SHA256).Hash
-                    }
-                    if ($restoreNeeded) { Copy-Item -LiteralPath $entry.backup -Destination $entry.destination -Force }
-                } elseif (Test-Path -LiteralPath $entry.destination -PathType Leaf) {
-                    Remove-Item -LiteralPath $entry.destination -Force
-                }
-            } catch {
-                $rollbackErrors.Add("$($entry.destination): $($_.Exception.Message)")
-            }
-        }
-        if ($rollbackErrors.Count -gt 0) {
-            throw "Update failed: $($installError.Exception.Message) Rollback was incomplete: $([string]::Join('; ', $rollbackErrors))"
-        }
-        throw $installError
-    } finally {
-        $resolvedTemp = [IO.Path]::GetFullPath($temporaryRoot)
-        $systemTemp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
-        if ((Test-Path -LiteralPath $resolvedTemp) -and $resolvedTemp.StartsWith($systemTemp, [StringComparison]::OrdinalIgnoreCase)) {
-            Remove-Item -LiteralPath $resolvedTemp -Recurse -Force
-        }
-    }
-}
-
 function Get-Probe {
     $sourceCheckout = Get-SourceCheckout
     return [ordered]@{
@@ -356,28 +517,84 @@ if ($Action -eq 'Probe') {
     Get-Probe | ConvertTo-Json -Depth 4
     return
 }
-if ($Action -eq 'Auto' -and (Test-AutoUpdateDisabled)) {
-    ([ordered]@{ skipped = $true; reason = 'auto-update-disabled'; localVersion = Get-LocalVersion } | ConvertTo-Json)
-    return
-}
-if ($Action -eq 'Auto' -and -not (Test-CheckDue)) {
-    ([ordered]@{ skipped = $true; reason = 'check-interval'; localVersion = Get-LocalVersion } | ConvertTo-Json)
-    return
-}
-
-$mutex = [Threading.Mutex]::new($false, 'Local\ChatGPTRemoteEnablerUpdate')
-$acquired = $false
+$lockStream = $null
+$launchGuard = $null
+$callerOwnsLaunchGuard = $LaunchLockHeld -or $env:CHATGPT_REMOTE_LAUNCH_GUARD_HELD -eq '1'
 try {
-    $acquired = $mutex.WaitOne($(if ($Action -eq 'Auto') { 0 } else { 30000 }))
-    if (-not $acquired) {
-        ([ordered]@{ skipped = $true; reason = 'update-already-running'; localVersion = Get-LocalVersion } | ConvertTo-Json)
+    $readOnlyAction = $Action -in @('Check', 'Prepare')
+    if (-not $readOnlyAction -and -not $callerOwnsLaunchGuard) {
+        $launchGuard = Enter-LaunchGuard
+    }
+    $lockStream = Enter-UpdateLock
+    if ($readOnlyAction) {
+        if (Test-Path -LiteralPath $journalPath -PathType Leaf) {
+            throw 'UPDATE_RECOVERY_REQUIRED: a pending update transaction must be recovered before checking or preparing another release.'
+        }
+        $recovery = [pscustomobject]@{ recovered = $false; integrityValid = $true }
+    } else {
+        $recovery = Invoke-PendingRecovery
+    }
+
+    if ($Action -eq 'Recover') {
+        $recovery | ConvertTo-Json -Depth 4 -Compress
         return
     }
+
+    if ($Action -eq 'Auto' -and (Test-AutoUpdateDisabled)) {
+        ([ordered]@{ skipped = $true; reason = 'auto-update-disabled'; localVersion = Get-LocalVersion; recovered = [bool]$recovery.recovered } | ConvertTo-Json)
+        return
+    }
+    if ($Action -eq 'Auto' -and -not (Test-CheckDue)) {
+        ([ordered]@{ skipped = $true; reason = 'check-interval'; localVersion = Get-LocalVersion; recovered = [bool]$recovery.recovered } | ConvertTo-Json)
+        return
+    }
+
+    if ($Action -in @('Prepare', 'ApplyPrepared')) {
+        Assert-PinnedReleaseArguments
+        if ($Action -eq 'Prepare') {
+            $result = New-PreparedRelease -RequestedVersion $TargetVersion -ExpectedHash $ExpectedArchiveSha256 -Destination $PreparedDirectory
+            $result | ConvertTo-Json -Depth 4 -Compress
+            return
+        }
+        try {
+            $result = Invoke-PreparedRelease -RequestedVersion $TargetVersion -ExpectedHash $ExpectedArchiveSha256 -Source $PreparedDirectory
+            Write-LastCheck $TargetVersion
+            $result | ConvertTo-Json -Depth 4 -Compress
+            return
+        } catch {
+            if ($_.Exception.Message -match 'UNSAFE_MIXED_INSTALL|UPDATE_BUSY') { throw }
+            throw "UPDATE_APPLY_FAILED: $($_.Exception.Message)"
+        }
+    }
+
+    if ($Action -eq 'Check') {
+        try {
+            $release = Get-LatestRelease
+            $archiveHash = Get-ReleaseArchiveHash -Release $release
+            $localVersion = Get-LocalVersion
+            $available = (ConvertTo-Version $release.tag) -gt (ConvertTo-Version $localVersion)
+            if ($release.tag -eq $localVersion -and -not (Test-InstalledIntegrity)) { $available = $true }
+            Write-LastCheck $release.tag
+            ([ordered]@{
+                available = $available
+                latestVersion = $release.tag
+                localVersion = $localVersion
+                archiveSha256 = $archiveHash
+                updated = $false
+                method = 'verified-release'
+            } | ConvertTo-Json -Compress)
+            return
+        } catch {
+            if ($_.Exception.Message -match 'UNSAFE_MIXED_INSTALL') { throw }
+            throw "UPDATE_CHECK_FAILED: $($_.Exception.Message)"
+        }
+    }
+
     $sourceCheckout = Get-SourceCheckout
     if ($sourceCheckout) {
         $remoteState = Get-SourceRemoteState -Checkout $sourceCheckout
         $localVersion = Get-LocalVersion
-        if ($Action -eq 'Check' -or -not $remoteState.available) {
+        if (-not $remoteState.available) {
             Write-LastCheck $remoteState.version
             ([ordered]@{ available = $remoteState.available; latestVersion = $remoteState.version; localVersion = $localVersion; updated = $false; method = 'git-fast-forward' } | ConvertTo-Json)
             return
@@ -388,18 +605,21 @@ try {
         return
     }
     $release = Get-LatestRelease
+    $archiveHash = Get-ReleaseArchiveHash -Release $release
     $localVersion = Get-LocalVersion
     $available = (ConvertTo-Version $release.tag) -gt (ConvertTo-Version $localVersion)
     if ($release.tag -eq $localVersion -and -not (Test-InstalledIntegrity)) { $available = $true }
-    if ($Action -eq 'Check' -or -not $available) {
+    if (-not $available) {
         Write-LastCheck $release.tag
-        ([ordered]@{ available = $available; latestVersion = $release.tag; localVersion = $localVersion; updated = $false; method = 'verified-release' } | ConvertTo-Json)
+        ([ordered]@{ available = $available; latestVersion = $release.tag; localVersion = $localVersion; archiveSha256 = $archiveHash; updated = $false; method = 'verified-release' } | ConvertTo-Json)
         return
     }
-    $result = Install-Release $release
+    $result = Install-VerifiedRelease -Release $release -ArchiveHash $archiveHash
     Write-LastCheck $release.tag
     $result | ConvertTo-Json -Depth 4
 } finally {
-    if ($acquired) { $mutex.ReleaseMutex() }
-    $mutex.Dispose()
+    if ($lockStream) { $lockStream.Dispose() }
+    if ($launchGuard) {
+        try { $launchGuard.ReleaseMutex() } finally { $launchGuard.Dispose() }
+    }
 }

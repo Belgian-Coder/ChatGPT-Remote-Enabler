@@ -1,5 +1,39 @@
 # Changelog
 
+## v1.5.32 (prerelease)
+
+- Add step-by-step per-user Windows 11 and Apple Silicon installation guides,
+  portable Node.js discovery, removal/troubleshooting instructions, and a
+  complete feature guide included in both archives. Validate Windows extraction,
+  write access and shortcut lifecycle under a real non-elevated user token.
+- Replace automatic installation during launch with asynchronous release
+  checks and an Update available control in both sidebar views. A session
+  helper prepares the selected verified release, waits for active work,
+  gracefully closes ChatGPT, updates, and restores the saved launch mode.
+  Queued updates can be cancelled before shutdown; refused shutdown never
+  triggers a forced termination.
+- Make replacement recoverable after process interruption with an exclusive
+  update lock, durable journal, atomic file replacement, and validation before
+  another injected launch. Write session records atomically and quarantine
+  damaged records before safe rediscovery.
+- Fix debugger discovery hanging on truncated responses and proxy connection
+  deadlines ending before target TLS negotiation. Apply bounded renderer
+  retries consistently and clean up failed persistent registrations.
+- Resolve peer names through the normal discovery, merge, publication, and
+  restart flow. Native placeholders cannot overwrite verified names; an
+  unknown peer displays Remote device rather than its environment ID.
+- Refresh complete task lists every 60 seconds and after detected membership
+  changes while preserving fast status updates. Preserve the true acquisition
+  timestamp so status publication cannot keep old membership authoritative.
+- Reduce unrelated sidebar rescans, production diagnostic work, and steady
+  gate discovery. Expose readiness stages and privacy-conscious timing/counters.
+- Require known managed archive paths and exclusive cross-window ownership
+  for permanent cleanup. Report physical-maintenance errors explicitly while
+  allowing best-effort startup maintenance to continue.
+- Windows and macOS share renderer v65. Native macOS startup, quit, and
+  update/relaunch acceptance is deferred until a Mac is available; candidate
+  validation records distinguish automated coverage from native runtime tests.
+
 ## v1.5.31
 
 - Match native project row spacing, headings, open/closed folder icons, and

@@ -108,6 +108,34 @@ function Wait-ForLineCount {
     throw "Timed out waiting for $Count lines in $Path; found $actual."
 }
 
+function Wait-ForFixtureWorkerExit {
+    param([string]$Path, [int]$Index, [string]$ExpectedOutcome, [int]$TimeoutSeconds = 10)
+    Wait-ForLineCount -Path $Path -Count $Index -TimeoutSeconds $TimeoutSeconds
+    $identity = @([IO.File]::ReadAllLines($Path))[$Index - 1]
+    $match = [regex]::Match($identity, '^(custom|root)\|([0-9]+)\|([0-9]+)\|(acquired|rejected)$')
+    if (-not $match.Success) { throw "Fixture worker identity is malformed: $identity" }
+    if ($ExpectedOutcome -and $match.Groups[4].Value -ne $ExpectedOutcome) {
+        throw "Fixture worker $Index reported $($match.Groups[4].Value), expected $ExpectedOutcome."
+    }
+
+    $workerProcess = $null
+    try {
+        try {
+            $workerProcess = [Diagnostics.Process]::GetProcessById([int]$match.Groups[2].Value)
+        } catch [ArgumentException] {
+            return
+        }
+        $expectedStartTime = [long]$match.Groups[3].Value
+        $actualStartTime = $workerProcess.StartTime.ToUniversalTime().ToFileTimeUtc()
+        if ($actualStartTime -ne $expectedStartTime) { return }
+        if (-not $workerProcess.WaitForExit($TimeoutSeconds * 1000)) {
+            throw "Fixture worker $($workerProcess.Id) did not exit after completing its work."
+        }
+    } finally {
+        if ($workerProcess) { $workerProcess.Dispose() }
+    }
+}
+
 function New-ReplacementLauncher {
     param([string]$Source, [string]$Destination, [string]$Compiler, [string]$TemporaryRoot)
     $text = Get-Content -LiteralPath $Source -Raw
@@ -142,8 +170,8 @@ if (-not $controllerSourceText.Contains('CliPath = $runtimeCliPath') -or
 }
 $rootWorkerSourceText = Get-Content -LiteralPath (Join-Path $root 'windows\Enable-ChatGPTRemote.ps1') -Raw
 foreach ($worker in @(
-    [pscustomobject]@{ Name = 'MobileProjectStartup'; Text = $startupSourceText; Updater = '& $updateController -Action Auto'; Injection = '& $stableController @stableArguments' },
-    [pscustomobject]@{ Name = 'Enable-ChatGPTRemote'; Text = $rootWorkerSourceText; Updater = '& $updater -Action Auto'; Injection = '& $stable -Action Enable' }
+    [pscustomobject]@{ Name = 'MobileProjectStartup'; Text = $startupSourceText; Updater = '& $updateController -Action Recover'; Injection = '& $stableController @stableArguments' },
+    [pscustomobject]@{ Name = 'Enable-ChatGPTRemote'; Text = $rootWorkerSourceText; Updater = '& $updater -Action Recover'; Injection = '& $stable -Action Enable' }
 )) {
     $capture = $worker.Text.IndexOf('$parentProcess = Capture-ExactParent', [StringComparison]::Ordinal)
     $signal = $worker.Text.IndexOf('Signal-Handshake', $capture, [StringComparison]::Ordinal)
@@ -158,7 +186,9 @@ foreach ($worker in @(
     }
 }
 
-$temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) ('chatgpt-custom-launcher-test-' + [guid]::NewGuid().ToString('N'))
+$fixtureId = [guid]::NewGuid().ToString('N')
+$temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) ('chatgpt-custom-launcher-test-' + $fixtureId)
+$fixtureMutexName = 'Local\ChatGPTCustomInjectionLauncher-Test-' + $fixtureId
 $processes = [Collections.Generic.List[Diagnostics.Process]]::new()
 try {
     New-Item -ItemType Directory -Path $temporaryRoot | Out-Null
@@ -178,6 +208,7 @@ try {
     $readyLog = Join-Path $temporaryRoot 'worker-ready.log'
     $afterParentLog = Join-Path $temporaryRoot 'worker-after-parent.log'
     $finishedLog = Join-Path $temporaryRoot 'worker-finished.log'
+    $workerIdentityLog = Join-Path $temporaryRoot 'worker-identity.log'
     $workerErrorLog = Join-Path $temporaryRoot 'worker-error.log'
     $workerScript = @"
 param(
@@ -189,16 +220,24 @@ param(
     [string]`$ReadyEventName,
     [string]`$RejectedEventName
 )
-`$mutex = [Threading.Mutex]::new(`$false, 'Local\ChatGPTCustomInjectionLauncher')
+`$mutex = [Threading.Mutex]::new(`$false, '$fixtureMutexName')
 `$ready = [Threading.EventWaitHandle]::OpenExisting(`$ReadyEventName)
 `$rejected = [Threading.EventWaitHandle]::OpenExisting(`$RejectedEventName)
 `$acquired = `$false
 `$parent = `$null
 `$kind = if ([IO.Path]::GetFileName(`$PSCommandPath) -eq 'Enable-ChatGPTRemote.ps1') { 'root' } else { 'custom' }
+`$self = [Diagnostics.Process]::GetCurrentProcess()
+try {
+    `$selfStartTime = `$self.StartTime.ToUniversalTime().ToFileTimeUtc()
+} finally {
+    `$self.Dispose()
+}
 try {
     if (-not (Get-Command Get-FileHash -ErrorAction SilentlyContinue)) { throw 'inbox hashing module unavailable' }
     Import-Module Microsoft.PowerShell.Security -ErrorAction Stop
     try { `$acquired = `$mutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { `$acquired = `$true }
+    `$mutexOutcome = if (`$acquired) { 'acquired' } else { 'rejected' }
+    [IO.File]::AppendAllText('$($workerIdentityLog.Replace("'", "''"))', "`$kind|`$PID|`$selfStartTime|`$mutexOutcome$([Environment]::NewLine)")
     if (-not `$acquired) { [void]`$rejected.Set(); exit 15 }
     `$parent = [Diagnostics.Process]::GetProcessById(`$ParentProcessId)
     `$actual = `$parent.StartTime.ToUniversalTime().ToFileTimeUtc()
@@ -235,12 +274,14 @@ try {
     $watch.Stop()
     $processes.Add($concurrent)
     if ($concurrent.ExitCode -ne 15 -or $watch.Elapsed.TotalSeconds -ge 5) { throw "Concurrent custom launcher was not rejected promptly: $($concurrent.ExitCode)." }
+    Wait-ForFixtureWorkerExit -Path $workerIdentityLog -Index 2 -ExpectedOutcome rejected
     Wait-ForLineCount -Path $finishedLog -Count 1 -TimeoutSeconds 30
+    Wait-ForFixtureWorkerExit -Path $workerIdentityLog -Index 1 -ExpectedOutcome acquired
 
     foreach ($case in @(
-        [pscustomobject]@{ Arguments = '--startup'; ReadyCount = 2; FinishedCount = 2 },
-        [pscustomobject]@{ Arguments = ''; ReadyCount = 3; FinishedCount = 3 },
-        [pscustomobject]@{ Arguments = '--proxy'; ReadyCount = 4; FinishedCount = 4 }
+        [pscustomobject]@{ Arguments = '--startup'; ReadyCount = 2; FinishedCount = 2; WorkerIndex = 3 },
+        [pscustomobject]@{ Arguments = ''; ReadyCount = 3; FinishedCount = 3; WorkerIndex = 4 },
+        [pscustomobject]@{ Arguments = '--proxy'; ReadyCount = 4; FinishedCount = 4; WorkerIndex = 5 }
     )) {
         $startArguments = @{ FilePath = $launcher; PassThru = $true }
         if (-not [string]::IsNullOrEmpty($case.Arguments)) { $startArguments.ArgumentList = $case.Arguments }
@@ -261,6 +302,7 @@ try {
             $workerErrors = if (Test-Path -LiteralPath $workerErrorLog) { [IO.File]::ReadAllText($workerErrorLog) } else { '<none>' }
             throw "Custom worker did not finish: $($case.Arguments); workerErrors=$workerErrors; $($_.Exception.Message)"
         }
+        Wait-ForFixtureWorkerExit -Path $workerIdentityLog -Index $case.WorkerIndex -ExpectedOutcome acquired
     }
 
     $rootProcess = Start-Process -FilePath $rootLauncher -PassThru
@@ -271,7 +313,9 @@ try {
     $crossEntry = Start-Process -FilePath $launcher -ArgumentList '--startup' -PassThru -Wait
     $processes.Add($crossEntry)
     if ($crossEntry.ExitCode -ne 15) { throw 'Root/custom cross-entry collision was not rejected.' }
+    Wait-ForFixtureWorkerExit -Path $workerIdentityLog -Index 7 -ExpectedOutcome rejected
     Wait-ForLineCount -Path $finishedLog -Count 5 -TimeoutSeconds 30
+    Wait-ForFixtureWorkerExit -Path $workerIdentityLog -Index 6 -ExpectedOutcome acquired
 
     $invocations = @([IO.File]::ReadAllLines($readyLog))
     $expectedInvocations = @(

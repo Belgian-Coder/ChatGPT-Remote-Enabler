@@ -20,12 +20,16 @@ const client = {
   },
 };
 
+const scheduledScans = [];
 const context = vm.createContext({
   __STATSIG__: { client },
-  clearInterval,
+  clearTimeout: () => {},
   console,
   globalThis: null,
-  setInterval,
+  setTimeout: (callback, milliseconds) => {
+    scheduledScans.push({ callback, milliseconds });
+    return { unref() {} };
+  },
 });
 context.globalThis = context;
 
@@ -52,9 +56,29 @@ assert.equal(report.remoteConnectionsAllTrue, true);
 assert.equal(context.__CODEX_STATSIG_GATE_BRIDGE__.version, 2);
 assert.equal(calls.includes("782640499"), false);
 assert.equal(calls.includes("4114442250"), false);
+assert.equal(scheduledScans[0]?.milliseconds, 1000);
+scheduledScans.shift().callback();
+assert.equal(scheduledScans[0]?.milliseconds, 1000);
+
+const unprovenSchedules = [];
+const unprovenContext = vm.createContext({
+  __STATSIG__: {},
+  clearTimeout: () => {},
+  globalThis: null,
+  setTimeout: (callback, milliseconds) => {
+    unprovenSchedules.push({ callback, milliseconds });
+    return { unref() {} };
+  },
+});
+unprovenContext.globalThis = unprovenContext;
+const unprovenReport = vm.runInContext(source, unprovenContext, { filename: "renderer-payload-unproven.js" });
+assert.equal(unprovenReport.proof, false);
+assert.equal(unprovenSchedules[0]?.milliseconds, 100);
 
 async function testOrchestratorProbeValidation() {
-  const { parseArguments, runProbeBridge } = require("../runtime/orchestrator.js");
+  const { isTransientRendererError, parseArguments, runProbeBridge } = require("../runtime/orchestrator.js");
+  assert.equal(isTransientRendererError({ code: "CDP_PROTOCOL_ERROR", protocolCode: -32000, message: "Execution context was destroyed." }), true);
+  assert.equal(isTransientRendererError({ code: "CDP_PROTOCOL_ERROR", protocolCode: -32000, message: "Invalid parameters." }), false);
   const result = await runProbeBridge(
     { rendererPort: 41001, mainPort: 41002, timeoutMs: 30000 },
     {
@@ -107,6 +131,7 @@ async function testRendererInstallRetriesTransientReload() {
   const { runRendererBridge } = require("../runtime/orchestrator.js");
   let connections = 0;
   let closes = 0;
+  const removedIdentifiers = [];
   const target = {
     type: "page",
     url: "app://-/index.html",
@@ -121,24 +146,39 @@ async function testRendererInstallRetriesTransientReload() {
         connections += 1;
         if (connections === 1) {
           return {
-            call: async () => {
-              const error = new Error("renderer reloaded");
-              error.code = "WEBSOCKET_CLOSED";
-              throw error;
+            attempt: 1,
+            call: async (method, params) => {
+              if (method === "Page.addScriptToEvaluateOnNewDocument") return { identifier: "orphaned-script" };
+              if (method === "Page.removeScriptToEvaluateOnNewDocument") {
+                removedIdentifiers.push(params.identifier);
+                const error = new Error("renderer reloaded during cleanup");
+                error.code = "WEBSOCKET_CLOSED";
+                throw error;
+              }
+              return {};
             },
             close: () => { closes += 1; },
           };
         }
         return {
-          call: async (method) => method === "Page.addScriptToEvaluateOnNewDocument"
-            ? { identifier: "persistent-script" }
-            : {},
+          attempt: 2,
+          call: async (method, params) => {
+            if (method === "Page.removeScriptToEvaluateOnNewDocument") removedIdentifiers.push(params.identifier);
+            return method === "Page.addScriptToEvaluateOnNewDocument" ? { identifier: "persistent-script" } : {};
+          },
           close: () => { closes += 1; },
         };
       },
-      evaluate: async (_client, expression) => expression.includes("__CODEX_STATSIG_GATE_BRIDGE__")
-        ? report
-        : { targetGate: "782640499", remoteConnectionsGate: "4114442250" },
+      evaluate: async (rendererClient, expression) => {
+        if (rendererClient.attempt === 1) {
+          const error = new Error("renderer reloaded");
+          error.code = "WEBSOCKET_CLOSED";
+          throw error;
+        }
+        return expression.includes("__CODEX_STATSIG_GATE_BRIDGE__")
+          ? report
+          : { targetGate: "782640499", remoteConnectionsGate: "4114442250" };
+      },
     },
   );
   assert.equal(connections, 2);
@@ -146,9 +186,53 @@ async function testRendererInstallRetriesTransientReload() {
   assert.equal(result.renderer.currentDocument.installed, true);
   assert.equal(result.renderer.newDocumentScriptInstalled, true);
   assert.equal(result.renderer.probe.proof, true);
+  assert.deepEqual(removedIdentifiers, ["orphaned-script", "orphaned-script"]);
 }
 
-Promise.all([testOrchestratorProbeValidation(), testRendererInstallRetriesTransientReload()])
+async function testFullBridgeUsesRendererRetry() {
+  const { runBridge } = require("../runtime/orchestrator.js");
+  let mainInstalls = 0;
+  let rendererConnections = 0;
+  const target = {
+    type: "page",
+    url: "app://-/index.html",
+    webSocketDebuggerUrl: "ws://127.0.0.1/fake",
+  };
+  const result = await runBridge(
+    { mainPayload: "synthetic-main", mainPort: 41002, rendererPort: 41001, timeoutMs: 3000 },
+    {
+      installMainPayload: async () => {
+        mainInstalls += 1;
+        return { closure: { confirmed: true }, report: { installed: true } };
+      },
+      readPayload: () => "synthetic payload",
+      waitForTarget: async () => target,
+      connectTarget: async () => {
+        rendererConnections += 1;
+        const attempt = rendererConnections;
+        return {
+          call: async (method) => {
+            if (attempt === 1) {
+              const error = new Error("renderer not ready");
+              error.code = "WEBSOCKET_CONNECT_FAILED";
+              throw error;
+            }
+            return method === "Page.addScriptToEvaluateOnNewDocument" ? { identifier: "persistent-script" } : {};
+          },
+          close() {},
+        };
+      },
+      evaluate: async (_rendererClient, expression) => expression.includes("__CODEX_STATSIG_GATE_BRIDGE__")
+        ? report
+        : { targetGate: "782640499", remoteConnectionsGate: "4114442250" },
+    },
+  );
+  assert.equal(mainInstalls, 1);
+  assert.equal(rendererConnections, 2);
+  assert.equal(result.renderer.probe.proof, true);
+}
+
+Promise.all([testOrchestratorProbeValidation(), testRendererInstallRetriesTransientReload(), testFullBridgeUsesRendererRetry()])
   .then(() => process.stdout.write(`${JSON.stringify({ ok: true, report })}\n`))
   .catch((error) => {
     console.error(error);

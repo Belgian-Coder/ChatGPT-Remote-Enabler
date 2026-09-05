@@ -82,6 +82,7 @@ class FixtureElement {
   contains(target) { return this === target || this.children.some(child => child.contains(target)); }
   addEventListener(name, callback) { this.listeners.set(name, [...(this.listeners.get(name) || []), callback]); }
   removeEventListener() {}
+  dispatchEvent(event) { for (const callback of this.listeners.get(event.type) || []) callback(event); return true; }
   click() { for (const callback of this.listeners.get("click") || []) callback({ preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {} }); }
   matches(selector) {
     return selector.split(/,(?![^\[]*\])/).some(part => {
@@ -164,7 +165,7 @@ const testSource = originalSource
   bindReorder = () => {};
   probe = () => ({});
   nativeThreadAction = () => null;
-  return { appendEmptyProjectState, appendGroup, commonAncestor, ensureStyle, nativeFolderIcon, nativeListContainer, plainFolderIcon, render, state,
+  return { appendEmptyProjectState, appendGroup, commonAncestor, ensureStyle, install, nativeFolderIcon, nativeListContainer, plainFolderIcon, render, state,
     useModel(model) { collectModel = () => model; }
   };
 })();`);
@@ -172,6 +173,8 @@ assert.notEqual(testSource, originalSource, "test entrypoint extraction must suc
 const context = vm.createContext({
   CSS: { escape: value => String(value) },
   Element: FixtureElement,
+  CustomEvent: class CustomEvent { constructor(type, options = {}) { this.type = type; this.detail = options.detail; } },
+  MutationObserver: class MutationObserver { disconnect() {} observe() {} },
   Node: FixtureElement,
   TextDecoder,
   TextEncoder,
@@ -189,6 +192,13 @@ const context = vm.createContext({
   setTimeout,
 });
 context.globalThis = context;
+const windowListeners = new Map();
+context.addEventListener = (name, callback) => windowListeners.set(name, [...(windowListeners.get(name) || []), callback]);
+context.removeEventListener = (name, callback) => windowListeners.set(name, (windowListeners.get(name) || []).filter(item => item !== callback));
+context.dispatchEvent = (event) => {
+  for (const callback of windowListeners.get(event.type) || []) callback(event);
+  return true;
+};
 vm.runInContext(testSource, context, { filename: rendererPath });
 const layout = context.__sidebarLayoutTest;
 
@@ -291,12 +301,26 @@ assert.equal(layout.nativeListContainer([nativeRecentRow], [opened, closed]), na
 assert.equal(layout.nativeListContainer([], [opened, closed]), nativeContainer, "empty Recents must not leave the native Projects heading and Recents sibling outside the replacement");
 layout.state.panel = element("div");
 layout.state.panel.id = "codex-remote-mobile-project-panel";
-layout.state.active = true;
 layout.state.view = "native";
+let updateStatus = { state: "current", version: "v1.5.32", message: null, canCancel: false, canQueue: false };
+const updateActions = [];
+context.__CHATGPT_REMOTE_UPDATE__ = {
+  getStatus: () => updateStatus,
+  request: (action) => { updateActions.push(action); },
+};
 layout.useModel({ rows: [nativeRecentRow], nativeProjectItems: [opened, closed], hosts: [], remoteRuntimes: [], projects: [], recents: [] });
-layout.render();
+layout.install();
 assert.equal(layout.state.nativeContainer, nativeContainer, "render must include native project items as well as task rows when choosing its mount");
 assert.equal(layout.state.panel.parentElement, nav, "mode controls must mount beside the common Projects/Recents container");
+assert.equal(layout.state.panel.querySelector(".crmp-update-status").textContent, "Current · v1.5.32");
+updateStatus = { state: "available", version: "v1.5.33", message: "Ready", canCancel: false, canQueue: true };
+context.dispatchEvent(new context.CustomEvent("chatgpt-remote-update-status"));
+assert.equal(layout.state.updateStatus.state, "available", "a window-dispatched updater event without detail must refresh through getStatus");
+layout.render();
+let updateControl = layout.state.panel.querySelector(".crmp-update-control");
+assert.equal(updateControl.textContent, "Update available · v1.5.33", "the canonical available state must be visible in Native views");
+updateControl.click();
+assert.deepEqual(updateActions, ["queue"], "the renderer must only ask the updater to queue an available release");
 layout.useModel({ rows: [], nativeProjectItems: [opened, closed], hosts: [], remoteRuntimes: [], projects: [], recents: [] });
 layout.render();
 assert.equal(layout.state.nativeContainer, nativeContainer, "an empty recent-task inventory must keep the whole native list mounted consistently");
@@ -310,6 +334,17 @@ layout.useModel({
   recents: [{ key: "fixture-recent", kind: "recent", hostId: "local", hostName: "Fixture Desktop", name: "Recent chats", tasks: [task] }],
 });
 layout.render();
+updateControl = layout.state.panel.querySelector(".crmp-update-control");
+assert.equal(updateControl.textContent, "Update available · v1.5.33", "the update control must remain visible in Mobile projects");
+updateStatus = { state: "preparing", version: "v1.5.33", message: "Waiting to close", canCancel: true, canQueue: false };
+document.dispatchEvent(new context.CustomEvent("chatgpt-remote-update-status", { detail: updateStatus }));
+assert.equal(layout.state.updateStatus.state, "preparing", "a document-dispatched status detail must be accepted directly");
+layout.render();
+assert.equal(layout.state.panel.querySelector(".crmp-update-label").textContent, "Preparing update…");
+const cancelUpdate = layout.state.panel.querySelector(".crmp-update-cancel");
+assert.equal(cancelUpdate.textContent, "Cancel", "preparing must retain an explicit cancel action while canCancel is true");
+cancelUpdate.click();
+assert.deepEqual(updateActions, ["queue", "cancel"]);
 const headings = layout.state.panel.querySelectorAll(".crmp-title");
 assert.deepEqual(headings.map(heading => heading.textContent), ["Projects", "Recents"]);
 for (const heading of headings) {

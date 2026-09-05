@@ -10,6 +10,9 @@ param(
     [string]$NodePath,
     [switch]$UseProxy,
     [switch]$ReplaceRunningApp,
+    [switch]$SkipUpdateCheckOnce,
+    [switch]$UpdateResume,
+    [string]$RelaunchHandoffPath,
     [int]$ParentProcessId = 0,
     [long]$ParentProcessStartTimeFileTimeUtc = 0,
     [string]$ReadyEventName,
@@ -26,13 +29,14 @@ $stableController = Join-Path $bundleParent 'CodexRemoteSimple\CodexRemoteSimple
 $mobileController = Join-Path $bundleRoot 'MobileProjectView.ps1'
 $maintenanceHelper = Join-Path $bundleRoot 'maintenance.js'
 $updateController = Join-Path $bundleParent 'Update-ChatGPTRemote.ps1'
+$updateSessionLauncher = Join-Path $bundleRoot 'UpdateSessionLauncher.ps1'
 $proxyModule = Join-Path $bundleRoot 'ProxyConfiguration.psm1'
 $logRoot = Join-Path $env:LOCALAPPDATA 'CodexRemoteFeatures'
 $logPath = Join-Path $logRoot 'startup.log'
 $rollbackRoot = Join-Path $bundleRoot 'rollback'
 
 function Assert-Controllers {
-    foreach ($path in @($stableController, $mobileController, $maintenanceHelper, $proxyModule)) {
+    foreach ($path in @($stableController, $mobileController, $maintenanceHelper, $proxyModule, $updateSessionLauncher)) {
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
             throw "Required controller is missing: $path"
         }
@@ -50,12 +54,55 @@ function Write-CommandOutput {
     foreach ($item in $Output) { Write-StartupLog ([string]$item) }
 }
 
+function Get-MobileReport {
+    param([object[]]$Output)
+    for ($index = $Output.Count - 1; $index -ge 0; $index--) {
+        try {
+            $value = [string]$Output[$index] | ConvertFrom-Json -ErrorAction Stop
+            if ($null -ne $value.report) { return $value.report }
+        } catch {
+            # Human-readable progress may precede the final JSON proof.
+        }
+    }
+    throw 'The mobile project view did not return JSON readiness proof.'
+}
+
+function Assert-MobileReport {
+    param($Report)
+    if ($null -eq $Report -or $Report.mounted -isnot [bool] -or
+        $Report.localRuntimeReady -isnot [bool] -or
+        $Report.authoritativeInventoryReady -isnot [bool] -or
+        $Report.publisherReady -isnot [bool] -or
+        $Report.ready -isnot [bool]) {
+        throw 'The mobile project view returned incomplete readiness proof.'
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$Report.error)) {
+        throw "The mobile project view reported a terminal readiness error: $($Report.error)"
+    }
+}
+
+function Write-RelaunchHandoff {
+    if ([string]::IsNullOrWhiteSpace($RelaunchHandoffPath)) { return }
+    $resolved = [IO.Path]::GetFullPath($RelaunchHandoffPath)
+    $allowedRoot = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'ChatGPTRemoteEnabler\update-sessions\sessions')).TrimEnd('\') + '\'
+    if (-not $resolved.StartsWith($allowedRoot, [StringComparison]::OrdinalIgnoreCase) -or
+        [IO.Path]::GetFileName($resolved) -ne 'relaunch-handoff.json') {
+        throw 'The relaunch handoff path is outside the per-user update-session state.'
+    }
+    New-Item -ItemType Directory -Path (Split-Path -Parent $resolved) -Force | Out-Null
+    $temporary = "$resolved.tmp"
+    $handoff = [ordered]@{ ready = $true; entryPointRelative = 'CodexRemoteMobileProject\MobileProjectStartup.ps1'; at = [DateTime]::UtcNow.ToString('o') }
+    [IO.File]::WriteAllText($temporary, (($handoff | ConvertTo-Json -Compress) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+    Move-Item -LiteralPath $temporary -Destination $resolved -Force
+}
+
 function Resolve-NodePath {
     $command = Get-Command node.exe -ErrorAction SilentlyContinue
     $candidates = @(
         $NodePath,
         $(if ($command) { $command.Source }),
         (Join-Path $env:USERPROFILE '.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe'),
+        (Join-Path $env:LOCALAPPDATA 'Programs\nodejs\node.exe'),
         'C:\Program Files\nodejs\node.exe'
     ) | Where-Object { $_ } | Select-Object -Unique
     foreach ($candidate in $candidates) {
@@ -205,8 +252,22 @@ switch ($Action) {
 
             try {
                 if (Test-Path -LiteralPath $updateController -PathType Leaf) {
-                    try { Write-CommandOutput @(& $updateController -Action Auto 2>&1) }
-                    catch { Write-StartupLog "$(Get-Date -Format o) [$computerName] automatic update skipped: $($_.Exception.Message)" }
+                    $recoverTimer = [Diagnostics.Stopwatch]::StartNew()
+                    $previousLaunchGuard = [Environment]::GetEnvironmentVariable('CHATGPT_REMOTE_LAUNCH_GUARD_HELD', 'Process')
+                    try {
+                        [Environment]::SetEnvironmentVariable('CHATGPT_REMOTE_LAUNCH_GUARD_HELD', '1', 'Process')
+                        $recoverOutput = @(& $updateController -Action Recover -InstallRoot $bundleParent -LaunchLockHeld 2>&1)
+                    } finally {
+                        [Environment]::SetEnvironmentVariable('CHATGPT_REMOTE_LAUNCH_GUARD_HELD', $previousLaunchGuard, 'Process')
+                    }
+                    $recoverTimer.Stop()
+                    Write-CommandOutput $recoverOutput
+                    if ($LASTEXITCODE -ne 0) { throw 'Update recovery failed before launch.' }
+                    $recover = [string]$recoverOutput[-1] | ConvertFrom-Json -ErrorAction Stop
+                    if ($recover.integrityValid -isnot [bool] -or -not $recover.integrityValid) {
+                        throw 'Update recovery did not prove installed-file integrity before launch.'
+                    }
+                    Write-StartupLog "$(Get-Date -Format o) [$computerName] stage=update-recovery durationMs=$($recoverTimer.ElapsedMilliseconds)"
                 }
                 Assert-Controllers
                 $node = Resolve-NodePath
@@ -219,23 +280,31 @@ switch ($Action) {
                     }
                     Write-StartupLog "$(Get-Date -Format o) [$computerName] protected Remote-only proxy configuration loaded"
                 }
-                Write-CommandOutput @(& $node --no-warnings $maintenanceHelper 2>&1)
+                $maintenanceTimer = [Diagnostics.Stopwatch]::StartNew()
+                Write-CommandOutput @(& $node --no-warnings $maintenanceHelper --best-effort 2>&1)
+                $maintenanceTimer.Stop()
+                Write-StartupLog "$(Get-Date -Format o) [$computerName] stage=maintenance durationMs=$($maintenanceTimer.ElapsedMilliseconds)"
                 # The VS Code extension and other Codex clients run a codex.exe
                 # app-server process. It is not the desktop Electron app and
                 # must not block or be terminated by a ChatGPT Custom launch.
                 $appProcesses = @(Get-CimInstance Win32_Process -Filter "Name='ChatGPT.exe'" -ErrorAction SilentlyContinue)
                 $debugApp = @($appProcesses | Where-Object { $_.CommandLine -match '--remote-debugging-port(?:=|\s)' })
+                if ($UpdateResume -and $appProcesses.Count -gt 0) {
+                    throw 'Another ChatGPT/Codex process appeared during the update. The verified relaunch was aborted without closing or replacing it.'
+                }
                 if ($appProcesses.Count -gt 0 -and $debugApp.Count -eq 0 -and -not $ReplaceRunningApp) {
                     throw 'ChatGPT/Codex is already running without the audited debug endpoint. Close it normally, then use ChatGPT Custom; startup will not terminate an active app.'
                 }
                 if ($debugApp.Count -ne 0) {
                     Write-StartupLog "$(Get-Date -Format o) [$computerName] existing debug session found; validating its durable proxy transport before reuse"
                 }
+                $stableTimer = [Diagnostics.Stopwatch]::StartNew()
                 for ($stableAttempt = 1; $stableAttempt -le 2; $stableAttempt++) {
                     try {
                         $stableArguments = @{
                             Action = 'Enable'
                             UseProxy = [bool]$UseProxy
+                            RefuseExistingApp = [bool]$UpdateResume
                             Confirm = $false
                         }
                         if ($UseProxy) { $stableArguments.ProxyServer = $proxyServer }
@@ -247,20 +316,44 @@ switch ($Action) {
                         Start-Sleep -Seconds 2
                     }
                 }
+                $stableTimer.Stop()
+                Write-StartupLog "$(Get-Date -Format o) [$computerName] stage=stable-runtime durationMs=$($stableTimer.ElapsedMilliseconds)"
                 $deadline = (Get-Date).AddSeconds($MobileReadyTimeoutSeconds)
-                $attempt = 0
-                while ($true) {
-                    $attempt++
-                    try {
-                        Write-CommandOutput @(& $mobileController -Action Enable -NodePath $node -Confirm:$false 2>&1)
-                        Write-CommandOutput @(& $mobileController -Action Probe -NodePath $node 2>&1)
-                        break
-                    } catch {
-                        if ((Get-Date) -ge $deadline) { throw }
-                        Write-StartupLog "$(Get-Date -Format o) [$computerName] mobile view not ready on attempt $attempt; retrying"
-                        Start-Sleep -Seconds 2
+                $mobileTimer = [Diagnostics.Stopwatch]::StartNew()
+                $enableOutput = @(& $mobileController -Action Enable -NodePath $node -Confirm:$false 2>&1)
+                Write-CommandOutput $enableOutput
+                $report = Get-MobileReport -Output $enableOutput
+                Assert-MobileReport -Report $report
+                while (-not $report.ready) {
+                    if ((Get-Date) -ge $deadline) {
+                        throw "The mobile project view did not become ready within $MobileReadyTimeoutSeconds seconds."
                     }
+                    Start-Sleep -Milliseconds 500
+                    $probeOutput = @(& $mobileController -Action Probe -NodePath $node 2>&1)
+                    Write-CommandOutput $probeOutput
+                    $report = Get-MobileReport -Output $probeOutput
+                    Assert-MobileReport -Report $report
                 }
+                $mobileTimer.Stop()
+                Write-StartupLog "$(Get-Date -Format o) [$computerName] stage=mobile-readiness durationMs=$($mobileTimer.ElapsedMilliseconds) mounted=$($report.mounted) localRuntimeReady=$($report.localRuntimeReady) authoritativeInventoryReady=$($report.authoritativeInventoryReady) publisherReady=$($report.publisherReady) ready=$($report.ready)"
+
+                try {
+                    $sessionTimer = [Diagnostics.Stopwatch]::StartNew()
+                    $sessionArguments = @{
+                        InstallRoot = $bundleParent
+                        EntryPointRelative = 'CodexRemoteMobileProject\MobileProjectStartup.ps1'
+                        NodePath = $node
+                        UseProxy = [bool]$UseProxy
+                        ReplaceRunningApp = [bool]$ReplaceRunningApp
+                        SkipInitialCheck = [bool]$SkipUpdateCheckOnce
+                    }
+                    Write-CommandOutput @(& $updateSessionLauncher @sessionArguments 2>&1)
+                    $sessionTimer.Stop()
+                    Write-StartupLog "$(Get-Date -Format o) [$computerName] stage=update-session durationMs=$($sessionTimer.ElapsedMilliseconds)"
+                } catch {
+                    Write-StartupLog "$(Get-Date -Format o) [$computerName] update-session launch unavailable: $($_.Exception.Message)"
+                }
+                Write-RelaunchHandoff
                 Write-StartupLog "$(Get-Date -Format o) [$computerName] startup run completed"
             } catch {
                 Write-StartupLog "$(Get-Date -Format o) [$computerName] startup run failed: $($_.Exception.Message)"

@@ -7,6 +7,8 @@ $node = (Get-Command node.exe -ErrorAction Stop).Source
 $helper = Join-Path $root 'windows\CodexRemoteMobileProject\maintenance.js'
 $nodeTemp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
 $testRoot = Join-Path $nodeTemp ('chatgpt-remote-maintenance-test-' + [guid]::NewGuid().ToString('N'))
+$strictFailureRoot = Join-Path $nodeTemp ('chatgpt-remote-maintenance-test-' + [guid]::NewGuid().ToString('N'))
+$bestEffortFailureRoot = Join-Path $nodeTemp ('chatgpt-remote-maintenance-test-' + [guid]::NewGuid().ToString('N'))
 $lookalikeRoot = "$testRoot-sibling"
 $linkRoot = Join-Path $nodeTemp ('chatgpt-remote-maintenance-test-' + [guid]::NewGuid().ToString('N'))
 
@@ -52,12 +54,84 @@ db.close();
     if ($report.logs.removedByAge -ne 240 -or -not $report.logs.vacuumed) { throw 'Log pruning or vacuum proof failed.' }
     if (-not $report.state.vacuumed) { throw 'State-database vacuum proof failed.' }
     if ($report.logs.fileBytesAfter -ge $logsBefore -or $report.state.fileBytesAfter -ge $stateBefore) { throw 'Database files did not shrink.' }
+    if ($report.durationMs -lt 0 -or @($report.phases).Count -ne 4 -or @($report.phases | Where-Object { $_.durationMs -lt 0 }).Count) {
+        throw 'Maintenance helper did not report privacy-safe phase timing.'
+    }
+
+    $sqliteBlockerPath = Join-Path $testRoot 'block-sqlite.js'
+    [IO.File]::WriteAllText($sqliteBlockerPath, @'
+const Module = require("node:module");
+const originalLoad = Module._load;
+Module._load = function(request, parent, isMain) {
+  if (request === "node:sqlite") throw new Error("fixture sqlite unavailable");
+  return originalLoad.call(this, request, parent, isMain);
+};
+'@, [Text.UTF8Encoding]::new($false))
+    $sqliteUnavailableJson = & $node --no-warnings --require $sqliteBlockerPath $helper --test-temp --codex-home $testRoot
+    $sqliteUnavailableExitCode = $LASTEXITCODE
+    $sqliteUnavailableReport = $sqliteUnavailableJson | ConvertFrom-Json
+    if ($sqliteUnavailableExitCode -ne 0 -or $sqliteUnavailableReport.status -ne 'skipped-node-sqlite-unavailable') {
+        throw 'Unavailable Node SQLite did not remain a benign exit-zero skip.'
+    }
+
+    foreach ($failureRoot in @($strictFailureRoot, $bestEffortFailureRoot)) {
+        New-Item -ItemType Directory -Path $failureRoot | Out-Null
+        Copy-Item -LiteralPath (Join-Path $testRoot 'logs_2.sqlite') -Destination (Join-Path $failureRoot 'logs_2.sqlite')
+        [IO.File]::WriteAllBytes((Join-Path $failureRoot 'state_5.sqlite'), [byte[]](0x53, 0x51, 0x4C, 0x69, 0x74, 0x65, 0x2D, 0x62, 0x72, 0x6F, 0x6B, 0x65, 0x6E))
+    }
+
+    $strictJson = & $node --no-warnings $helper --test-temp --codex-home $strictFailureRoot
+    $strictExitCode = $LASTEXITCODE
+    $strictReport = $strictJson | ConvertFrom-Json
+    if ($strictExitCode -eq 0 -or $strictReport.status -ne 'failed' -or
+        $strictReport.error.phase -ne 'state-database' -or $strictReport.error.database -ne 'state') {
+        throw 'Strict maintenance did not return a structured nonzero second-database failure.'
+    }
+    if ($strictReport.logs.status -ne 'optimized' -or @($strictReport.phases)[-1].status -ne 'failed' -or
+        @($strictReport.phases)[-1].database -ne 'state') {
+        throw 'Strict maintenance did not retain successful first-database evidence or stop at the failed phase.'
+    }
+    if (($strictJson -join '') -like "*$strictFailureRoot*") {
+        throw 'Strict maintenance disclosed a private fixture path in its report.'
+    }
+    $strictState = Join-Path $strictFailureRoot 'state_5.sqlite'
+    $strictStateMoved = Join-Path $strictFailureRoot 'state_5.closed-proof'
+    Move-Item -LiteralPath $strictState -Destination $strictStateMoved
+    Move-Item -LiteralPath $strictStateMoved -Destination $strictState
+
+    $bestEffortJson = & $node --no-warnings $helper --best-effort --test-temp --codex-home $bestEffortFailureRoot
+    $bestEffortExitCode = $LASTEXITCODE
+    $bestEffortReport = $bestEffortJson | ConvertFrom-Json
+    if ($bestEffortExitCode -ne 0 -or $bestEffortReport.status -ne 'completed-with-warning' -or
+        $bestEffortReport.warning.phase -ne 'state-database' -or $bestEffortReport.warning.database -ne 'state' -or
+        $bestEffortReport.logs.status -ne 'optimized' -or @($bestEffortReport.phases)[-1].status -ne 'failed') {
+        throw 'Best-effort maintenance did not return a structured exit-zero second-database warning.'
+    }
+    if (($bestEffortJson -join '') -like "*$bestEffortFailureRoot*") {
+        throw 'Best-effort maintenance disclosed a private fixture path in its report.'
+    }
     New-Item -ItemType Directory -Path $lookalikeRoot | Out-Null
-    $lookalikeReport = & $node --no-warnings $helper --test-temp --codex-home $lookalikeRoot | ConvertFrom-Json
-    if ($lookalikeReport.processState.testOverride) { throw 'A sibling prefix lookalike bypassed the maintenance process guard.' }
+    $runningProcessFixturePath = Join-Path $testRoot 'running-process.js'
+    [IO.File]::WriteAllText($runningProcessFixturePath, @'
+const childProcess = require("node:child_process");
+childProcess.spawnSync = function() {
+  return { status: 0, stdout: '"ChatGPT.exe","4242","Console","1","100 K"\n' };
+};
+'@, [Text.UTF8Encoding]::new($false))
+    $lookalikeJson = & $node --no-warnings --require $runningProcessFixturePath $helper --test-temp --codex-home $lookalikeRoot
+    $lookalikeExitCode = $LASTEXITCODE
+    $lookalikeReport = $lookalikeJson | ConvertFrom-Json
+    if ($lookalikeExitCode -ne 0 -or $lookalikeReport.processState.testOverride -or
+        $lookalikeReport.status -ne 'skipped-app-running-or-process-check-failed') {
+        throw 'A sibling prefix lookalike bypassed the maintenance process guard or produced a fatal result.'
+    }
     New-Item -ItemType Junction -Path $linkRoot -Target $lookalikeRoot | Out-Null
-    $linkReport = & $node --no-warnings $helper --test-temp --codex-home $linkRoot | ConvertFrom-Json
-    if ($linkReport.processState.testOverride) { throw 'A temporary-root junction bypassed the maintenance process guard.' }
+    $linkJson = & $node --no-warnings $helper --best-effort --test-temp --codex-home $linkRoot
+    $linkExitCode = $LASTEXITCODE
+    $linkReport = $linkJson | ConvertFrom-Json
+    if ($linkExitCode -ne 0 -or $linkReport.processState.testOverride) {
+        throw 'A temporary-root junction bypassed the maintenance process guard or produced a fatal result.'
+    }
     [pscustomobject]@{
         ExpiredRowsRemoved = [int]$report.logs.removedByAge
         RemainingRows = [int]$remaining.rows
@@ -66,11 +140,20 @@ db.close();
         Vacuumed = [bool]($report.logs.vacuumed -and $report.state.vacuumed)
         PrefixLookalikeRejected = $true
         JunctionRejected = $true
+        StrictFailureExitCode = $strictExitCode
+        StrictSecondDatabaseFailure = $true
+        BestEffortExitCode = $bestEffortExitCode
+        BestEffortWarning = $true
+        PriorPhaseEvidenceRetained = $true
+        DatabaseClosedAfterError = $true
+        PhaseTimingReported = $true
+        ProcessGuardsRemainBenign = $true
+        SqliteUnavailableRemainsBenign = $true
     } | ConvertTo-Json -Compress
 } finally {
     $temporary = [IO.Path]::GetFullPath($nodeTemp)
     if (Test-Path -LiteralPath $linkRoot) { Remove-Item -LiteralPath $linkRoot -Force }
-    foreach ($candidate in @($testRoot, $lookalikeRoot)) {
+    foreach ($candidate in @($testRoot, $strictFailureRoot, $bestEffortFailureRoot, $lookalikeRoot)) {
         $resolved = [IO.Path]::GetFullPath($candidate)
         if ((Test-Path -LiteralPath $resolved) -and
             [IO.Path]::GetFullPath((Split-Path -Parent $resolved)) -eq $temporary -and

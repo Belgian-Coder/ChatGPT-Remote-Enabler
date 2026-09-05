@@ -16,11 +16,23 @@ if (-not (Test-Path -LiteralPath $sessionPath -PathType Leaf)) {
     throw 'No CodexRemoteSimple special-session record exists. Run the stable Enable action first.'
 }
 
-if (-not $NodePath) {
+function Resolve-MobileNode {
+    param([string]$RequestedPath)
     $command = Get-Command node.exe -ErrorAction SilentlyContinue
-    $NodePath = if ($command) { $command.Source } else { Join-Path $env:USERPROFILE '.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe' }
+    foreach ($candidate in @(
+        $RequestedPath,
+        $(if ($command) { $command.Source }),
+        (Join-Path $env:USERPROFILE '.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe'),
+        (Join-Path $env:LOCALAPPDATA 'Programs\nodejs\node.exe'),
+        (Join-Path $env:ProgramFiles 'nodejs\node.exe')
+    ) | Where-Object { $_ } | Select-Object -Unique) {
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
+        & $candidate -e 'process.exit(parseInt(process.versions.node) >= 22 && globalThis.WebSocket ? 0 : 1)' 2>$null
+        if ($LASTEXITCODE -eq 0) { return [IO.Path]::GetFullPath($candidate) }
+    }
+    throw 'Node.js 22 or newer was not found. See the per-user Node.js instructions in README.md.'
 }
-if (-not (Test-Path -LiteralPath $NodePath -PathType Leaf)) { throw 'Node.js was not found. Pass -NodePath explicitly.' }
+$NodePath = Resolve-MobileNode -RequestedPath $NodePath
 
 $session = Get-Content -LiteralPath $sessionPath -Raw | ConvertFrom-Json
 $port = [int]$session.rendererPort

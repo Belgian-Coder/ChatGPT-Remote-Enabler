@@ -9,6 +9,8 @@ param(
 
     [string]$ProxyServer,
 
+    [switch]$RefuseExistingApp,
+
     [ValidateRange(5, 60)]
     [int]$TimeoutSeconds = 20
 )
@@ -255,6 +257,22 @@ function Get-CrsCodexProcesses {
             }
         }
     )
+}
+
+function Assert-CrsNoExistingAppForReplacement {
+    param($Package, $LaunchPackage, [switch]$Enabled)
+
+    if (-not $Enabled) { return }
+    $executablePaths = @([string]$Package.ExecutablePath)
+    if ($null -ne $LaunchPackage -and
+        -not [string]::Equals([string]$LaunchPackage.ExecutablePath, [string]$Package.ExecutablePath, [StringComparison]::OrdinalIgnoreCase)) {
+        $executablePaths += [string]$LaunchPackage.ExecutablePath
+    }
+    foreach ($executablePath in @($executablePaths | Select-Object -Unique)) {
+        if (@(Get-CrsCodexProcesses -ExecutablePath $executablePath).Count -ne 0) {
+            throw 'ChatGPT/Codex appeared while update resume was preparing the replacement session. It was left running and the resumed update was aborted.'
+        }
+    }
 }
 
 function Get-CrsDiscoverableSession {
@@ -532,6 +550,21 @@ function Start-CrsOrdinaryCodex {
     }
 }
 
+function Move-CrsDamagedState {
+    if (-not (Test-Path -LiteralPath $script:StatePath -PathType Leaf)) { return $null }
+
+    New-Item -ItemType Directory -Path $script:StateRoot -Force | Out-Null
+    $timestamp = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffffffZ')
+    $quarantineName = 'codexremote-simple-session.damaged-{0}-{1}.json' -f $timestamp,[guid]::NewGuid().ToString('N')
+    $quarantinePath = Join-Path $script:StateRoot $quarantineName
+    try {
+        Move-Item -LiteralPath $script:StatePath -Destination $quarantinePath -ErrorAction Stop
+    } catch {
+        throw "The local session record is damaged and could not be quarantined. No existing session was adopted: $script:StatePath"
+    }
+    return $quarantinePath
+}
+
 function Read-CrsState {
     param([switch]$AllowInvalid)
 
@@ -568,11 +601,13 @@ function Read-CrsState {
         $state.mainPort = $mainPort
         return $state
     } catch {
+        $quarantinePath = Move-CrsDamagedState
         if ($AllowInvalid) {
-            Write-Warning "Ignoring the damaged local session record during rollback: $script:StatePath"
+            Write-Warning "Quarantined the damaged local session record before rollback: $quarantinePath"
             return $null
         }
-        throw "The local session record is damaged. Inspect or remove it manually: $script:StatePath"
+        Write-Warning "Quarantined the damaged local session record. Live-session recovery will require the existing package, process, loopback-port, and proxy-mode checks: $quarantinePath"
+        return $null
     }
 }
 
@@ -596,7 +631,35 @@ function Write-CrsState {
     }
     $json = $state | ConvertTo-Json -Depth 4
     New-Item -ItemType Directory -Path $script:StateRoot -Force | Out-Null
-    Set-Content -LiteralPath $script:StatePath -Value $json -Encoding UTF8
+    $temporaryPath = Join-Path $script:StateRoot ('.codexremote-simple-session.{0}.{1}.tmp' -f $PID,[guid]::NewGuid().ToString('N'))
+    $stream = $null
+    try {
+        $encoding = [Text.UTF8Encoding]::new($false)
+        $bytes = $encoding.GetBytes($json)
+        $stream = [IO.FileStream]::new(
+            $temporaryPath,
+            [IO.FileMode]::CreateNew,
+            [IO.FileAccess]::Write,
+            [IO.FileShare]::None,
+            4096,
+            [IO.FileOptions]::WriteThrough
+        )
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Flush($true)
+        $stream.Dispose()
+        $stream = $null
+
+        if (Test-Path -LiteralPath $script:StatePath -PathType Leaf) {
+            [IO.File]::Replace($temporaryPath, $script:StatePath, $null)
+        } else {
+            [IO.File]::Move($temporaryPath, $script:StatePath)
+        }
+    } finally {
+        if ($null -ne $stream) { $stream.Dispose() }
+        if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
+            Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 function Invoke-CrsBridge {
@@ -647,11 +710,17 @@ function Test-CrsProxyModeProof {
     if ($null -eq $State -or $null -eq $State.PSObject.Properties['proxyMode']) { return $false }
     if ($State.proxyMode -isnot [bool]) { return $false }
     if ([bool]$State.proxyMode -ne $RequestedProxyMode) { return $false }
-    if ($RequestedProxyMode -and [string]$State.bridgeMode -ceq 'native-renderer') {
-        return ($null -ne $State.PSObject.Properties['proxyTransport'] -and
-            [string]$State.proxyTransport -ceq 'remote-websocket-bridge-v1')
+    $proxyTransport = if ($null -eq $State.PSObject.Properties['proxyTransport']) { '' } else { [string]$State.proxyTransport }
+    if (-not [string]::IsNullOrEmpty($proxyTransport) -and $proxyTransport -cne 'remote-websocket-bridge-v1') {
+        return $false
     }
-    return $true
+    if (-not $RequestedProxyMode) {
+        return [string]::IsNullOrEmpty($proxyTransport)
+    }
+    if ($RequestedProxyMode -and [string]$State.bridgeMode -ceq 'native-renderer') {
+        return $proxyTransport -ceq 'remote-websocket-bridge-v1'
+    }
+    return [string]::IsNullOrEmpty($proxyTransport)
 }
 
 function Remove-CrsInactiveProxyRuntimes {
@@ -776,6 +845,7 @@ switch ($Action) {
                     Write-Host 'Experimental proxy mode is enabled only for the Remote-control WebSocket.' -ForegroundColor Yellow
                 }
             }
+            Assert-CrsNoExistingAppForReplacement -Package $package -LaunchPackage $launchPackage -Enabled:$RefuseExistingApp
             $sessionStopped = $true
             if ($null -ne $state -and -not [string]::IsNullOrWhiteSpace([string]$state.executablePath)) {
                 Stop-CrsCodex -ExecutablePath ([string]$state.executablePath)

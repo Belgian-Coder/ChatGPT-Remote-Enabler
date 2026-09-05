@@ -21,6 +21,8 @@
     "getGateValue",
   ]);
   const GATE_METHODS = Object.freeze([...CHECK_GATE_METHODS, ...STRUCTURED_GATE_METHODS]);
+  const FAST_SCAN_INTERVAL_MS = 100;
+  const PROVEN_SCAN_INTERVAL_MS = 1_000;
 
   const existing = globalThis[API_SLOT];
   if (
@@ -245,8 +247,10 @@
     const queue = [{ depth: 0, value: root }];
     const visited = new WeakSet();
     let inspected = 0;
-    while (queue.length > 0 && inspected < 2_000) {
-      const current = queue.shift();
+    let queueIndex = 0;
+    while (queueIndex < queue.length && inspected < 2_000) {
+      const current = queue[queueIndex];
+      queueIndex += 1;
       if (!current || current.depth > 8 || !isObjectLike(current.value) || visited.has(current.value)) {
         continue;
       }
@@ -317,7 +321,12 @@
     globalThis[API_SLOT] = api;
   }
 
-  const interval = setInterval(scan, 100);
-  interval.unref?.();
-  return scan();
+  function scheduleNextScan(report) {
+    const timeout = setTimeout(() => scheduleNextScan(scan()), report.proof ? PROVEN_SCAN_INTERVAL_MS : FAST_SCAN_INTERVAL_MS);
+    timeout.unref?.();
+  }
+
+  const initialReport = scan();
+  scheduleNextScan(initialReport);
+  return initialReport;
 })();

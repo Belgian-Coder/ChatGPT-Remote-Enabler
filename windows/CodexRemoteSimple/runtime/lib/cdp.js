@@ -13,7 +13,25 @@ function transportError(code, message) {
 
 function getJson(port, pathname, timeoutMs) {
   return new Promise((resolve, reject) => {
-    const request = http.get(
+    let request;
+    let settled = false;
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadlineTimer);
+      if (error) reject(error);
+      else resolve(value);
+    };
+    const fail = (error) => {
+      finish(error);
+      request?.destroy();
+    };
+    const deadlineTimer = setTimeout(
+      () => fail(transportError("DISCOVERY_TIMEOUT", "Debugger discovery timed out")),
+      timeoutMs,
+    );
+    deadlineTimer.unref?.();
+    request = http.get(
       {
         agent: false,
         family: 4,
@@ -26,7 +44,7 @@ function getJson(port, pathname, timeoutMs) {
       (response) => {
         if (response.statusCode !== 200) {
           response.resume();
-          reject(transportError("DISCOVERY_HTTP_STATUS", `Debugger discovery returned HTTP ${response.statusCode}`));
+          finish(transportError("DISCOVERY_HTTP_STATUS", `Debugger discovery returned HTTP ${response.statusCode}`));
           return;
         }
         const chunks = [];
@@ -34,22 +52,33 @@ function getJson(port, pathname, timeoutMs) {
         response.on("data", (chunk) => {
           length += chunk.length;
           if (length > 8 * 1024 * 1024) {
-            request.destroy(transportError("DISCOVERY_TOO_LARGE", "Debugger discovery response is too large"));
+            fail(transportError("DISCOVERY_TOO_LARGE", "Debugger discovery response is too large"));
             return;
           }
           chunks.push(chunk);
         });
+        response.once("aborted", () => {
+          fail(transportError("DISCOVERY_ABORTED", "Debugger discovery response was aborted"));
+        });
+        response.once("error", () => {
+          fail(transportError("DISCOVERY_RESPONSE_FAILED", "Debugger discovery response failed"));
+        });
+        response.once("close", () => {
+          if (!response.complete) {
+            fail(transportError("DISCOVERY_ABORTED", "Debugger discovery response closed before completion"));
+          }
+        });
         response.on("end", () => {
           try {
-            resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+            finish(null, JSON.parse(Buffer.concat(chunks).toString("utf8")));
           } catch {
-            reject(transportError("DISCOVERY_INVALID_JSON", "Debugger discovery returned invalid JSON"));
+            finish(transportError("DISCOVERY_INVALID_JSON", "Debugger discovery returned invalid JSON"));
           }
         });
       },
     );
-    request.on("timeout", () => request.destroy(transportError("DISCOVERY_TIMEOUT", "Debugger discovery timed out")));
-    request.on("error", reject);
+    request.on("timeout", () => fail(transportError("DISCOVERY_TIMEOUT", "Debugger discovery timed out")));
+    request.on("error", (error) => finish(error));
   });
 }
 
@@ -106,6 +135,8 @@ class JsonRpcWebSocket {
     this.nextId = 1;
     this.pending = new Map();
     this.eventHandlers = new Set();
+    this.closeHandlers = new Set();
+    this.closeNotified = false;
   }
 
   connect() {
@@ -148,15 +179,26 @@ class JsonRpcWebSocket {
       socket.addEventListener("message", (event) => {
         messageText(event.data).then((text) => this._onMessage(text)).catch(() => {});
       });
-      socket.addEventListener("close", () => {
-        const error = transportError("WEBSOCKET_CLOSED", "WebSocket connection closed");
-        for (const pending of this.pending.values()) {
-          clearTimeout(pending.timer);
-          pending.reject(error);
-        }
-        this.pending.clear();
-      });
+      socket.addEventListener("close", () => this._onClose());
     });
+  }
+
+  _onClose() {
+    if (this.closeNotified) return;
+    this.closeNotified = true;
+    const error = transportError("WEBSOCKET_CLOSED", "WebSocket connection closed");
+    for (const pending of this.pending.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(error);
+    }
+    this.pending.clear();
+    for (const handler of this.closeHandlers) {
+      try {
+        handler(error);
+      } catch {
+        // Close consumers are isolated from transport cleanup.
+      }
+    }
   }
 
   _onMessage(text) {
@@ -177,10 +219,12 @@ class JsonRpcWebSocket {
         const detail = typeof message.error.message === "string"
           ? message.error.message.replace(/[\r\n]+/gu, " ").slice(0, 160)
           : "unknown error";
-        pending.reject(transportError(
+        const error = transportError(
           "CDP_PROTOCOL_ERROR",
           `Debugger protocol error ${message.error.code ?? "unknown"} in ${pending.method}: ${detail}`,
-        ));
+        );
+        if (Number.isInteger(message.error.code)) error.protocolCode = message.error.code;
+        pending.reject(error);
       } else {
         pending.resolve(message.result ?? {});
       }
@@ -200,6 +244,11 @@ class JsonRpcWebSocket {
   onEvent(handler) {
     this.eventHandlers.add(handler);
     return () => this.eventHandlers.delete(handler);
+  }
+
+  onClose(handler) {
+    this.closeHandlers.add(handler);
+    return () => this.closeHandlers.delete(handler);
   }
 
   call(method, params = {}, timeoutMs = this.timeoutMs) {

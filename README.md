@@ -6,39 +6,16 @@ Unofficial Windows and macOS helpers for ChatGPT/Codex Remote. Windows exposes h
 |---|---|
 | ![Native views](assets/screenshots/native-views.png) | ![Mobile projects](assets/screenshots/mobile-projects.png) |
 
-## Install
+## Install without administrator access
 
-Download your platform archive from [Releases](https://github.com/belgian-coder/ChatGPT-Remote-Enabler/releases) and extract it to a permanent local folder.
+Download a platform ZIP from [v1.5.32 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.32), then follow its step-by-step guide:
 
-**Windows:** run `ChatGPT Remote Enabler.exe`. Install the injected Desktop/Start-menu and sign-in shortcuts with:
+- **[Windows 11 x64](windows/README.md)**: per-user folder, optional portable Node, double-click launch, Desktop/Start-menu shortcuts and optional sign-in shortcut.
+- **[macOS Apple Silicon](macos/README.md)**: home-folder setup, optional portable Node, Terminal first launch, Dock shortcut and per-user sign-in startup.
 
-```powershell
-.\CodexRemoteMobileProject\DesktopShortcut.ps1 -Action Install
-.\CodexRemoteMobileProject\StartupShortcut.ps1 -Action Install
-```
+Neither setup requires administrator permissions. A supported desktop app/account and Node.js 22+ are prerequisites; organization policies can still block execution. **v1.5.32 is a prerelease: native macOS acceptance and a full real-app update/relaunch remain pending.**
 
-If the device requires a configured HTTP(S) proxy, add `-UseProxy` while installing those same shortcuts. No separate proxy shortcut is created.
-Copy an existing User-scope proxy into the launcher's protected storage with
-`ProxyConfiguration.ps1 -Action Install -ImportUserEnvironment`; the importer
-preserves all shared User- and Machine-scope environment variables. Proxy
-isolation applies only inside the custom launcher's child process. Native-key
-Windows builds keep the signed API and enrollment flow on canonical
-`https://chatgpt.com` and route only the Remote-control WebSocket through a
-temporary localhost bridge. A version-matched private runtime makes that
-single URL override without modifying the installed WindowsApps package. The
-bridge uses the configured proxy, preserves TLS verification, and exits with
-ChatGPT.
-
-**macOS Apple Silicon:**
-
-```zsh
-chmod 755 ./*.sh
-./MobileProjectView-macOS-arm64.sh enable
-./MobileProjectView-macOS-arm64.sh install-startup
-./MacOSShortcut.sh install
-```
-
-Install the injected startup on every participating computer. Each device automatically publishes its complete active project/task inventory through ChatGPT Remote's existing authenticated connection. Direct peer reads and local per-device cache files keep clients converged without opening folders or clicking **Show more**; there is no central storage or shared catalogue. Device dots use fresh direct connectivity—not cached inventory—while Native grouping and folder expansion are never changed.
+The **[feature guide](FEATURES.md)** explains controls, defaults, update behavior, and cleanup consequences. Both ZIPs include their installation and feature guides.
 
 ## Mobile-project buttons
 
@@ -49,6 +26,12 @@ temporarily unavailable; unknown connectivity uses a neutral indicator.
 Sidebar refreshes preserve keyboard focus, and unavailable native commands
 are disabled. These adapters depend on private desktop internals, so behavior
 on a future app build may require another compatibility update.
+
+Unknown peers display **Remote device** until a verified device name arrives.
+Verified names are remembered per device across restarts; native placeholder
+labels cannot replace them. Full task inventories refresh every 60 seconds
+and after detected task-list changes, while working/unread status continues
+to refresh independently at its faster cadence.
 
 - **Auto-register: on/off** mirrors active remote projects on this client, including empty projects. Enabling it only adds registrations; removal is always explicit.
 - **Remove auto projects (N)** removes only registrations created by that automation. It never deletes chats or folders.
@@ -75,20 +58,59 @@ PowerShell and macOS command equivalents:
 
 ## Updates and rollback
 
-Launchers check for updates on every start by default. On Windows, launch
-ownership first moves to a mutex-protected worker so the launcher executable
-can exit before verified replacement; the worker then continues the same
-direct/proxy and manual/startup launch exactly once. A completed update remains
-installed and is logged even if the later injection step fails. A clean Windows Git
-checkout fast-forwards through Git; packaged installs accept only a platform
-archive whose published SHA-256 and internal manifest pass. Disable automatic
-updates with `Update-ChatGPTRemote.ps1 -Action DisableAutoUpdate` or
+Launchers check asynchronously on every start and every 30 minutes while the
+app remains open. **Update available · vX.Y.Z** appears beside the view controls
+in both views. Updates install only after you click: the helper downloads and
+verifies the selected release, waits for active work to finish, closes ChatGPT
+normally, applies the update, and restarts with the same direct/proxy and
+startup options. **Update queued** offers **Cancel** until shutdown begins.
+Unknown activity keeps the update queued. An application that refuses to close
+is never force-killed by the update action.
+
+The session helper uses the existing loopback debugger connection and exits
+with ChatGPT, except while completing an explicitly requested restart. It does
+not install a service or scheduled task. A failed update recovers the previous
+verified installation; an interrupted transaction is recovered before another
+injected launch. Installation folders that require administration show an
+unavailable action instead of changing permissions or self-elevating.
+
+Explicit command-line `Update`/`update` remains available. Packaged installs
+accept only a platform archive whose published SHA-256 and internal manifest
+pass. Disable automatic checks with
+`Update-ChatGPTRemote.ps1 -Action DisableAutoUpdate` or
 `./Update-ChatGPTRemote.sh disable-auto-update`. Forks and mirrors can set
 `CHATGPT_REMOTE_UPDATE_REPOSITORY`, `CHATGPT_REMOTE_UPDATE_API_BASE`, or
 `CHATGPT_REMOTE_UPDATE_LATEST_URL`.
 
-Before starting ChatGPT, the packaged launcher prunes diagnostic logs older than seven days (96 MiB cap), checkpoints WAL files, runs SQLite optimization, and vacuums materially fragmented databases. It always skips this physical maintenance when ChatGPT/Codex is already running.
+Before starting ChatGPT, the packaged launcher prunes diagnostic logs older than seven days (96 MiB cap), checkpoints WAL files, runs SQLite optimization, and vacuums materially fragmented databases. It always skips this physical maintenance when ChatGPT/Codex is already running. Maintenance errors are reported separately and do not prevent ordinary launch. Permanent chat deletion requires a known managed archive path and an exclusive cross-window lock.
 
 Restore normal Windows ChatGPT with `Disable-ChatGPTRemote.ps1`; on macOS run `./MobileProjectView-macOS-arm64.sh disable`. See [Windows details](windows/README.md) and [macOS details](macos/README.md).
 
 This project uses loopback Electron debugging and private renderer internals. It does not bypass account authorization, MFA, workspace policy, or server permissions. Examples, screenshots, packages, commits, and release notes must not contain real hostnames, usernames, environment IDs, network addresses, or private paths.
+
+## Candidate validation
+
+Run `tools/Test-Source.ps1` with Node.js 22 or newer on PATH. This includes
+runtime and renderer fixtures, journal interruption/recovery, updater adapters,
+Windows native-window lifecycle checks, maintenance, and shared-source parity.
+The transaction fixture interrupts every durable operation boundary.
+
+For Windows per-user package acceptance, run
+`tools/Test-UserInstallWindows.ps1 -ArchivePath <Windows-release.zip>`.
+It runs under the interactive user's Medium token (duplicating Explorer's token
+when the parent is elevated), verifies extraction/write access and shortcut
+install/probe/remove in isolated folders, exercises portable Node discovery,
+and performs a read-only installed-app readiness check. It does not create a
+fresh account, use real shortcut folders, launch/stop the app, or prove sign-in
+execution. The fixture removes its own files on completion.
+
+With Playwright available through `NODE_PATH`, optional Chromium integration
+checks are `node tools/Test-RendererBrowser.cjs` and
+`node tools/Test-UpdateSessionCdpBrowser.cjs`. They exercise the complete
+renderer flow and real debugger bindings in isolated browser fixtures.
+
+The v1.5.32 candidate has automated Windows and browser coverage. These tests
+do not establish an actual ChatGPT update/relaunch. Full real-application startup,
+quit, and update acceptance remains necessary before promotion to a stable release. Native macOS
+execution, including `tools/Test-MacOSSupport.zsh`, is deferred until a Mac is
+available; JavaScript parity and static contracts are checked on Windows.

@@ -41,8 +41,9 @@ try {
     $fixtureLocalAppData = Join-Path $temporaryRoot 'local-app-data'
     New-Item -ItemType Directory -Path $fixtureRoot,$fixtureLocalAppData -Force | Out-Null
     Copy-Item -LiteralPath $updaterPath -Destination (Join-Path $fixtureRoot 'Update-ChatGPTRemote.ps1')
+    Copy-Item -LiteralPath (Join-Path $repositoryRoot 'windows\update-transaction.js') -Destination (Join-Path $fixtureRoot 'update-transaction.js')
     [IO.File]::WriteAllText((Join-Path $fixtureRoot 'VERSION'), "v9.8.7$([Environment]::NewLine)", [Text.UTF8Encoding]::new($false))
-    $manifestLines = foreach ($relative in @('Update-ChatGPTRemote.ps1', 'VERSION')) {
+    $manifestLines = foreach ($relative in @('Update-ChatGPTRemote.ps1', 'update-transaction.js', 'VERSION')) {
         $hash = (Get-FileHash -LiteralPath (Join-Path $fixtureRoot $relative) -Algorithm SHA256).Hash.ToLowerInvariant()
         "$hash *$relative"
     }
@@ -85,14 +86,22 @@ try {
         $listener.Start()
         try {
             for ($request = 0; $request -lt 5; $request++) {
+                $requestDeadline = [DateTime]::UtcNow.AddSeconds(30)
+                while (-not $listener.Pending()) {
+                    if ([DateTime]::UtcNow -ge $requestDeadline) { return }
+                    Start-Sleep -Milliseconds 25
+                }
                 $client = $listener.AcceptTcpClient()
                 try {
                     $stream = $client.GetStream()
                     $stream.ReadTimeout = 500
                     $buffer = [byte[]]::new(4096)
-                    try { [void]$stream.Read($buffer, 0, $buffer.Length) } catch [IO.IOException] {}
+                    $readCount = 0
+                    try { $readCount = $stream.Read($buffer, 0, $buffer.Length) } catch [IO.IOException] {}
+                    $requestText = [Text.Encoding]::ASCII.GetString($buffer, 0, $readCount)
                     try {
-                        $bodyBytes = [Text.Encoding]::UTF8.GetBytes($Body)
+                        $responseBody = if ($requestText -match '^GET /SHA256SUMS.txt ') { ('a' * 64) + ' *ChatGPT-Remote-Enabler-Windows-x64-v9.8.7.zip' + "`n" } else { $Body }
+                        $bodyBytes = [Text.Encoding]::UTF8.GetBytes($responseBody)
                         $header = "HTTP/1.1 200 OK`r`nContent-Type: application/json`r`nContent-Length: $($bodyBytes.Length)`r`nConnection: close`r`n`r`n"
                         $headerBytes = [Text.Encoding]::ASCII.GetBytes($header)
                         $stream.Write($headerBytes, 0, $headerBytes.Length)
@@ -133,6 +142,7 @@ try {
         throw 'Packaged Auto did not retain verified-release behavior.'
     }
 
+    Copy-Item -LiteralPath (Join-Path $repositoryRoot 'windows\update-transaction.js') -Destination (Join-Path $fixtureRoot 'update-transaction.js')
     [IO.File]::WriteAllText((Join-Path $fixtureRoot 'VERSION'), "v9.8.6$([Environment]::NewLine)", [Text.UTF8Encoding]::new($false))
     $lastCheckPath = Join-Path $fixtureLocalAppData 'ChatGPTRemoteEnabler\update\last-check.json'
     if (Test-Path -LiteralPath $lastCheckPath -PathType Leaf) { Remove-Item -LiteralPath $lastCheckPath -Force }

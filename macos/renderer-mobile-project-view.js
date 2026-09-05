@@ -16,6 +16,8 @@
   const AUTO_ARCHIVE_ENABLED_KEY = "codex-remote-mobile-auto-archive-enabled-v1";
   const AUTO_ARCHIVED_RECORDS_KEY = "codex-remote-mobile-auto-archived-records-v1";
   const AUTO_ARCHIVE_LOCK_KEY = "codex-remote-mobile-auto-archive-lock-v1";
+  const UPDATE_SLOT = "__CHATGPT_REMOTE_UPDATE__";
+  const UPDATE_EVENT = "chatgpt-remote-update-status";
   const AUTO_ARCHIVE_DAYS = 7;
   const AUTO_DELETE_AFTER_ARCHIVE_DAYS = 7;
   const AUTO_ARCHIVE_INTERVAL_MS = 60 * 60 * 1000;
@@ -25,7 +27,8 @@
   const REMOTE_UNREAD_ACK_KEY = "codex-remote-mobile-unread-ack-v1";
   const REMOTE_UNREAD_ACK_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
   const LOCAL_REMOTE_PROJECTS_TTL_MS = 15000;
-  const NATIVE_INVENTORY_REFRESH_MS = 15000;
+  const NATIVE_INVENTORY_REFRESH_MS = 60000;
+  const NATIVE_INVENTORY_DIRTY_DEBOUNCE_MS = 250;
   const NATIVE_INVENTORY_ERROR_RETRY_MS = 60000;
   const REMOTE_INVENTORY_FILENAME = "remote-project-inventory-v1.json";
   const REMOTE_INVENTORY_MAX_AGE_MS = 180000;
@@ -55,7 +58,10 @@
     "unknown",
   ]);
   const PUBLISHER_VERSION = 53;
-  const VERSION = 64;
+  const VERSION = 65;
+  const UPDATE_STATES = new Set(["checking", "current", "available", "queued", "preparing", "closing", "updating", "restarting", "error", "unavailable"]);
+  const ACTIVITY_BUSY_STATUSES = new Set(["active", "generating", "inprogress", "loading", "pending", "queued", "running", "working"]);
+  const ACTIVITY_IDLE_STATUSES = new Set(["complete", "completed", "idle", "notloaded"]);
   const TRUSTED_TITLE_SOURCES = new Set([
     "app-server-displayName",
     "app-server-entry-title",
@@ -142,11 +148,24 @@
     inventoryHydrationPending: false,
     inventoryHydrationError: sharedThreadListRegistry.recoveryPending ? sharedThreadListRegistry.recoveryReason : null,
     inventoryHydrationMicrotask: false,
+    inventoryHydrationDirty: false,
     inventoryHydrationPhase: "idle",
     inventoryHydrationRounds: 0,
     inventoryHydrationStarted: false,
     inventoryHydrationTimer: null,
     inventoryHydrationTruncated: false,
+    counters: {
+      fullProbeRuns: 0,
+      hostDiscoveryScans: 0,
+      inventoryDirtyRequests: 0,
+      inventoryHydrationRuns: 0,
+      remoteRuntimeScans: 0,
+      renders: 0,
+      updateActivityScans: 0,
+    },
+    hostDiscoveryCache: null,
+    hostDiscoveryDirty: true,
+    hostDiscoveryScannedAt: 0,
     lastAction: null,
     localFetchFromHost: null,
     localCodexHome: null,
@@ -169,9 +188,11 @@
     navigationBridge: null,
     mountRetryTimer: null,
     mountRetryDelay: 500,
+    mountObserver: null,
     nativeContainer: null,
     originalDisplay: "",
     observer: null,
+    observerTarget: null,
     panel: null,
     pendingNewThreads: new Set(),
     peerCacheStates: new Map(),
@@ -193,6 +214,7 @@
     threadManagers: new Map(),
     verifiedThreadIds: new Map(),
     view: "mobile",
+    updateStatus: null,
   };
 
   function assignLocalRuntime(fetchFromHost, requestClient) {
@@ -611,6 +633,8 @@
   }
 
   function discoverHostNames() {
+    if (!state.hostDiscoveryDirty && state.hostDiscoveryCache && Date.now() - state.hostDiscoveryScannedAt < 2000) return state.hostDiscoveryCache;
+    state.counters.hostDiscoveryScans += 1;
     const names = new Map();
     const availability = new Map();
     const availabilitySeenAt = new Map();
@@ -724,7 +748,7 @@
       let fiber = getFiber(element);
       for (let level = 0; fiber && level < 80; level += 1, fiber = fiber.return) {
         const group = fiber.memoizedProps?.group;
-        if (typeof group?.hostId === "string" && typeof group?.hostDisplayName === "string") {
+        if (typeof group?.hostId === "string" && !isSyntheticHostName(group?.hostDisplayName)) {
           authoritativeNames.set(normalizeHostId(group.hostId), group.hostDisplayName);
         }
         scan(fiber.memoizedProps);
@@ -738,13 +762,17 @@
       let fiber = getFiber(element);
       for (let level = 0; fiber && level < 30; level += 1, fiber = fiber.return) {
         const group = fiber.memoizedProps?.group;
-        if (group?.projectKind === "remote" && typeof group.hostId === "string" && typeof group.hostDisplayName === "string") {
+        if (group?.projectKind === "remote" && typeof group.hostId === "string" && !isSyntheticHostName(group.hostDisplayName)) {
           names.set(normalizeHostId(group.hostId), group.hostDisplayName);
           break;
         }
       }
     }
-    return { names, availability, registeredProjects, runtimes };
+    const result = { names, availability, registeredProjects, runtimes };
+    state.hostDiscoveryCache = result;
+    state.hostDiscoveryDirty = false;
+    state.hostDiscoveryScannedAt = Date.now();
+    return result;
   }
 
   function discoverRemoteRuntimes(fallback) {
@@ -752,6 +780,7 @@
     const cacheTtl = state.remoteRuntimeCache.size ? 30000 : 2000;
     if (state.remoteRuntimeScannedAt && now - state.remoteRuntimeScannedAt < cacheTtl) return state.remoteRuntimeCache;
     const runtimes = new Map(fallback);
+    state.counters.remoteRuntimeScans += 1;
     const anchor = document.querySelector(ROW_SELECTOR)
       ?? document.querySelector('[data-sidebar-project-kind][role="listitem"]');
     let root = anchor ? getFiber(anchor) : null;
@@ -1457,7 +1486,13 @@
     const runtime = state.localRuntime;
     const now = Date.now();
     const currentThreadInventory = state.threadInventories.get("local");
-    if (!runtime || state.disposed || state.localInventoryPublisherPending || !currentThreadInventory || currentThreadInventory.error) return;
+    if (!runtime
+      || state.disposed
+      || state.localInventoryPublisherPending
+      || !currentThreadInventory
+      || currentThreadInventory.truncated === true
+      || !Array.isArray(currentThreadInventory.threads)
+      || !Number.isFinite(currentThreadInventory.fetchedAt)) return;
     const localThreadsById = new Map((currentThreadInventory.threads ?? []).flatMap((thread) => {
       const id = rawConversationId(thread?.id ?? thread?.conversationId ?? "");
       return id ? [[id, thread]] : [];
@@ -1529,7 +1564,8 @@
       }))).filter((project) => project.projectId && project.cwd);
       removeGossipedLocalInventoryDuplicates();
       const generatedAt = new Date().toISOString();
-      const payload = JSON.stringify({ generatedAt, hostDisplayName: config.localDisplayName || null, peers, projects, publisherVersion: PUBLISHER_VERSION, schemaVersion: 1, tasks, threadScope: "user-visible", threadScopeGeneratedAt: generatedAt, threads });
+      const threadScopeGeneratedAt = new Date(currentThreadInventory.fetchedAt).toISOString();
+      const payload = JSON.stringify({ generatedAt, hostDisplayName: config.localDisplayName || null, peers, projects, publisherVersion: PUBLISHER_VERSION, schemaVersion: 1, tasks, threadScope: "user-visible", threadScopeGeneratedAt, threads });
       const dataBase64 = encodeText(payload);
       return sendRequestWithTimeout(runtime.requestClient, "fs/writeFile", { dataBase64, path: inventoryPath(codexHome) })
         .then(() => pushLocalInventoryToPeers(dataBase64));
@@ -1565,29 +1601,53 @@
     return typeof value !== "string" || !value.trim() || /^(?:Remote\s+)?(?:remote-control:)?env_/iu.test(value.trim());
   }
 
+  function hostNameAliases(hostId) {
+    const normalized = normalizeHostId(hostId);
+    const short = typeof normalized === "string" ? normalized.replace(/^remote-control:/u, "") : normalized;
+    return [...new Set([normalized, hostId, short].filter((value) => typeof value === "string" && value))];
+  }
+
+  function configuredHostName(hostId) {
+    for (const alias of hostNameAliases(hostId)) {
+      const value = config.hostDisplayNames?.[alias];
+      if (!isSyntheticHostName(value)) return value.trim();
+    }
+    return null;
+  }
+
   function hostName(hostId, discoveredNames, singleRemoteHostId) {
     if (hostId === "local") return config.localDisplayName || "Local";
-    const discovered = discoveredNames.get(hostId);
+    const normalizedHostId = normalizeHostId(hostId);
+    const aliases = hostNameAliases(normalizedHostId);
+    const discovered = aliases.map((alias) => discoveredNames.get(alias)).find((value) => !isSyntheticHostName(value));
     const remembered = readRecords(HOST_NAMES_KEY);
     if (!isSyntheticHostName(discovered)) {
-      if (remembered[hostId] !== discovered) {
-        remembered[hostId] = discovered;
+      if (remembered[normalizedHostId] !== discovered) {
+        remembered[normalizedHostId] = discovered;
         writeRecords(HOST_NAMES_KEY, remembered);
       }
       return discovered;
     }
-    if (!isSyntheticHostName(remembered[hostId])) return remembered[hostId];
-    if (!isSyntheticHostName(config.hostDisplayNames?.[hostId])) {
-      remembered[hostId] = config.hostDisplayNames[hostId];
-      writeRecords(HOST_NAMES_KEY, remembered);
-      return remembered[hostId];
+    const rememberedName = aliases.map((alias) => remembered[alias]).find((value) => !isSyntheticHostName(value));
+    if (rememberedName) {
+      if (remembered[normalizedHostId] !== rememberedName) {
+        remembered[normalizedHostId] = rememberedName;
+        writeRecords(HOST_NAMES_KEY, remembered);
+      }
+      return rememberedName;
     }
-    if (hostId === singleRemoteHostId && !isSyntheticHostName(config.singleRemoteDisplayName)) {
-      remembered[hostId] = config.singleRemoteDisplayName;
+    const configured = configuredHostName(normalizedHostId);
+    if (configured) {
+      remembered[normalizedHostId] = configured;
       writeRecords(HOST_NAMES_KEY, remembered);
-      return remembered[hostId];
+      return configured;
     }
-    return discovered || hostId.replace(/^remote-control:/u, "Remote ");
+    if (normalizedHostId === normalizeHostId(singleRemoteHostId) && !isSyntheticHostName(config.singleRemoteDisplayName)) {
+      remembered[normalizedHostId] = config.singleRemoteDisplayName.trim();
+      writeRecords(HOST_NAMES_KEY, remembered);
+      return remembered[normalizedHostId];
+    }
+    return "Remote device";
   }
 
   function metadataFromNativeProject(item) {
@@ -1785,8 +1845,8 @@
       const authoritativeState = applyRemoteTaskState(task, inventory);
       task.unread = task.unread && !remoteUnreadAcknowledged(task, authoritativeState);
     }
-    const names = hostDiscovery.names;
-    const availability = hostDiscovery.availability;
+    const names = new Map(hostDiscovery.names);
+    const availability = new Map(hostDiscovery.availability);
     for (const [hostId, inventory] of state.remoteProjectInventories) {
       if (!isSyntheticHostName(inventory?.hostDisplayName)) names.set(hostId, inventory.hostDisplayName.trim());
     }
@@ -1807,12 +1867,13 @@
     }
     for (const task of tasks) {
       for (const [id, name] of task.hostNames) {
-        if (!names.has(id)) names.set(id, name);
+        const normalizedId = normalizeHostId(id);
+        if (!names.has(normalizedId) && !isSyntheticHostName(name)) names.set(normalizedId, name.trim());
       }
-      if (task.hostDisplayName && task.hostId !== "local" && !names.has(task.hostId)) names.set(task.hostId, task.hostDisplayName);
+      if (task.hostId !== "local" && !names.has(task.hostId) && !isSyntheticHostName(task.hostDisplayName)) names.set(task.hostId, task.hostDisplayName.trim());
     }
     for (const project of nativeProjects) {
-      if (project.hostDisplayName && project.hostId !== "local") names.set(project.hostId, project.hostDisplayName);
+      if (project.hostId !== "local" && !names.has(project.hostId) && !isSyntheticHostName(project.hostDisplayName)) names.set(project.hostId, project.hostDisplayName.trim());
     }
     const remoteHostIds = [...new Set([...tasks, ...nativeProjects, ...remoteInventoryProjects].map((item) => item.hostId).filter((hostId) => hostId !== "local"))];
     const singleRemoteHostId = remoteHostIds.length === 1 ? remoteHostIds[0] : null;
@@ -1938,9 +1999,16 @@
     style.id = STYLE_ID;
     style.textContent = `
       #${PANEL_ID} { display:flex; flex-direction:column; gap:8px; padding:2px 8px 8px; }
-      #${PANEL_ID} .crmp-modes { display:flex; gap:4px; padding-bottom:2px; }
-      #${PANEL_ID} .crmp-mode { border:0; border-radius:5px; padding:3px 6px; color:var(--color-text-tertiary,#888); background:transparent; font-size:10px; cursor:pointer; }
+      #${PANEL_ID} .crmp-modes { display:flex; flex-wrap:wrap; align-items:center; gap:4px; padding-bottom:2px; }
+      #${PANEL_ID} .crmp-mode { flex:0 0 auto; border:0; border-radius:5px; padding:3px 6px; color:var(--color-text-tertiary,#888); background:transparent; font-size:10px; white-space:nowrap; cursor:pointer; }
       #${PANEL_ID} .crmp-mode[aria-pressed="true"] { color:var(--color-text,#eee); background:var(--color-background-primary-hover,rgba(127,127,127,.15)); }
+      #${PANEL_ID} .crmp-update-control, #${PANEL_ID} .crmp-update-status { flex:0 0 auto; max-width:100%; margin-inline-start:auto; border:0; border-radius:5px; padding:3px 6px; color:var(--color-text-tertiary,#888); background:transparent; font-size:10px; line-height:14px; white-space:nowrap; }
+      #${PANEL_ID} .crmp-update-control { cursor:pointer; }
+      #${PANEL_ID} .crmp-update-control[data-state="available"], #${PANEL_ID} .crmp-update-control[data-state="queued"], #${PANEL_ID} .crmp-update-control[data-state="error"] { color:var(--color-text,#eee); background:var(--color-background-primary-hover,rgba(127,127,127,.15)); }
+      #${PANEL_ID} .crmp-update-control:disabled { cursor:not-allowed; opacity:.6; }
+      #${PANEL_ID} .crmp-update-group { display:inline-flex; flex:0 0 auto; align-items:center; gap:4px; max-width:100%; margin-inline-start:auto; color:var(--color-text-tertiary,#888); font-size:10px; line-height:14px; white-space:nowrap; }
+      #${PANEL_ID} .crmp-update-group .crmp-update-status { margin-inline-start:0; }
+      #${PANEL_ID} .crmp-update-cancel { border:1px solid var(--color-border-default,#555); border-radius:5px; padding:3px 6px; color:var(--color-text,#eee); background:transparent; font-size:10px; cursor:pointer; }
       #${PANEL_ID} button:focus-visible, #${CARD_ID}:focus-visible, #${CARD_ID} button:focus-visible, #${CONTEXT_ID}:focus-visible, #${CONTEXT_ID} button:focus-visible { outline:2px solid var(--color-accent,#74b9ff); outline-offset:-2px; }
       #${PANEL_ID} .crmp-filters { display:flex; flex-wrap:wrap; gap:6px; padding:2px 0 6px; }
       #${PANEL_ID} .crmp-auto-controls { display:flex; align-items:center; flex-wrap:wrap; gap:6px; padding:0 0 4px; }
@@ -2017,6 +2085,106 @@
     element.className = className;
     element.textContent = text;
     return element;
+  }
+
+  function normalizeUpdateStatus(value) {
+    const stateValue = UPDATE_STATES.has(value?.state) ? value.state : "unavailable";
+    return {
+      canCancel: value?.canCancel === true,
+      canQueue: value?.canQueue === true,
+      message: typeof value?.message === "string" && value.message.trim() ? value.message.trim().slice(0, 240) : null,
+      state: stateValue,
+      version: typeof value?.version === "string" && value.version.trim() ? value.version.trim().slice(0, 40) : null,
+    };
+  }
+
+  function readUpdateStatus() {
+    const updater = globalThis[UPDATE_SLOT];
+    if (typeof updater?.getStatus === "function") {
+      try { state.updateStatus = normalizeUpdateStatus(updater.getStatus()); } catch {}
+    }
+    state.updateStatus ??= normalizeUpdateStatus(null);
+    return { ...state.updateStatus };
+  }
+
+  function handleUpdateStatus(event) {
+    if (event?.detail && typeof event.detail === "object") state.updateStatus = normalizeUpdateStatus(event.detail);
+    else {
+      state.updateStatus = null;
+      readUpdateStatus();
+    }
+    schedule();
+  }
+
+  async function requestUpdateAction(action) {
+    if (!["check", "queue", "cancel"].includes(action)) return;
+    const updater = globalThis[UPDATE_SLOT];
+    if (typeof updater?.request !== "function") {
+      state.updateStatus = normalizeUpdateStatus({ state: "unavailable", message: "Update service is unavailable" });
+      schedule();
+      return;
+    }
+    if (action === "check") state.updateStatus = normalizeUpdateStatus({ ...readUpdateStatus(), state: "checking" });
+    if (action === "queue") state.updateStatus = normalizeUpdateStatus({ ...readUpdateStatus(), state: "queued", canCancel: true });
+    schedule();
+    try {
+      await updater.request(action);
+      readUpdateStatus();
+    } catch (error) {
+      state.updateStatus = normalizeUpdateStatus({ state: "error", message: String(error?.message ?? error).slice(0, 240) });
+    }
+    schedule();
+  }
+
+  function updateStatusControl() {
+    const status = readUpdateStatus();
+    const versionLabel = status.version ? (/^v/iu.test(status.version) ? status.version : `v${status.version}`) : null;
+    if (["checking", "current"].includes(status.state)) {
+      const compact = document.createElement("span");
+      compact.className = "crmp-update-status";
+      compact.dataset.state = status.state;
+      compact.textContent = status.state === "checking" ? "Checking updates…" : `Current${versionLabel ? ` · ${versionLabel}` : ""}`;
+      compact.title = status.message ?? compact.textContent;
+      return compact;
+    }
+    const labels = {
+      available: `Update available${versionLabel ? ` · ${versionLabel}` : ""}`,
+      queued: "Update queued",
+      preparing: "Preparing update…",
+      closing: "Closing for update…",
+      updating: "Updating…",
+      restarting: "Restarting…",
+      error: "Update error · Retry",
+      unavailable: "Updates unavailable",
+    };
+    if (["queued", "preparing"].includes(status.state) && status.canCancel) {
+      const group = document.createElement("span");
+      group.className = "crmp-update-group";
+      group.dataset.state = status.state;
+      group.title = status.message ?? labels[status.state];
+      const label = document.createElement("span");
+      label.className = "crmp-update-label";
+      label.textContent = labels[status.state];
+      const cancel = button("crmp-update-cancel", "Cancel");
+      setFocusKey(cancel, "update", status.state, "cancel");
+      cancel.addEventListener("click", () => { void requestUpdateAction("cancel"); });
+      group.append(label, cancel);
+      return group;
+    }
+    const control = button("crmp-update-control", labels[status.state] ?? "Updates unavailable");
+    control.dataset.state = status.state;
+    control.title = status.message ?? control.textContent;
+    setFocusKey(control, "update", status.state);
+    if (status.state === "available") {
+      control.disabled = !status.canQueue;
+      control.addEventListener("click", () => { void requestUpdateAction("queue"); });
+    } else if (["error", "unavailable"].includes(status.state)) {
+      control.disabled = typeof globalThis[UPDATE_SLOT]?.request !== "function";
+      control.addEventListener("click", () => { void requestUpdateAction("check"); });
+    } else {
+      control.disabled = true;
+    }
+    return control;
   }
 
   function setFocusKey(element, ...parts) {
@@ -2229,6 +2397,8 @@
 
   async function hydrateNativeInventory() {
     if (state.inventoryHydrationPending) return;
+    state.counters.inventoryHydrationRuns += 1;
+    state.inventoryHydrationDirty = false;
     state.inventoryHydrationPending = true;
     state.inventoryHydrationPhase = "listing-threads";
     state.inventoryHydrationRounds = 0;
@@ -2243,15 +2413,42 @@
           const result = await (hostId === "local"
             ? listAllLocalThreadInventory(runtime.requestClient, false, deadline, false, "local inventory hydration", state.localRuntimeGeneration)
             : listAllRuntimeThreads(runtime.requestClient, false, deadline));
-          const inventory = { error: null, fetchedAt: Date.now(), hostId, pages: result.pages, retryAt: 0, threads: Array.isArray(result.threads) ? result.threads : [], truncated: result.truncated === true };
+          const attemptedAt = Date.now();
+          const prior = state.threadInventories.get(hostId);
+          const truncated = result.truncated === true || result.threads.length >= 9800;
+          const priorComplete = Number.isFinite(prior?.fetchedAt) && Array.isArray(prior?.threads) && prior.truncated !== true;
+          const inventory = truncated
+            ? {
+              error: "thread/list returned an incomplete inventory",
+              attemptTruncated: true,
+              attemptedAt,
+              fetchedAt: Number.isFinite(prior?.fetchedAt) ? prior.fetchedAt : null,
+              hostId,
+              pages: prior?.pages ?? 0,
+              retryAt: attemptedAt + NATIVE_INVENTORY_ERROR_RETRY_MS,
+              threads: Array.isArray(prior?.threads) ? prior.threads : [],
+              truncated: priorComplete ? false : true,
+            }
+            : { attemptedAt, error: null, fetchedAt: attemptedAt, hostId, pages: result.pages, retryAt: 0, threads: result.threads, truncated: false };
           state.threadInventories.set(hostId, inventory);
-          rememberVerifiedThreadIds(hostId, inventory.threads);
-          state.inventoryHydrationRounds += inventory.pages;
+          if (!truncated) rememberVerifiedThreadIds(hostId, inventory.threads);
+          state.inventoryHydrationRounds += result.pages;
           if (hostId === "local") removeGossipedLocalInventoryDuplicates();
           if (!state.disposed) schedule();
           return inventory;
         } catch (error) {
-          const inventory = { error: String(error?.message ?? error).slice(0, 240), fetchedAt: Date.now(), hostId, pages: 0, retryAt: Date.now() + NATIVE_INVENTORY_ERROR_RETRY_MS, threads: state.threadInventories.get(hostId)?.threads ?? [] };
+          const attemptedAt = Date.now();
+          const prior = state.threadInventories.get(hostId);
+          const inventory = {
+            error: String(error?.message ?? error).slice(0, 240),
+            attemptedAt,
+            fetchedAt: Number.isFinite(prior?.fetchedAt) ? prior.fetchedAt : null,
+            hostId,
+            pages: prior?.pages ?? 0,
+            retryAt: attemptedAt + NATIVE_INVENTORY_ERROR_RETRY_MS,
+            threads: Array.isArray(prior?.threads) ? prior.threads : [],
+            truncated: prior?.truncated === true,
+          };
           state.threadInventories.set(hostId, inventory);
           if (!state.disposed) schedule();
           return inventory;
@@ -2260,7 +2457,7 @@
       const results = await Promise.all(tasks);
       const errors = [...state.threadInventories.values()].filter((result) => result.error).map((result) => `${result.hostId}: ${result.error}`);
       state.inventoryHydrationError = errors.length ? errors.join("; ").slice(0, 240) : null;
-      state.inventoryHydrationTruncated = results.some((result) => result.truncated === true || result.threads.length >= 9800);
+      state.inventoryHydrationTruncated = results.some((result) => result.attemptTruncated === true || result.truncated === true || result.threads.length >= 9800);
     } catch (error) {
       state.inventoryHydrationError = String(error?.message ?? error).slice(0, 240);
     } finally {
@@ -2271,13 +2468,18 @@
   }
 
   function scheduleNativeInventoryHydration() {
-    if (state.inventoryHydrationPending || state.inventoryHydrationTimer !== null || !document.querySelector('[aria-label="Project sidebar options"]')) return;
+    if (state.inventoryHydrationPending || !document.querySelector('[aria-label="Project sidebar options"]')) return;
+    if (state.inventoryHydrationTimer !== null) {
+      if (!state.inventoryHydrationDirty) return;
+      clearTimeout(state.inventoryHydrationTimer);
+      state.inventoryHydrationTimer = null;
+    }
     if (!state.inventoryHydrationStarted) {
       state.inventoryHydrationStarted = true;
       void hydrateNativeInventory();
       return;
     }
-    const delay = NATIVE_INVENTORY_REFRESH_MS;
+    const delay = state.inventoryHydrationDirty ? NATIVE_INVENTORY_DIRTY_DEBOUNCE_MS : NATIVE_INVENTORY_REFRESH_MS;
     state.inventoryHydrationStarted = true;
     state.inventoryHydrationTimer = setTimeout(() => {
       state.inventoryHydrationTimer = null;
@@ -3072,9 +3274,9 @@
     return { caseInsensitive, value: caseInsensitive ? normalized.toLocaleLowerCase() : normalized };
   }
 
-  function maintenanceThreadPathManaged(thread, archived) {
+  function maintenanceThreadPathManaged(thread, archived, requirePath = archived === true) {
     const threadPath = typeof thread?.path === "string" && thread.path.trim() ? thread.path : null;
-    if (!threadPath || !state.localCodexHome) return true;
+    if (!threadPath || !state.localCodexHome) return requirePath !== true;
     const home = lexicalAbsolutePath(state.localCodexHome);
     const candidate = lexicalAbsolutePath(threadPath);
     if (!home || !candidate || home.caseInsensitive !== candidate.caseInsensitive) return false;
@@ -3084,8 +3286,7 @@
   }
 
   function unmanagedMaintenanceThreadCount(threads, archived) {
-    if (!state.localCodexHome) return 0;
-    return threads.filter((thread) => typeof thread?.path === "string" && thread.path.trim() && !maintenanceThreadPathManaged(thread, archived)).length;
+    return threads.filter((thread) => !maintenanceThreadPathManaged(thread, archived, archived === true)).length;
   }
 
   function sanitizedMaintenanceFailure(operation, error) {
@@ -3256,13 +3457,23 @@
         ? await requestThreadList(params)
         : await sendRequestWithTimeout(requestClient, "thread/list", params, remainingRequestTimeout(deadline, phase));
       if (state.disposed) return { pages: page + 1, threads: [] };
-      for (const thread of Array.isArray(result?.data) ? result.data : []) {
+      if (!result || typeof result !== "object" || !Array.isArray(result.data)) throw new Error("thread/list returned malformed data");
+      if (!(result.nextCursor === null || (typeof result.nextCursor === "string" && result.nextCursor.length > 0))) {
+        throw new Error("thread/list returned a malformed pagination cursor");
+      }
+      for (const thread of result.data) {
+        if (!thread || typeof thread !== "object") throw new Error("thread/list returned a malformed thread entry");
         const threadId = rawConversationId(thread?.id ?? thread?.conversationId ?? "");
-        if (!threadId || threadIds.has(threadId)) continue;
+        if (!threadId) throw new Error("thread/list returned a thread without an identity");
+        if (includeInternalSources) {
+          const status = typeof thread.status === "string" ? thread.status : thread?.status?.type;
+          if (typeof status !== "string" || !status.trim()) throw new Error("thread/list returned a thread without an authoritative status");
+        }
+        if (threadIds.has(threadId)) continue;
         threadIds.add(threadId);
         threads.push(thread);
       }
-      const nextCursor = typeof result?.nextCursor === "string" && result.nextCursor ? result.nextCursor : null;
+      const nextCursor = result.nextCursor;
       if (!nextCursor) return { pages: page + 1, threads };
       if (cursors.has(nextCursor)) throw new Error("thread/list returned a repeated pagination cursor");
       cursors.add(nextCursor);
@@ -3291,6 +3502,51 @@
   async function listAllLocalThreads(requestClient, archived = false, deadline = Number.POSITIVE_INFINITY, includeInternalSources = true, phase = "local thread listing", runtimeGeneration = state.localRuntimeGeneration) {
     return listAllLocalThreadInventory(requestClient, archived, deadline, includeInternalSources, phase, runtimeGeneration)
       .then((result) => result.threads);
+  }
+
+  function updateActivityFailureReason(error) {
+    const message = String(error?.message ?? error ?? "");
+    if (/timed out|bounded deadline/iu.test(message)) return "Authoritative activity scan timed out";
+    if (/quarantined|recovery|runtime changed/iu.test(message)) return "Local app-server activity is recovering";
+    return "Authoritative activity state is unavailable";
+  }
+
+  async function updateActivity() {
+    state.counters.updateActivityScans += 1;
+    const requestClient = state.localRuntime?.requestClient;
+    const runtimeGeneration = state.localRuntimeGeneration;
+    if (state.disposed || typeof requestClient?.sendRequest !== "function") {
+      return { busy: false, known: false, reason: "Local app-server runtime is unavailable" };
+    }
+    if (sharedThreadListRegistry.recoveryPending || state.localThreadListQuarantines.has(requestClient)) {
+      return { busy: false, known: false, reason: "Local app-server activity is recovering" };
+    }
+    try {
+      const deadline = Date.now() + 30000;
+      const result = await listAllLocalThreadInventory(requestClient, false, deadline, true, "update activity snapshot", runtimeGeneration);
+      if (state.disposed || state.localRuntime?.requestClient !== requestClient || state.localRuntimeGeneration !== runtimeGeneration) {
+        return { busy: false, known: false, reason: "Local app-server runtime changed during activity scan" };
+      }
+      if (result.truncated === true) return { busy: false, known: false, reason: "Authoritative activity inventory is incomplete" };
+      let busy = false;
+      for (const thread of result.threads) {
+        const statusObject = thread?.status && typeof thread.status === "object" ? thread.status : null;
+        const flags = statusObject?.activeFlags;
+        if (Array.isArray(flags) && flags.some((flag) => flag === "waitingOnApproval" || flag === "waitingOnUserInput")) {
+          busy = true;
+          continue;
+        }
+        const rawStatus = typeof thread?.status === "string" ? thread.status : statusObject?.type;
+        const status = typeof rawStatus === "string" ? rawStatus.replace(/[_-]/gu, "").toLowerCase() : "";
+        if (ACTIVITY_BUSY_STATUSES.has(status)) busy = true;
+        else if (!ACTIVITY_IDLE_STATUSES.has(status)) {
+          return { busy: false, known: false, reason: "Authoritative activity status is unknown" };
+        }
+      }
+      return { busy, known: true };
+    } catch (error) {
+      return { busy: false, known: false, reason: updateActivityFailureReason(error) };
+    }
   }
 
   function eligibleAutoArchiveThreads(threads, pinnedThreadIds = new Set(), relatedThreads = threads) {
@@ -3352,7 +3608,7 @@
       const statusType = typeof thread?.status === "string" ? thread.status : thread?.status?.type;
       const archivedAt = Number(archiveRecords?.[threadId]);
       return Boolean(threadId)
-        && maintenanceThreadPathManaged(thread, true)
+        && maintenanceThreadPathManaged(thread, true, true)
         && !parentsWithKnownChildren.has(threadId)
         && !pinnedThreadIds.has(threadId)
         && thread.selected !== true
@@ -3391,7 +3647,7 @@
     };
   }
 
-  async function runAutoArchiveNow() {
+  async function runAutoArchiveWithLease() {
     if (state.autoArchivePending || state.disposed) return state.autoArchiveLastResult ?? { archived: 0, eligible: 0 };
     if (!readOptionalBoolean(AUTO_ARCHIVE_ENABLED_KEY)) return { archived: 0, eligible: 0, skipped: "auto-archive-disabled" };
     const requestClient = state.localRuntime?.requestClient;
@@ -3564,6 +3820,33 @@
         scheduleAutoArchive(state.autoArchiveError || maintenanceContinuationNeeded ? AUTO_ARCHIVE_RETRY_MS : AUTO_ARCHIVE_INTERVAL_MS);
         schedule();
       }
+    }
+  }
+
+  async function runAutoArchiveNow() {
+    if (state.autoArchivePending || state.disposed) return state.autoArchiveLastResult ?? { archived: 0, deleted: 0, eligible: 0 };
+    if (!readOptionalBoolean(AUTO_ARCHIVE_ENABLED_KEY)) return { archived: 0, deleted: 0, eligible: 0, skipped: "auto-archive-disabled" };
+    if (typeof globalThis.navigator?.locks?.request !== "function") {
+      const result = { archived: 0, deleted: 0, eligible: 0, error: "Exclusive maintenance lock is unavailable" };
+      state.autoArchiveError = result.error;
+      state.autoArchiveLastResult = result;
+      scheduleAutoArchive(AUTO_ARCHIVE_RETRY_MS);
+      return result;
+    }
+    try {
+      return await globalThis.navigator.locks.request("codex-remote-mobile-auto-maintenance-v1", { ifAvailable: true, mode: "exclusive" }, async (lock) => {
+        if (!lock) {
+          scheduleAutoArchive(AUTO_ARCHIVE_RETRY_MS);
+          return { archived: 0, deleted: 0, eligible: 0, skipped: "maintenance-running-in-another-window" };
+        }
+        return runAutoArchiveWithLease();
+      });
+    } catch {
+      const result = { archived: 0, deleted: 0, eligible: 0, error: "Exclusive maintenance lock request failed" };
+      state.autoArchiveError = result.error;
+      state.autoArchiveLastResult = result;
+      scheduleAutoArchive(AUTO_ARCHIVE_RETRY_MS);
+      return result;
     }
   }
 
@@ -4140,12 +4423,45 @@
     fragment.appendChild(section);
   }
 
+  function readiness() {
+    const localInventory = state.threadInventories.get("local");
+    const mounted = Boolean(state.panel?.isConnected && state.nativeContainer?.isConnected);
+    const localRuntimeReady = typeof state.localRuntime?.requestClient?.sendRequest === "function";
+    const authoritativeInventoryReady = Boolean(localInventory
+      && !localInventory.error
+      && localInventory.truncated !== true
+      && Number.isFinite(localInventory.fetchedAt)
+      && Array.isArray(localInventory.threads));
+    const publisherReady = state.localInventoryPublishedAt > 0 && !state.localInventoryPublisherError;
+    const ready = mounted && localRuntimeReady && authoritativeInventoryReady && publisherReady;
+    const error = ready ? null
+      : !mounted ? "Mobile project view is not mounted"
+      : !localRuntimeReady ? "Local app-server runtime is unavailable"
+      : !authoritativeInventoryReady ? (localInventory?.error || "Authoritative local inventory is not ready")
+      : (state.localInventoryPublisherError || "Local inventory publisher is not ready");
+    return { authoritativeInventoryReady, error, localRuntimeReady, mounted, publisherReady, ready };
+  }
+
+  function renderReport(model = null) {
+    return {
+      active: state.active,
+      hosts: model?.hosts?.length ?? 0,
+      projects: model?.projects?.length ?? 0,
+      readiness: readiness(),
+      tasks: model?.tasks?.length ?? 0,
+      updateStatus: readUpdateStatus(),
+      version: VERSION,
+      view: state.view,
+    };
+  }
+
   function render() {
+    state.counters.renders += 1;
     const focus = captureSidebarFocus();
     state.scheduledFrame = null;
     document.getElementById(CARD_ID)?.remove();
     document.getElementById(CONTEXT_ID)?.remove();
-    if (!state.active) return probe();
+    if (!state.active) return renderReport();
     const model = collectModel();
     // Current Codex separates Projects and Recents into sibling sections.
     // Include both sets so the replacement covers the complete native list.
@@ -4158,7 +4474,7 @@
         }, state.mountRetryDelay);
         state.mountRetryDelay = Math.min(30000, state.mountRetryDelay * 2);
       }
-      return probe(model);
+      return renderReport(model);
     }
     state.mountRetryDelay = 500;
 
@@ -4168,6 +4484,7 @@
       state.originalDisplay = nextNative.style.display;
       nextNative.parentElement?.insertBefore(state.panel, nextNative);
     }
+    observeSidebarMutations(nextNative.closest?.("nav,aside") ?? nextNative.parentElement ?? document.body);
 
     const fragment = document.createDocumentFragment();
     const modes = document.createElement("div");
@@ -4179,6 +4496,7 @@
       mode.addEventListener("click", () => setView(id));
       modes.appendChild(mode);
     }
+    modes.appendChild(updateStatusControl());
     fragment.appendChild(modes);
 
     scheduleLocalProjectInventoryPublication();
@@ -4194,7 +4512,7 @@
       state.nativeContainer.style.display = state.originalDisplay;
       state.panel.replaceChildren(fragment);
       restoreRenderedFocus(focus);
-      return probe(model);
+      return renderReport(model);
     }
     state.nativeContainer.style.setProperty("display", "none", "important");
 
@@ -4307,7 +4625,30 @@
     positionProjectCard();
     positionProjectContextMenu();
     restoreRenderedFocus(focus);
-    return probe(model);
+    return renderReport(model);
+  }
+
+  function mutationNodeContainsThreadRow(node) {
+    return node instanceof Element && (node.matches?.(ROW_SELECTOR) || Boolean(node.querySelector?.(ROW_SELECTOR)));
+  }
+
+  function mutationsChangeThreadMembership(mutations) {
+    return Boolean(mutations?.some((mutation) => mutation.type === "childList"
+      && !state.panel?.contains(mutation.target)
+      && [...mutation.addedNodes, ...mutation.removedNodes].some(mutationNodeContainsThreadRow)));
+  }
+
+  function observeSidebarMutations(target) {
+    if (!target || typeof MutationObserver !== "function" || state.observerTarget === target) return;
+    state.observer?.disconnect();
+    state.observer ??= new MutationObserver(schedule);
+    state.observer.observe(target, {
+      attributeFilter: ["data-app-action-sidebar-thread-selected", "data-app-action-sidebar-thread-title", "data-app-action-sidebar-project-collapsed", "aria-expanded", "disabled"],
+      attributes: true,
+      childList: true,
+      subtree: true,
+    });
+    state.observerTarget = target;
   }
 
   function schedule(mutations) {
@@ -4317,6 +4658,14 @@
       const changed = [...mutation.addedNodes, ...mutation.removedNodes].filter((node) => node instanceof Element);
       return changed.length > 0 && changed.every((node) => [CARD_ID, CONTEXT_ID].includes(node.id));
     })) return;
+    if (mutations?.length) {
+      state.hostDiscoveryDirty = true;
+      if (mutationsChangeThreadMembership(mutations)) {
+        state.counters.inventoryDirtyRequests += 1;
+        state.inventoryHydrationDirty = true;
+        scheduleNativeInventoryHydration();
+      }
+    }
     if (state.scheduledFrame !== null) return;
     state.scheduledFrame = requestAnimationFrame(render);
   }
@@ -4339,6 +4688,7 @@
   }
 
   function probe(model = null) {
+    state.counters.fullProbeRuns += 1;
     model ??= collectModel();
     const expansionControls = nativeThreadListExpansionControls();
     const tasksByHost = Object.fromEntries(model.hosts.map((host) => [host.name, model.tasks.filter((task) => task.hostId === host.id).length]));
@@ -4368,6 +4718,7 @@
       autoRegistrationPending: state.autoRegistrationPending,
       autoReconciliationPending: state.autoReconciliationPending,
       autoSuppressedProjects: Object.keys(readRecords(AUTO_SUPPRESSED_KEY)).length,
+      counters: { ...state.counters },
       filter: state.filter,
       hosts: model.hosts.length,
       hostNames: model.hosts.map((host) => host.name),
@@ -4391,6 +4742,7 @@
       hostInventoryProjects: [...state.remoteProjectInventories.keys()].reduce((count, hostId) => count + (freshInventory(hostId)?.projects?.length ?? 0), 0),
       hostInventoryTaskStates: [...state.remoteProjectInventories.keys()].reduce((count, hostId) => count + (freshInventory(hostId)?.tasks?.size ?? 0), 0),
       projects: model.projects.length,
+      readiness: readiness(),
       localInventoryPublished: state.localInventoryPublishedAt > 0,
       localInventoryProjects: state.localInventoryProjects.length,
       localInventoryPublisherError: state.localInventoryPublisherError,
@@ -4428,6 +4780,7 @@
       syntheticTasks: model.tasks.filter((task) => !task.originalRow).length,
       syntheticNavigableTasks: model.tasks.filter((task) => !task.originalRow && (state.threadManagers.has(task.hostId) || typeof state.navigationBridge?.navigateToLocalConversation === "function")).length,
       unreadTasks: model.tasks.filter((task) => task.unread).length,
+      updateStatus: readUpdateStatus(),
       verifiedThreadHosts: state.verifiedThreadIds.size,
       verifiedThreads: [...state.verifiedThreadIds.values()].reduce((total, record) => total + record.ids.size, 0),
       version: VERSION,
@@ -4447,15 +4800,15 @@
     state.disposed = false;
     document.addEventListener("pointerdown", dismissOverlays);
     document.addEventListener("keydown", dismissOnEscape);
-    if (!state.observer) {
-      state.observer = new MutationObserver(schedule);
-      state.observer.observe(document.body, {
-        attributeFilter: ["data-app-action-sidebar-thread-selected", "data-app-action-sidebar-thread-title", "data-app-action-sidebar-project-collapsed", "aria-expanded", "disabled"],
-        attributes: true,
-        childList: true,
-        subtree: true,
+    document.addEventListener(UPDATE_EVENT, handleUpdateStatus);
+    if (globalThis !== document && typeof globalThis.addEventListener === "function") globalThis.addEventListener(UPDATE_EVENT, handleUpdateStatus);
+    if (!state.mountObserver) {
+      state.mountObserver = new MutationObserver((mutations) => {
+        if (!state.observerTarget?.isConnected || !state.nativeContainer?.isConnected) schedule(mutations);
       });
+      state.mountObserver.observe(document.body, { childList: true, subtree: true });
     }
+    observeSidebarMutations(state.nativeContainer?.parentElement ?? document.body);
     return render();
   }
 
@@ -4491,8 +4844,13 @@
     }
     document.removeEventListener("pointerdown", dismissOverlays);
     document.removeEventListener("keydown", dismissOnEscape);
+    document.removeEventListener(UPDATE_EVENT, handleUpdateStatus);
+    if (globalThis !== document && typeof globalThis.removeEventListener === "function") globalThis.removeEventListener(UPDATE_EVENT, handleUpdateStatus);
     state.observer?.disconnect();
     state.observer = null;
+    state.observerTarget = null;
+    state.mountObserver?.disconnect();
+    state.mountObserver = null;
     if (state.scheduledFrame !== null) cancelAnimationFrame(state.scheduledFrame);
     state.scheduledFrame = null;
     if (state.autoRegistrationTimer !== null) clearTimeout(state.autoRegistrationTimer);
@@ -4516,9 +4874,11 @@
     document.getElementById(CONTEXT_ID)?.remove();
     document.getElementById(STYLE_ID)?.remove();
     state.active = false;
-    const report = probe();
+    const report = renderReport();
     for (const collection of [state.autoRegistrationFailures, state.collapsed, state.hostConnectivity, state.localRegisteredProjects, state.localRuntimeHostIds, state.peerCacheStates, state.remoteCodexHomes, state.remoteProjectInventories, state.remoteRuntimeCache, state.threadInventories, state.threadManagers, state.verifiedThreadIds]) collection.clear();
     state.localFetchFromHost = null;
+    state.hostDiscoveryCache = null;
+    state.hostDiscoveryDirty = true;
     state.localRuntime = null;
     state.navigationBridge = null;
     state.projectService = null;
@@ -4527,7 +4887,7 @@
   }
 
   loadVerifiedThreadIds();
-  const api = Object.freeze({ install, previewAutoArchive, previewAutoMaintenance: previewAutoArchive, probe, reconcileAutoRegisteredProjects, removeAllAutoRegistered, runAutoArchiveNow, runAutoMaintenanceNow: runAutoArchiveNow, setAutoArchive, setAutoMaintenance: setAutoArchive, setAutoRegistration, setFilter, setView, uninstall, version: VERSION });
+  const api = Object.freeze({ install, previewAutoArchive, previewAutoMaintenance: previewAutoArchive, probe, reconcileAutoRegisteredProjects, removeAllAutoRegistered, runAutoArchiveNow, runAutoMaintenanceNow: runAutoArchiveNow, setAutoArchive, setAutoMaintenance: setAutoArchive, setAutoRegistration, setFilter, setView, uninstall, updateActivity, version: VERSION });
   Object.defineProperty(globalThis, API_SLOT, { configurable: true, enumerable: false, value: api });
   return install();
 })();

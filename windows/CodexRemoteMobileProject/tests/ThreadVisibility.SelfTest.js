@@ -13,7 +13,7 @@ const testSource = originalSource
   .replace("    const report = probe();", "    const report = {};")
   .replace(
     "  return install();\n})();",
-    "  return { assignLocalRuntime, collectAuthoritativeThreadIds, directInventoryHasPriority, eligibleAutoArchiveThreads, eligibleAutoDeleteThreads, lexicalAbsolutePath, listAllLocalThreads, listAllRuntimeThreads, maintenanceThreadPathManaged, parseInventoryPayload, preferredThreadInventory, pruneVerifiedThreadIds, publishedLocalProjectSnapshot, purgeLocalRuntimeAliases, rememberVerifiedThreadIds, removeGossipedLocalInventoryDuplicates, runAutoArchiveNow, runtimeThreadInventoryDue, sanitizedMaintenanceFailure, scopedThreadsAreFresh, serializePeerInventory, sharedThreadListRegistry, state, taskIsAuthoritative, unmanagedMaintenanceThreadCount, uninstall };\n})();",
+    "  return { assignLocalRuntime, collectAuthoritativeThreadIds, directInventoryHasPriority, eligibleAutoArchiveThreads, eligibleAutoDeleteThreads, lexicalAbsolutePath, listAllLocalThreads, listAllRuntimeThreads, maintenanceThreadPathManaged, parseInventoryPayload, preferredThreadInventory, pruneVerifiedThreadIds, publishedLocalProjectSnapshot, purgeLocalRuntimeAliases, rememberVerifiedThreadIds, removeGossipedLocalInventoryDuplicates, runAutoArchiveNow, runtimeThreadInventoryDue, sanitizedMaintenanceFailure, scopedThreadsAreFresh, serializePeerInventory, sharedThreadListRegistry, state, taskIsAuthoritative, unmanagedMaintenanceThreadCount, uninstall, updateActivity };\n})();",
   );
 
 const now = Date.now();
@@ -42,6 +42,7 @@ const context = vm.createContext({
     removeItem: (key) => storage.delete(key),
     setItem: (key, value) => storage.set(key, String(value)),
   },
+  navigator: { locks: { request: async (_name, _options, callback) => callback({ name: "maintenance-fixture" }) } },
   setInterval,
   setTimeout,
   cancelAnimationFrame() {},
@@ -335,7 +336,7 @@ assert.match(originalSource, /threadScopeGeneratedAt/);
   const changingCursorClient = {
     async sendRequest() {
       pageCalls += 1;
-      return { data: [{ id: `thread-${pageCalls}` }], nextCursor: `cursor-${pageCalls}` };
+      return { data: [{ id: `thread-${pageCalls}`, status: "notLoaded" }], nextCursor: `cursor-${pageCalls}` };
     },
   };
   const bounded = await visibility.listAllRuntimeThreads(changingCursorClient, false, Number.POSITIVE_INFINITY, false);
@@ -365,12 +366,51 @@ assert.match(originalSource, /threadScopeGeneratedAt/);
   assert.equal(requestShapes[1].useStateDbOnly, true);
   assert.equal(requestShapes[1].sourceKinds.includes("appServer"), true);
 
+  await assert.rejects(
+    visibility.listAllRuntimeThreads({ sendRequest: async () => ({ nextCursor: null }) }, false, Date.now() + 1000, true),
+    /malformed data/,
+  );
+  await assert.rejects(
+    visibility.listAllRuntimeThreads({ sendRequest: async () => ({ data: [], nextCursor: 7 }) }, false, Date.now() + 1000, true),
+    /malformed pagination cursor/,
+  );
+  await assert.rejects(
+    visibility.listAllRuntimeThreads({ sendRequest: async () => ({ data: [{ id: "missing-status" }], nextCursor: null }) }, false, Date.now() + 1000, true),
+    /authoritative status/,
+  );
+
+  const activity = async (threads) => {
+    const requestClient = { sendRequest: async () => ({ data: threads, nextCursor: null }) };
+    visibility.state.localRuntime = null;
+    visibility.assignLocalRuntime(null, requestClient);
+    return visibility.updateActivity();
+  };
+  let activityResult = await activity([]);
+  assert.equal(activityResult.known, true, "an authoritative empty inventory is known idle");
+  assert.equal(activityResult.busy, false);
+  activityResult = await activity([{ id: "idle", status: "notLoaded" }]);
+  assert.equal(activityResult.known, true);
+  assert.equal(activityResult.busy, false);
+  activityResult = await activity([{ id: "active", status: "active" }]);
+  assert.equal(activityResult.known, true);
+  assert.equal(activityResult.busy, true);
+  activityResult = await activity([{ id: "waiting", status: { type: "notLoaded", activeFlags: ["waitingOnUserInput"] } }]);
+  assert.equal(activityResult.known, true);
+  assert.equal(activityResult.busy, true, "waiting-on-user work must keep a queued update from closing the app");
+  const unknownActivity = await activity([{ id: "unknown", status: "pausedByFutureRuntime" }]);
+  assert.equal(unknownActivity.known, false, "unknown non-empty statuses must fail closed");
+  assert.equal(unknownActivity.busy, false);
+  const malformedActivity = await activity([{ id: "missing-status" }]);
+  assert.equal(malformedActivity.known, false, "malformed activity rows must never be reported as idle");
+  visibility.state.localRuntime = null;
+
   visibility.state.localCodexHome = "D:\\Fixture\\.codex";
   assert.equal(visibility.maintenanceThreadPathManaged({ path: "d:/FIXTURE/.codex/sessions/2026/thread.jsonl" }, false), true);
   assert.equal(visibility.maintenanceThreadPathManaged({ path: "D:\\Fixture\\.codex\\archived_sessions\\thread.jsonl" }, true), true);
   assert.equal(visibility.maintenanceThreadPathManaged({ path: "D:\\Fixture\\.codex\\sessions-old\\thread.jsonl" }, false), false);
   assert.equal(visibility.maintenanceThreadPathManaged({ path: "D:\\Fixture\\.codex\\sessions\\..\\legacy\\thread.jsonl" }, false), false);
   assert.equal(visibility.maintenanceThreadPathManaged({ path: null }, false), true);
+  assert.equal(visibility.maintenanceThreadPathManaged({ path: null }, true), false);
   visibility.state.localCodexHome = "/opt/fixture/.codex";
   assert.equal(visibility.maintenanceThreadPathManaged({ path: "/opt/fixture/.codex/sessions/2026/thread.jsonl" }, false), true);
   assert.equal(visibility.maintenanceThreadPathManaged({ path: "/opt/fixture/.codex/archived_sessions/thread.jsonl" }, true), true);
@@ -525,6 +565,26 @@ assert.match(originalSource, /threadScopeGeneratedAt/);
   assert.equal(maintenanceResult.unmanagedArchivedSkipped, 0);
   assert.equal(visibility.state.autoArchivePending, false);
 
+  const grantMaintenanceLock = context.navigator.locks.request;
+  context.navigator.locks.request = async (_name, options, callback) => {
+    assert.equal(options.ifAvailable, true);
+    assert.equal(options.mode, "exclusive");
+    return callback(null);
+  };
+  const deniedLockResult = await visibility.runAutoArchiveNow();
+  assert.equal(deniedLockResult.skipped, "maintenance-running-in-another-window");
+  assert.equal(maintenanceListCalls, 4, "a denied cross-window lock must prevent all inventory and mutation requests");
+  assert.equal(mutations.length, 1);
+  if (visibility.state.autoArchiveTimer !== null) clearTimeout(visibility.state.autoArchiveTimer);
+  visibility.state.autoArchiveTimer = null;
+  context.navigator.locks.request = null;
+  const unavailableLockResult = await visibility.runAutoArchiveNow();
+  assert.equal(unavailableLockResult.error, "Exclusive maintenance lock is unavailable");
+  assert.equal(maintenanceListCalls, 4, "missing Web Locks support must fail closed before maintenance starts");
+  if (visibility.state.autoArchiveTimer !== null) clearTimeout(visibility.state.autoArchiveTimer);
+  visibility.state.autoArchiveTimer = null;
+  context.navigator.locks.request = grantMaintenanceLock;
+
   let archiveRaceActiveLists = 0;
   const archiveRaceMutations = [];
   const archiveRaceClient = {
@@ -619,9 +679,9 @@ assert.match(originalSource, /threadScopeGeneratedAt/);
   const archiveRecords = Object.fromEntries(archivedPathThreads.map((thread) => [thread.id, old]));
   assert.deepEqual(
     visibility.eligibleAutoDeleteThreads(archivedPathThreads, [], archiveRecords).map((thread) => thread.id),
-    ["archived-managed", "archived-legacy-api"],
+    ["archived-managed"],
   );
-  assert.equal(visibility.unmanagedMaintenanceThreadCount(archivedPathThreads, true), 1);
+  assert.equal(visibility.unmanagedMaintenanceThreadCount(archivedPathThreads, true), 2);
   visibility.state.localCodexHome = null;
 
   let originalClientMutations = 0;

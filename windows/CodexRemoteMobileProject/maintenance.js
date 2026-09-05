@@ -9,6 +9,23 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const LOG_RETENTION_DAYS = 7;
 const LOG_CAP_BYTES = 96 * 1024 * 1024;
 
+function elapsedMilliseconds(startedAt) {
+  return Math.max(0, Math.round(Number(process.hrtime.bigint() - startedAt) / 1_000_000));
+}
+
+function safeFailure(error, databaseFailure) {
+  const knownMessages = new Set([
+    "Log size estimate is invalid; refusing cap pruning",
+    "A log row has an invalid size estimate; refusing cap pruning",
+  ]);
+  const rawMessage = String(error?.message ?? error);
+  const rawCode = String(error?.code ?? "");
+  return {
+    code: /^[A-Z0-9_]{1,80}$/.test(rawCode) ? rawCode : null,
+    message: knownMessages.has(rawMessage) ? rawMessage : (databaseFailure ? "Database maintenance failed" : "Maintenance phase failed"),
+  };
+}
+
 function appProcessesRunning() {
   if (process.platform === "win32") {
     const result = childProcess.spawnSync("tasklist.exe", ["/FO", "CSV", "/NH"], {
@@ -60,6 +77,7 @@ function optimizeDatabase(DatabaseSync, dbPath, pruneLogs) {
   const db = new DatabaseSync(dbPath);
   let removedByAge = 0;
   let removedByCap = 0;
+  let operationFailed = false;
   try {
     db.exec("PRAGMA busy_timeout=2000");
     if (pruneLogs) {
@@ -108,40 +126,98 @@ function optimizeDatabase(DatabaseSync, dbPath, pruneLogs) {
       status: "optimized",
       vacuumed: shouldVacuum,
     };
+  } catch (error) {
+    operationFailed = true;
+    throw error;
   } finally {
-    db.close();
+    try {
+      db.close();
+    } catch (error) {
+      if (!operationFailed) throw error;
+    }
   }
 }
 
 function main() {
-  const codexHomeIndex = process.argv.indexOf("--codex-home");
-  const codexHomeArgument = codexHomeIndex >= 0 ? process.argv[codexHomeIndex + 1] : null;
-  const codexHome = path.resolve(codexHomeArgument || process.env.CODEX_HOME || path.join(os.homedir(), ".codex"));
-  const safeTestOverride = safeTemporaryTestRoot(codexHome);
-  const processState = safeTestOverride ? { safe: true, testOverride: true } : appProcessesRunning();
-  if (!processState.safe) {
-    process.stdout.write(`${JSON.stringify({ processState, status: "skipped-app-running-or-process-check-failed" })}\n`);
-    return;
-  }
-  let DatabaseSync;
-  try {
-    ({ DatabaseSync } = require("node:sqlite"));
-  } catch {
-    process.stdout.write(`${JSON.stringify({ processState, status: "skipped-node-sqlite-unavailable" })}\n`);
-    return;
-  }
-  const report = {
-    logs: optimizeDatabase(DatabaseSync, path.join(codexHome, "logs_2.sqlite"), true),
-    processState,
-    state: optimizeDatabase(DatabaseSync, path.join(codexHome, "state_5.sqlite"), false),
-    status: "completed",
+  const startedAt = process.hrtime.bigint();
+  const bestEffort = process.argv.includes("--best-effort");
+  const phases = [];
+  const report = { bestEffort, phases };
+  let activePhase = "arguments";
+  let activeDatabase = null;
+  let phaseStartedAt = startedAt;
+
+  const finish = (status, exitCode = 0) => {
+    report.durationMs = elapsedMilliseconds(startedAt);
+    report.status = status;
+    process.stdout.write(`${JSON.stringify(report)}\n`);
+    process.exitCode = exitCode;
   };
-  process.stdout.write(`${JSON.stringify(report)}\n`);
+
+  try {
+    const codexHomeIndex = process.argv.indexOf("--codex-home");
+    const codexHomeArgument = codexHomeIndex >= 0 ? process.argv[codexHomeIndex + 1] : null;
+    if (codexHomeIndex >= 0 && (!codexHomeArgument || codexHomeArgument.startsWith("--"))) {
+      throw new Error("The --codex-home argument requires a path");
+    }
+    const codexHome = path.resolve(codexHomeArgument || process.env.CODEX_HOME || path.join(os.homedir(), ".codex"));
+
+    activePhase = "process-safety";
+    phaseStartedAt = process.hrtime.bigint();
+    const safeTestOverride = safeTemporaryTestRoot(codexHome);
+    const processState = safeTestOverride ? { safe: true, testOverride: true } : appProcessesRunning();
+    report.processState = processState;
+    phases.push({ durationMs: elapsedMilliseconds(phaseStartedAt), phase: activePhase, status: processState.safe ? "passed" : "skipped" });
+    if (!processState.safe) {
+      finish("skipped-app-running-or-process-check-failed");
+      return;
+    }
+
+    activePhase = "sqlite-load";
+    phaseStartedAt = process.hrtime.bigint();
+    let DatabaseSync;
+    try {
+      ({ DatabaseSync } = require("node:sqlite"));
+    } catch {
+      phases.push({ durationMs: elapsedMilliseconds(phaseStartedAt), phase: activePhase, status: "skipped" });
+      finish("skipped-node-sqlite-unavailable");
+      return;
+    }
+    phases.push({ durationMs: elapsedMilliseconds(phaseStartedAt), phase: activePhase, status: "passed" });
+
+    for (const database of [
+      { key: "logs", filename: "logs_2.sqlite", pruneLogs: true },
+      { key: "state", filename: "state_5.sqlite", pruneLogs: false },
+    ]) {
+      activeDatabase = database.key;
+      activePhase = `${database.key}-database`;
+      phaseStartedAt = process.hrtime.bigint();
+      report[database.key] = optimizeDatabase(DatabaseSync, path.join(codexHome, database.filename), database.pruneLogs);
+      phases.push({
+        database: database.key,
+        durationMs: elapsedMilliseconds(phaseStartedAt),
+        phase: activePhase,
+        status: report[database.key].status === "missing" ? "skipped-missing" : "completed",
+      });
+    }
+    finish("completed");
+  } catch (error) {
+    const failure = { ...safeFailure(error, Boolean(activeDatabase)), phase: activePhase };
+    if (activeDatabase) failure.database = activeDatabase;
+    phases.push({
+      ...(activeDatabase ? { database: activeDatabase } : {}),
+      durationMs: elapsedMilliseconds(phaseStartedAt),
+      phase: activePhase,
+      status: "failed",
+    });
+    if (bestEffort) {
+      report.warning = failure;
+      finish("completed-with-warning");
+    } else {
+      report.error = failure;
+      finish("failed", 1);
+    }
+  }
 }
 
-try {
-  main();
-} catch (error) {
-  process.stdout.write(`${JSON.stringify({ error: String(error?.message ?? error).slice(0, 240), status: "skipped-error" })}\n`);
-  process.exitCode = 0;
-}
+main();

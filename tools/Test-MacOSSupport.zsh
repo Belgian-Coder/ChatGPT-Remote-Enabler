@@ -30,33 +30,42 @@ relative_probe="$(cd "$root/macos" && HOME="$temporary/home" /bin/zsh ./Update-C
   exit 1
 }
 
-sed -n '/^rollback_copies() {$/,/^}$/p' "$root/macos/Update-ChatGPTRemote.sh" > "$temporary/rollback.zsh"
-source "$temporary/rollback.zsh"
-typeset -a failure_points=(first.txt middle.txt Update-ChatGPTRemote.sh RELEASE-MANIFEST.sha256)
-for failure_point in "${failure_points[@]}"; do
-  install_root="$temporary/install-${failure_point//[^A-Za-z0-9]/_}"
-  backup_root="$temporary/backup-${failure_point//[^A-Za-z0-9]/_}"
-  mkdir -p "$install_root" "$backup_root"
-  typeset -ga copied_relatives=() copied_existed=()
-  for relative in "${failure_points[@]}"; do
-    print -r -- "old-$relative" > "$install_root/$relative"
-  done
-  for relative in "${failure_points[@]}"; do
-    cp -p -- "$install_root/$relative" "$backup_root/$relative"
-    copied_relatives+=("$relative"); copied_existed+=(1)
-    print -r -- partial-copy > "$install_root/$relative"
-    if [[ "$relative" == "$failure_point" ]]; then
-      rollback_copies "$backup_root"
-      break
-    fi
-    print -r -- "new-$relative" > "$install_root/$relative"
-  done
-  for relative in "${failure_points[@]}"; do
-    [[ "$(<"$install_root/$relative")" == "old-$relative" ]] || {
-      print -u2 "Rollback did not restore $relative after injected $failure_point failure."
-      exit 1
-    }
-  done
-done
+node_bin="$(command -v node)"
+transaction_helper="$root/macos/update-transaction.js"
+install_root="$temporary/install"
+prepared_root="$temporary/prepared"
+state_root="$temporary/state"
+mkdir -p "$install_root" "$prepared_root" "$state_root"
+print -r -- v1.0.0 > "$install_root/VERSION"
+print -r -- old > "$install_root/payload.txt"
+print -r -- removed > "$install_root/removed.txt"
+{
+  print -r -- "$(/usr/bin/shasum -a 256 "$install_root/VERSION" | /usr/bin/awk '{print $1}') *VERSION"
+  print -r -- "$(/usr/bin/shasum -a 256 "$install_root/payload.txt" | /usr/bin/awk '{print $1}') *payload.txt"
+  print -r -- "$(/usr/bin/shasum -a 256 "$install_root/removed.txt" | /usr/bin/awk '{print $1}') *removed.txt"
+} > "$install_root/RELEASE-MANIFEST.sha256"
+print -r -- v2.0.0 > "$prepared_root/VERSION"
+print -r -- new > "$prepared_root/payload.txt"
+print -r -- added > "$prepared_root/added.txt"
+cp -p -- "$root/macos/Update-ChatGPTRemote.sh" "$prepared_root/Update-ChatGPTRemote.sh"
+cp -p -- "$transaction_helper" "$prepared_root/update-transaction.js"
+{
+  print -r -- "$(/usr/bin/shasum -a 256 "$prepared_root/VERSION" | /usr/bin/awk '{print $1}') *VERSION"
+  print -r -- "$(/usr/bin/shasum -a 256 "$prepared_root/payload.txt" | /usr/bin/awk '{print $1}') *payload.txt"
+  print -r -- "$(/usr/bin/shasum -a 256 "$prepared_root/added.txt" | /usr/bin/awk '{print $1}') *added.txt"
+  print -r -- "$(/usr/bin/shasum -a 256 "$prepared_root/Update-ChatGPTRemote.sh" | /usr/bin/awk '{print $1}') *Update-ChatGPTRemote.sh"
+  print -r -- "$(/usr/bin/shasum -a 256 "$prepared_root/update-transaction.js" | /usr/bin/awk '{print $1}') *update-transaction.js"
+} > "$prepared_root/RELEASE-MANIFEST.sha256"
+print -rn -- fixture-archive > "$prepared_root/.chatgpt-remote-release.zip"
+archive_hash="$(/usr/bin/shasum -a 256 "$prepared_root/.chatgpt-remote-release.zip" | /usr/bin/awk '{print $1}')"
+"$node_bin" "$transaction_helper" seal-prepared --prepared-root "$prepared_root" --platform macOS-arm64 --version v2.0.0 --archive-sha256 "$archive_hash" >/dev/null
+apply_result="$("$node_bin" "$transaction_helper" apply --install-root "$install_root" --prepared-root "$prepared_root" \
+  --journal-path "$state_root/transaction.json" --backup-root "$state_root/rollback" --platform macOS-arm64 \
+  --version v2.0.0 --archive-sha256 "$archive_hash")"
+[[ "$apply_result" == *'"updated":true'* && "$(<"$install_root/payload.txt")" == new && ! -e "$install_root/removed.txt" ]] || {
+  print -u2 "Transactional macOS apply produced the wrong fixture state."
+  exit 1
+}
+"$node_bin" "$transaction_helper" integrity --install-root "$install_root" >/dev/null
 
-print -r -- '{"AppleScriptEscapeSemantic":true,"SharedEscapeHelper":true,"MacOSShellSyntax":true,"RelativeInvocation":true,"RollbackFailurePoints":4}'
+print -r -- '{"AppleScriptEscapeSemantic":true,"SharedEscapeHelper":true,"MacOSShellSyntax":true,"RelativeInvocation":true,"TransactionApply":true}'

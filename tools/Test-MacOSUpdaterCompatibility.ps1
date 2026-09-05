@@ -16,6 +16,7 @@ if (-not $updater.Contains('/usr/bin/shasum -a 256 "$file_path" | /usr/bin/awk')
     throw 'The macOS installed-integrity check does not use the absolute awk path.'
 }
 
+$global:LASTEXITCODE = 0
 [pscustomobject]@{
     SpecialPathVariableAbsent = $true
     AbsoluteIntegrityTools = $true

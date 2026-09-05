@@ -188,6 +188,26 @@ function Get-PublishedArchiveHash {
     return ([regex]::Match($checksumLine, '^[0-9a-fA-F]{64}')).Value.ToLowerInvariant()
 }
 
+function Get-SafePreparedDirectoryItem {
+    param([string]$Path)
+    $maxAttempts = 3
+    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+        try {
+            return Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+        } catch {
+            $isPathNotFound = $_.CategoryInfo.Category -eq [Management.Automation.ErrorCategory]::ObjectNotFound -or
+                $_.FullyQualifiedErrorId -match '(^|,)PathNotFound(?:,|$)' -or
+                $_.Exception -is [Management.Automation.ItemNotFoundException]
+            if (-not $isPathNotFound) { throw }
+            if ($attempt -eq $maxAttempts) {
+                throw "PreparedDirectory path component could not be resolved after $maxAttempts attempts: $Path"
+            }
+            Start-Sleep -Milliseconds 50
+        }
+    }
+    throw "PreparedDirectory path component could not be resolved: $Path"
+}
+
 function Assert-SafePreparedDirectory {
     param([string]$Path)
     $resolved = [IO.Path]::GetFullPath($Path).TrimEnd('\')
@@ -203,7 +223,7 @@ function Assert-SafePreparedDirectory {
     $current = [IO.Path]::GetPathRoot($parent)
     foreach ($component in $parent.Substring($current.Length).Split('\') | Where-Object { $_ }) {
         $current = Join-Path $current $component
-        if ((Get-Item -LiteralPath $current).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        if ((Get-SafePreparedDirectoryItem -Path $current).Attributes -band [IO.FileAttributes]::ReparsePoint) {
             throw "PreparedDirectory must not traverse a reparse point: $resolved"
         }
     }

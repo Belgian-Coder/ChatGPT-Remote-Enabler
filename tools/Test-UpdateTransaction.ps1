@@ -188,8 +188,95 @@ function Start-ReleaseServer {
     return $process
 }
 
+function Get-UpdaterFunctionText {
+    param([string]$Name)
+    $tokens = $null
+    $parseErrors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($updater, [ref]$tokens, [ref]$parseErrors)
+    if ($parseErrors.Count -gt 0) { throw "Updater parse failed: $($parseErrors -join '; ')" }
+    $functionAst = @($ast.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $Name
+    }, $true)) | Select-Object -First 1
+    if (-not $functionAst) { throw "Updater function was not found: $Name" }
+    return $functionAst.Extent.Text
+}
+
+function Invoke-ExtractedPreparedDirectoryCheck {
+    param(
+        [string]$Install,
+        [string]$Prepared,
+        [string]$ItemFunctionText,
+        [string]$AssertFunctionText,
+        [switch]$InjectOneTimePathNotFound
+    )
+    $script:safePreparedDirectoryTestInject = [bool]$InjectOneTimePathNotFound
+    $script:safePreparedDirectoryTestInjectCount = 0
+    try {
+        $result = & {
+            param([string]$InstallRootValue, [string]$PreparedValue, [string]$ItemText, [string]$AssertText)
+            $InstallRoot = $InstallRootValue
+            function Get-Item {
+                param(
+                    [string]$LiteralPath,
+                    [switch]$Force,
+                    [Management.Automation.ActionPreference]$ErrorAction = 'Continue'
+                )
+                if ($script:safePreparedDirectoryTestInject -and $script:safePreparedDirectoryTestInjectCount -eq 0) {
+                    $script:safePreparedDirectoryTestInjectCount++
+                    Write-Error -Message "Injected transient path-not-found for $LiteralPath" -ErrorId PathNotFound -Category ObjectNotFound -TargetObject $LiteralPath -ErrorAction Stop
+                }
+                Microsoft.PowerShell.Management\Get-Item -LiteralPath $LiteralPath -Force:$Force -ErrorAction $ErrorAction
+            }
+            . ([scriptblock]::Create($ItemText))
+            . ([scriptblock]::Create($AssertText))
+            $resolved = Assert-SafePreparedDirectory -Path $PreparedValue
+            [pscustomobject]@{ Resolved = $resolved }
+        } $Install $Prepared $ItemFunctionText $AssertFunctionText
+        return [pscustomobject]@{
+            Result = $result
+            InjectionCount = $script:safePreparedDirectoryTestInjectCount
+        }
+    } finally {
+        Remove-Variable -Name safePreparedDirectoryTestInject -Scope Script -ErrorAction SilentlyContinue
+        Remove-Variable -Name safePreparedDirectoryTestInjectCount -Scope Script -ErrorAction SilentlyContinue
+    }
+}
+
 try {
     New-Item -ItemType Directory -Path $temporaryRoot | Out-Null
+    $safePreparedDirectoryItemText = Get-UpdaterFunctionText 'Get-SafePreparedDirectoryItem'
+    $assertSafePreparedDirectoryText = Get-UpdaterFunctionText 'Assert-SafePreparedDirectory'
+    $safePathRoot = Join-Path $temporaryRoot 'path-safety'
+    $safeInstall = Join-Path $safePathRoot 'install'
+    $safePrepared = Join-Path $safePathRoot 'prepared\transient'
+    New-Item -ItemType Directory -Path $safeInstall -Force | Out-Null
+    $transientResult = Invoke-ExtractedPreparedDirectoryCheck -Install $safeInstall -Prepared $safePrepared -ItemFunctionText $safePreparedDirectoryItemText -AssertFunctionText $assertSafePreparedDirectoryText -InjectOneTimePathNotFound
+    if ($transientResult.InjectionCount -ne 1 -or $transientResult.Result.Resolved -ne [IO.Path]::GetFullPath($safePrepared)) {
+        throw 'A one-time Get-Item PathNotFound was not retried successfully while checking a prepared directory.'
+    }
+
+    $reparseTarget = Join-Path $safePathRoot 'reparse-target'
+    $reparsePath = Join-Path $safePathRoot 'reparse-link'
+    New-Item -ItemType Directory -Path $reparseTarget -Force | Out-Null
+    New-Item -ItemType Junction -Path $reparsePath -Target $reparseTarget | Out-Null
+    try {
+        if (-not ((Microsoft.PowerShell.Management\Get-Item -LiteralPath $reparsePath -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw 'The reparse-point fixture was not a real reparse point.'
+        }
+        $reparseRejected = $false
+        try {
+            [void](Invoke-ExtractedPreparedDirectoryCheck -Install $safeInstall -Prepared (Join-Path $reparsePath 'child') -ItemFunctionText $safePreparedDirectoryItemText -AssertFunctionText $assertSafePreparedDirectoryText)
+        } catch {
+            $reparseRejected = $_.Exception.Message -match 'must not traverse a reparse point'
+            if (-not $reparseRejected) { throw }
+        }
+        if (-not $reparseRejected) { throw 'A real prepared-directory reparse point was not rejected.' }
+    } finally {
+        Remove-Item -LiteralPath $reparsePath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $reparseTarget -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
     $install = Join-Path $temporaryRoot 'install'
     $prepared = Join-Path $temporaryRoot 'prepared'
     $state = Join-Path $temporaryRoot 'state'

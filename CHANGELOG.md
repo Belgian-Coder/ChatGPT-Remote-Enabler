@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.5.38
+
+- Retry a transient Windows path-provider lookup failure while validating a prepared update directory. Keep the existing fail-closed rejection of reparse points and fail immediately for permission or other non-transient errors.
+- Add deterministic regression coverage for a one-time missing-path result and for rejection of a real directory junction during prepared-directory validation.
+
 ## v1.5.37
 
 - Preserve existing Windows Remote Enabler enrollment keys when the installed Codex build switches to its native Windows key provider. Normal startup detects a matching protected key and prepares a version-matched private runtime with a native-first fallback to the existing DPAPI store. New keys remain native, and direct connections retain the original network URLs and challenge validation.

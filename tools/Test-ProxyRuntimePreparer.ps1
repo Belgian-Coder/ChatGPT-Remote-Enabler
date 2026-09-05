@@ -34,7 +34,8 @@ try {
 
     $originalController = 'Tle=class extends n.$t{constructor(e){let t=wC(e.desktopApiOptions),i=e.globalState,a=e.deviceKeyClient;super({envId:e.hostConfig.env_id,connectionGroup:e.appServerClient,connectionKey:t,websocketUrl:n.en(r.H(e.desktopApiOptions,`/codex/remote/control/client`)),getAuthHeaders:({headers:t}={})=>EC({appServerClient:e.appServerClient,desktopApiOptions:e.desktopApiOptions,headers:t}),enrollClient:({headers:n})=>DC({appServerClient:e.appServerClient,deviceKeyClient:a,desktopApiOptions:e.desktopApiOptions,enrollmentKey:t,globalState:i,headers:n,onEnrollmentAuthorizationRequired:e.onEnrollmentAuthorizationRequired,requestRemoteControlEnrollmentStepUpToken:e.requestRemoteControlEnrollmentStepUpToken}),authorizeDeviceKeyChallenge:e=>Yle({challenge:e,deviceKeyClient:a,enrollmentKey:t,globalState:i})})}}'
     $originalChallengeValidator = 'function vQ(e,t){let n=new URL(t),r=n.protocol===`wss:`?`https:`:n.protocol===`ws:`?`http:`:null;return r!=null&&e.targetOrigin===`${r}//${n.host}`&&e.targetPath===n.pathname}'
-    [IO.File]::WriteAllText((Join-Path $resources 'app.asar'), "header${originalController};async function Ele;${originalChallengeValidator};trailer", [Text.UTF8Encoding]::new($false))
+    $originalKeyLoader = 'return this.addon??=Yke((0,p.join)(this.resourcesPath,`native`,Xke)),this.addon'
+    [IO.File]::WriteAllText((Join-Path $resources 'app.asar'), "header${originalController};async function Ele;${originalChallengeValidator};${originalKeyLoader};trailer", [Text.UTF8Encoding]::new($false))
     $sourceAsarHash = (Get-FileHash -LiteralPath (Join-Path $resources 'app.asar') -Algorithm SHA256).Hash
     $sourceChromeHash = (Get-FileHash -LiteralPath (Join-Path $source 'chrome.dll') -Algorithm SHA256).Hash
 
@@ -72,6 +73,30 @@ try {
         throw 'The verified private proxy runtime was not reused.'
     }
 
+    $keyOutput = @(& $node $preparer '--source-app' $source '--package-version' '1.2.3.4' '--proxy-enabled' 'false' '--legacy-device-keys' 'true' 2>&1)
+    if ($LASTEXITCODE -ne 0 -or $keyOutput.Count -ne 1) { throw "Existing-key runtime preparation failed: $($keyOutput -join ' ')" }
+    $keyResult = [string]$keyOutput[0] | ConvertFrom-Json
+    $keyAsar = Get-Content -LiteralPath ([string]$keyResult.appAsarPath) -Raw
+    if (-not $keyAsar.Contains($originalController) -or -not $keyAsar.Contains($originalChallengeValidator) -or
+        $keyAsar.Contains($originalKeyLoader) -or -not $keyAsar.Contains('Yke(this.resourcesPath+`/crk.cjs`)()')) {
+        throw 'Direct existing-key compatibility must change only the native key loader, preserving network and challenge validation.'
+    }
+    if ((Get-Item -LiteralPath ([string]$keyResult.appAsarPath)).Length -ne (Get-Item -LiteralPath (Join-Path $resources 'app.asar')).Length) { throw 'The existing-key patch changed ASAR length.' }
+    $keyLoader = Join-Path ([string]$keyResult.runtimeRoot) 'resources\crk.cjs'
+    $keyService = Join-Path ([string]$keyResult.runtimeRoot) 'resources\crks.cjs'
+    if ((Get-FileHash -LiteralPath $keyLoader).Hash -ne (Get-FileHash -LiteralPath (Join-Path $root 'windows\CodexRemoteSimple\runtime\legacy-device-key-compat.cjs')).Hash -or
+        (Get-FileHash -LiteralPath $keyService).Hash -ne (Get-FileHash -LiteralPath (Join-Path $root 'windows\CodexRemoteSimple\runtime\main-payload.js')).Hash) { throw 'The private runtime omitted the exact compatibility helpers.' }
+    $keyAgain = @(& $node $preparer '--source-app' $source '--package-version' '1.2.3.4' '--proxy-enabled' 'false' '--legacy-device-keys' 'true' 2>&1)
+    if ($LASTEXITCODE -ne 0 -or -not ([bool](([string]$keyAgain[0] | ConvertFrom-Json).reused))) { throw 'The verified existing-key runtime was not reused.' }
+    Add-Content -LiteralPath $keyLoader -Value '// fixture modification'
+    $keyRepaired = @(& $node $preparer '--source-app' $source '--package-version' '1.2.3.4' '--proxy-enabled' 'false' '--legacy-device-keys' 'true' 2>&1)
+    if ($LASTEXITCODE -ne 0 -or ([bool](([string]$keyRepaired[0] | ConvertFrom-Json).reused))) { throw 'A modified compatibility helper was incorrectly reused.' }
+    $combined = @(& $node $preparer '--source-app' $source '--package-version' '1.2.3.4' '--proxy-enabled' 'true' '--legacy-device-keys' 'true' 2>&1)
+    if ($LASTEXITCODE -ne 0) { throw "Combined compatibility preparation failed: $($combined -join ' ')" }
+    $combinedResult = [string]$combined[0] | ConvertFrom-Json
+    $combinedAsar = Get-Content -LiteralPath ([string]$combinedResult.appAsarPath) -Raw
+    if (-not $combinedAsar.Contains('Yke(this.resourcesPath+`/crk.cjs`)()') -or -not $combinedAsar.Contains('process.env.CHATGPT_REMOTE_WS_URL??')) { throw 'Proxy and existing-key compatibility were not composed.' }
+
     [pscustomobject]@{
         SourceAppPreserved = $true
         ScopedControllerPatched = $true
@@ -81,6 +106,11 @@ try {
         PrivateCliPreserved = $true
         TransientRenameRetried = $true
         VerifiedRuntimeReused = $true
+        ExistingKeyLoaderPatched = $true
+        DirectNetworkAndChallengesPreserved = $true
+        ExistingKeyHelpersVerified = $true
+        ModifiedHelperRebuilt = $true
+        ProxyAndKeyCompatibilityComposed = $true
     } | ConvertTo-Json
 } finally {
     $env:LOCALAPPDATA = $previousLocalAppData

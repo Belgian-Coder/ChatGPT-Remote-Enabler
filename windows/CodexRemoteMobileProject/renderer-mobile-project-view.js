@@ -11,6 +11,7 @@
   const ROW_SELECTOR = "[data-app-action-sidebar-thread-row]";
   const AUTO_ENABLED_KEY = "codex-remote-mobile-auto-register-enabled-v1";
   const HOST_NAMES_KEY = "codex-remote-mobile-host-names-v1";
+  const NATIVE_HOST_NAMES_KEY = "codex-remote-mobile-native-host-names-v1";
   const AUTO_MANAGED_KEY = "codex-remote-mobile-auto-managed-v1";
   const AUTO_SUPPRESSED_KEY = "codex-remote-mobile-auto-suppressed-v1";
   const AUTO_ARCHIVE_ENABLED_KEY = "codex-remote-mobile-auto-archive-enabled-v1";
@@ -61,7 +62,7 @@
     "unknown",
   ]);
   const PUBLISHER_VERSION = 53;
-  const VERSION = 69;
+  const VERSION = 70;
   // Keep outstanding writes locked across renderer reinjection until the underlying RPC settles.
   const peerWriteLocks = globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ instanceof Map
     ? globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ : (globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ = new Map());
@@ -237,6 +238,10 @@
     nativeStateBridgePending: null,
     nativeStateBridgeRetryAt: 0,
     nativeStateBridgeControllers: new Set(),
+    nativeConnectionSnapshot: null,
+    nativeConnectionSignature: "",
+    nativeConnectionTimer: null,
+    nativeConnectionRefreshPending: false,
     healthRefreshOutcomes: new Map(),
     diagnosticSavePending: false,
     diagnosticPreview: null,
@@ -737,7 +742,89 @@
     return fallback && !fallback.matches("body,nav,header") && !containsSidebarChrome(fallback) ? fallback : null;
   }
 
+  function readNativeConnectionSnapshot() {
+    const bridge = globalThis.electronBridge;
+    if (typeof bridge?.getSharedObjectSnapshotValue !== "function") return null;
+    try {
+      const catalog = bridge.getSharedObjectSnapshotValue("remote_control_connections");
+      const status = bridge.getSharedObjectSnapshotValue("remote_control_connections_state");
+      if (!Array.isArray(catalog) && (!status || typeof status !== "object")) return null;
+      const boolean = value => typeof value === "boolean" ? value : null;
+      const connections = [];
+      for (const item of Array.isArray(catalog) ? catalog.slice(0, 1000) : []) {
+        const hostId = normalizeHostId(item?.hostId ?? item?.envId);
+        if (typeof hostId !== "string" || !/^remote-control:env_/iu.test(hostId)) continue;
+        const reportedName = [item.displayName, item.hostName].find(name => !isSyntheticHostName(name));
+        connections.push({ hostId, name: reportedName?.trim() ?? null, online: boolean(item.online), autoConnect: boolean(item.autoConnect) });
+      }
+      connections.sort((left, right) => left.hostId.localeCompare(right.hostId));
+      return {
+        available: boolean(status?.available),
+        accessRequired: boolean(status?.accessRequired),
+        authRequired: boolean(status?.authRequired),
+        clientAuthorized: boolean(status?.clientAuthorized),
+        connections,
+      };
+    } catch { return null; }
+  }
+
+  function nativeConnectionStatus() {
+    const snapshot = state.nativeConnectionSnapshot;
+    if (!snapshot) return "unknown";
+    if (snapshot.authRequired === true) return "sign-in-required";
+    if (snapshot.accessRequired === true) return "access-required";
+    if (snapshot.available === false) return "unavailable";
+    if (snapshot.clientAuthorized === false) return "authorization-required";
+    if (snapshot.clientAuthorized === true) return snapshot.connections.length ? "authorized" : "no-devices";
+    return "unknown";
+  }
+
+  function refreshNativeConnectionSnapshot() {
+    if (state.disposed) return false;
+    const snapshot = readNativeConnectionSnapshot();
+    const signature = JSON.stringify(snapshot);
+    if (signature === state.nativeConnectionSignature) return false;
+    state.nativeConnectionSignature = signature;
+    state.nativeConnectionSnapshot = snapshot;
+    const remembered = readRecords(HOST_NAMES_KEY);
+    const nativeNames = readRecords(NATIVE_HOST_NAMES_KEY);
+    let changedNames = false;
+    for (const connection of snapshot?.connections ?? []) {
+      if (isSyntheticHostName(connection.name)
+        || (remembered[connection.hostId] === connection.name && nativeNames[connection.hostId] === connection.name)) continue;
+      remembered[connection.hostId] = connection.name;
+      nativeNames[connection.hostId] = connection.name;
+      changedNames = true;
+    }
+    if (changedNames) {
+      writeRecords(HOST_NAMES_KEY, remembered);
+      writeRecords(NATIVE_HOST_NAMES_KEY, nativeNames);
+    }
+    // Native connection changes need not mutate the sidebar DOM. Invalidate
+    // discovery on authorization/reconnect as well as on initial installation.
+    state.hostDiscoveryDirty = true;
+    state.remoteRuntimeCache.clear();
+    state.remoteRuntimeScannedAt = 0;
+    state.inventoryHydrationDirty = true;
+    state.nativeConnectionRefreshPending = true;
+    if (state.active) {
+      scheduleNativeInventoryHydration();
+      schedule();
+    }
+    return true;
+  }
+
+  function startNativeConnectionObservation() {
+    refreshNativeConnectionSnapshot();
+    if (state.nativeConnectionTimer !== null) return;
+    // Read the native shared cache only. Do not initiate enrollment, change
+    // connection settings, or make repeated backend refresh requests.
+    state.nativeConnectionTimer = setInterval(refreshNativeConnectionSnapshot, 2000);
+    state.nativeConnectionTimer?.unref?.();
+  }
+
   function discoverHostNames() {
+    refreshNativeConnectionSnapshot();
     if (!state.hostDiscoveryDirty && state.hostDiscoveryCache && Date.now() - state.hostDiscoveryScannedAt < 2000) return state.hostDiscoveryCache;
     state.counters.hostDiscoveryScans += 1;
     const names = new Map();
@@ -872,6 +959,12 @@
           break;
         }
       }
+    }
+    // The native catalog exists independently of mounted sidebar rows and keeps
+    // the user's device labels when a device has no projects or tasks yet.
+    for (const connection of state.nativeConnectionSnapshot?.connections ?? []) {
+      if (!isSyntheticHostName(connection.name)) names.set(connection.hostId, connection.name);
+      if (connection.online !== null) availability.set(connection.hostId, connection.online);
     }
     const result = { names, availability, registeredProjects, runtimes };
     state.hostDiscoveryCache = result;
@@ -1801,7 +1894,9 @@
   }
 
   function isSyntheticHostName(value) {
-    return typeof value !== "string" || !value.trim() || /^(?:Remote\s+)?(?:remote-control:)?env_/iu.test(value.trim());
+    return typeof value !== "string" || !value.trim()
+      || /^(?:Remote\s+)?(?:remote-control:)?env_/iu.test(value.trim())
+      || /^(?:remote|unknown) (?:device|machine)$/iu.test(value.trim());
   }
 
   function hostNameAliases(hostId) {
@@ -1822,6 +1917,9 @@
     if (hostId === "local") return config.localDisplayName || "Local";
     const normalizedHostId = normalizeHostId(hostId);
     const aliases = hostNameAliases(normalizedHostId);
+    const nativeNames = readRecords(NATIVE_HOST_NAMES_KEY);
+    const nativeName = aliases.map(alias => nativeNames[alias]).find(value => !isSyntheticHostName(value));
+    if (nativeName) return nativeName.trim();
     const discovered = aliases.map((alias) => discoveredNames.get(alias)).find((value) => !isSyntheticHostName(value));
     const remembered = readRecords(HOST_NAMES_KEY);
     if (!isSyntheticHostName(discovered)) {
@@ -2512,6 +2610,13 @@
       if (!ready.publisherReady || ageSeconds(state.localInventoryPublishedAt) === null || ageSeconds(state.localInventoryPublishedAt) > 180) return { code: "local-publisher", summary: "The local inventory publisher has not confirmed a recent successful write.", next: "Check that the app can write its data folder and launch through Remote Enabler. Review a diagnostic preview if refresh does not recover." };
       return { code: "local-ready", summary: "Local inventory and publication are ready.", next: "Check the other device below if its projects are missing." };
     }
+    const nativeStatus = nativeConnectionStatus();
+    if (/^remote-control:env_/iu.test(host.id)) {
+      if (nativeStatus === "authorization-required") return { code: nativeStatus, summary: "Codex has not confirmed this computer's authorization to connect to other devices. Project sync is paused.", next: "Open Settings > Connections > Control other devices and complete the native authorization flow. Saved projects and device labels do not prove authorization. Sync checks resume automatically once Codex exposes the connections." };
+      if (nativeStatus === "sign-in-required") return { code: nativeStatus, summary: "Codex reports that sign-in is required for remote connections.", next: "Sign in through Codex, then check Settings > Connections > Control other devices. Sync checks resume when connections become available." };
+      if (nativeStatus === "access-required") return { code: nativeStatus, summary: "Codex reports that access to remote connections is required.", next: "Review the access message in Settings > Connections > Control other devices. The helper cannot supply account access." };
+      if (nativeStatus === "unavailable") return { code: nativeStatus, summary: "Codex reports that remote connections are unavailable.", next: "Check Settings > Connections > Control other devices. The helper will discover the connections when Codex makes them available." };
+    }
     const inventory = state.remoteProjectInventories.get(host.id);
     const connectivity = state.hostConnectivity.get(host.id);
     const checkedRecently = ageSeconds(connectivity?.checkedAt) !== null && ageSeconds(connectivity.checkedAt) <= 30;
@@ -2530,7 +2635,10 @@
 
   function appendConnectionTroubleshooting(parent, model) {
     const details = featureDetails("Connection troubleshooting", "connection");
-    helpText(details, "Follow the next step for each device. This uses observed helper evidence; it does not test account entitlement, change Remote settings, or restart apps.");
+    helpText(details, "Follow the next step for each device. This reads helper evidence and Codex's reported connection state; it does not change Remote settings or restart apps.");
+    const nativeStatus = nativeConnectionStatus();
+    helpText(details, `Codex remote connection state: ${nativeStatus.replaceAll("-", " ")}.`);
+    if (nativeStatus === "authorization-required" || nativeStatus === "sign-in-required") helpText(details, "Open Settings > Connections > Control other devices to complete Codex's authorization flow on this computer. This requires your interaction; the helper cannot authorize a device for you.");
     const refresh = button("crmp-auto-control", "Refresh connection evidence");
     refresh.disabled = Date.now() < state.healthRefreshUntil;
     setFocusKey(refresh, "connection-evidence");
@@ -2793,6 +2901,7 @@
       capturedAt: new Date().toISOString(),
       helperVersion: releaseVersion(config.helperVersion),
       rendererVersion: VERSION,
+      nativeConnectionState: nativeConnectionStatus(),
       view: state.view === "native" ? "native" : "mobile",
       devices: model.hosts.map((host, index) => {
         const inventory = state.remoteProjectInventories.get(host.id);
@@ -5413,7 +5522,8 @@
     scheduleLocalProjectInventoryPublication();
     scheduleLocalPeerCacheInventory(model.hosts);
     scheduleLocalRegisteredProjectsRefresh();
-    scheduleRemoteProjectInventory(model.remoteRuntimes);
+    scheduleRemoteProjectInventory(model.remoteRuntimes, state.nativeConnectionRefreshPending);
+    state.nativeConnectionRefreshPending = false;
     scheduleAutoRegistration(model);
     scheduleAutoReconciliation(model);
     scheduleAutoArchive();
@@ -5458,7 +5568,17 @@
     fragment.appendChild(filters);
 
     const unavailableInventoryHosts = model.hosts.filter((host) => host.id !== "local" && state.remoteProjectInventories.get(host.id)?.error);
-    if (unavailableInventoryHosts.length) {
+    const nativeStatus = nativeConnectionStatus();
+    if (["authorization-required", "sign-in-required", "access-required"].includes(nativeStatus)) {
+      const status = document.createElement("div");
+      status.className = "crmp-inventory-status";
+      status.textContent = nativeStatus === "authorization-required"
+        ? "Project sync paused: authorize this computer in Settings > Connections > Control other devices."
+        : nativeStatus === "sign-in-required"
+          ? "Project sync paused: Codex requires sign-in for remote connections."
+          : "Project sync paused: check remote connection access in Settings > Connections.";
+      fragment.appendChild(status);
+    } else if (unavailableInventoryHosts.length) {
       const status = document.createElement("div");
       status.className = "crmp-inventory-status";
       status.textContent = `Project sync paused: waiting for a current inventory from ${unavailableInventoryHosts.map((host) => host.name).join(", ")}.`;
@@ -5597,6 +5717,8 @@
       filter: state.filter,
       hosts: model.hosts.length,
       hostNames: model.hosts.map((host) => host.name),
+      nativeConnectionState: nativeConnectionStatus(),
+      nativeConnectionCount: state.nativeConnectionSnapshot?.connections.length ?? null,
       hostAvailability: Object.fromEntries(model.hosts.map((host) => [host.name, { available: host.available, known: host.availabilityKnown }])),
       inventoryHydrationPending: state.inventoryHydrationPending,
       inventoryHydrationError: state.inventoryHydrationError,
@@ -5679,6 +5801,7 @@
     document.body.appendChild(state.liveRegion);
     state.active = true;
     state.disposed = false;
+    startNativeConnectionObservation();
     document.addEventListener("pointerdown", dismissOverlays);
     document.addEventListener("keydown", dismissOnEscape);
     document.addEventListener(UPDATE_EVENT, handleUpdateStatus);
@@ -5733,6 +5856,8 @@
     state.observerTarget = null;
     state.mountObserver?.disconnect();
     state.mountObserver = null;
+    if (state.nativeConnectionTimer !== null) clearInterval(state.nativeConnectionTimer);
+    state.nativeConnectionTimer = null;
     if (state.scheduledFrame !== null) cancelAnimationFrame(state.scheduledFrame);
     state.scheduledFrame = null;
     if (state.autoRegistrationTimer !== null) clearTimeout(state.autoRegistrationTimer);

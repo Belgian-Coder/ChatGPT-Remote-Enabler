@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.5.37
+
+- Preserve existing Windows Remote Enabler enrollment keys when the installed Codex build switches to its native Windows key provider. Normal startup detects a matching protected key and prepares a version-matched private runtime with a native-first fallback to the existing DPAPI store. New keys remain native, and direct connections retain the original network URLs and challenge validation.
+- Verify compatibility helper hashes before reusing a session; launch the selected private executable through its package context instead of activating the ordinary installed executable. The installed app files and existing enrollment store are preserved.
+- Read device labels from the native connection catalog even when a device has no sidebar rows, retain those labels across renderer restarts, and prevent placeholders or inventory hostnames from replacing them.
+- Observe native authorization and connection changes independently of sidebar mutations, invalidate stale runtime discovery, and retry project inventory after reconnect. Report authorization/sign-in/access blocks explicitly instead of silently waiting.
+- Add regression coverage for existing protected-key signing across fresh processes, native-provider preference, startup selection, private runtime reuse/tamper detection, empty-folder transfer and modeling, and browser document reloads. Live signed peer reconnection and native macOS acceptance remain pending; no release was injected into running apps.
+
 ## v1.5.36
 
 - Put update controls, device health, cleanup, diagnostics, and connection troubleshooting behind Settings in both views. Keep only navigation and device filters before projects, with a small update-attention indicator on Settings.

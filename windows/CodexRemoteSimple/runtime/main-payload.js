@@ -583,10 +583,14 @@
         reject(error);
         return;
       }
+      const dpapiEnvironment = { ...process.env };
+      for (const name of Object.keys(dpapiEnvironment)) {
+        if (name.toLowerCase() === "psmodulepath") delete dpapiEnvironment[name];
+      }
       const child = childProcess.spawn(
         powershellPath,
         ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", operationScript],
-        { stdio: ["pipe", "pipe", "pipe"], windowsHide: true },
+        { stdio: ["pipe", "pipe", "pipe"], windowsHide: true, env: dpapiEnvironment },
       );
       const stdout = [];
       let stdoutBytes = 0;

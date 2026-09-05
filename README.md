@@ -8,12 +8,12 @@ Unofficial Windows and macOS helpers for ChatGPT/Codex Remote. Windows exposes h
 
 ## Install without administrator access
 
-Download a platform ZIP from [v1.5.36 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.36), then follow its step-by-step guide:
+Download a platform ZIP from [v1.5.37 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.37), then follow its step-by-step guide:
 
 - **[Windows 11 x64](windows/README.md)**: per-user folder, optional portable Node, double-click launch, Desktop/Start-menu shortcuts and optional sign-in shortcut.
 - **[macOS Apple Silicon](macos/README.md)**: home-folder setup, optional portable Node, Terminal first launch, Dock shortcut and per-user sign-in startup.
 
-Neither setup requires administrator permissions. A supported desktop app/account and Node.js 22+ are prerequisites; organization policies can still block execution. **v1.5.36 is a normal release. Native macOS acceptance and a full real-app update/relaunch remain pending.**
+Neither setup requires administrator permissions. A supported desktop app/account and Node.js 22+ are prerequisites; organization policies can still block execution. **v1.5.37 is a normal release. Native macOS acceptance and a full real-app update/relaunch remain pending.**
 
 The **[feature guide](FEATURES.md)** explains controls, defaults, update behavior, and cleanup consequences. Both ZIPs include their installation and feature guides.
 
@@ -109,14 +109,14 @@ checks are `node tools/Test-RendererBrowser.cjs` and
 `node tools/Test-UpdateSessionCdpBrowser.cjs`. They exercise the complete
 renderer flow and real debugger bindings in isolated browser fixtures.
 
-The v1.5.36 candidate has automated Windows and browser coverage. These tests
+The v1.5.37 release has automated Windows and browser coverage. These tests
 do not establish an actual ChatGPT update/relaunch. Full real-application startup,
 quit, and update acceptance remains necessary before promotion to a stable release. Native macOS
 execution, including `tools/Test-MacOSSupport.zsh`, is deferred until a Mac is
 available; JavaScript parity and static contracts are checked on Windows.
 ## UX roadmap
 
-The interface polish and per-user setup assistants are included in v1.5.36. See [the prioritized feature backlog](UX-ROADMAP.md) for ideas intentionally outside this release.
+The interface polish and per-user setup assistants are included in v1.5.37. See [the prioritized feature backlog](UX-ROADMAP.md) for ideas intentionally outside this release.
 
 ## Health, history, and diagnostics
 

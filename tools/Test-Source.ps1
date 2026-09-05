@@ -9,6 +9,8 @@ $javascript = @(
     'windows\CodexRemoteMobileProject\inject.js',
     'windows\CodexRemoteSimple\runtime\renderer-payload.js',
     'windows\CodexRemoteSimple\runtime\orchestrator.js',
+    'windows\CodexRemoteSimple\runtime\legacy-device-key-compat.cjs',
+    'windows\CodexRemoteSimple\runtime\main-payload.js',
     'windows\CodexRemoteSimple\runtime\api-proxy-bridge.js',
     'windows\CodexRemoteSimple\runtime\prepare-proxy-runtime.js',
     'windows\CodexRemoteMobileProject\update-session.js',
@@ -55,6 +57,7 @@ $powershell = @(
     'tools\Test-WindowsControllerReliability.ps1'
     'tools\Test-PackageProcessLauncher.ps1'
     'tools\Test-ProxyRuntimePreparer.ps1'
+    'tools\Test-LegacyDeviceKeyStartup.ps1'
     'tools\Test-MacOSUpdaterCompatibility.ps1'
     'tools\Test-MacOSSupport.ps1'
     'tools\Test-UserInstallWindows.ps1'
@@ -96,7 +99,7 @@ foreach ($pair in @(
 }
 $renderer = Get-Content -LiteralPath $windowsRenderer -Raw
 $requiredContracts = @(
-    'const VERSION = 69;',
+    'const VERSION = 70;',
     'hostDisplayName: config.localDisplayName || null',
     'codex-remote-mobile-verified-thread-ids-v2',
     'THREAD_VISIBILITY_CONTRACT_VERSION',
@@ -202,7 +205,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Thread visibility self-test failed.' }
 & $node (Join-Path $root 'windows\CodexRemoteMobileProject\tests\TaskStatus.SelfTest.js')
 if ($LASTEXITCODE -ne 0) { throw 'Task status self-test failed.' }
 
-foreach ($test in @('HostNames', 'SidebarLayout', 'SidebarStatus', 'SidebarBehavior', 'RendererReliability', 'FeatureState', 'PeerTransfer', 'NativeStateBridge')) {
+foreach ($test in @('HostNames', 'SidebarLayout', 'SidebarStatus', 'SidebarBehavior', 'RendererReliability', 'FeatureState', 'PeerTransfer', 'NativeStateBridge', 'NativeConnectionLifecycle')) {
     & $node (Join-Path $root "windows\CodexRemoteMobileProject\tests\$test.SelfTest.js")
     if ($LASTEXITCODE -ne 0) { throw "$test self-test failed." }
 }
@@ -240,6 +243,12 @@ if ($LASTEXITCODE -ne 0) { throw 'Windows controller reliability self-test faile
 & (Join-Path $root 'tools\Test-PackageProcessLauncher.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Package process launcher self-test failed.' }
 
+& $node (Join-Path $root 'windows\CodexRemoteSimple\tests\LegacyDeviceKeyCompatibility.SelfTest.cjs')
+if ($LASTEXITCODE -ne 0) { throw 'Legacy device-key compatibility self-test failed.' }
+
+& (Join-Path $root 'tools\Test-LegacyDeviceKeyStartup.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Legacy device-key startup self-test failed.' }
+
 & (Join-Path $root 'tools\Test-ProxyRuntimePreparer.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Private proxy runtime preparer self-test failed.' }
 
@@ -258,7 +267,7 @@ if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
 [pscustomobject]@{
     JavaScriptFiles = $javascript.Count
     PowerShellFiles = $powershell.Count
-    RendererVersion = 69
+    RendererVersion = 70
     LegacyUpdateBootstrapSelfTest = $true
     SetupAssistantSelfTest = $true
     RendererParity = $true
@@ -274,6 +283,9 @@ if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
     NativeWindowsUpdateSessionSelfTest = $true
     PeerTransferSelfTest = $true
     NativeStateBridgeSelfTest = $true
+    NativeConnectionLifecycleSelfTest = $true
+    LegacyDeviceKeyCompatibilitySelfTest = $true
+    LegacyDeviceKeyStartupSelfTest = $true
     FeatureStateSelfTest = $true
     RendererReliabilitySelfTest = $true
     WindowsSessionStateSelfTest = $true

@@ -4,7 +4,7 @@ You need Windows 11 x64, the ChatGPT/Codex desktop app installed and signed in w
 
 ## 1. Download and extract
 
-1. Download **ChatGPT-Remote-Enabler-Windows-x64-v1.5.36.zip** from [v1.5.36 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.36). Read the verification limitations.
+1. Download **ChatGPT-Remote-Enabler-Windows-x64-v1.5.37.zip** from [v1.5.37 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.37). Read the verification limitations.
 2. Right-click the ZIP in File Explorer, choose **Properties**, select **Unblock** if offered, and click **OK**. Then choose **Extract All**.
 3. Enter `%LOCALAPPDATA%\Programs` in File Explorer's address bar. Create a **ChatGPTRemoteEnabler** folder and copy the extracted package contents into it.
 4. **ChatGPT Remote Enabler.exe**, **README.md**, and **CodexRemoteMobileProject** must be directly inside that folder. Keep the whole package together.
@@ -310,4 +310,15 @@ Check the target of **ChatGPT Custom** in the Start menu (open its file location
 
 Fully quit the app when your work is safe, then use **ChatGPT Remote Enabler.exe** in the newly extracted folder, or the new **ChatGPT Remote Enabler** shortcut created by that folder's setup assistant. Open Settings to see the loaded helper version and update controls in either view. A missing update service shows recovery instructions there.
 
-v1.5.36 is a normal release and is discoverable by the existing automatic updater. The first Windows upgrade from v1.5.31 attaches the new update helper even through the legacy launcher.
+v1.5.37 is a normal release and is discoverable by the existing automatic updater. The first Windows upgrade from v1.5.31 attaches the new update helper even through the legacy launcher.
+
+
+### Existing enrollment keys after a Codex update
+
+v1.5.37 detects an enrollment that still matches the older Remote Enabler DPAPI key store. On the next normal launch, it prepares a version-matched private runtime that tries Codex's native key provider first and uses the existing protected key when the native provider cannot find it. New keys use the native provider. This does not create or authorize an enrollment and does not rewrite the existing key store. Server-side revocation and authorization checks still apply.
+
+The compatibility copy lives under `%LOCALAPPDATA%\ChatGPTRemoteEnabler\patched-chatgpt`. The installed WindowsApps files remain unchanged. Without proxy mode, only the device-key loader changes; network destinations and challenge validation remain original. The private copy disables embedded ASAR integrity validation to load the reviewed compatibility code, and the launcher verifies its source/runtime/helper hashes before reuse. Use the ordinary Codex shortcut to return to the unmodified installed runtime; revoke a device through native settings before deliberately deleting its protected key material.
+
+Device labels are now collected from Codex's connection catalog even for devices with no tasks. A saved label or local publisher-ready status is not proof of an authorized connection. If Codex still requests authorization, complete its native Settings > Connections > Control other devices flow. The helper resumes discovery after the connection state changes.
+
+Verification for this release uses source checks, isolated DPAPI keys, mocked package launches, and headless browser fixtures. Live signed peer reconnection through a normal user launch remains to be checked. Validation must not launch a second copy of Codex against a running user session: Windows can forward that invocation to the existing window.

@@ -168,13 +168,37 @@ function Test-CrsCompatibility {
     return $result
 }
 
+function Test-CrsLegacyDeviceKeyCompatibilityNeeded {
+    param($Node)
+    $checker = Join-Path $script:RuntimeRoot 'legacy-device-key-compat.cjs'
+    $output = @(& $Node.Path $checker '--check' 2>&1)
+    if ($LASTEXITCODE -ne 0 -or $output.Count -ne 1) { throw 'The existing device-key compatibility check failed.' }
+    $result = [string]$output[0] | ConvertFrom-Json -ErrorAction Stop
+    if ($result.legacyDeviceKeyCompatibilityNeeded -isnot [bool]) { throw 'The device-key compatibility check returned an invalid result.' }
+    return [bool]$result.legacyDeviceKeyCompatibilityNeeded
+}
+
+function Test-CrsLegacyDeviceKeyModeProof {
+    param($State, [bool]$Required)
+    if (-not $Required) { return $true }
+    if ($null -eq $State -or $null -eq $State.PSObject.Properties['legacyDeviceKeyCompatibility'] -or
+        $State.legacyDeviceKeyCompatibility -isnot [bool] -or -not $State.legacyDeviceKeyCompatibility) { return $false }
+    try {
+        $resources = Join-Path (Split-Path -Parent ([string]$State.executablePath)) 'resources'
+        return (Get-FileHash -LiteralPath (Join-Path $resources 'crk.cjs') -Algorithm SHA256).Hash -ceq
+            (Get-FileHash -LiteralPath (Join-Path $script:RuntimeRoot 'legacy-device-key-compat.cjs') -Algorithm SHA256).Hash -and
+            (Get-FileHash -LiteralPath (Join-Path $resources 'crks.cjs') -Algorithm SHA256).Hash -ceq
+            (Get-FileHash -LiteralPath (Join-Path $script:RuntimeRoot 'main-payload.js') -Algorithm SHA256).Hash
+    } catch { return $false }
+}
+
 function New-CrsProxyRuntimePackage {
-    param($Package, $Node)
+    param($Package, $Node, [bool]$ProxyEnabled = $true, [bool]$LegacyDeviceKeys = $false)
 
     if (-not (Test-Path -LiteralPath $script:ProxyRuntimePreparer -PathType Leaf)) {
         throw "The private proxy-runtime preparer is missing: $script:ProxyRuntimePreparer"
     }
-    $output = @(& $Node.Path $script:ProxyRuntimePreparer '--source-app' $Package.AppRoot '--package-version' $Package.Version 2>&1)
+    $output = @(& $Node.Path $script:ProxyRuntimePreparer '--source-app' $Package.AppRoot '--package-version' $Package.Version '--proxy-enabled' $ProxyEnabled.ToString().ToLowerInvariant() '--legacy-device-keys' $LegacyDeviceKeys.ToString().ToLowerInvariant() 2>&1)
     if ($LASTEXITCODE -ne 0 -or $output.Count -ne 1) {
         throw "Preparing the private ChatGPT proxy runtime failed: $($output -join ' ')"
     }
@@ -472,6 +496,12 @@ function Start-CrsPackagedCodex {
     }
 
     try {
+        if ($null -ne $Package.PSObject.Properties['OriginalExecutablePath'] -and
+            -not [string]::Equals([string]$Package.OriginalExecutablePath, [string]$Package.ExecutablePath, [StringComparison]::OrdinalIgnoreCase)) {
+            # Activation by application id would reopen the installed executable
+            # and silently omit the private runtime's startup compatibility.
+            throw 'The private compatibility runtime requires explicit package-context execution.'
+        }
         if (-not (Test-Path -LiteralPath $script:PackageActivationLauncher -PathType Leaf)) {
             throw "The package activation launcher is missing: $script:PackageActivationLauncher"
         }
@@ -612,7 +642,7 @@ function Read-CrsState {
 }
 
 function Write-CrsState {
-    param($Package, [int]$RendererPort, $MainPort, $Probe, $Launch, [bool]$ProxyMode, [string]$BridgeMode)
+    param($Package, [int]$RendererPort, $MainPort, $Probe, $Launch, [bool]$ProxyMode, [string]$BridgeMode, [bool]$LegacyDeviceKeyCompatibility = $false)
 
     $state = [pscustomobject][ordered]@{
         schemaVersion = 2
@@ -625,6 +655,7 @@ function Write-CrsState {
         launchMethod = [string]$Launch.Method
         launchProcessId = $Launch.ProcessId
         proxyMode = $ProxyMode
+        legacyDeviceKeyCompatibility = $LegacyDeviceKeyCompatibility
         proxyTransport = if ($ProxyMode -and $BridgeMode -ceq 'native-renderer') { 'remote-websocket-bridge-v1' } else { $null }
         appAsarSha256 = [string]$Probe.appAsarSha256
         startedAtUtc = [DateTime]::UtcNow.ToString('o')
@@ -782,6 +813,7 @@ if ($Action -ceq 'Rollback') {
 $node = Resolve-CrsNode -RequestedPath $NodePath
 $compatibility = Test-CrsCompatibility -Package $package -Node $node
 $bridgeMode = [string]$compatibility.bridgeMode
+$legacyDeviceKeyCompatibilityNeeded = $bridgeMode -ceq 'native-renderer' -and (Test-CrsLegacyDeviceKeyCompatibilityNeeded -Node $node)
 $state = Read-CrsState
 
 switch ($Action) {
@@ -795,6 +827,7 @@ switch ($Action) {
             AppAsarSha256 = $compatibility.appAsarSha256
             Classification = $compatibility.classification
             BridgeMode = $bridgeMode
+            LegacyDeviceKeyCompatibilityNeeded = $legacyDeviceKeyCompatibilityNeeded
             LocalSessionActive = [bool]($null -ne $liveProbe -and $liveProbe.ok -and $liveProbe.renderer.probe.proof)
             SessionRecord = if ($null -eq $state) { $null } else { $script:StatePath }
         }
@@ -807,7 +840,8 @@ switch ($Action) {
             if ($null -ne $discovered) {
                 $discoveredProbe = Invoke-CrsProbeExisting -Node $node -State $discovered
                 if ($null -ne $discoveredProbe -and $discoveredProbe.ok -and $discoveredProbe.renderer.probe.proof -and
-                    (Test-CrsProxyModeProof -State $discovered -RequestedProxyMode ([bool]$UseProxy))) {
+                    (Test-CrsProxyModeProof -State $discovered -RequestedProxyMode ([bool]$UseProxy)) -and
+                    (Test-CrsLegacyDeviceKeyModeProof -State $discovered -Required $legacyDeviceKeyCompatibilityNeeded)) {
                     Write-CrsState -Package $package -RendererPort $discovered.rendererPort -MainPort $discovered.mainPort -Probe $compatibility -Launch ([pscustomobject]@{ Method = 'adopted-existing-session'; ProcessId = $discovered.launchProcessId }) -ProxyMode ([bool]$discovered.proxyMode) -BridgeMode $bridgeMode
                     $state = Read-CrsState
                     $existing = $discoveredProbe
@@ -816,11 +850,12 @@ switch ($Action) {
             }
         }
         if ($null -ne $existing -and $existing.ok -and $existing.renderer.probe.proof) {
-            if (Test-CrsProxyModeProof -State $state -RequestedProxyMode ([bool]$UseProxy)) {
+            if ((Test-CrsProxyModeProof -State $state -RequestedProxyMode ([bool]$UseProxy)) -and
+                (Test-CrsLegacyDeviceKeyModeProof -State $state -Required $legacyDeviceKeyCompatibilityNeeded)) {
                 Write-Host 'The local Control other devices bridge is already active in the requested proxy mode.' -ForegroundColor Green
                 break
             }
-            Write-Host 'The requested proxy mode differs from the active session; ChatGPT will be relaunched.' -ForegroundColor Yellow
+            Write-Host 'The requested connection compatibility differs from the active session; ChatGPT will be relaunched.' -ForegroundColor Yellow
         }
         if (-not $PSCmdlet.ShouldProcess('the current OpenAI Codex session', 'Close it, relaunch with loopback debug ports, and inject the audited compatibility bridge')) {
             break
@@ -837,13 +872,15 @@ switch ($Action) {
             $resolvedProxyServer = $null
             if ($UseProxy) {
                 $resolvedProxyServer = Resolve-CrsProxyServer -RequestedProxy $ProxyServer
-                if ($bridgeMode -ceq 'native-renderer') {
-                    Write-Host 'Preparing the version-matched private ChatGPT runtime for Remote-control WebSocket proxying.' -ForegroundColor Yellow
-                    $launchPackage = New-CrsProxyRuntimePackage -Package $package -Node $node
-                    Write-Host 'Proxy mode is scoped to the Remote-control WebSocket; signed enrollment remains on the canonical ChatGPT URL.' -ForegroundColor Yellow
-                } else {
+                if ($bridgeMode -cne 'native-renderer') {
                     Write-Host 'Experimental proxy mode is enabled only for the Remote-control WebSocket.' -ForegroundColor Yellow
                 }
+            }
+            if ($bridgeMode -ceq 'native-renderer' -and ($UseProxy -or $legacyDeviceKeyCompatibilityNeeded)) {
+                Write-Host 'Preparing the version-matched private ChatGPT compatibility runtime.' -ForegroundColor Yellow
+                $launchPackage = New-CrsProxyRuntimePackage -Package $package -Node $node -ProxyEnabled ([bool]$UseProxy) -LegacyDeviceKeys $legacyDeviceKeyCompatibilityNeeded
+                if ($UseProxy) { Write-Host 'Proxy mode is scoped to the Remote-control WebSocket; signed enrollment remains on the canonical ChatGPT URL.' -ForegroundColor Yellow }
+                if ($legacyDeviceKeyCompatibilityNeeded) { Write-Host 'Existing protected enrollment keys remain available; new keys use the native Windows provider.' -ForegroundColor Yellow }
             }
             Assert-CrsNoExistingAppForReplacement -Package $package -LaunchPackage $launchPackage -Enabled:$RefuseExistingApp
             $sessionStopped = $true
@@ -871,7 +908,7 @@ switch ($Action) {
             }
             $launch = Start-CrsPackagedCodex @launchArguments
             $bridge = Invoke-CrsBridge -Node $node -RendererPort $rendererPort -MainPort $mainPort -ProxyServer $(if ($UseProxy) { $resolvedProxyServer } else { $null }) -BridgeMode $bridgeMode
-            Write-CrsState -Package $launchPackage -RendererPort $rendererPort -MainPort $mainPort -Probe $compatibility -Launch $launch -ProxyMode ([bool]$UseProxy) -BridgeMode $bridgeMode
+            Write-CrsState -Package $launchPackage -RendererPort $rendererPort -MainPort $mainPort -Probe $compatibility -Launch $launch -ProxyMode ([bool]$UseProxy) -BridgeMode $bridgeMode -LegacyDeviceKeyCompatibility $legacyDeviceKeyCompatibilityNeeded
             Write-Host 'Control other devices and macOS-style connection grouping are active for this Codex session.' -ForegroundColor Green
             Write-Host 'Open Settings > Connections > Control other devices.'
             Write-Host 'In the sidebar, open Project sidebar options and choose By connection when desired.'

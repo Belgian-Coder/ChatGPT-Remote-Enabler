@@ -363,8 +363,45 @@ async function main() {
     });
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     if (screenshotPath) await panel.screenshot({ path: screenshotPath });
+    // A separate browser profile and full document reload exercise the normal
+    // production install hook. No live Codex executable or user profile is used.
+    const lifecycleContext = await browser.newContext();
+    const lifecyclePage = await lifecycleContext.newPage();
+    lifecyclePage.setDefaultTimeout(6000);
+    lifecyclePage.on("pageerror", error => errors.push(error.message));
+    await lifecyclePage.route("http://connection-lifecycle.invalid/**", route => route.fulfill({ contentType: "text/html", body: '<!doctype html><html><body><nav style="width:320px"><button aria-label="Project sidebar options" hidden></button><div id="native-list"><div id="native-project" data-sidebar-project-kind="remote" role="listitem"><div role="button" data-app-action-sidebar-project-collapsed="false">Empty project</div></div></div></nav></body></html>' }));
+    const bootLifecycle = async () => {
+      await lifecyclePage.evaluate(() => {
+        globalThis.__lifecycleHost = "remote-control:" + "env" + "_browser_lifecycle";
+        globalThis.__lifecycleCatalog = [];
+        globalThis.__lifecycleStatus = { available: true, authRequired: false, accessRequired: false, clientAuthorized: false };
+        globalThis.__CODEX_REMOTE_MOBILE_CONFIG__ = { localDisplayName: "Fixture local" };
+        localStorage.setItem("codex-remote-mobile-auto-register-enabled-v1", "false");
+        localStorage.setItem("codex-remote-mobile-auto-archive-enabled-v1", "false");
+        globalThis.electronBridge = { getSharedObjectSnapshotValue: key => key === "remote_control_connections" ? __lifecycleCatalog : key === "remote_control_connections_state" ? __lifecycleStatus : undefined };
+        document.getElementById("native-project").__reactFiber$fixture = { memoizedProps: { group: { projectKind: "remote", projectId: "fixture-empty", hostId: __lifecycleHost, hostDisplayName: "Remote device", cwd: "/fixture/empty", label: "Empty project" } }, memoizedState: null, return: null, updateQueue: null };
+      });
+      await lifecyclePage.evaluate(source);
+    };
+    await lifecyclePage.goto("http://connection-lifecycle.invalid/");
+    await bootLifecycle();
+    const lifecyclePanel = lifecyclePage.locator("#codex-remote-mobile-project-panel");
+    await lifecyclePanel.locator(".crmp-inventory-status").filter({ hasText: "authorize this computer" }).waitFor();
+    await lifecyclePage.evaluate(() => {
+      __lifecycleStatus = { ...__lifecycleStatus, clientAuthorized: true };
+      __lifecycleCatalog = [{ hostId: __lifecycleHost, displayName: "Named test workstation", online: true, autoConnect: true }, { hostId: "remote-control:" + "env" + "_browser_empty", displayName: "Device without rows", online: true, autoConnect: true }];
+    });
+    await lifecyclePanel.locator(".crmp-chip").filter({ hasText: "Named test workstation" }).waitFor();
+    await lifecyclePanel.locator(".crmp-chip").filter({ hasText: "Device without rows" }).waitFor();
+    assert.equal(await lifecyclePanel.locator(".crmp-inventory-status").filter({ hasText: "authorize this computer" }).count(), 0);
+    await lifecyclePage.reload();
+    await bootLifecycle();
+    await lifecyclePanel.locator(".crmp-chip").filter({ hasText: "Named test workstation" }).waitFor();
+    await lifecyclePanel.locator(".crmp-inventory-status").filter({ hasText: "authorize this computer" }).waitFor();
+    if (screenshotPath) await lifecyclePanel.screenshot({ path: screenshotPath.replace(/\.png$/u, "-authorization.png") });
+    await lifecycleContext.close();
     assert.deepEqual(errors, [], "the real renderer must not raise browser errors");
-    console.log(JSON.stringify({ settingsContainUpdatesAndHealth: true, missingUpdaterRecoveryBothViews: true, guidedConnectionTroubleshooting: true, transferDiagnosticsAllowlisted: true, featureControls: true, aliasReload: true, caretPreserved: true, healthRefreshCoalesced: true, diagnosticCopyAndNativeSave: true, diagnosticCancelAndError: true, uxStates: 10, themes: 2, sidebarWidths: [280,320,400], scaling: [1,2], fixtureTextContrast: true, stableAnnouncements: true, focusRestored: true, realChromium: true, realModelAndRender: true, neutralName: true, metadataArrival: true, reinjection: true, updateEventBothTargets: true, keyboardQueue: true, nativeViewUpdate: true, cancel: true, unrelatedMutations: 200, extraRenders: after.renders - before.renders, extraHostScans: after.hostDiscoveryScans - before.hostDiscoveryScans }));
+    console.log(JSON.stringify({ nativeConnectionLifecycle: true, nativeLabelsWithoutRows: true, fullDocumentReloadRetainsLabels: true, authorizationPauseVisible: true, settingsContainUpdatesAndHealth: true, missingUpdaterRecoveryBothViews: true, guidedConnectionTroubleshooting: true, transferDiagnosticsAllowlisted: true, featureControls: true, aliasReload: true, caretPreserved: true, healthRefreshCoalesced: true, diagnosticCopyAndNativeSave: true, diagnosticCancelAndError: true, uxStates: 10, themes: 2, sidebarWidths: [280,320,400], scaling: [1,2], fixtureTextContrast: true, stableAnnouncements: true, focusRestored: true, realChromium: true, realModelAndRender: true, neutralName: true, metadataArrival: true, reinjection: true, updateEventBothTargets: true, keyboardQueue: true, nativeViewUpdate: true, cancel: true, unrelatedMutations: 200, extraRenders: after.renders - before.renders, extraHostScans: after.hostDiscoveryScans - before.hostDiscoveryScans }));
   } finally { await browser.close(); }
 }
 

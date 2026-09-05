@@ -5,7 +5,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const PATCH_SCHEMA = 2;
+const PATCH_SCHEMA = 3;
 const FUSE_SENTINEL = Buffer.from("dL7pKGdnNz796PbbjQWNKmHXBZaB9tsX", "ascii");
 const ENABLE_EMBEDDED_ASAR_INTEGRITY_VALIDATION = 4;
 const ORIGINAL_CONTROLLER = Buffer.from(
@@ -22,6 +22,14 @@ const ORIGINAL_CHALLENGE_TARGET_VALIDATOR = Buffer.from(
 );
 const PATCHED_CHALLENGE_TARGET_VALIDATOR = Buffer.from(
   "function vQ(e,t){let n=new URL(process.env.CRWU||t),r=n.protocol===`wss:`?`https:`:`http:`;return e.targetOrigin===`${r}//${n.host}`&&e.targetPath===n.pathname}",
+  "utf8",
+);
+const ORIGINAL_DEVICE_KEY_LOADER = Buffer.from(
+  "return this.addon??=Yke((0,p.join)(this.resourcesPath,`native`,Xke)),this.addon",
+  "utf8",
+);
+const PATCHED_DEVICE_KEY_LOADER = Buffer.from(
+  "return this.addon??=Yke(this.resourcesPath+`/crk.cjs`)(),this.addon",
   "utf8",
 );
 
@@ -97,15 +105,18 @@ function patchInPlace(contents, original, replacement, label) {
   contents.fill(0x20, offset + replacement.length, offset + original.length);
 }
 
-function patchAsar(file) {
+function patchAsar(file, features) {
   const contents = fs.readFileSync(file);
-  patchInPlace(contents, ORIGINAL_CONTROLLER, PATCHED_CONTROLLER, "Remote-control controller");
-  patchInPlace(
-    contents,
-    ORIGINAL_CHALLENGE_TARGET_VALIDATOR,
-    PATCHED_CHALLENGE_TARGET_VALIDATOR,
-    "Remote-control challenge target validator",
-  );
+  if (features.proxyEnabled) {
+    patchInPlace(contents, ORIGINAL_CONTROLLER, PATCHED_CONTROLLER, "Remote-control controller");
+    patchInPlace(
+      contents,
+      ORIGINAL_CHALLENGE_TARGET_VALIDATOR,
+      PATCHED_CHALLENGE_TARGET_VALIDATOR,
+      "Remote-control challenge target validator",
+    );
+  }
+  if (features.legacyDeviceKeys) patchInPlace(contents, ORIGINAL_DEVICE_KEY_LOADER, PATCHED_DEVICE_KEY_LOADER, "existing protected device-key loader");
   fs.writeFileSync(file, contents);
 }
 
@@ -114,6 +125,11 @@ function isCurrent(destination, expected) {
   try {
     const marker = JSON.parse(fs.readFileSync(markerPath, "utf8"));
     return marker.patchSchema === PATCH_SCHEMA &&
+      marker.proxyEnabled === expected.proxyEnabled &&
+      marker.legacyDeviceKeys === expected.legacyDeviceKeys &&
+      (!expected.legacyDeviceKeys ||
+        (sha256(path.join(destination, "resources", "crk.cjs")) === expected.compatibilityLoaderSha256 &&
+          sha256(path.join(destination, "resources", "crks.cjs")) === expected.compatibilityServiceSha256)) &&
       marker.packageVersion === expected.packageVersion &&
       marker.sourceAppAsarSha256 === expected.sourceAppAsarSha256 &&
       marker.sourceChromeSha256 === expected.sourceChromeSha256 &&
@@ -149,6 +165,12 @@ function renameWithRetry(source, destination) {
 
 function main() {
   const args = readArguments(process.argv.slice(2));
+  for (const option of ["proxy-enabled", "legacy-device-keys"]) {
+    if (args.has(option) && !["true", "false"].includes(args.get(option))) fail(`Invalid ${option} option.`);
+  }
+  const proxyEnabled = args.get("proxy-enabled") !== "false";
+  const legacyDeviceKeys = args.get("legacy-device-keys") === "true";
+  if (!proxyEnabled && !legacyDeviceKeys) fail("A private runtime requires a compatibility feature.");
   const source = path.resolve(args.get("source-app") ?? "");
   const packageVersion = args.get("package-version") ?? "";
   if (!path.isAbsolute(source) || !/^\d+\.\d+\.\d+\.\d+$/u.test(packageVersion)) {
@@ -166,10 +188,16 @@ function main() {
 
   const expected = {
     packageVersion,
+    proxyEnabled,
+    legacyDeviceKeys,
+    compatibilityLoaderSha256: legacyDeviceKeys ? sha256(path.join(__dirname, "legacy-device-key-compat.cjs")) : null,
+    compatibilityServiceSha256: legacyDeviceKeys ? sha256(path.join(__dirname, "main-payload.js")) : null,
     sourceAppAsarSha256: sha256(sourceAsar),
     sourceChromeSha256: sha256(sourceChrome),
   };
-  const identity = `${packageVersion}-${expected.sourceAppAsarSha256.slice(0, 12)}-p${PATCH_SCHEMA}`;
+  const compatibilityIdentity = legacyDeviceKeys
+    ? `-k${expected.compatibilityLoaderSha256.slice(0, 8)}${expected.compatibilityServiceSha256.slice(0, 8)}` : "";
+  const identity = `${packageVersion}-${expected.sourceAppAsarSha256.slice(0, 12)}-p${PATCH_SCHEMA}${proxyEnabled ? "-proxy" : ""}${compatibilityIdentity}`;
   const destination = path.join(safeRoot, `proxy-runtime-${identity}`);
   assertSafeDestination(destination, safeRoot);
   fs.mkdirSync(safeRoot, { recursive: true });
@@ -190,10 +218,18 @@ function main() {
     fs.cpSync(source, staging, { recursive: true, force: false, errorOnExist: true });
     const stagedAsar = path.join(staging, "resources", "app.asar");
     const stagedChrome = path.join(staging, "chrome.dll");
-    patchAsar(stagedAsar);
+    patchAsar(stagedAsar, expected);
+    if (legacyDeviceKeys) {
+      fs.copyFileSync(path.join(__dirname, "legacy-device-key-compat.cjs"), path.join(staging, "resources", "crk.cjs"));
+      fs.copyFileSync(path.join(__dirname, "main-payload.js"), path.join(staging, "resources", "crks.cjs"));
+    }
     patchFuse(stagedChrome);
     const marker = {
       patchSchema: PATCH_SCHEMA,
+      proxyEnabled,
+      legacyDeviceKeys,
+      compatibilityLoaderSha256: expected.compatibilityLoaderSha256,
+      compatibilityServiceSha256: expected.compatibilityServiceSha256,
       packageVersion,
       sourceAppAsarSha256: expected.sourceAppAsarSha256,
       sourceChromeSha256: expected.sourceChromeSha256,

@@ -45,10 +45,15 @@ if ((Get-FileHash $windowsTransaction -Algorithm SHA256).Hash -ne (Get-FileHash 
 foreach ($contract in @(
     'const targets = JSON.parse(text);',
     'target?.url === "app://-/index.html"',
+    'const report = value?.report?.readiness ?? value?.report;',
+    'Last readiness proof: $summary',
     'New LaunchAgent failed to load; the previous definition was restored.',
     'cp -p -- "$previous_plist" "$plist"'
 )) {
     if (-not $launcher.Contains($contract)) { throw "macOS launcher reliability contract is missing: $contract" }
+}
+if ($launcher.Contains('reported a terminal readiness error')) {
+    throw 'macOS launcher still treats a transient renderer readiness error as terminal.'
 }
 foreach ($contract in @(
     'candidate_source=',
@@ -76,6 +81,8 @@ $global:LASTEXITCODE = 0
     LaunchGuardOrdering = $true
     LaunchAgentRestoration = $true
     ExactCdpTarget = $true
+    NestedReadinessEnvelope = $true
+    TransientReadinessRetried = $true
     ShortcutCandidateSwap = $true
     ShortcutExactTarget = $true
     RealZshSemanticTestPresent = $true

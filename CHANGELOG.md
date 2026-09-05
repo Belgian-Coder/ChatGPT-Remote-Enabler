@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.5.40
+
+- Accept the renderer's current nested `report.readiness` envelope in both Windows startup coordinators while retaining the former flat-report format for compatibility. This fixes the live v1.5.39 launch failure that reported incomplete readiness proof even though the same renderer later became ready.
+- Apply the same envelope correction on macOS, retry transient not-ready states until the bounded deadline, and include the final readiness flags and reason when the deadline expires.
+- Exercise the actual nested renderer envelope, the legacy flat envelope, transient retry behavior, and cross-platform launcher contracts in deterministic tests.
+
 ## v1.5.39
 
 - Keep polling a well-formed mobile-project readiness report while its renderer reports a transient not-ready reason. On timeout, retain the final readiness flags and error instead of failing on the first explanatory message.

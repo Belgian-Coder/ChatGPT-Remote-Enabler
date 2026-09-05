@@ -161,17 +161,15 @@ readiness_state() {
   local node_bin="$1" json="$2"
   "$node_bin" -e '
     const value = JSON.parse(process.argv[1]);
-    const report = value?.report;
+    const report = value?.report?.readiness ?? value?.report;
     const fields = ["mounted", "localRuntimeReady", "authoritativeInventoryReady", "publisherReady", "ready"];
     if (!report || fields.some((name) => typeof report[name] !== "boolean")) {
       process.stderr.write("The mobile project view returned incomplete readiness proof.\n");
       process.exit(2);
     }
-    if (typeof report.error === "string" && report.error.trim()) {
-      process.stderr.write(`The mobile project view reported a terminal readiness error: ${report.error.slice(0, 240)}\n`);
-      process.exit(2);
-    }
-    process.stdout.write(JSON.stringify(Object.fromEntries(fields.map((name) => [name, report[name]])));
+    const summary = Object.fromEntries(fields.map((name) => [name, report[name]]));
+    summary.error = typeof report.error === "string" ? report.error.slice(0, 240) : null;
+    process.stdout.write(JSON.stringify(summary));
     process.exit(report.ready ? 0 : 3);
   ' "$json"
 }
@@ -298,7 +296,7 @@ enable_view() {
   (( readiness_exit == 2 )) && return 1
   deadline=$(( EPOCHSECONDS + mobile_ready_timeout_seconds ))
   while (( readiness_exit == 3 )); do
-    (( EPOCHSECONDS < deadline )) || { print -u2 "The mobile project view did not become ready within $mobile_ready_timeout_seconds seconds."; return 1; }
+    (( EPOCHSECONDS < deadline )) || { print -u2 "The mobile project view did not become ready within $mobile_ready_timeout_seconds seconds. Last readiness proof: $summary"; return 1; }
     sleep 0.5
     output="$(run_injector "$node_bin" probe)"
     set +e

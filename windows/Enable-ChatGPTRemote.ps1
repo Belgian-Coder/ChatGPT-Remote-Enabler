@@ -37,7 +37,10 @@ function Get-RemoteMobileReport {
     for ($index = $Output.Count - 1; $index -ge 0; $index--) {
         try {
             $value = [string]$Output[$index] | ConvertFrom-Json -ErrorAction Stop
-            if ($null -ne $value.report) { return $value.report }
+            if ($null -ne $value.report) {
+                if ($null -ne $value.report.readiness) { return $value.report.readiness }
+                return $value.report
+            }
         } catch {
             # Progress may precede the final JSON proof.
         }

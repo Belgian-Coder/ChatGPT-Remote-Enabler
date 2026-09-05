@@ -22,6 +22,15 @@ Keyboard focus and sidebar scroll position are retained during refreshes. Update
 
 ## Updates
 
+![Always-visible helper version and update icon](assets/screenshots/version-v1.5.35.png)
+
+The update icon and **loaded helper version** remain visible above Settings in both views, including when Settings is closed and no update is queued. Click the version button for a manual update check. A missing update sidecar leaves the version visible with recovery instructions; an unavailable version is explicitly labeled rather than guessed.
+
+**v1.5.35 is a normal release available to the existing automatic updater.** Earlier v1.5.32-v1.5.34 releases were incorrectly published as prereleases, which kept v1.5.31 clients from discovering them. The first Windows upgrade now bootstraps the new update helper even when the old launcher is finishing its startup code.
+
+If a downloaded version is not visible, fully quit and launch from that extracted version's Remote Enabler launcher. A legacy **ChatGPT Custom** shortcut can still point at an older installation. A running app can also retain its older injected sidebar until relaunched.
+
+
 Checks run asynchronously at launch and every 30 minutes while open. **Update available** appears in its own status row in both views. Queued updates explain the wait directly; technical errors have a details disclosure and a **Check again** action. Installation requires a click.
 
 Clicking pins the selected release/checksum and prepares it while the app remains open. The helper waits for authoritative idle activity, including internal tasks. Unknown activity keeps it queued. **Cancel** is available until shutdown starts. Resumed work makes it continue waiting.
@@ -69,9 +78,31 @@ In Settings, expand **Diagnostic export preview** and generate a snapshot. Revie
 
 The allowlist includes helper/renderer versions, pseudonymous device labels, connection and inventory age/counts, cleanup settings/history count, and update status/version/event count. It excludes real device names and aliases, device/task IDs, task titles, paths, raw logs/errors, and credentials. This deliberately limited report is not a complete support log.
 
+
+## Guided connection troubleshooting
+
+Open **Settings → Connection troubleshooting** in either sidebar view. Each discovered device gets an evidence-based finding and next step: disconnected, no recent check, publisher unavailable, stale/incomplete inventory, cached fallback, outgoing-write retry, or healthy direct reads. Local findings cover bridge, inventory, and publisher readiness.
+
+**Refresh connection evidence** requests the existing read-only discovery/inventory checks. Pending reads are reused and refresh is limited to once every ten seconds. It does not change Remote configuration, sign in, elevate, install, or restart anything. Follow the suggested step on the affected device and refresh again. Recent cached projects alone never prove a direct connection; status heartbeats do not renew old task membership.
+
+The panel also shows per-session read/write-attempt counts, failures, base64 payload bytes, and last successful request timings. These figures cover the helper's inventory exchange, excluding transport overhead, native chat, and model streaming. The diagnostic preview includes only the finding code and status-only transfer counts/timings under pseudonymous device labels.
+
+![Connection troubleshooting in a dark browser fixture](assets/screenshots/connection-dark-v1.5.35.png)
+
+## More efficient inventory transfer
+
+- Outgoing peer-cache snapshots omit the recipient's own echoed inventory while retaining other peers for forwarding.
+- Nullable fields with identical schema-v1 defaults are omitted. Older helpers can read the same file format; no new endpoint or negotiated compression is required.
+- Peer heartbeat timestamps no longer trigger an immediate publication echo. Idle task rows use the 15-second publication heartbeat; actual working activity uses five seconds. Content changes still trigger publication, and direct-read polling keeps its existing cadence.
+- A slow peer gets at most one active write and one newest queued snapshot. Intermediate snapshots are replaced. Failed attempts use exponential backoff from two seconds up to one minute.
+- A timed-out underlying write remains locked until its request settles, including through renderer reinjection. A permanently unresolved write blocks further pushes to that peer; the direct-read path remains available. Queued snapshots older than three minutes are discarded.
+- Pull/push operations share configuration discovery. Failed reads retain the old acquisition timestamp and cannot make stale inventory authoritative.
+
+A reproducible two-client fixture with 1,000 tasks per client reduced an outgoing JSON snapshot from **392,392 to 141,178 bytes (64%)**. This measures that fixture's push payload, not total network traffic or live end-to-end speed. Results depend on task metadata and peer topology. Run `node windows/CodexRemoteMobileProject/tests/PeerTransfer.SelfTest.js` from the repository to repeat the transport fixture.
+
 ## Validation status
 
-Automated Windows native fixtures, real Chromium renderer/CDP integration, transaction interruption/recovery and source checks pass. Native macOS execution and full real-app update/relaunch acceptance remain pending. The prerelease label does not imply those tests are complete. See the release notes for exact tested boundaries.
+Automated Windows native fixtures, real Chromium renderer/CDP integration, transaction interruption/recovery and source checks pass. Native macOS execution and full real-app update/relaunch acceptance remain pending. Release publication does not imply those tests are complete. See the release notes for exact tested boundaries.
 
 ![Settings feature panels in a browser fixture](assets/screenshots/features-v1.5.34.png)
 

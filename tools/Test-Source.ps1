@@ -34,6 +34,7 @@ foreach ($contract in @('TRANSIENT_RENDERER_CODES', 'installRendererPayloadWithR
 $powershell = @(
     'windows\Setup-ChatGPTRemote.ps1',
     'tools\Test-SetupAssistant.ps1',
+    'tools\Test-LegacyUpdateBootstrap.ps1',
     'windows\Update-ChatGPTRemote.ps1',
     'windows\CodexRemoteMobileProject\UpdateSessionLauncher.ps1',
     'windows\CodexRemoteMobileProject\UpdateSessionPlatform.ps1',
@@ -95,7 +96,7 @@ foreach ($pair in @(
 }
 $renderer = Get-Content -LiteralPath $windowsRenderer -Raw
 $requiredContracts = @(
-    'const VERSION = 67;',
+    'const VERSION = 68;',
     'hostDisplayName: config.localDisplayName || null',
     'codex-remote-mobile-verified-thread-ids-v2',
     'THREAD_VISIBILITY_CONTRACT_VERSION',
@@ -201,7 +202,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Thread visibility self-test failed.' }
 & $node (Join-Path $root 'windows\CodexRemoteMobileProject\tests\TaskStatus.SelfTest.js')
 if ($LASTEXITCODE -ne 0) { throw 'Task status self-test failed.' }
 
-foreach ($test in @('HostNames', 'SidebarLayout', 'SidebarStatus', 'SidebarBehavior', 'RendererReliability', 'FeatureState')) {
+foreach ($test in @('HostNames', 'SidebarLayout', 'SidebarStatus', 'SidebarBehavior', 'RendererReliability', 'FeatureState', 'PeerTransfer')) {
     & $node (Join-Path $root "windows\CodexRemoteMobileProject\tests\$test.SelfTest.js")
     if ($LASTEXITCODE -ne 0) { throw "$test self-test failed." }
 }
@@ -230,6 +231,9 @@ if ($LASTEXITCODE -ne 0) { throw 'Windows PowerShell Node capability probe self-
 & (Join-Path $root 'tools\Test-WindowsUpdaterNonGit.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Windows packaged updater self-test failed.' }
 
+& (Join-Path $root 'tools\Test-LegacyUpdateBootstrap.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Legacy update bootstrap test failed.' }
+
 & (Join-Path $root 'tools\Test-WindowsControllerReliability.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Windows controller reliability self-test failed.' }
 
@@ -254,7 +258,8 @@ if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
 [pscustomobject]@{
     JavaScriptFiles = $javascript.Count
     PowerShellFiles = $powershell.Count
-    RendererVersion = 67
+    RendererVersion = 68
+    LegacyUpdateBootstrapSelfTest = $true
     SetupAssistantSelfTest = $true
     RendererParity = $true
     MaintenanceParity = $true
@@ -267,6 +272,7 @@ if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
     UpdateSessionSelfTest = $true
     UpdateSessionCdpSelfTest = $true
     NativeWindowsUpdateSessionSelfTest = $true
+    PeerTransferSelfTest = $true
     FeatureStateSelfTest = $true
     RendererReliabilitySelfTest = $true
     WindowsSessionStateSelfTest = $true

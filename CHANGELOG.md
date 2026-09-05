@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.5.35
+
+- Publish as a normal release discoverable by existing automatic updaters. Earlier prerelease flags had blocked v1.5.31 clients. Verify the legacy Auto action and bootstrap the new Windows update helper during that first upgrade, preserving the recorded proxy mode.
+
+- Keep the update icon and loaded helper version visible in both views with Settings closed. Show explicit recovery and a release link when the update sidecar is absent; document the loaded version and legacy shortcut targets.
+
+- Add guided connection troubleshooting in both views, with explicit evidence refresh and privacy-conscious session transfer statistics.
+- Remove recipient inventory echoes and redundant nullable fields while retaining schema-v1 compatibility and third-peer forwarding.
+- Suppress timestamp-only publication echoes and use idle heartbeat timing for idle task rows. Keep direct-read cadence and original task-membership authority timestamps.
+- Serialize peer writes, retain only the newest pending snapshot, share configuration discovery, and add bounded exponential retry. Keep unresolved write ownership across renderer reinjection; expire old jobs and retain direct-read fallback.
+- Verify a 64% smaller push JSON in the documented two-client, 1,000-task fixture, plus timeout/reinjection, retry, stale-authority, browser guidance, and diagnostic privacy checks. This is not a live network speed benchmark.
+- Native macOS, assistive technology, real sign-in, and full live-app update acceptance remain pending.
+
 ## v1.5.34 (prerelease)
 
 - Add device health with timestamped connection/inventory evidence, optional peer helper version, and coalesced refresh.

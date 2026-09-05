@@ -11,7 +11,7 @@ const testSource = originalSource
   .replace("(() => {", "globalThis.__titleTest = (() => {")
   .replace(
     "  return install();\n})();",
-    "  return { mergeTaskTitle, parseInventoryPayload, parsedThreadTitle, persistedThreadTitle, publishedThreadTitle, state, taskFromThread, threadTitle, trustedThreadTitle };\n})();",
+    "  return { publicationSignature, mergeTaskTitle, parseInventoryPayload, parsedThreadTitle, persistedThreadTitle, publishedThreadTitle, state, taskFromThread, threadTitle, trustedThreadTitle };\n})();",
   );
 
 const rows = [];
@@ -126,7 +126,10 @@ assert.equal(untrustedOnly.titleSource, "none");
 
 assert.match(originalSource, /publisherVersion: PUBLISHER_VERSION, schemaVersion: 1/);
 assert.match(originalSource, /publisherVersion: inventory\.publisherVersion/);
-assert.match(originalSource, /title: thread\.title \?\? null, titleSource: thread\.titleSource/);
+const signatureThread = { id: "signature-thread", title: "Before", titleSource: "native-title" };
+const signatureBefore = title.publicationSignature({}, [], [], [signatureThread], 1);
+assert.notEqual(title.publicationSignature({}, [], [], [{ ...signatureThread, title: "After" }], 1), signatureBefore, "a title change must trigger publication");
+assert.notEqual(title.publicationSignature({}, [], [], [{ ...signatureThread, titleSource: "app-server-title" }], 1), signatureBefore, "a provenance change must trigger publication");
 assert.match(originalSource, /USER_VISIBLE_THREAD_SOURCE_KINDS = Object\.freeze\(\["cli", "vscode"\]\)/);
 assert.match(originalSource, /listAllRuntimeThreads\(runtime\.requestClient, false/);
 

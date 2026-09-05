@@ -61,7 +61,10 @@
     "unknown",
   ]);
   const PUBLISHER_VERSION = 53;
-  const VERSION = 67;
+  const VERSION = 68;
+  // Keep outstanding writes locked across renderer reinjection until the underlying RPC settles.
+  const peerWriteLocks = globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ instanceof Map
+    ? globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ : (globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ = new Map());
   const UPDATE_STATES = new Set(["checking", "current", "available", "queued", "preparing", "closing", "updating", "restarting", "error", "unavailable"]);
   const ACTIVITY_BUSY_STATUSES = new Set(["active", "generating", "inprogress", "loading", "pending", "queued", "running", "working"]);
   const ACTIVITY_IDLE_STATUSES = new Set(["complete", "completed", "idle", "notloaded"]);
@@ -199,6 +202,9 @@
     panel: null,
     pendingNewThreads: new Set(),
     peerCacheStates: new Map(),
+    peerTransfers: new Map(),
+    transferStats: new Map(),
+    remoteHomeRequests: new Map(),
     projectService: null,
     queryClient: null,
     remoteProjectInventories: new Map(),
@@ -1284,18 +1290,17 @@
       if (typeof runtime?.requestClient?.sendRequest !== "function") continue;
       state.remoteProjectInventories.set(hostId, { ...current, pending: true });
       let connectionProven = false;
-      const resolveCodexHome = state.remoteCodexHomes.has(hostId)
-        ? Promise.resolve(state.remoteCodexHomes.get(hostId))
-        : sendRequestWithTimeout(runtime.requestClient, "config/read", { cwd: null, includeLayers: true }).then((configResult) => {
-          connectionProven = true;
-          const codexHome = findCodexHome(configResult);
-          if (!codexHome) throw new Error("Remote Codex home was not reported");
-          state.remoteCodexHomes.set(hostId, codexHome);
-          return codexHome;
-        });
-      resolveCodexHome.then((codexHome) => sendRequestWithTimeout(runtime.requestClient, "fs/readFile", { path: inventoryPath(codexHome) })).then((result) => {
+      const readStartedAt = Date.now();
+      const resolveCodexHome = resolveRemoteHome(hostId, runtime);
+      resolveCodexHome.then((codexHome) => {
+        connectionProven = state.hostConnectivity.get(hostId)?.checkedAt >= readStartedAt;
+        return sendRequestWithTimeout(runtime.requestClient, "fs/readFile", { path: inventoryPath(codexHome) });
+      }).then((result) => {
         if (state.disposed) return;
         connectionProven = true;
+        const stats = transferStats(hostId);
+        stats.reads += 1; stats.receivedBase64Bytes += typeof result?.dataBase64 === "string" ? result.dataBase64.length : 0;
+        stats.lastReadMs = Math.max(0, Date.now() - readStartedAt);
         const parsed = parseRemoteProjectInventory(result);
         state.hostConnectivity.set(hostId, { available: true, checkedAt: Date.now() });
         const latest = state.remoteProjectInventories.get(hostId);
@@ -1359,6 +1364,7 @@
         removeGossipedLocalInventoryDuplicates();
       }).catch((error) => {
         if (state.disposed) return;
+        transferStats(hostId).failures += 1;
         state.remoteRuntimeCache.delete(hostId);
         state.remoteRuntimeScannedAt = 0;
         if (connectionProven) state.hostConnectivity.set(hostId, { available: true, checkedAt: Date.now() });
@@ -1390,26 +1396,130 @@
     }
   }
 
-  function pushLocalInventoryToPeers(dataBase64) {
+  function inventoryHasWork(tasks, threads = []) {
+    const values = tasks instanceof Map ? [...tasks.values()] : tasks ?? [];
+    return values.some(task => normalizeTaskStatus(task.statusType) === "loading")
+      || threads.some(thread => normalizeTaskStatus(typeof thread.status === "string" ? thread.status : thread.status?.type) === "loading");
+  }
+
+  function peerContentSignature(peers) {
+    // Publication timestamps are heartbeats, not content changes to echo back.
+    return JSON.stringify(peers, (key, value) => ["generatedAt", "threadScopeGeneratedAt"].includes(key) ? undefined : value);
+  }
+
+  function publicationSignature(peers, projects, tasks, threads, threadFetchedAt) {
+    return JSON.stringify({ peers: peerContentSignature(peers), projects, tasks, threads, threadFetchedAt });
+  }
+
+  function compactInventoryText(payload) {
+    // These nullable fields have identical defaults in schema-v1 readers.
+    return JSON.stringify(payload, (key, value) => value === null && ["projectId", "workspaceKind", "updatedAt", "helperVersion"].includes(key) ? undefined : value);
+  }
+
+  function peerTransferText(payload, hostId) {
+    const peers = Object.fromEntries(Object.entries(payload.peers ?? {}).filter(([id]) => normalizeHostId(id) !== normalizeHostId(hostId)));
+    return compactInventoryText({ ...payload, peers });
+  }
+
+  function transferStats(hostId) {
+    if (!state.transferStats.has(hostId)) state.transferStats.set(hostId, { reads: 0, writes: 0, receivedBase64Bytes: 0, sentBase64Bytes: 0, failures: 0, lastReadMs: null, lastWriteMs: null });
+    return state.transferStats.get(hostId);
+  }
+
+  function resolveRemoteHome(hostId, runtime) {
+    if (state.remoteCodexHomes.has(hostId)) return Promise.resolve(state.remoteCodexHomes.get(hostId));
+    if (state.remoteHomeRequests.has(hostId)) return state.remoteHomeRequests.get(hostId);
+    const request = sendRequestWithTimeout(runtime.requestClient, "config/read", { cwd: null, includeLayers: true }).then(result => {
+      const home = findCodexHome(result);
+      if (!home) throw new Error("Remote Codex home was not reported");
+      if (!state.disposed) { state.remoteCodexHomes.set(hostId, home); state.hostConnectivity.set(hostId, { available: true, checkedAt: Date.now() }); }
+      return home;
+    }).finally(() => { if (state.remoteHomeRequests.get(hostId) === request) state.remoteHomeRequests.delete(hostId); });
+    state.remoteHomeRequests.set(hostId, request);
+    return request;
+  }
+
+  function wakePeerTransfer(hostId, transfer) {
+    if (state.disposed || transfer.timer !== null || !transfer.latest) return;
+    transfer.timer = setTimeout(() => {
+      transfer.timer = null;
+      void drainPeerTransfer(hostId, transfer);
+    }, Math.max(1000, (transfer.retryAt || 0) - Date.now()));
+  }
+
+  async function drainPeerTransfer(hostId, transfer) {
+    if (state.disposed || transfer.pending || !transfer.latest) return;
+    const outstanding = peerWriteLocks.get(hostId);
+    if (outstanding) {
+      if (transfer.waitingOn !== outstanding) {
+        transfer.waitingOn = outstanding;
+        const settled = () => { transfer.waitingOn = null; if (!state.disposed) void drainPeerTransfer(hostId, transfer); };
+        void outstanding.then(settled, settled);
+      }
+      return;
+    }
+    if (transfer.retryAt > Date.now()) { wakePeerTransfer(hostId, transfer); return; }
+    const job = transfer.latest;
+    transfer.latest = null;
+    if (!Number.isFinite(job.generatedAt) || Date.now() - job.generatedAt > REMOTE_INVENTORY_MAX_AGE_MS) return;
+    transfer.pending = true;
+    const stats = transferStats(hostId);
+    const startedAt = Date.now();
+    try {
+      const home = await resolveRemoteHome(hostId, job.runtime);
+      if (state.disposed) return;
+      // Another renderer may have started a write while config/read was pending.
+      if (peerWriteLocks.has(hostId)) { if (!transfer.latest) transfer.latest = job; return; }
+      const raw = Promise.resolve().then(() => job.runtime.requestClient.sendRequest("fs/writeFile", {
+        dataBase64: job.dataBase64, path: peerInventoryPath(home, config.localDisplayName || "Local"),
+      }));
+      peerWriteLocks.set(hostId, raw);
+      const release = () => { if (peerWriteLocks.get(hostId) === raw) peerWriteLocks.delete(hostId); };
+      void raw.then(release, release);
+      stats.writes += 1;
+      stats.sentBase64Bytes += job.dataBase64.length;
+      await withTimeout(raw, "Peer inventory write");
+      if (state.disposed) return;
+      transfer.failures = 0; transfer.retryAt = 0; transfer.lastSuccessAt = Date.now(); transfer.error = null;
+      stats.lastWriteMs = Math.max(0, Date.now() - startedAt);
+    } catch (error) {
+      if (state.disposed) return;
+      transfer.failures = Math.min(transfer.failures + 1, 8);
+      transfer.retryAt = Date.now() + Math.min(60000, 2000 * 2 ** (transfer.failures - 1));
+      transfer.error = error?.code === "CODEX_REMOTE_REQUEST_TIMEOUT" ? "timeout" : "unavailable";
+      stats.failures += 1;
+      state.remoteCodexHomes.delete(hostId);
+      if (!transfer.latest) transfer.latest = job;
+    } finally {
+      transfer.pending = false;
+      if (!state.disposed) { wakePeerTransfer(hostId, transfer); schedule(); }
+    }
+  }
+
+  function queuePeerTransfer(hostId, runtime, payload) {
+    if (state.disposed || typeof runtime?.requestClient?.sendRequest !== "function") return;
+    let transfer = state.peerTransfers.get(hostId);
+    if (!transfer) {
+      transfer = { pending: false, latest: null, timer: null, retryAt: 0, failures: 0, lastSuccessAt: null, error: null };
+      state.peerTransfers.set(hostId, transfer);
+    }
+    // A slow peer retains only the newest complete snapshot, never an unbounded queue.
+    transfer.latest = { runtime, generatedAt: Date.parse(payload.generatedAt), dataBase64: encodeText(peerTransferText(payload, hostId)) };
+    void drainPeerTransfer(hostId, transfer);
+  }
+
+  function pushLocalInventoryToPeers(payload) {
     const discovery = discoverHostNames();
     const runtimes = discoverRemoteRuntimes(discovery.runtimes);
-    for (const [hostId, runtime] of runtimes) {
-      if (typeof runtime?.requestClient?.sendRequest !== "function") continue;
-      const resolveCodexHome = state.remoteCodexHomes.has(hostId)
-        ? Promise.resolve(state.remoteCodexHomes.get(hostId))
-        : sendRequestWithTimeout(runtime.requestClient, "config/read", { cwd: null, includeLayers: true }).then((configResult) => {
-          const codexHome = findCodexHome(configResult);
-          if (!codexHome) throw new Error("Remote Codex home was not reported");
-          state.remoteCodexHomes.set(hostId, codexHome);
-          return codexHome;
-        });
-      void resolveCodexHome
-        .then((codexHome) => sendRequestWithTimeout(runtime.requestClient, "fs/writeFile", {
-          dataBase64,
-          path: peerInventoryPath(codexHome, config.localDisplayName || "Local"),
-        }))
-        .catch(() => {});
+    for (const [hostId, transfer] of state.peerTransfers) {
+      if (!runtimes.has(hostId)) {
+        transfer.latest = null;
+        if (transfer.timer !== null) clearTimeout(transfer.timer);
+        transfer.timer = null;
+        if (!transfer.pending) state.peerTransfers.delete(hostId);
+      }
     }
+    for (const [hostId, runtime] of runtimes) queuePeerTransfer(hostId, runtime, payload);
   }
 
   function scheduleLocalPeerCacheInventory(hosts) {
@@ -1552,18 +1662,8 @@
     }));
     const localThreadInventory = state.threadInventories.get("local");
     const nativeProjectSnapshot = publishedLocalProjectSnapshot(null);
-    const statusSignature = JSON.stringify({
-      peers: Object.fromEntries(Object.entries(peers).map(([hostId, peer]) => [hostId, {
-        generatedAt: peer.generatedAt,
-        publisherVersion: peer.publisherVersion,
-        threads: peer.threads.map((thread) => ({ id: thread.id, title: thread.title ?? null, titleSource: thread.titleSource })),
-      }])),
-      projects: nativeProjectSnapshot.projects,
-      tasks,
-      threads: threads.map((thread) => ({ id: thread.id, title: thread.title ?? null, titleSource: thread.titleSource })),
-      threadFetchedAt: localThreadInventory?.fetchedAt ?? 0,
-    });
-    const publishInterval = tasks.length ? REMOTE_INVENTORY_ACTIVE_MS : REMOTE_INVENTORY_IDLE_MS;
+    const statusSignature = publicationSignature(peers, nativeProjectSnapshot.projects, tasks, threads, localThreadInventory?.fetchedAt ?? 0);
+    const publishInterval = inventoryHasWork(tasks, threads) ? REMOTE_INVENTORY_ACTIVE_MS : REMOTE_INVENTORY_IDLE_MS;
     const statusChanged = statusSignature !== state.localInventoryStatusSignature;
     if (!statusChanged && now - state.localInventoryPublishedAt < publishInterval) return;
     state.localInventoryPublisherPending = true;
@@ -1591,10 +1691,10 @@
       removeGossipedLocalInventoryDuplicates();
       const generatedAt = new Date().toISOString();
       const threadScopeGeneratedAt = new Date(currentThreadInventory.fetchedAt).toISOString();
-      const payload = JSON.stringify({ generatedAt, hostDisplayName: config.localDisplayName || null, helperVersion: releaseVersion(config.helperVersion), peers, projects, publisherVersion: PUBLISHER_VERSION, schemaVersion: 1, tasks, threadScope: "user-visible", threadScopeGeneratedAt, threads });
-      const dataBase64 = encodeText(payload);
+      const payload = { generatedAt, hostDisplayName: config.localDisplayName || null, helperVersion: releaseVersion(config.helperVersion), peers, projects, publisherVersion: PUBLISHER_VERSION, schemaVersion: 1, tasks, threadScope: "user-visible", threadScopeGeneratedAt, threads };
+      const dataBase64 = encodeText(compactInventoryText(payload));
       return sendRequestWithTimeout(runtime.requestClient, "fs/writeFile", { dataBase64, path: inventoryPath(codexHome) })
-        .then(() => pushLocalInventoryToPeers(dataBase64));
+        .then(() => pushLocalInventoryToPeers(payload));
     }).then(() => {
       if (state.disposed) return;
       state.localInventoryPublishedAt = Date.now();
@@ -1607,7 +1707,7 @@
       if (state.disposed) return;
       state.localInventoryPublisherPending = false;
       if (state.localInventoryPublisherTimer === null) {
-        const nextInterval = tasks.length ? REMOTE_INVENTORY_ACTIVE_MS : REMOTE_INVENTORY_IDLE_MS;
+        const nextInterval = inventoryHasWork(tasks, threads) ? REMOTE_INVENTORY_ACTIVE_MS : REMOTE_INVENTORY_IDLE_MS;
         state.localInventoryPublisherTimer = setTimeout(() => {
           state.localInventoryPublisherTimer = null;
           schedule();
@@ -2107,6 +2207,10 @@
       #${PANEL_ID} .crmp-task { font-size:13px; min-height:30px; }
       #${PANEL_ID} .crmp-update-group { flex-wrap:wrap; white-space:normal; font-size:12px; margin:0; }
       #${PANEL_ID} .crmp-update-control, #${PANEL_ID} .crmp-update-status { margin:0; white-space:normal; font-size:12px; }
+      #${PANEL_ID} .crmp-version { display:flex; align-items:center; gap:6px; max-width:100%; min-height:28px; margin:0 0 4px; padding:3px 6px; border:1px solid var(--color-border-secondary, #777); border-radius:5px; color:var(--color-text,inherit); background:transparent; font:inherit; font-size:12px; text-align:start; white-space:normal; }
+      #${PANEL_ID} .crmp-version svg { flex:0 0 16px; }
+      #${PANEL_ID} .crmp-version:disabled { cursor:default; opacity:1; }
+
       #${PANEL_ID} .crmp-update-panel, #${PANEL_ID} .crmp-settings, #${PANEL_ID} .crmp-devices { min-width:0; padding:6px; border:1px solid var(--color-border-default,#777); border-radius:8px; }
       #${PANEL_ID} .crmp-settings[hidden] { display:none; }
       #${PANEL_ID} .crmp-help { margin:6px 0; font-size:12px; line-height:1.5; color:var(--color-text-secondary,inherit); overflow-wrap:anywhere; }
@@ -2200,7 +2304,7 @@
       const compact = document.createElement("span");
       compact.className = "crmp-update-status";
       compact.dataset.state = status.state;
-      compact.textContent = status.state === "checking" ? "Checking updates…" : `Current${versionLabel ? ` · ${versionLabel}` : ""}`;
+      compact.textContent = status.state === "checking" ? "Checking updates…" : "Automatic update checks";
       compact.title = status.message ?? compact.textContent;
       return compact;
     }
@@ -2313,6 +2417,60 @@
     state.healthRefreshTimer = setTimeout(() => { state.healthRefreshTimer = null; if (!state.disposed) schedule(); }, 10000);
     schedule();
     return true;
+  }
+
+  function connectionGuidance(host) {
+    if (host.id === "local") {
+      const ready = readiness();
+      if (!ready.localRuntimeReady) return { code: "local-bridge", summary: "The local helper bridge is not ready.", next: "Launch this device through Remote Enabler, keep the app open, then refresh the evidence." };
+      if (!ready.authoritativeInventoryReady) return { code: "local-inventory", summary: "The local task inventory is not ready.", next: "Allow initial loading to finish, then refresh. If this persists, generate a diagnostic preview before restarting through Remote Enabler." };
+      if (!ready.publisherReady || ageSeconds(state.localInventoryPublishedAt) === null || ageSeconds(state.localInventoryPublishedAt) > 180) return { code: "local-publisher", summary: "The local inventory publisher has not confirmed a recent successful write.", next: "Check that the app can write its data folder and launch through Remote Enabler. Review a diagnostic preview if refresh does not recover." };
+      return { code: "local-ready", summary: "Local inventory and publication are ready.", next: "Check the other device below if its projects are missing." };
+    }
+    const inventory = state.remoteProjectInventories.get(host.id);
+    const connectivity = state.hostConnectivity.get(host.id);
+    const checkedRecently = ageSeconds(connectivity?.checkedAt) !== null && ageSeconds(connectivity.checkedAt) <= 30;
+    const fresh = Boolean(freshInventory(host.id));
+    if (host.availabilityKnown && host.available === false) return { code: "disconnected", summary: "The app currently reports this device as disconnected.", next: "Keep the other device awake with the app open, check its network and Remote connection, then refresh here. Cached projects do not prove it is online." };
+    if (!checkedRecently || connectivity?.available !== true) return { code: "unknown", summary: "A recent successful connection check is not available.", next: "Refresh the evidence. If it remains unknown, inspect the app's Remote connection on both devices; this helper cannot determine account or network health from cached data." };
+    if (!inventory || inventory.error) return { code: "publisher-unavailable", summary: "The device responded, but its project inventory could not be read or validated.", next: "On that device, launch through Remote Enabler and inspect its Device health panel. Confirm local inventory/publication is ready, then refresh here." };
+    if (!fresh || !scopedThreadsAreFresh(inventory)) return { code: "stale", summary: "Connection evidence exists, but the project/task inventory is stale or incomplete.", next: "Check the other device's local inventory status and helper version. Refresh there and here; old membership is not renewed by status-only updates." };
+    if (inventory.sourcePeerCache || inventory.sourcePeerHostId) return { code: "cached", summary: "Fresh inventory is available through a cache or another peer.", next: "Refresh for a direct read. This is useful fallback data, but the source alone does not prove a direct connection." };
+    const transfer = state.peerTransfers.get(host.id);
+    if (transfer?.error) return { code: "push-retrying", summary: "Direct reads work, but outgoing cache writes are waiting or retrying.", next: "The normal read path remains available. Keep both apps open and refresh; if this persists, review the other device's app data-folder write access." };
+    return { code: "healthy", summary: "Recent direct connection and complete inventory evidence are available.", next: "If a project is missing, check device filters and its project registration. Refresh after creating or moving a project." };
+  }
+
+  function appendConnectionTroubleshooting(parent, model) {
+    const details = featureDetails("Connection troubleshooting", "connection");
+    helpText(details, "Follow the next step for each device. This uses observed helper evidence; it does not test account entitlement, change Remote settings, or restart apps.");
+    const refresh = button("crmp-auto-control", "Refresh connection evidence");
+    refresh.disabled = Date.now() < state.healthRefreshUntil;
+    setFocusKey(refresh, "connection-evidence");
+    refresh.addEventListener("click", refreshDeviceHealth);
+    details.appendChild(refresh);
+    if (refresh.disabled) helpText(details, "Checks requested. Pending reads are reused; wait for updated evidence below.");
+    if (!model.hosts.length) helpText(details, "No devices discovered. Open the app's Remote controls to connect another device, then refresh.");
+    for (const host of model.hosts) {
+      const card = document.createElement("section");
+      card.className = "crmp-device-card";
+      const title = document.createElement("strong");
+      title.textContent = displayDeviceName(host.id, host.name);
+      card.appendChild(title);
+      const guide = connectionGuidance(host);
+      helpText(card, guide.summary);
+      helpText(card, `Next step: ${guide.next}`);
+      if (host.id !== "local") {
+        const stats = state.transferStats.get(host.id);
+        if (stats) helpText(card, `This session: ${stats.reads} inventory reads, ${stats.writes} cache write attempts, ${stats.failures} failed operations. Base64 payload: ${stats.receivedBase64Bytes} bytes received / ${stats.sentBase64Bytes} bytes sent. Last successful read/write: ${stats.lastReadMs ?? "unknown"} / ${stats.lastWriteMs ?? "unknown"} ms.`);
+        const transfer = state.peerTransfers.get(host.id);
+        if (peerWriteLocks.has(host.id)) helpText(card, "An outgoing write has not settled. A newer snapshot waits to prevent overlapping writes; direct reads remain available.");
+        else if (transfer?.retryAt > Date.now()) helpText(card, `Outgoing retry in about ${Math.ceil((transfer.retryAt - Date.now()) / 1000)} seconds.`);
+      }
+      details.appendChild(card);
+    }
+    helpText(details, "Transfer figures cover helper inventory payloads since this renderer loaded, excluding transport overhead, native chat, and model streaming. Generate a diagnostic export preview to share these status-only counts.");
+    parent.appendChild(details);
   }
 
   function appendDeviceHealth(parent, model) {
@@ -2529,6 +2687,8 @@
           inventoryAgeSeconds: ageSeconds(inventory?.generatedAt), inventoryPending: inventory?.pending === true,
           inventoryError: Boolean(inventory?.error), inventoryFresh: host.id === "local" ? readiness().authoritativeInventoryReady : Boolean(freshInventory(host.id)),
           helperVersion: host.id === "local" ? releaseVersion(config.helperVersion) : releaseVersion(inventory?.helperVersion),
+          connectionFinding: connectionGuidance(host).code,
+          transfer: state.transferStats.has(host.id) ? { ...state.transferStats.get(host.id) } : null,
           projects: model.projects.filter(project => project.hostId === host.id).length,
           tasks: model.tasks.filter(task => task.hostId === host.id).length };
       }),
@@ -2625,29 +2785,54 @@
       ? "Downloading and verifying the update. You can cancel before shutdown starts."
       : /cancell/i.test(status.message || "") ? "Finishing preparation before cancellation completes. The app will stay open." : "Preparing the verified update…";
     return ({
+      current: "Checks run at launch and every 30 minutes. Use the version button to check now.",
       available: "Install when tasks finish; the app will close and reopen automatically.",
       checking: "Checking for a new release…", closing: "Closing the app normally before updating…",
       updating: "Installing the verified update…", restarting: "Reopening the app with your saved settings…",
       error: "The update could not complete. Review the details, then check again.",
-      unavailable: "The update service is unavailable in this session." })[status.state] || "";
+      unavailable: typeof globalThis[UPDATE_SLOT]?.request === "function"
+        ? "Automatic update checks are unavailable. Try a manual check or review the details."
+        : "The update service is not attached. Fully quit the app and launch Remote Enabler from the folder containing the version you installed." })[status.state] || "";
   }
 
   function announceUpdate(status) {
     const announcement = `${status.state}: ${updateExplanation(status)}`;
     if (announcement === state.lastAnnouncement) return;
     state.lastAnnouncement = announcement;
-    if (state.liveRegion) state.liveRegion.textContent = status.state === "current" ? "Remote Enabler is up to date." : updateExplanation(status);
+    if (state.liveRegion) state.liveRegion.textContent = status.state === "current" ? "Remote Enabler update checks are ready." : updateExplanation(status);
   }
 
   function updateStatusPanel(status) {
     const panel = document.createElement("section");
     panel.className = "crmp-update-panel";
     panel.setAttribute("aria-label", "Remote Enabler update");
+    const installed = releaseVersion(config.helperVersion) || status.details?.installedVersion || (status.state === "current" ? releaseVersion(status.version) : null);
+    const version = button("crmp-version", "");
+    version.setAttribute("aria-label", `Check Remote Enabler updates${installed ? ` (${installed})` : " (version not reported)"}`);
+    version.title = "Loaded helper version. Check for updates.";
+    setFocusKey(version, "update-version");
+    version.disabled = !["current", "error", "unavailable"].includes(status.state) || typeof globalThis[UPDATE_SLOT]?.request !== "function";
+    version.addEventListener("click", () => { void requestUpdateAction("check"); });
+    const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    icon.setAttribute("viewBox", "0 0 24 24"); icon.setAttribute("width", "16"); icon.setAttribute("height", "16");
+    icon.setAttribute("aria-hidden", "true"); icon.setAttribute("focusable", "false");
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", "M20 7v5h-5M4 17v-5h5M6.1 7a7 7 0 0 1 11.6-1L20 9M4 15l2.3 3A7 7 0 0 0 17.9 17");
+    path.setAttribute("fill", "none"); path.setAttribute("stroke", "currentColor"); path.setAttribute("stroke-width", "1.8");
+    path.setAttribute("stroke-linecap", "round"); path.setAttribute("stroke-linejoin", "round"); icon.appendChild(path);
+    const label = document.createElement("span"); label.textContent = `Remote Enabler · ${installed || "version not reported"}`;
+    version.append(icon, label); panel.appendChild(version);
     panel.appendChild(updateStatusControl());
     const explanation = document.createElement("p");
     explanation.className = "crmp-help";
     explanation.textContent = updateExplanation(status);
     panel.appendChild(explanation);
+    if (["current", "unavailable", "error"].includes(status.state)) {
+      const releases = document.createElement("a"); releases.className = "crmp-release-link";
+      releases.href = "https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases";
+      releases.target = "_blank"; releases.rel = "noopener noreferrer"; releases.textContent = "Release notes and downloads";
+      panel.appendChild(releases);
+    }
     if (status.message && ["error", "unavailable"].includes(status.state)) {
       const details = document.createElement("details");
       details.open = state.updateDetailsOpen;
@@ -5007,7 +5192,7 @@
     fragment.appendChild(modes);
     const update = readUpdateStatus();
     announceUpdate(update);
-    if (update.state !== "current") fragment.appendChild(updateStatusPanel(update));
+    fragment.appendChild(updateStatusPanel(update));
     const settings = document.createElement("section");
     settings.id = `${PANEL_ID}-settings`;
     settings.className = "crmp-settings";
@@ -5064,7 +5249,6 @@
     maintenanceSummary.className = "crmp-help";
     maintenanceSummary.textContent = "Startup maintenance runs only while the app is closed. It maintains local databases and diagnostic logs.";
     settings.appendChild(maintenanceSummary);
-    if (update.state === "current") settings.appendChild(updateStatusControl());
     const check = button("crmp-auto-control", "Check for updates");
     check.disabled = !["current", "error", "unavailable"].includes(update.state) || typeof globalThis[UPDATE_SLOT]?.request !== "function";
     setFocusKey(check, "settings", "check");
@@ -5073,6 +5257,7 @@
     appendCleanupPanel(settings);
     appendUpdateDetails(settings, update);
     appendDiagnosticsPanel(settings, model);
+    appendConnectionTroubleshooting(settings, model);
     if (state.view === "native") appendDeviceHealth(settings, model);
     fragment.appendChild(settings);
 
@@ -5408,6 +5593,7 @@
     state.autoArchiveTimer = null;
     if (state.autoArchiveLeaseTimer !== null) clearInterval(state.autoArchiveLeaseTimer);
     state.autoArchiveLeaseTimer = null;
+    for (const transfer of state.peerTransfers.values()) { if (transfer.timer !== null) clearTimeout(transfer.timer); transfer.latest = null; }
     if (state.localInventoryPublisherTimer !== null) clearTimeout(state.localInventoryPublisherTimer);
     state.localInventoryPublisherTimer = null;
     if (state.inventoryHydrationTimer !== null) clearTimeout(state.inventoryHydrationTimer);
@@ -5425,7 +5611,7 @@
     document.getElementById(STYLE_ID)?.remove();
     state.active = false;
     const report = renderReport();
-    for (const collection of [state.autoRegistrationFailures, state.collapsed, state.hostConnectivity, state.localRegisteredProjects, state.localRuntimeHostIds, state.peerCacheStates, state.remoteCodexHomes, state.remoteProjectInventories, state.remoteRuntimeCache, state.threadInventories, state.threadManagers, state.verifiedThreadIds]) collection.clear();
+    for (const collection of [state.autoRegistrationFailures, state.collapsed, state.hostConnectivity, state.localRegisteredProjects, state.localRuntimeHostIds, state.peerCacheStates, state.peerTransfers, state.transferStats, state.remoteHomeRequests, state.remoteCodexHomes, state.remoteProjectInventories, state.remoteRuntimeCache, state.threadInventories, state.threadManagers, state.verifiedThreadIds]) collection.clear();
     state.localFetchFromHost = null;
     state.hostDiscoveryCache = null;
     state.hostDiscoveryDirty = true;

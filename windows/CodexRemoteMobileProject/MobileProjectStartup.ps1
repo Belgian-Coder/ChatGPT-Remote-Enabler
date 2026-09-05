@@ -320,7 +320,7 @@ switch ($Action) {
                 Write-StartupLog "$(Get-Date -Format o) [$computerName] stage=stable-runtime durationMs=$($stableTimer.ElapsedMilliseconds)"
                 $deadline = (Get-Date).AddSeconds($MobileReadyTimeoutSeconds)
                 $mobileTimer = [Diagnostics.Stopwatch]::StartNew()
-                $enableOutput = @(& $mobileController -Action Enable -NodePath $node -Confirm:$false 2>&1)
+                $enableOutput = @(& $mobileController -Action Enable -NodePath $node -DeferUpdateSession -Confirm:$false 2>&1)
                 Write-CommandOutput $enableOutput
                 $report = Get-MobileReport -Output $enableOutput
                 Assert-MobileReport -Report $report

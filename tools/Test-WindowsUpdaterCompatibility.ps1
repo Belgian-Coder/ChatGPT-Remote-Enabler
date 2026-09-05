@@ -55,6 +55,25 @@ try {
     $probe = & (Join-Path $fixtureRoot 'Update-ChatGPTRemote.ps1') -Action Probe -LatestReleaseUrl "$baseUrl/release.json" -InstallRoot $fixtureRoot -AllowInsecureTransport | ConvertFrom-Json
     if ($probe.localVersion -ne $version) { throw 'Updated updater probe returned the wrong version.' }
 
+    # Exercise the exact Auto action used by v1.5.31 launchers, with isolated
+    # preferences and rollback state. No installed app or shortcut is changed.
+    $autoFixture = Join-Path $temporaryRoot 'auto-fixture'
+    New-Item -ItemType Directory -Path $autoFixture -Force | Out-Null
+    Copy-Item -Path (Join-Path $PreviousInstallRoot '*') -Destination $autoFixture -Recurse -Force
+    $previousLocalAppData = $env:LOCALAPPDATA
+    $previousAutoUpdate = $env:CHATGPT_REMOTE_AUTO_UPDATE
+    try {
+        $env:LOCALAPPDATA = Join-Path $temporaryRoot 'auto-state'
+        $env:CHATGPT_REMOTE_AUTO_UPDATE = '1'
+        $autoResult = & $previousUpdater -Action Auto -CheckIntervalHours 0 -LatestReleaseUrl "$baseUrl/release.json" -InstallRoot $autoFixture -AllowInsecureTransport | ConvertFrom-Json
+        if ($autoResult.updated -ne $true -or (Get-Content -LiteralPath (Join-Path $autoFixture 'VERSION') -Raw).Trim() -ne $version) {
+            throw 'The previous launcher Auto action did not install the normal release.'
+        }
+    } finally {
+        $env:LOCALAPPDATA = $previousLocalAppData
+        $env:CHATGPT_REMOTE_AUTO_UPDATE = $previousAutoUpdate
+    }
+
     $flatExtract = Join-Path $temporaryRoot 'flat-extract'
     $flatFixture = Join-Path $temporaryRoot 'flat-fixture'
     Expand-Archive -LiteralPath $archivePath -DestinationPath $flatExtract
@@ -88,6 +107,7 @@ try {
 
     [pscustomobject]@{
         PreviousUpdaterAcceptedRelease = $true
+        PreviousLauncherAutoInstalledRelease = $true
         NewUpdaterAcceptedFlatStar = $true
         SecurityBlockDetected = $true
         RootedArchive = $archiveName

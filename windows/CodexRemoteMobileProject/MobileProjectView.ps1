@@ -2,7 +2,8 @@
 param(
     [ValidateSet('Enable', 'Disable', 'Probe', 'EnableAutoMaintenance', 'DisableAutoMaintenance', 'PreviewAutoMaintenance', 'RunAutoMaintenance', 'EnableAutoArchive', 'DisableAutoArchive', 'PreviewAutoArchive', 'RunAutoArchive', 'EnableAutoRegistration', 'DisableAutoRegistration', 'ReconcileAutoRegistrations', 'RemoveAutoRegistrations')]
     [string]$Action = 'Probe',
-    [string]$NodePath
+    [string]$NodePath,
+    [switch]$DeferUpdateSession
 )
 
 $ErrorActionPreference = 'Stop'
@@ -64,3 +65,16 @@ $nodeAction = switch ($Action) {
 }
 & $NodePath (Join-Path $PSScriptRoot 'inject.js') --action $nodeAction --port $port --local-name $env:COMPUTERNAME
 if ($LASTEXITCODE -ne 0) { throw "Mobile project view action failed with exit code $LASTEXITCODE." }
+
+# Legacy launchers may have updated these files while their pre-update startup
+# script is still running. Bootstrap the session helper on that first Enable.
+# Current coordinators defer this until readiness and supply exact resume flags.
+if ($Action -eq 'Enable' -and -not $DeferUpdateSession) {
+    try {
+        if ($session.proxyMode -isnot [bool]) { throw 'The stable session does not report an exact proxy mode.' }
+        $sessionLauncher = Join-Path $PSScriptRoot 'UpdateSessionLauncher.ps1'
+        & $sessionLauncher -InstallRoot $bundleParent -EntryPointRelative 'CodexRemoteMobileProject\MobileProjectStartup.ps1' -NodePath $NodePath -UseProxy:([bool]$session.proxyMode) | Out-Null
+    } catch {
+        Write-Warning "Update status could not be attached after enabling the sidebar: $($_.Exception.Message)"
+    }
+}

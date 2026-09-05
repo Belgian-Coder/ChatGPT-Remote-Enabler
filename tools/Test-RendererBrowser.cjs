@@ -14,6 +14,9 @@ const fixtureSource = source.replace("  return install();\n})();", "  globalThis
 assert.notEqual(fixtureSource, source, "The fixture must expose the real renderer entrypoints.");
 
 async function main() {
+    const screenshotIndex = process.argv.indexOf("--screenshot");
+    const screenshotPath = screenshotIndex >= 0 ? path.resolve(process.argv[screenshotIndex + 1]) : null;
+
   const defaultEdge = process.platform === "win32" ? path.join(process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)", "Microsoft", "Edge", "Application", "msedge.exe") : null;
   const executablePath = process.env.CHATGPT_REMOTE_BROWSER || (defaultEdge && fs.existsSync(defaultEdge) ? defaultEdge : undefined);
   const browser = await chromium.launch({ executablePath, headless: true });
@@ -33,7 +36,7 @@ async function main() {
     await page.evaluate(() => {
       globalThis.__fixtureHost = "remote-control:" + "env" + "_" + "primary_fixture";
       globalThis.__fixtureOlderHost = "remote-control:" + "env" + "_" + "older_fixture";
-      globalThis.__CODEX_REMOTE_MOBILE_CONFIG__ = { localDisplayName: "Local device", hostDisplayNames: {} };
+      globalThis.__CODEX_REMOTE_MOBILE_CONFIG__ = { localDisplayName: "Local device", helperVersion: "v1.5.35", hostDisplayNames: {} };
       localStorage.setItem("codex-remote-mobile-auto-register-enabled-v1", "false");
       localStorage.setItem("codex-remote-mobile-auto-archive-enabled-v1", "false");
       const project = document.getElementById("native-project");
@@ -59,6 +62,29 @@ async function main() {
       __crmpBrowserFixture.install();
     });
     const panel = page.locator("#codex-remote-mobile-project-panel");
+    await panel.locator(".crmp-version").waitFor();
+    assert.match(await panel.locator(".crmp-version").innerText(), /Remote Enabler · v1\.5\.35/u);
+    assert.equal(await panel.locator(".crmp-version svg").count(), 1);
+    assert.equal(await panel.locator(".crmp-settings").isVisible(), false, "version must be visible while Settings is closed");
+    if (screenshotPath) await panel.locator(".crmp-update-panel").screenshot({ path: screenshotPath.replace(/\.png$/u, "-version.png") });
+    await panel.locator(".crmp-version").click();
+    assert.equal(await page.evaluate(() => __fixtureRequests.pop()), "check");
+    // A missing sidecar must leave a visible version, icon, recovery instruction and release link.
+    await page.evaluate(() => {
+      globalThis.__savedFixtureUpdater = __CHATGPT_REMOTE_UPDATE__;
+      delete globalThis.__CHATGPT_REMOTE_UPDATE__;
+      __crmpBrowserFixture.state.updateStatus = null;
+      __crmpBrowserFixture.render();
+    });
+    assert.match(await panel.locator(".crmp-update-panel").innerText(), /update service is not attached/u);
+    assert.match(await panel.locator(".crmp-version").innerText(), /v1\.5\.35/u);
+    assert.equal(await panel.locator(".crmp-version").isDisabled(), true);
+    if (screenshotPath) await panel.locator(".crmp-update-panel").screenshot({ path: screenshotPath.replace(/\.png$/u, "-missing-updater.png") });
+    assert.equal(await panel.getByRole("link", { name: "Release notes and downloads" }).count(), 1);
+    await panel.getByRole("button", { name: "Native sidebar", exact: true }).click();
+    assert.equal(await panel.locator(".crmp-version").isVisible(), true);
+    await page.evaluate(() => { globalThis.__CHATGPT_REMOTE_UPDATE__ = __savedFixtureUpdater; __crmpBrowserFixture.state.updateStatus = null; __crmpBrowserFixture.render(); });
+    await panel.getByRole("button", { name: "Device projects", exact: true }).click();
     const chips = panel.locator(".crmp-chip");
     await chips.filter({ hasText: "Remote device" }).waitFor();
     assert.doesNotMatch(await panel.innerText(), /primary_fixture|Remote env_/u);
@@ -130,7 +156,7 @@ async function main() {
       }, state);
       await page.waitForFunction(state => __crmpBrowserFixture.state.updateStatus.state === state, state);
       await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-      assert.equal(await panel.locator(".crmp-update-panel").count(), state === "current" ? 0 : 1);
+      assert.equal(await panel.locator(".crmp-update-panel").count(), 1);
       if (state === "queued") assert.match(await panel.innerText(), /Waiting for activity information/);
       if (state === "error") await panel.getByRole("button", { name: "Check again", exact: true }).waitFor();
       if (["queued", "preparing"].includes(state)) await panel.getByRole("button", { name: "Cancel", exact: true }).waitFor();
@@ -229,8 +255,23 @@ async function main() {
       __crmpBrowserFixture.render();
     });
 
-    const screenshotIndex = process.argv.indexOf("--screenshot");
-    const screenshotPath = screenshotIndex >= 0 ? path.resolve(process.argv[screenshotIndex + 1]) : null;
+    await page.evaluate(() => {
+      __crmpBrowserFixture.state.featureOpen.connection = true;
+      __crmpBrowserFixture.state.transferStats.set(__fixtureHost, { reads: 3, writes: 2, receivedBase64Bytes: 1200, sentBase64Bytes: 600, failures: 1, lastReadMs: 40, lastWriteMs: 35 });
+      __crmpBrowserFixture.state.healthRefreshUntil = 0;
+      __crmpBrowserFixture.render();
+    });
+    const troubleshooting = panel.locator("details.crmp-feature").filter({ has: page.locator("summary", { hasText: "Connection troubleshooting" }) });
+    assert.match(await troubleshooting.innerText(), /Next step:/u);
+    assert.match(await troubleshooting.innerText(), /3 inventory reads, 2 cache write attempts/u);
+    await troubleshooting.getByRole("button", { name: "Refresh connection evidence", exact: true }).click();
+    await page.waitForFunction(() => [...document.querySelectorAll("button")].some(button => button.textContent === "Refresh connection evidence" && button.disabled));
+    assert.equal(await troubleshooting.getByRole("button", { name: "Refresh connection evidence", exact: true }).isDisabled(), true);
+    assert.match(await troubleshooting.innerText(), /Pending reads are reused/u);
+    const connectionDiagnostics = await page.evaluate(() => __crmpBrowserFixture.diagnosticSnapshot(__crmpBrowserFixture.collectModel()));
+    assert.ok(connectionDiagnostics.devices.some(device => device.transfer?.sentBase64Bytes === 600));
+    assert.doesNotMatch(JSON.stringify(connectionDiagnostics), /primary_fixture|Peer desktop/u);
+
     for (const theme of ["dark", "light"]) {
       await page.evaluate(theme => {
         document.documentElement.style.colorScheme = theme;
@@ -243,6 +284,7 @@ async function main() {
         __fixtureUpdateStatus = { state: "queued", version: "v1.5.33", canCancel: true, message: "Waiting for active tasks" };
         __crmpBrowserFixture.state.settingsOpen = true;
         __crmpBrowserFixture.state.deviceDetailsOpen = true;
+        __crmpBrowserFixture.state.featureOpen.connection = true;
         __crmpBrowserFixture.state.remoteProjectInventories.get(__fixtureHost).hostDisplayName = "Peer desktop with a very long device name";
         globalThis.dispatchEvent(new CustomEvent("chatgpt-remote-update-status", { detail: __fixtureUpdateStatus }));
       }, theme);
@@ -268,13 +310,14 @@ async function main() {
         assert.ok(contrast >= 4.5, `Low fixture text contrast (${contrast}): ${item.text}`);
       }
       if (screenshotPath) await panel.screenshot({ path: screenshotPath.replace(/\.png$/u, `-${theme}.png`) });
+      if (screenshotPath) await troubleshooting.screenshot({ path: screenshotPath.replace(/\.png$/u, `-connection-${theme}.png`) });
     }
     if (screenshotPath) {
       await page.evaluate(() => {
         __crmpBrowserFixture.state.settingsOpen = true;
         __crmpBrowserFixture.state.deviceDetailsOpen = false;
         __crmpBrowserFixture.state.featureOpen = { cleanup: true, updates: true, diagnostics: true };
-        __fixtureUpdateStatus = { state: "current", version: "v1.5.34", details: { installedVersion: "v1.5.34", lastCheckedAt: Date.now(), historyAvailable: true, history: [{ at: Date.now(), state: "checked", version: "v1.5.34" }] } };
+        __fixtureUpdateStatus = { state: "current", version: "v1.5.35", details: { installedVersion: "v1.5.35", lastCheckedAt: Date.now(), historyAvailable: true, history: [{ at: Date.now(), state: "checked", version: "v1.5.35" }] } };
         globalThis.dispatchEvent(new CustomEvent("chatgpt-remote-update-status", { detail: __fixtureUpdateStatus }));
       });
       await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
@@ -285,13 +328,13 @@ async function main() {
     await page.evaluate(() => {
       __crmpBrowserFixture.state.settingsOpen = false;
       __crmpBrowserFixture.state.deviceDetailsOpen = false;
-      __fixtureUpdateStatus = { state: "available", version: "v1.5.33", canQueue: true };
+      __fixtureUpdateStatus = { state: "current", version: "v1.5.35", canQueue: false };
       globalThis.dispatchEvent(new CustomEvent("chatgpt-remote-update-status", { detail: __fixtureUpdateStatus }));
     });
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     if (screenshotPath) await panel.screenshot({ path: screenshotPath });
     assert.deepEqual(errors, [], "the real renderer must not raise browser errors");
-    console.log(JSON.stringify({ featureControls: true, aliasReload: true, caretPreserved: true, healthRefreshCoalesced: true, diagnosticCopyAndDownload: true, uxStates: 10, themes: 2, sidebarWidths: [280,320,400], scaling: [1,2], fixtureTextContrast: true, stableAnnouncements: true, focusRestored: true, realChromium: true, realModelAndRender: true, neutralName: true, metadataArrival: true, reinjection: true, updateEventBothTargets: true, keyboardQueue: true, nativeViewUpdate: true, cancel: true, unrelatedMutations: 200, extraRenders: after.renders - before.renders, extraHostScans: after.hostDiscoveryScans - before.hostDiscoveryScans }));
+    console.log(JSON.stringify({ alwaysVisibleVersionAndIcon: true, missingUpdaterRecoveryBothViews: true, guidedConnectionTroubleshooting: true, transferDiagnosticsAllowlisted: true, featureControls: true, aliasReload: true, caretPreserved: true, healthRefreshCoalesced: true, diagnosticCopyAndDownload: true, uxStates: 10, themes: 2, sidebarWidths: [280,320,400], scaling: [1,2], fixtureTextContrast: true, stableAnnouncements: true, focusRestored: true, realChromium: true, realModelAndRender: true, neutralName: true, metadataArrival: true, reinjection: true, updateEventBothTargets: true, keyboardQueue: true, nativeViewUpdate: true, cancel: true, unrelatedMutations: 200, extraRenders: after.renders - before.renders, extraHostScans: after.hostDiscoveryScans - before.hostDiscoveryScans }));
   } finally { await browser.close(); }
 }
 

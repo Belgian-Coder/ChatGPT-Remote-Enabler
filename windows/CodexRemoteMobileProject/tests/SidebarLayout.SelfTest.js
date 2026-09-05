@@ -312,7 +312,8 @@ layout.useModel({ rows: [nativeRecentRow], nativeProjectItems: [opened, closed],
 layout.install();
 assert.equal(layout.state.nativeContainer, nativeContainer, "render must include native project items as well as task rows when choosing its mount");
 assert.equal(layout.state.panel.parentElement, nav, "mode controls must mount beside the common Projects/Recents container");
-assert.equal(layout.state.panel.querySelector(".crmp-update-status").textContent, "Current · v1.5.32");
+assert.equal(layout.state.panel.querySelector(".crmp-update-status").textContent, "Automatic update checks");
+assert.match(layout.state.panel.querySelector(".crmp-version").textContent, /v1\.5\.32/u, "loaded version remains visible outside Settings");
 updateStatus = { state: "available", version: "v1.5.33", message: "Ready", canCancel: false, canQueue: true };
 context.dispatchEvent(new context.CustomEvent("chatgpt-remote-update-status"));
 assert.equal(layout.state.updateStatus.state, "available", "a window-dispatched updater event without detail must refresh through getStatus");

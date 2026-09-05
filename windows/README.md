@@ -4,7 +4,7 @@ You need Windows 11 x64, the ChatGPT/Codex desktop app installed and signed in w
 
 ## 1. Download and extract
 
-1. Download **ChatGPT-Remote-Enabler-Windows-x64-v1.5.34.zip** from [v1.5.34 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.34). Read the prerelease testing limitations.
+1. Download **ChatGPT-Remote-Enabler-Windows-x64-v1.5.35.zip** from [v1.5.35 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.35). Read the prerelease testing limitations.
 2. Right-click the ZIP in File Explorer, choose **Properties**, select **Unblock** if offered, and click **OK**. Then choose **Extract All**.
 3. Enter `%LOCALAPPDATA%\Programs` in File Explorer's address bar. Create a **ChatGPTRemoteEnabler** folder and copy the extracted package contents into it.
 4. **ChatGPT Remote Enabler.exe**, **README.md**, and **CodexRemoteMobileProject** must be directly inside that folder. Keep the whole package together.
@@ -290,12 +290,24 @@ their included C# source files.
 
 These screenshots show the shared renderer in a browser fixture; they are not native macOS acceptance evidence.
 
-![Device projects](screenshots/device-projects-v1.5.34.png)
+![Device projects](screenshots/device-projects-v1.5.35.png)
 
-![Settings and update status](screenshots/settings-v1.5.34.png)
+![Settings and update status](screenshots/settings-v1.5.35.png)
 
-![Windows setup assistant](screenshots/setup-v1.5.34.png)
+![Windows setup assistant](screenshots/setup-v1.5.35.png)
 
 ## Health, history, and diagnostics
 
 Settings now includes cleanup preview/history, update details/history, and an explicit diagnostic export preview. Device health includes refresh, reported helper versions, and aliases that stay on this client. See the [feature guide](FEATURES.md) for retention and privacy boundaries.
+
+## Connection troubleshooting and transfer
+
+Settings now provides per-device connection findings, next steps, explicit evidence refresh, and session transfer statistics. Inventory exchange avoids recipient echoes, coalesces slow-peer writes, and retries with backoff. A 1,000-task-per-client fixture measured a 64% smaller push payload; live network speed is not yet measured. See the [feature guide](FEATURES.md) for scope and compatibility.
+
+## Version or update icon missing
+
+Check the target of **ChatGPT Custom** in the Start menu (open its file location, then shortcut Properties). Setup preserves legacy shortcuts, so one may still launch a different, older folder. Downloading a ZIP into a new folder does not retarget that shortcut.
+
+Fully quit the app when your work is safe, then use **ChatGPT Remote Enabler.exe** in the newly extracted folder, or the new **ChatGPT Remote Enabler** shortcut created by that folder's setup assistant. The top sidebar strip reports the loaded helper version in both views. If its update service is missing, the strip shows recovery instructions.
+
+v1.5.35 is a normal release and is discoverable by the existing automatic updater. The first Windows upgrade from v1.5.31 attaches the new update helper even through the legacy launcher.

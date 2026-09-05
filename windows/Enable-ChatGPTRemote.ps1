@@ -197,7 +197,7 @@ try {
     if (-not $SkipMobileProjects) {
         $mobileTimer = [Diagnostics.Stopwatch]::StartNew()
         $deadline = [DateTime]::UtcNow.AddSeconds(45)
-        $enableOutput = @(& $mobile -Action Enable -Confirm:$false 2>&1)
+        $enableOutput = @(& $mobile -Action Enable -DeferUpdateSession -Confirm:$false 2>&1)
         $enableOutput | ForEach-Object { Write-Host $_ }
         $report = Get-RemoteMobileReport -Output $enableOutput
         Assert-RemoteMobileReport -Report $report

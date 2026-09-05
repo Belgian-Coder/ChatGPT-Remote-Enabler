@@ -54,9 +54,15 @@ function Assert-RemoteMobileReport {
         $Report.ready -isnot [bool]) {
         throw 'The mobile project view returned incomplete readiness proof.'
     }
+}
+
+function Get-RemoteMobileReadinessTimeoutMessage {
+    param($Report, [int]$TimeoutSeconds)
+    $message = "The mobile project view did not become ready within $TimeoutSeconds seconds (mounted=$($Report.mounted), localRuntimeReady=$($Report.localRuntimeReady), authoritativeInventoryReady=$($Report.authoritativeInventoryReady), publisherReady=$($Report.publisherReady), ready=$($Report.ready))."
     if (-not [string]::IsNullOrWhiteSpace([string]$Report.error)) {
-        throw "The mobile project view reported a terminal readiness error: $($Report.error)"
+        $message += " Last readiness error: $($Report.error)"
     }
+    return $message
 }
 
 function Write-RemoteRelaunchHandoff {
@@ -202,7 +208,7 @@ try {
         $report = Get-RemoteMobileReport -Output $enableOutput
         Assert-RemoteMobileReport -Report $report
         while (-not $report.ready) {
-            if ([DateTime]::UtcNow -ge $deadline) { throw 'The mobile project view did not become ready within 45 seconds.' }
+            if ([DateTime]::UtcNow -ge $deadline) { throw (Get-RemoteMobileReadinessTimeoutMessage -Report $report -TimeoutSeconds 45) }
             Start-Sleep -Milliseconds 500
             $probeOutput = @(& $mobile -Action Probe 2>&1)
             $report = Get-RemoteMobileReport -Output $probeOutput

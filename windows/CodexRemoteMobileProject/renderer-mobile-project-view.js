@@ -62,7 +62,7 @@
     "unknown",
   ]);
   const PUBLISHER_VERSION = 53;
-  const VERSION = 70;
+  const VERSION = 71;
   // Keep outstanding writes locked across renderer reinjection until the underlying RPC settles.
   const peerWriteLocks = globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ instanceof Map
     ? globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ : (globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ = new Map());
@@ -966,6 +966,7 @@
       if (!isSyntheticHostName(connection.name)) names.set(connection.hostId, connection.name);
       if (connection.online !== null) availability.set(connection.hostId, connection.online);
     }
+    persistHostNames(names);
     const result = { names, availability, registeredProjects, runtimes };
     state.hostDiscoveryCache = result;
     state.hostDiscoveryDirty = false;
@@ -1905,6 +1906,22 @@
     return [...new Set([normalized, hostId, short].filter((value) => typeof value === "string" && value))];
   }
 
+  function persistHostNames(names, storageKey = HOST_NAMES_KEY) {
+    const records = readRecords(storageKey);
+    let changed = false;
+    for (const [hostId, value] of names) {
+      if (isSyntheticHostName(value)) continue;
+      const name = value.trim();
+      for (const alias of hostNameAliases(hostId)) {
+        if (records[alias] === name) continue;
+        records[alias] = name;
+        changed = true;
+      }
+    }
+    if (changed) writeRecords(storageKey, records);
+    return changed;
+  }
+
   function configuredHostName(hostId) {
     for (const alias of hostNameAliases(hostId)) {
       const value = config.hostDisplayNames?.[alias];
@@ -2176,6 +2193,7 @@
     for (const project of nativeProjects) {
       if (project.hostId !== "local" && !names.has(project.hostId) && !isSyntheticHostName(project.hostDisplayName)) names.set(project.hostId, project.hostDisplayName.trim());
     }
+    persistHostNames(names);
     const remoteHostIds = [...new Set([...tasks, ...nativeProjects, ...remoteInventoryProjects].map((item) => item.hostId).filter((hostId) => hostId !== "local"))];
     const singleRemoteHostId = remoteHostIds.length === 1 ? remoteHostIds[0] : null;
 

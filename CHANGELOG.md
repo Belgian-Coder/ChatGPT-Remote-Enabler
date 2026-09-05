@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.5.39
+
+- Keep polling a well-formed mobile-project readiness report while its renderer reports a transient not-ready reason. On timeout, retain the final readiness flags and error instead of failing on the first explanatory message.
+- Persist trusted device labels as soon as native discovery or remote inventory observes them, including normalized long and short host identities. Retain the labels after a renderer restart even when Codex authorization is temporarily absent, without treating saved names as connection or authorization proof.
+- Record the first stable-bridge failure before the guarded retry so repeated app activation can be diagnosed from the startup log.
+- Reuse an intact same-session update controller after a transient debugger reconnect, preserving pending renderer requests and avoiding a brief false unavailable/replaced state.
+- Add deterministic regression coverage for both Windows readiness entry points and for pre-render device-name persistence across a renderer restart.
+
 ## v1.5.38
 
 - Retry a transient Windows path-provider lookup failure while validating a prepared update directory. Keep the existing fail-closed rejection of reparse points and fail immediately for permission or other non-transient errors.

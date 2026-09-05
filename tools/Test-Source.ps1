@@ -58,6 +58,7 @@ $powershell = @(
     'tools\Test-PackageProcessLauncher.ps1'
     'tools\Test-ProxyRuntimePreparer.ps1'
     'tools\Test-LegacyDeviceKeyStartup.ps1'
+    'tools\Test-MobileReadinessPolling.ps1'
     'tools\Test-MacOSUpdaterCompatibility.ps1'
     'tools\Test-MacOSSupport.ps1'
     'tools\Test-UserInstallWindows.ps1'
@@ -99,7 +100,7 @@ foreach ($pair in @(
 }
 $renderer = Get-Content -LiteralPath $windowsRenderer -Raw
 $requiredContracts = @(
-    'const VERSION = 70;',
+    'const VERSION = 71;',
     'hostDisplayName: config.localDisplayName || null',
     'codex-remote-mobile-verified-thread-ids-v2',
     'THREAD_VISIBILITY_CONTRACT_VERSION',
@@ -249,6 +250,9 @@ if ($LASTEXITCODE -ne 0) { throw 'Legacy device-key compatibility self-test fail
 & (Join-Path $root 'tools\Test-LegacyDeviceKeyStartup.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Legacy device-key startup self-test failed.' }
 
+& (Join-Path $root 'tools\Test-MobileReadinessPolling.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Mobile readiness polling self-test failed.' }
+
 & (Join-Path $root 'tools\Test-ProxyRuntimePreparer.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Private proxy runtime preparer self-test failed.' }
 
@@ -267,7 +271,7 @@ if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
 [pscustomobject]@{
     JavaScriptFiles = $javascript.Count
     PowerShellFiles = $powershell.Count
-    RendererVersion = 70
+    RendererVersion = 71
     LegacyUpdateBootstrapSelfTest = $true
     SetupAssistantSelfTest = $true
     RendererParity = $true
@@ -286,6 +290,7 @@ if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
     NativeConnectionLifecycleSelfTest = $true
     LegacyDeviceKeyCompatibilitySelfTest = $true
     LegacyDeviceKeyStartupSelfTest = $true
+    MobileReadinessPollingSelfTest = $true
     FeatureStateSelfTest = $true
     RendererReliabilitySelfTest = $true
     WindowsSessionStateSelfTest = $true

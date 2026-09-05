@@ -176,8 +176,21 @@ async function bootstrapContract() {
   assert.equal((await reply).state, "current");
 
   const pending = context[PUBLIC_NAME].request("queue");
+  const originalApi = context[PUBLIC_NAME];
+  const reconnectProof = vm.runInContext(bootstrapSource("fixture-nonce", {
+    state: "available", version: "v3", message: "reconnected", canQueue: true,
+  }), context);
+  assert.deepEqual({ ...reconnectProof }, { installed: true, topFrame: true });
+  assert.equal(context[PUBLIC_NAME], originalApi, "a same-session reconnect must reuse the renderer controller");
+  assert.equal(context[PUBLIC_NAME].getStatus().version, "v3");
+  assert.equal(context[INTERNAL_NAME].receive({
+    nonce: "fixture-nonce", id: "fixture-request", ok: true,
+    status: { state: "current", version: "v3", message: null, canQueue: false, canCancel: false },
+  }), true);
+  assert.equal((await pending).version, "v3", "a pending request must survive a same-session reconnect");
+  const pendingAfterReconnect = context[PUBLIC_NAME].request("queue");
   assert.equal(context[INTERNAL_NAME].dispose("fixture stopped"), true);
-  await assert.rejects(pending, /fixture stopped/u);
+  await assert.rejects(pendingAfterReconnect, /fixture stopped/u);
   assert.equal(context[PUBLIC_NAME], undefined);
   assert.equal(context[INTERNAL_NAME], undefined);
 

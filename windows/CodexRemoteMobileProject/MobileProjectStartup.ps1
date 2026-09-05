@@ -76,9 +76,15 @@ function Assert-MobileReport {
         $Report.ready -isnot [bool]) {
         throw 'The mobile project view returned incomplete readiness proof.'
     }
+}
+
+function Get-MobileReadinessTimeoutMessage {
+    param($Report, [int]$TimeoutSeconds)
+    $message = "The mobile project view did not become ready within $TimeoutSeconds seconds (mounted=$($Report.mounted), localRuntimeReady=$($Report.localRuntimeReady), authoritativeInventoryReady=$($Report.authoritativeInventoryReady), publisherReady=$($Report.publisherReady), ready=$($Report.ready))."
     if (-not [string]::IsNullOrWhiteSpace([string]$Report.error)) {
-        throw "The mobile project view reported a terminal readiness error: $($Report.error)"
+        $message += " Last readiness error: $($Report.error)"
     }
+    return $message
 }
 
 function Write-RelaunchHandoff {
@@ -311,8 +317,12 @@ switch ($Action) {
                         Write-CommandOutput @(& $stableController @stableArguments 2>&1)
                         break
                     } catch {
-                        if ($stableAttempt -ge 2) { throw }
-                        Write-StartupLog "$(Get-Date -Format o) [$computerName] stable bridge not ready on attempt $stableAttempt; retrying once"
+                        $stableError = $_.Exception.Message
+                        if ($stableAttempt -ge 2) {
+                            Write-StartupLog "$(Get-Date -Format o) [$computerName] stable bridge failed on attempt ${stableAttempt}: $stableError"
+                            throw
+                        }
+                        Write-StartupLog "$(Get-Date -Format o) [$computerName] stable bridge failed on attempt ${stableAttempt}: $stableError; retrying once"
                         Start-Sleep -Seconds 2
                     }
                 }
@@ -326,7 +336,7 @@ switch ($Action) {
                 Assert-MobileReport -Report $report
                 while (-not $report.ready) {
                     if ((Get-Date) -ge $deadline) {
-                        throw "The mobile project view did not become ready within $MobileReadyTimeoutSeconds seconds."
+                        throw (Get-MobileReadinessTimeoutMessage -Report $report -TimeoutSeconds $MobileReadyTimeoutSeconds)
                     }
                     Start-Sleep -Milliseconds 500
                     $probeOutput = @(& $mobileController -Action Probe -NodePath $node 2>&1)

@@ -172,8 +172,9 @@ async function main() {
 
     rawClients.at(-1).close();
     await waitFor(() => rawClients.length >= 2, "The real CDP socket did not reattach.");
+    await transport.publish({ state: "available", version: "v-real-reconnected", message: "ready", canQueue: true });
     await waitFor(
-      async () => page.evaluate(() => globalThis.__CHATGPT_REMOTE_UPDATE__?.getStatus?.().state === "available").catch(() => false),
+      async () => page.evaluate(() => globalThis.__CHATGPT_REMOTE_UPDATE__?.getStatus?.().version === "v-real-reconnected").catch(() => false),
       "The status did not converge after a real CDP reconnect.",
     );
     const replyAfterReconnect = await page.evaluate(() => globalThis.__CHATGPT_REMOTE_UPDATE__.request("check"));

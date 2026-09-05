@@ -83,9 +83,15 @@ function bootstrapSource(nonce, initialStatus) {
     let disposed = false;
     let status = ${encodedStatus};
     const clone = (value) => ({ ...(value.details ? { details: JSON.parse(JSON.stringify(value.details)) } : {}), state: value.state, version: value.version, message: value.message, canCancel: value.canCancel, canQueue: value.canQueue });
+    const existing = globalThis[internalName];
+    if (existing?.nonce === nonce && typeof existing.setStatus === "function"
+      && globalThis[publicName] && existing.setStatus(status) === true) {
+      return { installed:true, topFrame:true };
+    }
     try { globalThis[internalName]?.dispose?.("The update controller was replaced."); } catch {}
     let api;
     const internal = {
+      nonce,
       dispose(reason) {
         if (disposed) return true;
         disposed = true;

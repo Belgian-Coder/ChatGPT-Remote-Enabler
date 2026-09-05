@@ -9,7 +9,7 @@ const rendererPath = path.join(__dirname, "..", "renderer-mobile-project-view.js
 const originalSource = fs.readFileSync(rendererPath, "utf8").replace(/\r\n/gu, "\n");
 const testSource = originalSource
   .replace("(() => {", "globalThis.__hostFlowTest = (() => {")
-  .replace("  return install();\n})();", "  return { collectModel, hostName, state, uninstall };\n})();");
+  .replace("  return install();\n})();", "  return { collectModel, discoverHostNames, hostName, state, uninstall };\n})();");
 assert.notEqual(testSource, originalSource, "full renderer test adapter must replace the production entrypoint");
 
 class FixtureElement {
@@ -46,6 +46,7 @@ const document = {
 const environmentPrefix = "env" + "_";
 const hostId = `remote-control:${environmentPrefix}fixture_primary`;
 const olderHostId = `remote-control:${environmentPrefix}fixture_older`;
+const transientHostId = `remote-control:${environmentPrefix}fixture_transient`;
 const configuredShortId = `${environmentPrefix}fixture_configured`;
 const configuredHostId = `remote-control:${configuredShortId}`;
 const context = vm.createContext({
@@ -133,6 +134,20 @@ assert.notEqual(hostLabel(flow, olderHostId), "Peer desktop", "an unnamed peer m
 flow.state.remoteProjectInventories.set(configuredHostId, inventory(null, "D:\\Fixture\\Configured"));
 assert.equal(hostLabel(flow, configuredHostId), "Configured peer", "short configured identities must resolve after runtime normalization");
 
+nativeProjects = [new FixtureElement({
+  cwd: "D:\\Fixture\\Transient",
+  hostDisplayName: "Transient workstation",
+  hostId: transientHostId,
+  label: "Transient project",
+  projectId: "transient-project",
+  projectKind: "remote",
+})];
+flow.state.hostDiscoveryDirty = true;
+flow.discoverHostNames();
+const eagerlyRemembered = JSON.parse(storage.get("codex-remote-mobile-host-names-v1") ?? "{}");
+assert.equal(eagerlyRemembered[transientHostId], "Transient workstation", "trusted discovery must persist a name before the host reaches the rendered model");
+assert.equal(eagerlyRemembered[transientHostId.replace(/^remote-control:/u, "")], "Transient workstation", "durable labels must cover the normalized short identity");
+
 delete context.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__;
 delete context.__hostFlowTest;
 nativeProjects = [];
@@ -140,12 +155,16 @@ vm.runInContext(testSource, context, { filename: rendererPath });
 flow = context.__hostFlowTest;
 flow.state.remoteProjectInventories.set(hostId, inventory(null, "D:\\Fixture\\Primary"));
 assert.equal(hostLabel(flow, hostId), "Peer desktop", "renderer reinjection must restore the per-host confirmed name");
+flow.state.remoteProjectInventories.set(transientHostId, inventory(null, "D:\\Fixture\\Transient"));
+assert.equal(hostLabel(flow, transientHostId), "Transient workstation", "a renderer restart without live discovery must retain a previously observed label");
 
 console.log(JSON.stringify({
   configuredKeyNormalized: true,
   initialNeutral: true,
   metadataArrivalRenamed: true,
+  preRenderDiscoveryPersisted: true,
   olderPeerNeutral: true,
   reinjectionRestored: true,
+  shortAliasPersisted: true,
   syntheticOverwriteRejected: true,
 }));

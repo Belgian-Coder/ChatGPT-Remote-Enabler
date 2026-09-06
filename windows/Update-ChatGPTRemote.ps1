@@ -188,6 +188,44 @@ function Get-PublishedArchiveHash {
     return ([regex]::Match($checksumLine, '^[0-9a-fA-F]{64}')).Value.ToLowerInvariant()
 }
 
+function Remove-UpdaterDirectoryTree {
+    param([IO.DirectoryInfo]$Directory)
+
+    if ($Directory.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        $Directory.Delete($false)
+        return
+    }
+    foreach ($file in $Directory.GetFiles()) {
+        if (-not ($file.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            $file.Attributes = [IO.FileAttributes]::Normal
+        }
+        $file.Delete()
+    }
+    foreach ($child in $Directory.GetDirectories()) {
+        Remove-UpdaterDirectoryTree -Directory $child
+    }
+    $Directory.Attributes = [IO.FileAttributes]([int]$Directory.Attributes -band (-bnot [int][IO.FileAttributes]::ReadOnly))
+    $Directory.Delete($false)
+}
+
+function Remove-UpdaterOwnedDirectory {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$ExpectedParent,
+        [Parameter(Mandatory)][string]$ExpectedLeafPattern
+    )
+
+    $resolved = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+    $resolvedParent = [IO.Path]::GetFullPath((Split-Path -Parent $resolved)).TrimEnd('\')
+    $allowedParent = [IO.Path]::GetFullPath($ExpectedParent).TrimEnd('\')
+    $leaf = Split-Path -Leaf $resolved
+    if ($resolvedParent -cne $allowedParent -or $leaf -notmatch "^(?:$ExpectedLeafPattern)$") {
+        throw "Refusing to remove a directory outside the updater-owned scope: $resolved"
+    }
+    if (-not [IO.Directory]::Exists($resolved)) { return }
+    Remove-UpdaterDirectoryTree -Directory ([IO.DirectoryInfo]::new($resolved))
+}
+
 function Get-SafePreparedDirectoryItem {
     param([string]$Path)
     $maxAttempts = 3
@@ -294,8 +332,10 @@ function New-PreparedRelease {
         if ($_.Exception.Message -match 'UNSAFE_MIXED_INSTALL|UPDATE_BUSY') { throw }
         throw "UPDATE_PREPARE_FAILED: $($_.Exception.Message)"
     } finally {
-        if (Test-Path -LiteralPath $temporaryRoot) { Remove-Item -LiteralPath $temporaryRoot -Recurse -Force }
-        if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
+        Remove-UpdaterOwnedDirectory -Path $temporaryRoot -ExpectedParent ([IO.Path]::GetTempPath()) -ExpectedLeafPattern 'chatgpt-remote-prepare-[0-9a-f]{32}'
+        $destinationParent = Split-Path -Parent $Destination
+        $stagingPattern = [regex]::Escape((Split-Path -Leaf $Destination)) + '\.prepare-[0-9]+-[0-9a-f]{32}'
+        Remove-UpdaterOwnedDirectory -Path $staging -ExpectedParent $destinationParent -ExpectedLeafPattern $stagingPattern
     }
 }
 
@@ -341,7 +381,7 @@ function Get-ReleaseArchiveHash {
         New-Item -ItemType Directory -Path $temporaryRoot -Force | Out-Null
         return Get-PublishedArchiveHash -Release $Release -TemporaryRoot $temporaryRoot
     } finally {
-        if (Test-Path -LiteralPath $temporaryRoot) { [IO.Directory]::Delete($temporaryRoot, $true) }
+        Remove-UpdaterOwnedDirectory -Path $temporaryRoot -ExpectedParent ([IO.Path]::GetTempPath()) -ExpectedLeafPattern 'chatgpt-remote-check-[0-9a-f]{32}'
     }
 }
 
@@ -355,7 +395,9 @@ function Install-VerifiedRelease {
     } finally {
         if (-not (Test-Path -LiteralPath $journalPath -PathType Leaf) -and
             (Test-Path -LiteralPath $preparedRoot -PathType Container)) {
-            Remove-Item -LiteralPath $preparedRoot -Recurse -Force
+            $preparedParent = Join-Path $stateRoot 'prepared'
+            $preparedPattern = [regex]::Escape("$safeVersion-$($ArchiveHash.Substring(0, 16))")
+            Remove-UpdaterOwnedDirectory -Path $preparedRoot -ExpectedParent $preparedParent -ExpectedLeafPattern $preparedPattern
         }
     }
 }

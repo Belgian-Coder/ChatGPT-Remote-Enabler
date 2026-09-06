@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.5.47
+
+- Complete Windows update preparation when a normal user's temporary folder is Windows TEMP. Use the same scoped cleanup for checks, preparation staging and completed update staging.
+- Preserve read-only file cleanup without following directory links, and retain cleanup failures. Cover full pinned preparation with a failing PowerShell cleanup provider.
 ## v1.5.46
 
 - Share saved device aliases and resets automatically through the existing authenticated peer inventory connection. Keep aliases separate from device identity, connection settings and cache paths.

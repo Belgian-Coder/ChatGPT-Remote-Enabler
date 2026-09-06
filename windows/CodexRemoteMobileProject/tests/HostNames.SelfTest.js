@@ -110,6 +110,47 @@ let flow = context.__hostFlowTest;
 flow.state.remoteProjectInventories.set(hostId, inventory(null, "D:\\Fixture\\Primary"));
 assert.equal(hostLabel(flow, hostId), "Remote device", "an initially unnamed runtime must use a neutral label");
 assert.doesNotMatch(hostLabel(flow, hostId), /fixture_primary/iu, "a raw environment identity must never enter the UI label");
+const firstModel = flow.collectModel();
+assert.equal(firstModel.hosts.map((host) => host.id).join("|"), `local|${hostId}`, "the authoritative local host identity must always lead device hosts");
+assert.equal(firstModel.hosts[0].name, "Local device");
+assert.equal(firstModel.projects.find((project) => project.hostId === hostId)?.tasksAuthoritative, true, "a fresh scoped inventory must mark its empty project membership authoritative");
+assert.equal(firstModel.projects.find((project) => project.hostId === hostId)?.taskStatusAuthoritative, true, "empty authoritative membership must also prove that no child is busy");
+assert.equal(firstModel.projects.find((project) => project.hostId === hostId)?.taskUnreadAuthoritative, true, "empty authoritative membership must also prove that no child is unread");
+
+const localThreadId = "11111111-1111-4111-8111-111111111111";
+const localThread = (threadStatus, hasUnreadTurn) => ({
+  cwd: "C:\\Fixture\\Local",
+  hasUnreadTurn,
+  id: localThreadId,
+  projectId: "local-project",
+  status: threadStatus,
+});
+nativeProjects = [new FixtureElement({
+  cwd: "C:\\Fixture\\Local",
+  label: "Local project",
+  projectId: "local-project",
+  projectKind: "local",
+})];
+flow.state.threadInventories.set("local", { error: null, threads: [localThread("active", false)] });
+let localProject = flow.collectModel().projects.find((project) => project.projectId === "local-project");
+assert.equal(localProject.taskStatusAuthoritative, true);
+assert.equal(localProject.taskUnreadAuthoritative, true);
+assert.equal(localProject.tasksAuthoritative, true);
+assert.equal(localProject.tasks[0].statusType, "loading", "current local app-server status must establish the busy phase");
+flow.state.threadInventories.set("local", { error: null, threads: [localThread("completed", true)] });
+localProject = flow.collectModel().projects.find((project) => project.projectId === "local-project");
+assert.equal(localProject.tasks[0].statusType, "idle");
+assert.equal(localProject.tasks[0].unread, true, "current local app-server unread state must establish the completed-unread phase");
+flow.state.threadInventories.set("local", { error: null, threads: [localThread("completed", false)] });
+localProject = flow.collectModel().projects.find((project) => project.projectId === "local-project");
+assert.equal(localProject.tasks[0].unread, false, "current local app-server unread state must establish the read phase");
+flow.state.threadInventories.set("local", { error: null, threads: [localThread("completed", undefined)] });
+localProject = flow.collectModel().projects.find((project) => project.projectId === "local-project");
+assert.equal(localProject.taskStatusAuthoritative, true, "known completion stays authoritative when unread metadata is absent");
+assert.equal(localProject.taskUnreadAuthoritative, false, "missing unread metadata must remain independently unknown");
+assert.equal(localProject.tasksAuthoritative, false, "the combined marker remains conservative when either signal is unknown");
+flow.state.threadInventories.delete("local");
+nativeProjects = [];
 
 flow.state.remoteProjectInventories.set(hostId, inventory("Peer desktop", "D:\\Fixture\\Primary"));
 assert.equal(hostLabel(flow, hostId), "Peer desktop", "direct inventory metadata must update the rendered device name");

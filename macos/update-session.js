@@ -15,6 +15,7 @@ const STATUS_STATES = new Set([
   "updating", "restarting", "error", "unavailable",
 ]);
 const REQUEST_ACTIONS = new Set(["check", "queue", "cancel", "history"]);
+const CLOSE_METHODS = new Set(["native-renderer-quit", "WM_CLOSE", "concurrent-graceful-exit", "NSRunningApplicationTerminate"]);
 
 function cleanMessage(value, fallback = null) {
   if (typeof value !== "string") return fallback;
@@ -289,6 +290,7 @@ class PlatformAdapter {
     this.config = config;
     this.run = dependencies.runCommand ?? runCommand;
     this.spawn = dependencies.spawn ?? spawn;
+    this.lastCloseMethod = null;
   }
 
   async #platform(action) {
@@ -297,7 +299,7 @@ class PlatformAdapter {
       const result = await this.run(shell, [
         "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
         "-File", this.config.platformHelperPath, "-Action", action,
-        "-ConfigPath", this.config.configPath,
+        "-ConfigPath", this.config.configPath, "-NodePath", process.execPath,
       ], { timeoutMs: 45_000 });
       return parseLastJson(result.stdout);
     }
@@ -321,7 +323,9 @@ class PlatformAdapter {
 
   async closeGracefully() {
     const result = await this.#platform("Close");
-    return result.closed === true;
+    if (result.closed !== true) return false;
+    this.lastCloseMethod = CLOSE_METHODS.has(result.method) ? result.method : null;
+    return true;
   }
 
   async relaunch() {
@@ -700,7 +704,7 @@ class UpdateSessionController {
       this.config.log?.("close-request", { version: release.version });
       if (await this.platform.closeGracefully() !== true) throw new Error("ChatGPT refused the graceful close request; the update was not applied.");
       appClosed = true;
-      this.config.log?.("app-closed", { version: release.version });
+      this.config.log?.("app-closed", { version: release.version, method: this.platform.lastCloseMethod ?? null });
       await this.setStatus({ state: "updating", version: release.version, message: "Installing the verified update…" });
       this.config.log?.("apply-start", { version: release.version, archiveSha256: release.archiveSha256 });
       const result = await this.updater.applyPrepared(release, retainedDirectory);

@@ -85,7 +85,7 @@ try {
         $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $Port)
         $listener.Start()
         try {
-            for ($request = 0; $request -lt 5; $request++) {
+            for ($request = 0; $request -lt 10; $request++) {
                 $requestDeadline = [DateTime]::UtcNow.AddSeconds(30)
                 while (-not $listener.Pending()) {
                     if ([DateTime]::UtcNow -ge $requestDeadline) { return }
@@ -142,6 +142,39 @@ try {
         throw 'Packaged Auto did not retain verified-release behavior.'
     }
 
+    $temporaryCheckRootsBefore = @(Get-ChildItem -LiteralPath ([IO.Path]::GetTempPath()) -Directory -Filter 'chatgpt-remote-check-*' -ErrorAction SilentlyContinue | ForEach-Object FullName)
+    $guardedCheckCommand = @'
+function Remove-Item {
+    [CmdletBinding(DefaultParameterSetName = 'Path')]
+    param(
+        [Parameter(Position = 0, ParameterSetName = 'Path')]
+        [string[]]$Path,
+        [Parameter(Mandatory, ParameterSetName = 'LiteralPath')]
+        [string[]]$LiteralPath,
+        [switch]$Recurse,
+        [switch]$Force
+    )
+    $targets = if ($PSCmdlet.ParameterSetName -eq 'LiteralPath') { @($LiteralPath) } else { @($Path) }
+    if (@($targets | Where-Object { $_ -like '*chatgpt-remote-check-*' }).Count -gt 0) {
+        throw 'The PowerShell provider must not clean up the exact-owned archive-hash directory.'
+    }
+    Microsoft.PowerShell.Management\Remove-Item @PSBoundParameters
+}
+& __UPDATER__ -Action Check -InstallRoot __INSTALL__ -LatestReleaseUrl __RELEASE__ -AllowInsecureTransport 2>&1
+'@
+    $guardedCheckCommand = $guardedCheckCommand.Replace('__UPDATER__', $quotedUpdater).Replace('__INSTALL__', $quotedFixture).Replace('__RELEASE__', $quotedReleaseUrl)
+    $guardedCheckCapture = Invoke-WindowsPowerShellCapture $guardedCheckCommand
+    if ($guardedCheckCapture.exitCode -ne 0) { throw "Packaged Check cleanup regression failed: $($guardedCheckCapture.text)" }
+    $guardedCheck = $guardedCheckCapture.text | ConvertFrom-Json
+    if ($guardedCheck.method -ne 'verified-release' -or $guardedCheck.archiveSha256 -ne ('a' * 64)) {
+        throw 'Packaged Check did not return the published archive hash after exact-owned cleanup.'
+    }
+    $temporaryCheckRootsAfter = @(Get-ChildItem -LiteralPath ([IO.Path]::GetTempPath()) -Directory -Filter 'chatgpt-remote-check-*' -ErrorAction SilentlyContinue | ForEach-Object FullName)
+    $leakedCheckRoots = @($temporaryCheckRootsAfter | Where-Object { $_ -notin $temporaryCheckRootsBefore })
+    if ($leakedCheckRoots.Count -gt 0) {
+        throw "Packaged Check left an archive-hash temporary directory: $($leakedCheckRoots -join ', ')"
+    }
+
     Copy-Item -LiteralPath (Join-Path $repositoryRoot 'windows\update-transaction.js') -Destination (Join-Path $fixtureRoot 'update-transaction.js')
     [IO.File]::WriteAllText((Join-Path $fixtureRoot 'VERSION'), "v9.8.6$([Environment]::NewLine)", [Text.UTF8Encoding]::new($false))
     $lastCheckPath = Join-Path $fixtureLocalAppData 'ChatGPTRemoteEnabler\update\last-check.json'
@@ -166,6 +199,7 @@ try {
         PackagedInstallKind = $probe.installKind
         DefaultCheckIntervalHours = [int]$probe.checkIntervalHours
         AutoMethod = $auto.method
+        ExactOwnedCheckCleanup = $true
         FailedUpdateNotStamped = $true
         SourceInstallKind = $sourceProbe.installKind
     } | ConvertTo-Json

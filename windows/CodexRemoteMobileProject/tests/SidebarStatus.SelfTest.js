@@ -252,6 +252,18 @@ assert.equal(sidebar.projectStatusIndicator({ ...project, tasks: [loading] }, fa
 projectHeader.setAttribute("data-app-action-sidebar-project-collapsed", "false");
 assert.equal(sidebar.nativeProjectStatus(project).collapsed, false);
 assert.ok(sidebar.projectStatusIndicator({ ...project, tasks: [loading] }, false).classList.contains("crmp-project-status-loading"), "an expanded native row has no collapsed aggregate, so current child activity must supply the custom collapsed status");
+projectHeader.setAttribute("data-app-action-sidebar-project-collapsed", "true");
+projectHeader.__reactFiber$fixture.return.memoizedProps.actions.props.collapsedStatusState = { type: "loading" };
+assert.equal(sidebar.projectStatusIndicator({ ...project, tasks: [], tasksAuthoritative: true }, false), null, "an authoritative empty project must clear a stale native spinner");
+assert.ok(sidebar.projectStatusIndicator({ ...project, tasks: [loading], tasksAuthoritative: true }, false).classList.contains("crmp-project-status-loading"), "authoritative active children must show a folder spinner");
+assert.ok(sidebar.projectStatusIndicator({ ...project, tasks: [unread], tasksAuthoritative: true }, false).classList.contains("crmp-project-status-unread"), "authoritative completion with unread output must replace the spinner with the native unread indicator");
+assert.equal(sidebar.projectStatusIndicator({ ...project, tasks: [idle], tasksAuthoritative: true }, false), null, "reading authoritative completed output must clear the folder indicator");
+assert.equal(sidebar.projectStatusIndicator({ ...project, tasks: [{ ...idle, statusKnown: true, unreadKnown: false }], taskStatusAuthoritative: true, taskUnreadAuthoritative: false }, false), null, "authoritative completion must clear a stale native spinner even when unread state is unavailable");
+projectHeader.__reactFiber$fixture.return.memoizedProps.actions.props.collapsedStatusState = { type: "idle", unread: true };
+assert.ok(sidebar.projectStatusIndicator({ ...project, tasks: [{ ...idle, statusKnown: true, unreadKnown: false }], taskStatusAuthoritative: true, taskUnreadAuthoritative: false }, false).classList.contains("crmp-project-status-unread"), "unknown unread state must preserve a native unread dot while independently authoritative status clears busy");
+assert.equal(sidebar.projectStatusIndicator({ ...project, tasks: [{ ...idle, statusKnown: false, unreadKnown: true }], taskStatusAuthoritative: false, taskUnreadAuthoritative: true }, false), null, "authoritative read state must clear a native unread dot even when task status is unavailable");
+projectHeader.__reactFiber$fixture.return.memoizedProps.actions.props.collapsedStatusState = { type: "loading" };
+assert.ok(sidebar.projectStatusIndicator({ ...project, tasks: [{ ...loading, statusKnown: true, unreadKnown: false }], taskStatusAuthoritative: true, taskUnreadAuthoritative: false }, false).classList.contains("crmp-project-status-loading"), "authoritative busy status must remain visible without requiring unread metadata");
 projects.length = 0;
 assert.ok(sidebar.projectStatusIndicator({ ...project, tasks: [loading] }, false).classList.contains("crmp-project-status-loading"), "inventory-only folders compute their own aggregate");
 

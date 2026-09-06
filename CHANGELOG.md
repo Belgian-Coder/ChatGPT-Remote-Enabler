@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.5.44
+
+- Put the current device first in the filter row and identify it with a visible and accessible `this device` label. Keep the All filter beside it for compact wrapping.
+- Use authoritative task membership and independently known activity/unread state for folder indicators. Empty projects clear stale busy state, completed work changes from a spinner to the native unread indicator, and reading it clears that indicator without guessing unknown state.
+- Clean the version-check scratch directory directly instead of through the PowerShell filesystem provider. This fixes successful checks being reported as Access denied under a normal user whose temporary directory is Windows TEMP; cleanup failures are not suppressed.
+- Ask the Windows app to quit through its native command during an update. Closing its window alone leaves the tray process running. Bind the request to the exact process and loopback debugger, retain graceful-close fallback, and never force-terminate the app.
+
 ## v1.5.43
 
 - Match the native sidebar's `No chats` empty state, child-row indentation, and status placement. A collapsed Device project can show child activity when the underlying native project is expanded; an explicitly idle collapsed native project still clears stale status.

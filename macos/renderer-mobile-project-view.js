@@ -1305,8 +1305,14 @@
 
   function applyRemoteTaskState(task, inventory, now = Date.now()) {
     const taskState = inventory?.tasks?.get(task.conversationKey) ?? inventory?.tasks?.get(task.conversationId) ?? null;
-    if (!task.threadStatusKnown && remoteTaskStatusIsFresh(inventory, taskState, now)) task.statusType = taskState.statusType;
-    if (taskState?.unreadKnown !== false && taskState) task.unread = taskState.unread;
+    if (!task.threadStatusKnown && remoteTaskStatusIsFresh(inventory, taskState, now)) {
+      task.statusKnown = true;
+      task.statusType = taskState.statusType;
+    }
+    if (taskState?.unreadKnown !== false && taskState) {
+      task.unread = taskState.unread;
+      task.unreadKnown = true;
+    }
     return taskState;
   }
 
@@ -2124,10 +2130,14 @@
           mergeTaskTitle(nativeTask, task);
           if (task.statusKnown) {
             nativeTask.directStatusKnown = true;
+            nativeTask.statusKnown = true;
             nativeTask.threadStatusKnown = true;
             nativeTask.statusType = task.statusType;
           }
-          if (task.unreadKnown) nativeTask.unread = task.unread;
+          if (task.unreadKnown) {
+            nativeTask.unread = task.unread;
+            nativeTask.unreadKnown = true;
+          }
         } else {
           taskMap.set(key, task);
         }
@@ -2153,10 +2163,14 @@
           existing.sourceThread = thread;
           mergeTaskTitle(existing, task);
           if (task.statusKnown && !existing.directStatusKnown) {
+            existing.statusKnown = true;
             existing.statusType = task.statusType;
             existing.threadStatusKnown = true;
           }
-          if (task.unreadKnown) existing.unread = task.unread;
+          if (task.unreadKnown) {
+            existing.unread = task.unread;
+            existing.unreadKnown = true;
+          }
         } else {
           taskMap.set(key, task);
         }
@@ -2243,8 +2257,8 @@
     const remoteHostIds = [...new Set([...tasks, ...nativeProjects, ...remoteInventoryProjects].map((item) => item.hostId).filter((hostId) => hostId !== "local"))];
     const singleRemoteHostId = remoteHostIds.length === 1 ? remoteHostIds[0] : null;
 
-    const hosts = [];
-    const seenHosts = new Set();
+    const hosts = [{ id: "local", name: hostName("local", names, singleRemoteHostId), available: true, availabilityKnown: true }];
+    const seenHosts = new Set(["local"]);
     for (const item of [...tasks, ...nativeProjects, ...remoteInventoryProjects]) {
       if (!seenHosts.has(item.hostId)) {
         seenHosts.add(item.hostId);
@@ -2345,6 +2359,14 @@
       }
       if (matchingProject && !group.cwd) group.cwd = task.cwd;
       group.tasks.push(task);
+    }
+    for (const group of groups) {
+      const membershipAuthoritative = authoritativeIds.has(group.hostId);
+      group.taskStatusAuthoritative = membershipAuthoritative && group.tasks.every((task) => (
+        task.statusKnown === true || task.directStatusKnown === true || task.threadStatusKnown === true
+      ));
+      group.taskUnreadAuthoritative = membershipAuthoritative && group.tasks.every((task) => task.unreadKnown === true);
+      group.tasksAuthoritative = group.taskStatusAuthoritative && group.taskUnreadAuthoritative;
     }
     return {
       groups,
@@ -3679,7 +3701,26 @@
   function projectStatusIndicator(project, expanded) {
     if (expanded || project.flatRecent) return null;
     const native = nativeProjectStatus(project);
-    const statusState = native.statusState ?? (!native.known || native.collapsed === false ? aggregateSidebarStatus(project.tasks) : null);
+    const aggregate = aggregateSidebarStatus(project.tasks);
+    const fallback = native.statusState ?? (!native.known || native.collapsed === false ? aggregate : null);
+    const statusAuthoritative = project.taskStatusAuthoritative === true || project.tasksAuthoritative === true;
+    const unreadAuthoritative = project.taskUnreadAuthoritative === true || project.tasksAuthoritative === true;
+    let statusState = fallback;
+    if (statusAuthoritative || unreadAuthoritative) {
+      const fallbackState = normalizeSidebarStatus(fallback);
+      const authoritativeUnread = project.tasks.some((task) => {
+        const taskState = taskSidebarStatus(task);
+        return task.unread === true || taskState.needsAttention;
+      });
+      const unreadCount = unreadAuthoritative ? 0 : fallbackState.unreadCount;
+      const unread = unreadAuthoritative ? authoritativeUnread : fallbackState.unread;
+      const type = unread || unreadCount > 0
+        ? "idle"
+        : statusAuthoritative && project.tasks.some((task) => task.statusType === "loading")
+          ? "loading"
+          : statusAuthoritative ? "idle" : fallbackState.type;
+      statusState = { type, unread, unreadCount };
+    }
     const kind = sidebarStatusKind(statusState);
     if (!kind) return null;
     const status = document.createElement("span");
@@ -5611,15 +5652,21 @@
     filters.className = "crmp-filters";
     filters.setAttribute("role", "group");
     filters.setAttribute("aria-label", "Filter tasks by device");
-    const filterItems = [{ id: "all", name: "All" }, ...model.hosts];
+    const filterItems = [
+      ...model.hosts.filter((host) => host.id === "local"),
+      { id: "all", name: "All" },
+      ...model.hosts.filter((host) => host.id !== "local"),
+    ];
     for (const host of filterItems) {
-      const chip = button("crmp-chip", host.id === "all" ? host.name : displayDeviceName(host.id, host.name));
+      const currentDevice = host.id === "local";
+      const deviceName = host.id === "all" ? host.name : displayDeviceName(host.id, host.name);
+      const chip = button("crmp-chip", currentDevice ? `${deviceName} (this device)` : deviceName);
       setFocusKey(chip, "filter", host.id);
       chip.style.maxWidth = "100%";
       chip.style.overflow = "hidden";
       chip.style.textOverflow = "ellipsis";
-      chip.title = host.name;
-      chip.setAttribute("aria-label", host.id === "all" ? "All devices" : `${displayDeviceName(host.id, host.name)}, ${connectionLabel(host)}`);
+      chip.title = currentDevice ? `${host.name} — this device` : host.name;
+      chip.setAttribute("aria-label", host.id === "all" ? "All devices" : currentDevice ? `${deviceName}, this device` : `${deviceName}, ${connectionLabel(host)}`);
       chip.setAttribute("aria-pressed", String(state.filter === host.id));
       if (host.id !== "all") {
         const dot = document.createElement("span");

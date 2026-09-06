@@ -341,7 +341,7 @@ function Get-ReleaseArchiveHash {
         New-Item -ItemType Directory -Path $temporaryRoot -Force | Out-Null
         return Get-PublishedArchiveHash -Release $Release -TemporaryRoot $temporaryRoot
     } finally {
-        if (Test-Path -LiteralPath $temporaryRoot) { Remove-Item -LiteralPath $temporaryRoot -Recurse -Force }
+        if (Test-Path -LiteralPath $temporaryRoot) { [IO.Directory]::Delete($temporaryRoot, $true) }
     }
 }
 

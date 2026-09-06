@@ -5,14 +5,18 @@ $ErrorActionPreference = 'Stop'
 if ($env:OS -ne 'Windows_NT') { throw 'The native Windows update-session test requires Windows.' }
 
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-$platformScript = Join-Path $root 'windows\CodexRemoteMobileProject\UpdateSessionPlatform.ps1'
-if (-not (Test-Path -LiteralPath $platformScript -PathType Leaf)) {
+$platformSource = Join-Path $root 'windows\CodexRemoteMobileProject\UpdateSessionPlatform.ps1'
+$cdpSource = Join-Path $root 'windows\CodexRemoteSimple\runtime\lib\cdp.js'
+if (-not (Test-Path -LiteralPath $platformSource -PathType Leaf) -or
+    -not (Test-Path -LiteralPath $cdpSource -PathType Leaf)) {
     throw 'The Windows update-session platform adapter is missing.'
 }
 
 $temporary = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
 $testRoot = Join-Path $temporary ('chatgpt-remote-update-session-test-' + [guid]::NewGuid().ToString('N'))
+$platformScript = Join-Path $testRoot 'UpdateSessionPlatform.ps1'
 $fixtureRecords = [Collections.Generic.List[object]]::new()
+$nativeFixtureRecords = [Collections.Generic.List[object]]::new()
 $forcedCleanupCount = 0
 $testResult = $null
 $testFailure = $null
@@ -118,11 +122,14 @@ function Invoke-PlatformAdapter {
     param(
         [ValidateSet('Probe', 'Close')]
         [string]$Action,
-        [string]$ConfigPath
+        [string]$ConfigPath,
+        [string]$NodePath
     )
 
     try {
-        $output = @(& $platformScript -Action $Action -ConfigPath $ConfigPath)
+        $adapterParameters = @{ Action = $Action; ConfigPath = $ConfigPath }
+        if (-not [string]::IsNullOrWhiteSpace($NodePath)) { $adapterParameters.NodePath = $NodePath }
+        $output = @(& $platformScript @adapterParameters)
         if ($output.Count -ne 1) { throw "The platform adapter returned $($output.Count) output records." }
         return [pscustomobject]@{
             Error = $null
@@ -158,8 +165,86 @@ function Test-TrackedFixtureAlive {
     }
 }
 
+function Get-FreeTcpPort {
+    $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+    try {
+        $listener.Start()
+        return ([Net.IPEndPoint]$listener.LocalEndpoint).Port
+    } finally {
+        $listener.Stop()
+    }
+}
+
+function Start-NativeQuitFixture {
+    param(
+        [ValidateSet('quit', 'close-before-response', 'pid-mismatch', 'target-mismatch')]
+        [string]$Mode,
+        [string]$ExecutablePath,
+        [string]$ScriptPath,
+        [Collections.Generic.List[object]]$FixtureRecords
+    )
+
+    $port = Get-FreeTcpPort
+    $readyPath = Join-Path $testRoot "native-$Mode.ready"
+    $quitPath = Join-Path $testRoot "native-$Mode.quit"
+    $stopPath = Join-Path $testRoot "native-$Mode.stop"
+    $process = Start-Process -FilePath $ExecutablePath -ArgumentList @($ScriptPath, $Mode, $port, $readyPath, $quitPath, $stopPath) -WindowStyle Hidden -PassThru
+    $record = $null
+    try {
+        $actualStart = $process.StartTime.ToUniversalTime().ToFileTimeUtc()
+        $actualPath = [IO.Path]::GetFullPath($ExecutablePath)
+        $record = [pscustomobject]@{
+            ExecutablePath = $actualPath
+            Mode = $Mode
+            Pid = [int]$process.Id
+            Port = [int]$port
+            Process = $process
+            QuitPath = $quitPath
+            ReadyPath = $readyPath
+            StartTimeFileTimeUtc = [long]$actualStart
+            StopPath = $stopPath
+        }
+        $FixtureRecords.Add($record)
+        Wait-TestFile -Path $readyPath -Process $process
+        $actual = [Diagnostics.Process]::GetProcessById($process.Id)
+        try {
+            if ($actual.StartTime.ToUniversalTime().ToFileTimeUtc() -ne $actualStart -or
+                -not [string]::Equals([IO.Path]::GetFullPath($actual.MainModule.FileName), $actualPath, [StringComparison]::OrdinalIgnoreCase)) {
+                throw 'The native-quit fixture executable identity changed during startup.'
+            }
+        } finally {
+            $actual.Dispose()
+        }
+        return $record
+    } catch {
+        if ($null -eq $record) { $process.Dispose() }
+        throw
+    }
+}
+
+function New-NativeAdapterConfig {
+    param($Record, [string]$CoordinatorNodePath, [int]$CloseTimeoutMilliseconds = 5000, [string]$Name)
+
+    if ([string]::IsNullOrWhiteSpace($Name)) { $Name = "native-$($Record.Mode)" }
+    $configPath = New-AdapterConfig -Name $Name -ProcessId $Record.Pid `
+        -StartTimeFileTimeUtc $Record.StartTimeFileTimeUtc.ToString([Globalization.CultureInfo]::InvariantCulture) `
+        -ExecutablePath $Record.ExecutablePath -CloseTimeoutMilliseconds $CloseTimeoutMilliseconds
+    $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+    $config.rendererPort = $Record.Port
+    $nodeHash = (Get-FileHash -LiteralPath $CoordinatorNodePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $receiptPath = Join-Path (Split-Path -Parent $configPath) 'coordinator-ready.json'
+    $config | Add-Member -NotePropertyName launchReceipt -NotePropertyValue ([pscustomobject][ordered]@{
+        path = $receiptPath
+        nodeSha256 = $nodeHash
+    })
+    [IO.File]::WriteAllText($configPath, (($config | ConvertTo-Json -Depth 8) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+    return $configPath
+}
+
 try {
     New-Item -ItemType Directory -Path $testRoot | Out-Null
+    Copy-Item -LiteralPath $platformSource -Destination $platformScript
+    Copy-Item -LiteralPath $cdpSource -Destination (Join-Path $testRoot 'cdp.js')
     $fixtureSourcePath = Join-Path $testRoot 'InvisibleWindowFixture.cs'
     $fixtureExecutable = Join-Path $testRoot 'InvisibleWindowFixture.exe'
     $fixtureSource = @'
@@ -247,6 +332,112 @@ internal static class Program
     $alternateExecutable = Join-Path $testRoot 'AlternateInvisibleWindowFixture.exe'
     Copy-Item -LiteralPath $fixtureExecutable -Destination $alternateExecutable
 
+    $nodeSource = (Get-Command node.exe -ErrorAction Stop).Source
+    $nativeFixtureExecutable = Join-Path $testRoot 'ChatGPT.exe'
+    Copy-Item -LiteralPath $nodeSource -Destination $nativeFixtureExecutable
+    $nativeFixtureScript = Join-Path $testRoot 'NativeQuitCdpFixture.js'
+    [IO.File]::WriteAllText($nativeFixtureScript, @'
+"use strict";
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const http = require("node:http");
+const [mode, portText, readyPath, quitPath, stopPath] = process.argv.slice(2);
+const port = Number(portText);
+
+function sendFrame(socket, value) {
+  const payload = Buffer.from(JSON.stringify(value), "utf8");
+  let header;
+  if (payload.length < 126) {
+    header = Buffer.from([0x81, payload.length]);
+  } else {
+    header = Buffer.alloc(4);
+    header[0] = 0x81;
+    header[1] = 126;
+    header.writeUInt16BE(payload.length, 2);
+  }
+  socket.write(Buffer.concat([header, payload]));
+}
+
+function consumeFrames(socket, initial, endpoint) {
+  let buffered = initial;
+  const consume = () => {
+    while (buffered.length >= 2) {
+      const opcode = buffered[0] & 0x0f;
+      const masked = (buffered[1] & 0x80) !== 0;
+      let length = buffered[1] & 0x7f;
+      let offset = 2;
+      if (length === 126) {
+        if (buffered.length < 4) return;
+        length = buffered.readUInt16BE(2);
+        offset = 4;
+      } else if (length === 127) {
+        if (buffered.length < 10) return;
+        const large = buffered.readBigUInt64BE(2);
+        if (large > BigInt(Number.MAX_SAFE_INTEGER)) process.exit(71);
+        length = Number(large);
+        offset = 10;
+      }
+      const maskLength = masked ? 4 : 0;
+      if (buffered.length < offset + maskLength + length) return;
+      const mask = masked ? buffered.subarray(offset, offset + 4) : null;
+      offset += maskLength;
+      const payload = Buffer.from(buffered.subarray(offset, offset + length));
+      buffered = buffered.subarray(offset + length);
+      if (mask) for (let index = 0; index < payload.length; index += 1) payload[index] ^= mask[index % 4];
+      if (opcode === 8) { socket.end(); continue; }
+      if (opcode !== 1) continue;
+      const message = JSON.parse(payload.toString("utf8"));
+      if (endpoint === "browser" && message.method === "SystemInfo.getProcessInfo") {
+        const id = mode === "pid-mismatch" ? process.pid + 10000 : process.pid;
+        sendFrame(socket, { id: message.id, result: { processInfo: [{ type: "browser", id, cpuTime: 0 }] } });
+      } else if (endpoint === "page" && message.method === "Page.getFrameTree") {
+        sendFrame(socket, { id: message.id, result: { frameTree: { frame: { id: "main", url: "app://-/index.html" } } } });
+      } else if (endpoint === "page" && message.method === "Runtime.evaluate") {
+        fs.writeFileSync(quitPath, "quit-app");
+        if (mode === "close-before-response") {
+          socket.destroy();
+          server.close();
+          setTimeout(() => process.exit(0), 25);
+        } else {
+          sendFrame(socket, { id: message.id, result: { result: { type: "object", value: { requested: true } } } });
+          server.close();
+          setTimeout(() => process.exit(0), 100);
+        }
+      } else {
+        sendFrame(socket, { id: message.id, error: { code: -32601, message: "Unexpected fixture method" } });
+      }
+    }
+  };
+  socket.on("data", (chunk) => { buffered = Buffer.concat([buffered, chunk]); consume(); });
+  consume();
+}
+
+const server = http.createServer((request, response) => {
+  const host = `127.0.0.1:${port}`;
+  response.setHeader("Content-Type", "application/json");
+  response.setHeader("Connection", "close");
+  if (request.url === "/json/version") {
+    response.end(JSON.stringify({ webSocketDebuggerUrl: `ws://${host}/devtools/browser/fixture` }));
+    return;
+  }
+  if (request.url === "/json/list" || request.url === "/json") {
+    const url = mode === "target-mismatch" ? "app://-/other.html" : "app://-/index.html";
+    response.end(JSON.stringify([{ id: "fixture", type: "page", url, webSocketDebuggerUrl: `ws://${host}/devtools/page/fixture` }]));
+    return;
+  }
+  response.statusCode = 404;
+  response.end("{}");
+});
+server.on("upgrade", (request, socket, head) => {
+  const key = request.headers["sec-websocket-key"];
+  const accept = crypto.createHash("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
+  socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
+  consumeFrames(socket, head, request.url.includes("/browser/") ? "browser" : "page");
+});
+server.listen(port, "127.0.0.1", () => fs.writeFileSync(readyPath, String(process.pid)));
+setInterval(() => { if (fs.existsSync(stopPath)) process.exit(0); }, 25).unref();
+'@, [Text.UTF8Encoding]::new($false))
+
     $cooperative = Start-TestFixture -Mode cooperative -ExecutablePath $fixtureExecutable -Name cooperative -FixtureRecords $fixtureRecords
     if ($fixtureRecords.Count -ne 1) { throw 'The cooperative fixture identity was not tracked for cleanup.' }
     if ($cooperative.StartTimeFileTimeUtc -le 9007199254740992L) {
@@ -317,6 +508,57 @@ internal static class Program
         throw 'A fixture with no top-level window did not fail safely and remain running.'
     }
 
+    $nativeQuit = Start-NativeQuitFixture -Mode quit -ExecutablePath $nativeFixtureExecutable -ScriptPath $nativeFixtureScript -FixtureRecords $nativeFixtureRecords
+    $nativeQuitConfig = New-NativeAdapterConfig -Record $nativeQuit -CoordinatorNodePath $nodeSource
+    if (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $nativeQuitConfig) 'coordinator-ready.json')) {
+        throw 'The native-quit fixture unexpectedly retained a transient coordinator receipt.'
+    }
+    $nativeQuitResult = Invoke-PlatformAdapter -Action Close -ConfigPath $nativeQuitConfig -NodePath $nodeSource
+    if (-not $nativeQuitResult.Succeeded -or $nativeQuitResult.Result.closed -ne $true -or
+        $nativeQuitResult.Result.method -cne 'native-renderer-quit' -or
+        -not (Test-Path -LiteralPath $nativeQuit.QuitPath -PathType Leaf) -or
+        -not $nativeQuit.Process.WaitForExit(5000)) {
+        throw "The exact renderer bridge did not request the native ChatGPT quit path: $($nativeQuitResult.Error)"
+    }
+
+    $closedSocket = Start-NativeQuitFixture -Mode close-before-response -ExecutablePath $nativeFixtureExecutable -ScriptPath $nativeFixtureScript -FixtureRecords $nativeFixtureRecords
+    $closedSocketConfig = New-NativeAdapterConfig -Record $closedSocket -CoordinatorNodePath $nodeSource
+    $closedSocketResult = Invoke-PlatformAdapter -Action Close -ConfigPath $closedSocketConfig -NodePath $nodeSource
+    if (-not $closedSocketResult.Succeeded -or $closedSocketResult.Result.closed -ne $true -or
+        $closedSocketResult.Result.method -cne 'native-renderer-quit' -or
+        -not (Test-Path -LiteralPath $closedSocket.QuitPath -PathType Leaf) -or
+        -not $closedSocket.Process.WaitForExit(5000)) {
+        throw "An expected debugger disconnect was not accepted only after exact-process exit: $($closedSocketResult.Error)"
+    }
+
+    $pidMismatch = Start-NativeQuitFixture -Mode pid-mismatch -ExecutablePath $nativeFixtureExecutable -ScriptPath $nativeFixtureScript -FixtureRecords $nativeFixtureRecords
+    $pidMismatchConfig = New-NativeAdapterConfig -Record $pidMismatch -CoordinatorNodePath $nodeSource -CloseTimeoutMilliseconds 1000
+    $pidMismatchResult = Invoke-PlatformAdapter -Action Close -ConfigPath $pidMismatchConfig -NodePath $nodeSource
+    if ($pidMismatchResult.Succeeded -or -not (Test-TrackedFixtureAlive -Record $pidMismatch) -or
+        (Test-Path -LiteralPath $pidMismatch.QuitPath -PathType Leaf)) {
+        throw 'A debugger listener with the wrong browser PID reached the native quit command or terminated the exact process.'
+    }
+
+    $targetMismatch = Start-NativeQuitFixture -Mode target-mismatch -ExecutablePath $nativeFixtureExecutable -ScriptPath $nativeFixtureScript -FixtureRecords $nativeFixtureRecords
+    $targetMismatchConfig = New-NativeAdapterConfig -Record $targetMismatch -CoordinatorNodePath $nodeSource -CloseTimeoutMilliseconds 1000
+    $targetMismatchResult = Invoke-PlatformAdapter -Action Close -ConfigPath $targetMismatchConfig -NodePath $nodeSource
+    if ($targetMismatchResult.Succeeded -or -not (Test-TrackedFixtureAlive -Record $targetMismatch) -or
+        (Test-Path -LiteralPath $targetMismatch.QuitPath -PathType Leaf)) {
+        throw 'A mismatched renderer target reached the native quit command or terminated the exact process.'
+    }
+
+    $ownerMismatchConfig = New-NativeAdapterConfig -Record $targetMismatch -CoordinatorNodePath $nodeSource -CloseTimeoutMilliseconds 1000 -Name 'native-socket-owner-mismatch'
+    $ownerMismatchValue = Get-Content -LiteralPath $ownerMismatchConfig -Raw | ConvertFrom-Json
+    $ownerMismatchValue.rendererPort = $pidMismatch.Port
+    [IO.File]::WriteAllText($ownerMismatchConfig, (($ownerMismatchValue | ConvertTo-Json -Depth 8) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+    $ownerMismatchResult = Invoke-PlatformAdapter -Action Close -ConfigPath $ownerMismatchConfig -NodePath $nodeSource
+    if ($ownerMismatchResult.Succeeded -or $ownerMismatchResult.Error -notmatch 'does not own the loopback debugger listener' -or
+        -not (Test-TrackedFixtureAlive -Record $pidMismatch) -or -not (Test-TrackedFixtureAlive -Record $targetMismatch) -or
+        (Test-Path -LiteralPath $pidMismatch.QuitPath -PathType Leaf) -or
+        (Test-Path -LiteralPath $targetMismatch.QuitPath -PathType Leaf)) {
+        throw 'A debugger listener owned by a different exact-path process was trusted or changed either fixture.'
+    }
+
     $testResult = [ordered]@{
         ExactIdentityAccepted = $true
         FileTimeSerializedAsString = $true
@@ -330,6 +572,11 @@ internal static class Program
         NoWindowFailedSafely = $true
         NoWindowDurationMs = [long]$noWindowTimer.ElapsedMilliseconds
         InvisibleFixture = $true
+        NativeRendererQuit = $true
+        NativeRendererSocketCloseAcceptedAfterExit = $true
+        DebuggerOwnerPidMismatchStayedRunning = $true
+        DebuggerSocketOwnerMismatchStayedRunning = $true
+        RendererTargetMismatchStayedRunning = $true
     }
 } catch {
     $testFailure = $_
@@ -344,6 +591,7 @@ internal static class Program
 
         if (Test-Path -LiteralPath $resolved -PathType Container) {
             $allowedNames = @('cooperative', 'refusing', 'no-window')
+            $allowedNativeModes = @('quit', 'close-before-response', 'pid-mismatch', 'target-mismatch')
             foreach ($record in $fixtureRecords) {
                 if ([string]$record.Name -cnotin $allowedNames) { throw 'A tracked fixture name is invalid.' }
                 $expectedStopPath = [IO.Path]::GetFullPath((Join-Path $resolved "$([string]$record.Name).stop"))
@@ -357,9 +605,26 @@ internal static class Program
             foreach ($fixtureName in $allowedNames) {
                 [IO.File]::WriteAllText((Join-Path $resolved "$fixtureName.stop"), 'stop', [Text.UTF8Encoding]::new($false))
             }
+            foreach ($record in $nativeFixtureRecords) {
+                if ([string]$record.Mode -cnotin $allowedNativeModes) { throw 'A tracked native fixture mode is invalid.' }
+                $expectedExecutablePath = [IO.Path]::GetFullPath((Join-Path $resolved 'ChatGPT.exe'))
+                $expectedStopPath = [IO.Path]::GetFullPath((Join-Path $resolved "native-$([string]$record.Mode).stop"))
+                if (-not [string]::Equals([IO.Path]::GetFullPath([string]$record.ExecutablePath), $expectedExecutablePath, [StringComparison]::OrdinalIgnoreCase) -or
+                    -not [string]::Equals([IO.Path]::GetFullPath([string]$record.StopPath), $expectedStopPath, [StringComparison]::OrdinalIgnoreCase)) {
+                    throw 'A native fixture identity escaped the validated test root.'
+                }
+            }
+            foreach ($fixtureMode in $allowedNativeModes) {
+                [IO.File]::WriteAllText((Join-Path $resolved "native-$fixtureMode.stop"), 'stop', [Text.UTF8Encoding]::new($false))
+            }
         }
 
         foreach ($record in $fixtureRecords) {
+            try {
+                if (-not $record.Process.HasExited) { [void]$record.Process.WaitForExit(5000) }
+            } catch {}
+        }
+        foreach ($record in $nativeFixtureRecords) {
             try {
                 if (-not $record.Process.HasExited) { [void]$record.Process.WaitForExit(5000) }
             } catch {}
@@ -405,6 +670,24 @@ internal static class Program
             }
         }
 
+        foreach ($record in $nativeFixtureRecords) {
+            if ($record.Process.HasExited) { continue }
+            $actual = [Diagnostics.Process]::GetProcessById([int]$record.Pid)
+            try {
+                $actualPath = [IO.Path]::GetFullPath($actual.MainModule.FileName)
+                $actualStart = $actual.StartTime.ToUniversalTime().ToFileTimeUtc()
+                if (-not [string]::Equals($actualPath, [string]$record.ExecutablePath, [StringComparison]::OrdinalIgnoreCase) -or
+                    $actualStart -ne [long]$record.StartTimeFileTimeUtc) {
+                    throw "Native fixture PID $([int]$record.Pid) changed identity before cleanup."
+                }
+                $actual.Kill()
+                [void]$actual.WaitForExit(5000)
+                $forcedCleanupCount += 1
+            } finally {
+                $actual.Dispose()
+            }
+        }
+
         if (Test-Path -LiteralPath $resolved) {
             for ($attempt = 1; $attempt -le 50 -and (Test-Path -LiteralPath $resolved); $attempt += 1) {
                 try {
@@ -421,6 +704,9 @@ internal static class Program
         foreach ($record in $fixtureRecords) {
             try { $record.Process.Dispose() } catch {}
         }
+        foreach ($record in $nativeFixtureRecords) {
+            try { $record.Process.Dispose() } catch {}
+        }
     }
 }
 
@@ -435,4 +721,5 @@ if ($forcedCleanupCount -ne 0) {
     throw "Fixture shutdown required $forcedCleanupCount forced cleanup operation(s)."
 }
 $testResult.CleanupForcedProcesses = $forcedCleanupCount
+$global:LASTEXITCODE = 0
 $testResult | ConvertTo-Json -Compress

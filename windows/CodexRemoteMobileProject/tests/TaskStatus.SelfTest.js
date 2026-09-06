@@ -63,6 +63,8 @@ const fallbackTask = {
 };
 status.applyRemoteTaskState(fallbackTask, inventory, now);
 assert.equal(fallbackTask.statusType, "loading", "a fresh peer loading snapshot remains a valid fallback");
+assert.equal(fallbackTask.statusKnown, true, "accepted peer task status must retain its authority marker");
+assert.equal(fallbackTask.unreadKnown, true, "accepted peer unread state must retain its authority marker");
 
 const remoteThreadCompleted = { ...fallbackTask, statusType: "idle", threadStatusKnown: true };
 status.applyRemoteTaskState(remoteThreadCompleted, inventory, now);

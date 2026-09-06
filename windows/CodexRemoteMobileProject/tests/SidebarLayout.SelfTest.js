@@ -350,13 +350,17 @@ assert.ok(nav.querySelector(".native-global-control"), "choosing the list mount 
 layout.state.view = "mobile";
 layout.useModel({
   rows: [nativeRecentRow], nativeProjectItems: [opened, closed],
-  hosts: [{ id: "local", name: "Fixture Desktop" }], remoteRuntimes: [],
+  hosts: [{ id: "fixture-peer", name: "Peer Desktop", available: true, availabilityKnown: true }, { id: "local", name: "Fixture Desktop", available: true, availabilityKnown: true }], remoteRuntimes: [],
   projects: [project("empty-open"), project("empty-closed")],
   recents: [{ key: "fixture-recent", kind: "recent", hostId: "local", hostName: "Fixture Desktop", name: "Recent chats", tasks: [task] }],
 });
 layout.render();
 updateControl = layout.state.panel.querySelector(".crmp-update-control");
 assert.equal(updateControl.textContent, "Update available · v1.5.33", "the update control must remain visible in Mobile projects");
+const filterChips = layout.state.panel.querySelectorAll(".crmp-chip");
+assert.deepEqual(filterChips.map((chip) => chip.textContent), ["Fixture Desktop (this device)", "All", "Peer Desktop"], "the authoritative local identity must lead the entire row, followed by the compact All control and peer devices");
+assert.equal(filterChips[0].getAttribute("aria-label"), "Fixture Desktop, this device", "the accessible name must identify the current device");
+assert.equal(filterChips[1].getAttribute("aria-label"), "All devices");
 updateStatus = { state: "preparing", version: "v1.5.33", message: "Waiting to close", canCancel: true, canQueue: false };
 document.dispatchEvent(new context.CustomEvent("chatgpt-remote-update-status", { detail: updateStatus }));
 assert.equal(layout.state.updateStatus.state, "preparing", "a document-dispatched status detail must be accepted directly");

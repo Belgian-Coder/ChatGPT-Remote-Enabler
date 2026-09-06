@@ -8,12 +8,12 @@ Unofficial Windows and macOS helpers for ChatGPT/Codex Remote. Windows exposes h
 
 ## Install without administrator access
 
-Download a platform ZIP from [v1.5.43 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.43), then follow its step-by-step guide:
+Download a platform ZIP from [v1.5.44 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.44), then follow its step-by-step guide:
 
 - **[Windows 11 x64](windows/README.md)**: per-user folder, optional portable Node, double-click launch, Desktop/Start-menu shortcuts and optional sign-in shortcut.
 - **[macOS Apple Silicon](macos/README.md)**: home-folder setup, optional portable Node, Terminal first launch, Dock shortcut and per-user sign-in startup.
 
-Neither setup requires administrator permissions. A supported desktop app/account and Node.js 22+ are prerequisites; organization policies can still block execution. **v1.5.43 is a normal release. See the validation scope below; source tests and installed-app acceptance are separate.**
+Neither setup requires administrator permissions. A supported desktop app/account and Node.js 22+ are prerequisites; organization policies can still block execution. **v1.5.44 is a normal release. See the validation scope below; source tests and installed-app acceptance are separate.**
 
 The **[feature guide](FEATURES.md)** explains controls, defaults, update behavior, and cleanup consequences. Both ZIPs include their installation and feature guides.
 
@@ -117,13 +117,13 @@ renderer flow and real debugger bindings in isolated browser fixtures.
 
 Automated Windows and browser coverage does not establish an actual ChatGPT
 update/relaunch. Real v1.5.42 transactional installation and installed-launcher
-restart were accepted on Windows and macOS; the macOS native apply fixture also
-passed. Native startup testing exposed missing executable modes, corrected in
-v1.5.43. A fresh login trigger, a Settings-queued update, and each newly installed
-release remain separate acceptance checks.
+restart passed on Windows; macOS completed a real queued update to v1.5.43,
+including graceful quit, apply, and relaunch. Its executable-mode packaging
+correction also passed native extraction and startup checks. A fresh login
+trigger and each newly installed release remain separate acceptance checks.
 ## UX roadmap
 
-The interface polish and per-user setup assistants are included in v1.5.43. See [the prioritized feature backlog](UX-ROADMAP.md) for ideas intentionally outside this release.
+The interface polish and per-user setup assistants are included in v1.5.44. See [the prioritized feature backlog](UX-ROADMAP.md) for ideas intentionally outside this release.
 
 ## Health, history, and diagnostics
 

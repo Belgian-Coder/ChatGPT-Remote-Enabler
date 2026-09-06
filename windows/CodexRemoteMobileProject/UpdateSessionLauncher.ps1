@@ -8,13 +8,26 @@ param(
     [string]$NodePath,
     [switch]$UseProxy,
     [switch]$ReplaceRunningApp,
-    [switch]$SkipInitialCheck
+    [switch]$SkipInitialCheck,
+    [string]$BundleRoot
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $InstallRoot = [IO.Path]::GetFullPath($InstallRoot)
+$bundleRootSpecified = -not [string]::IsNullOrWhiteSpace($BundleRoot)
+if (-not $bundleRootSpecified) {
+    $BundleRoot = $InstallRoot
+} elseif (-not [IO.Path]::IsPathRooted($BundleRoot)) {
+    throw 'The update-session bundle root must be an absolute path.'
+} else {
+    $BundleRoot = [IO.Path]::GetFullPath($BundleRoot)
+}
 $sourceRoot = [IO.Path]::GetFullPath($PSScriptRoot)
+if ($bundleRootSpecified -and
+    -not [string]::Equals($sourceRoot, [IO.Path]::GetFullPath((Join-Path $BundleRoot 'CodexRemoteMobileProject')), [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'The explicit update-session bundle root does not own this launcher.'
+}
 $stateRoot = Join-Path $env:LOCALAPPDATA 'ChatGPTRemoteEnabler\update-sessions'
 $stableStatePath = Join-Path (Join-Path $env:LOCALAPPDATA 'CodexRemoteFeatures') 'codexremote-simple-session.json'
 
@@ -77,9 +90,9 @@ function Copy-ImmutableUpdateSessionBundle {
         'update-session.js' = Join-Path $sourceRoot 'update-session.js'
         'update-session-cdp.js' = Join-Path $sourceRoot 'update-session-cdp.js'
         'UpdateSessionPlatform.ps1' = Join-Path $sourceRoot 'UpdateSessionPlatform.ps1'
-        'cdp.js' = Join-Path $InstallRoot 'CodexRemoteSimple\runtime\lib\cdp.js'
-        'Update-ChatGPTRemote.ps1' = Join-Path $InstallRoot 'Update-ChatGPTRemote.ps1'
-        'update-transaction.js' = Join-Path $InstallRoot 'update-transaction.js'
+        'cdp.js' = Join-Path $BundleRoot 'CodexRemoteSimple\runtime\lib\cdp.js'
+        'Update-ChatGPTRemote.ps1' = Join-Path $BundleRoot 'Update-ChatGPTRemote.ps1'
+        'update-transaction.js' = Join-Path $BundleRoot 'update-transaction.js'
     }
     foreach ($source in $sources.Values) {
         if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Update-session dependency is missing: $source" }

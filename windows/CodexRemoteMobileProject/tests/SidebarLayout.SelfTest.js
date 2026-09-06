@@ -15,6 +15,7 @@ class FixtureElement {
     this.children = [];
     this.parentElement = null;
     this._text = "";
+    this.replaceChildrenCalls = 0;
     this.listeners = new Map();
     this.style = {
       setProperty(name, value) { this[name.replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = value; },
@@ -44,6 +45,10 @@ class FixtureElement {
   set textContent(value) { this.replaceChildren(); this._text = String(value ?? ""); }
   get innerText() { return this.textContent; }
   get childElementCount() { return this.children.length; }
+  get childNodes() {
+    const textNode = this._text ? [{ nodeType: 3, nodeValue: this._text }] : [];
+    return [...textNode, ...this.children];
+  }
   get firstElementChild() { return this.children[0] || null; }
   get lastElementChild() { return this.children.at(-1) || null; }
   get isConnected() { return this.tagName === "DOCUMENT" || Boolean(this.parentElement?.isConnected); }
@@ -70,6 +75,7 @@ class FixtureElement {
     return child;
   }
   replaceChildren(...children) {
+    this.replaceChildrenCalls += 1;
     for (const child of this.children) child.parentElement = null;
     this.children = [];
     this._text = "";
@@ -170,6 +176,8 @@ const testSource = originalSource
   };
 })();`);
 assert.notEqual(testSource, originalSource, "test entrypoint extraction must succeed");
+const microtasks = [];
+const storage = new Map([["codex-remote-mobile-device-aliases-v1", JSON.stringify({ "fixture-zulu": "Bravo Alias" })]]);
 const context = vm.createContext({
   CSS: { escape: value => String(value) },
   Element: FixtureElement,
@@ -184,8 +192,13 @@ const context = vm.createContext({
   crypto: { randomUUID: () => "sidebar-layout-fixture" },
   document,
   getComputedStyle: element => new Proxy({ ...element.computedStyle, ...element.style }, { get: (target, key) => target[key] ?? "" }),
-  localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+  localStorage: {
+    getItem: key => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, String(value)),
+    removeItem: key => storage.delete(key),
+  },
   performance: { now: () => 1000 },
+  queueMicrotask: callback => microtasks.push(callback),
   requestAnimationFrame: () => 1,
   cancelAnimationFrame() {},
   setInterval,
@@ -322,6 +335,7 @@ assert.equal(discoveredReactRoots[1], reactRoot, "stable sidebar anchors must ex
 layout.state.panel = element("div");
 layout.state.panel.id = "codex-remote-mobile-project-panel";
 layout.state.view = "native";
+layout.state.settingsOpen = true;
 let updateStatus = { state: "current", version: "v1.5.32", message: null, canCancel: false, canQueue: false };
 const updateActions = [];
 context.__CHATGPT_REMOTE_UPDATE__ = {
@@ -350,17 +364,33 @@ assert.ok(nav.querySelector(".native-global-control"), "choosing the list mount 
 layout.state.view = "mobile";
 layout.useModel({
   rows: [nativeRecentRow], nativeProjectItems: [opened, closed],
-  hosts: [{ id: "fixture-peer", name: "Peer Desktop", available: true, availabilityKnown: true }, { id: "local", name: "Fixture Desktop", available: true, availabilityKnown: true }], remoteRuntimes: [],
+  hosts: [
+    { id: "fixture-zulu", name: "Zulu Desktop", available: true, availabilityKnown: true },
+    { id: "local", name: "Fixture Desktop", available: true, availabilityKnown: true },
+    { id: "fixture-alpha", name: "alpha Desktop", available: true, availabilityKnown: true },
+    { id: "fixture-ten", name: "Peer 10", available: true, availabilityKnown: true },
+    { id: "fixture-two", name: "Peer 2", available: true, availabilityKnown: true },
+  ], remoteRuntimes: [],
   projects: [project("empty-open"), project("empty-closed")],
-  recents: [{ key: "fixture-recent", kind: "recent", hostId: "local", hostName: "Fixture Desktop", name: "Recent chats", tasks: [task] }],
+  recents: [{ key: "fixture-recent", kind: "recent", hostId: "local", hostName: "Fixture Desktop", name: "Recent chats", tasks: [{ ...task, statusType: "loading" }] }],
 });
 layout.render();
+while (microtasks.length) microtasks.shift()();
 updateControl = layout.state.panel.querySelector(".crmp-update-control");
 assert.equal(updateControl.textContent, "Update available · v1.5.33", "the update control must remain visible in Mobile projects");
 const filterChips = layout.state.panel.querySelectorAll(".crmp-chip");
-assert.deepEqual(filterChips.map((chip) => chip.textContent), ["Fixture Desktop (this device)", "All", "Peer Desktop"], "the authoritative local identity must lead the entire row, followed by the compact All control and peer devices");
-assert.equal(filterChips[0].getAttribute("aria-label"), "Fixture Desktop, this device", "the accessible name must identify the current device");
-assert.equal(filterChips[1].getAttribute("aria-label"), "All devices");
+assert.deepEqual(filterChips.map((chip) => chip.textContent), ["All", "This device", "alpha Desktop", "Bravo Alias", "Peer 2", "Peer 10"], "filters must show All, this device, then friendly remote names and saved aliases in case-insensitive natural order");
+assert.equal(filterChips[0].getAttribute("aria-label"), "All devices");
+assert.equal(filterChips[1].getAttribute("aria-label"), "This device, Fixture Desktop", "the current device's verified host name remains available to assistive technology");
+const panelChildren = [...layout.state.panel.children];
+const replacementCount = layout.state.panel.replaceChildrenCalls;
+const renderSkipCount = layout.state.counters.panelRenderSkips;
+layout.render();
+while (microtasks.length) microtasks.shift()();
+assert.equal(layout.state.panel.replaceChildrenCalls, replacementCount, "an unchanged internal refresh must not replace the visible sidebar tree");
+assert.equal(layout.state.panel.children.length, panelChildren.length);
+assert.ok(layout.state.panel.children.every((child, index) => child === panelChildren[index]), "an unchanged refresh must preserve every rendered sidebar node identity");
+assert.equal(layout.state.counters.panelRenderSkips, renderSkipCount + 1, "the renderer must record a semantic no-op instead of redrawing unchanged content");
 updateStatus = { state: "preparing", version: "v1.5.33", message: "Waiting to close", canCancel: true, canQueue: false };
 document.dispatchEvent(new context.CustomEvent("chatgpt-remote-update-status", { detail: updateStatus }));
 assert.equal(layout.state.updateStatus.state, "preparing", "a document-dispatched status detail must be accepted directly");

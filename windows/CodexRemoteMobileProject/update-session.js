@@ -354,7 +354,7 @@ class PlatformAdapter {
         }
       }
     }
-    const child = this.spawn(command, args, { cwd: this.config.installRoot, detached: true, env, stdio: "ignore", windowsHide: true });
+    const child = this.spawn(command, args, { cwd: this.config.installRoot, detached: this.config.platform !== "win32", env, stdio: "ignore", windowsHide: true });
     const spawned = new Promise((resolve, reject) => {
       child.once?.("spawn", resolve);
       child.once?.("error", reject);
@@ -384,7 +384,7 @@ class PlatformAdapter {
       if (child.exitCode !== null && child.exitCode !== undefined) {
         throw new Error(`The updated launcher exited before readiness handoff (exit ${child.exitCode}).`);
       }
-      await sleep(250);
+      await new Promise((resolve) => setTimeout(resolve, 250));
     }
     throw new Error("The updated launcher did not report readiness within 90 seconds.");
   }

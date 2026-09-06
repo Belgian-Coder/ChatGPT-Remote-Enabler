@@ -254,6 +254,9 @@ if ($LASTEXITCODE -ne 0) { throw 'Native Windows update session self-test failed
 & (Join-Path $root 'tools\Test-UpdateSessionLauncherBundleRoot.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Update-session bundle-root self-test failed.' }
 
+& (Join-Path $root 'tools\Test-UpdateSessionSurvivalWindows.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Native Windows detached update-session survival self-test failed.' }
+
 & (Join-Path $root 'tools\Test-WindowsSessionState.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Windows session-state self-test failed.' }
 
@@ -317,6 +320,7 @@ if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
     UpdateSessionCdpSelfTest = $true
     NativeWindowsUpdateSessionSelfTest = $true
     UpdateSessionBundleRootSelfTest = $true
+    UpdateSessionSurvivalSelfTest = $true
     PeerTransferSelfTest = $true
     NativeStateBridgeSelfTest = $true
     NativeConnectionLifecycleSelfTest = $true

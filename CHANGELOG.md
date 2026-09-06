@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.5.45
+
+- Run the Windows post-update startup script without the detached-process flag that caused PowerShell to exit 0 before executing the script. Keep the already independent update coordinator alive until the readiness handoff; retain hidden windows and descendant survival.
+- Cover the real Windows relaunch workload after the initiating process job terminates, successful child survival after coordinator exit, and rejection of a launcher that exits without readiness.
+- Show device filters as All, This device, then other devices alphabetically by their displayed names, including saved aliases.
+- Preserve unchanged sidebar elements during background refreshes instead of repeatedly replacing the complete panel. Refresh changed controls and task targets, and build settings from current state when opened.
 ## v1.5.44
 
 - Put the current device first in the filter row and identify it with a visible and accessible `this device` label. Keep the All filter beside it for compact wrapping.

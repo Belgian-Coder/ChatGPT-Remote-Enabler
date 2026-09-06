@@ -207,15 +207,55 @@ try {
     $configPath = Join-Path $sessionRoot 'session.json'
     $receiptPath = Join-Path $sessionRoot 'coordinator-ready.json'
     $triggerPath = Join-Path $sessionRoot 'initiator-terminated.trigger'
-    $survivedPath = Join-Path $sessionRoot 'coordinator-survived.marker'
+    $survivedPath = Join-Path $sessionRoot 'relaunched-descendant-survived.marker'
+    $relaunchResultPath = Join-Path $sessionRoot 'relaunch-result.json'
+    $relaunchWorkloadPath = Join-Path $sessionRoot 'relaunch-workload.json'
     $stopPath = Join-Path $sessionRoot 'stop.trigger'
     $initiatorResultPath = Join-Path $sessionRoot 'initiator-result.json'
     $initiatorErrorPath = Join-Path $sessionRoot 'initiator-error.txt'
+    Copy-Item -LiteralPath (Join-Path $repositoryRoot 'windows\CodexRemoteMobileProject\update-session.js') -Destination (Join-Path $bundleRoot 'update-session-runtime.js')
+    Copy-Item -LiteralPath (Join-Path $repositoryRoot 'windows\CodexRemoteMobileProject\update-session-cdp.js') -Destination (Join-Path $bundleRoot 'update-session-cdp.js')
+    $fixtureDirectory = Join-Path $bundleRoot 'fixture scripts'
+    New-Item -ItemType Directory -Path $fixtureDirectory | Out-Null
+    $descendantScript = Join-Path $fixtureDirectory 'descendant.ps1'
+    Write-Utf8File $descendantScript @'
+$coordinatorId = [int]$env:TEST_RELAUNCH_COORDINATOR_PID
+$deadline = [DateTime]::UtcNow.AddSeconds(15)
+while ((Get-Process -Id $coordinatorId -ErrorAction SilentlyContinue) -and [DateTime]::UtcNow -lt $deadline) {
+    Start-Sleep -Milliseconds 25
+}
+if (Get-Process -Id $coordinatorId -ErrorAction SilentlyContinue) { exit 71 }
+[IO.File]::WriteAllText($env:TEST_RELAUNCH_SURVIVED_PATH, [string]$PID, [Text.UTF8Encoding]::new($false))
+'@
+    $relaunchFixture = @'
+[CmdletBinding()]
+param(
+    [ValidateSet('Run')][string]$Action,
+    [switch]$UseProxy,
+    [switch]$UpdateResume,
+    [switch]$SkipUpdateCheckOnce,
+    [string]$RelaunchHandoffPath
+)
+$ErrorActionPreference = 'Stop'
+if ($MyInvocation.MyCommand.Name -like 'Failure*') { exit 0 }
+if ($Action -cne 'Run' -or -not $UseProxy -or -not $UpdateResume -or -not $SkipUpdateCheckOnce) { exit 72 }
+if ([IO.Path]::GetFullPath($RelaunchHandoffPath) -cne [IO.Path]::GetFullPath($env:TEST_RELAUNCH_HANDOFF_PATH)) { exit 73 }
+$evidence = [ordered]@{ action = $Action; useProxy = [bool]$UseProxy; updateResume = [bool]$UpdateResume; skipUpdateCheckOnce = [bool]$SkipUpdateCheckOnce; hidden = $true }
+[IO.File]::WriteAllText($env:TEST_RELAUNCH_WORKLOAD_PATH, ($evidence | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+$shell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+$descendantArgument = '"' + $env:TEST_RELAUNCH_DESCENDANT_SCRIPT + '"'
+Start-Process -FilePath $shell -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',$descendantArgument) -WindowStyle Hidden | Out-Null
+$handoff = [ordered]@{ ready = $true; entryPointRelative = $env:TEST_RELAUNCH_ENTRY_POINT }
+[IO.File]::WriteAllText($RelaunchHandoffPath, ($handoff | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+'@
+    Write-Utf8File (Join-Path $fixtureDirectory 'MobileProjectStartup.ps1') $relaunchFixture
+    Write-Utf8File (Join-Path $fixtureDirectory 'FailureStartup.ps1') $relaunchFixture
     $fixtureSource = @'
 "use strict";
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
+const { PlatformAdapter } = require("./update-session-runtime.js");
 const args = process.argv.slice(2);
 const value = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : null; };
 const configPath = path.resolve(value("--config"));
@@ -237,10 +277,27 @@ const receipt = {
   configSha256: configHash, nodeSha256: digest(process.execPath), scriptSha256: digest(__filename),
 };
 fs.writeFileSync(config.launchReceipt.path, JSON.stringify(receipt));
-const timer = setInterval(() => {
-  if (fs.existsSync(config.test.triggerPath)) fs.writeFileSync(config.test.survivedPath, String(process.pid));
-  if (fs.existsSync(config.test.stopPath)) { clearInterval(timer); process.exit(0); }
-}, 25);
+while (!fs.existsSync(config.test.triggerPath)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+(async () => {
+  process.env.TEST_RELAUNCH_COORDINATOR_PID = String(process.pid);
+  process.env.TEST_RELAUNCH_SURVIVED_PATH = config.test.survivedPath;
+  process.env.TEST_RELAUNCH_WORKLOAD_PATH = config.test.workloadPath;
+  process.env.TEST_RELAUNCH_DESCENDANT_SCRIPT = config.test.descendantScript;
+  process.env.TEST_RELAUNCH_ENTRY_POINT = config.test.successEntry;
+  const base = {
+    platform: "win32", installRoot: config.test.installRoot, sessionDirectory: config.test.sessionDirectory,
+    rendererPort: 9222, relaunch: { entryPointRelative: config.test.successEntry, useProxy: true },
+  };
+  process.env.TEST_RELAUNCH_HANDOFF_PATH = path.join(base.sessionDirectory, "relaunch-handoff.json");
+  const success = await new PlatformAdapter(base).relaunch();
+  let failureMessage = null;
+  try {
+    await new PlatformAdapter({ ...base, relaunch: { entryPointRelative: config.test.failureEntry } }).relaunch();
+  } catch (error) { failureMessage = error.message; }
+  const expected = "The updated launcher exited before readiness handoff (exit 0).";
+  if (failureMessage !== expected) throw new Error(`Unexpected no-handoff failure: ${failureMessage}`);
+  fs.writeFileSync(config.test.resultPath, JSON.stringify({ successEntry: success.entry, failureMessage }));
+})().catch((error) => { fs.writeFileSync(config.test.errorPath, error.stack || error.message); process.exitCode = 1; });
 '@
     Write-Utf8File $scriptPath $fixtureSource
     $config = [ordered]@{
@@ -252,7 +309,19 @@ const timer = setInterval(() => {
             scriptSha256 = (Get-FileHash -LiteralPath $scriptPath -Algorithm SHA256).Hash.ToLowerInvariant()
             expiresAtUnixMs = [DateTimeOffset]::UtcNow.AddSeconds(30).ToUnixTimeMilliseconds()
         }
-        test = [ordered]@{ triggerPath = $triggerPath; survivedPath = $survivedPath; stopPath = $stopPath }
+        test = [ordered]@{
+            triggerPath = $triggerPath
+            survivedPath = $survivedPath
+            stopPath = $stopPath
+            workloadPath = $relaunchWorkloadPath
+            resultPath = $relaunchResultPath
+            errorPath = $initiatorErrorPath
+            descendantScript = $descendantScript
+            installRoot = $bundleRoot
+            sessionDirectory = $sessionRoot
+            successEntry = 'fixture scripts\MobileProjectStartup.ps1'
+            failureEntry = 'fixture scripts\FailureStartup.ps1'
+        }
     }
     Write-Utf8File $configPath (($config | ConvertTo-Json -Depth 6) + "`n")
     $configHash = (Get-FileHash -LiteralPath $configPath -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -305,9 +374,18 @@ try {
     }
     $initiator.WaitForExit(5000) | Out-Null
     Write-Utf8File $triggerPath 'terminated'
-    Wait-File $survivedPath
-    if (-not (Get-Process -Id ([int]$launch.processId) -ErrorAction SilentlyContinue)) {
-        throw 'The detached coordinator did not survive termination of the initiating Windows Job.'
+    Wait-File $relaunchResultPath -FailurePath $initiatorErrorPath
+    if (-not $coordinatorProcess.WaitForExit(5000)) { throw 'The coordinator did not exit after the relaunch handoff test.' }
+    if ($coordinatorProcess.ExitCode -ne 0) { throw "The coordinator relaunch test exited with code $($coordinatorProcess.ExitCode)." }
+    Wait-File $survivedPath -FailurePath $initiatorErrorPath
+    Wait-File $relaunchWorkloadPath -FailurePath $initiatorErrorPath
+    $relaunchEvidence = Get-Content -LiteralPath $relaunchWorkloadPath -Raw | ConvertFrom-Json
+    if ($relaunchEvidence.action -cne 'Run' -or -not $relaunchEvidence.useProxy -or -not $relaunchEvidence.updateResume -or -not $relaunchEvidence.skipUpdateCheckOnce) {
+        throw 'The real Windows relaunch fixture did not receive the exact protected update-resume arguments.'
+    }
+    $relaunchEvidence = Get-Content -LiteralPath $relaunchResultPath -Raw | ConvertFrom-Json
+    if ($relaunchEvidence.failureMessage -cne 'The updated launcher exited before readiness handoff (exit 0).') {
+        throw 'A Windows launcher exit without a handoff was not rejected with the expected error.'
     }
     $residualTasks = @(Get-ScheduledTask -ErrorAction Stop | Where-Object {
         $_.TaskName -like 'ChatGPTRemoteEnabler-LaunchWorker-*' -or $_.TaskName -like 'ChatGPTRemoteEnabler-UpdateSession-*'
@@ -358,6 +436,9 @@ try {
         CoordinatorOutsideInitiatorJob = $true
         CoordinatorSurvivedTaskHostExit = $true
         CoordinatorSurvivedTerminateJobObject = $true
+        RealWindowsRelaunchExecuted = $true
+        RelaunchedDescendantSurvivedCoordinatorExit = $true
+        MissingRelaunchHandoffRejected = $true
         VerifiedEntrypointTamperRejected = $true
         NoTransientTaskResidual = $true
         NoVisibleConsoleWindowObserved = $true

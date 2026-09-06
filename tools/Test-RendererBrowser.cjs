@@ -136,7 +136,45 @@ async function main() {
     });
     await chips.filter({ hasText: "Peer desktop" }).waitFor();
     await chips.filter({ hasText: "Remote device" }).waitFor();
+    assert.deepEqual(await chips.allTextContents(), ["All", "This device", "Peer desktop", "Remote device"], "device filters must keep the current device second and sort remote display names");
     assert.doesNotMatch(await panel.innerText(), /primary_fixture|older_fixture|Remote env_/u);
+    await setSettingsOpen(false);
+    const stableRender = await page.evaluate(() => {
+      const fixture = __crmpBrowserFixture;
+      const panelElement = document.getElementById("codex-remote-mobile-project-panel");
+      const firstChild = panelElement.firstElementChild;
+      const before = { ...fixture.state.counters };
+      fixture.state.transferStats.set(__fixtureHost, { reads: 11, writes: 7, receivedBase64Bytes: 1200, sentBase64Bytes: 600, failures: 1, lastReadMs: 40, lastWriteMs: 35 });
+      fixture.render();
+      return {
+        sameFirstChild: firstChild === panelElement.firstElementChild,
+        replacements: fixture.state.counters.panelReplacements - before.panelReplacements,
+        skips: fixture.state.counters.panelRenderSkips - before.panelRenderSkips,
+      };
+    });
+    assert.deepEqual(stableRender, { sameFirstChild: true, replacements: 0, skips: 1 }, "hidden diagnostic changes must not replace an otherwise identical closed sidebar");
+    await setSettingsOpen(true);
+    assert.match(await panel.locator(".crmp-settings").textContent(), /11 inventory reads/u, "opening Settings must build the latest hidden diagnostic data");
+    await setSettingsOpen(false);
+    const nativeActionRefresh = await page.evaluate(() => {
+      const fixture = __crmpBrowserFixture;
+      const panelElement = document.getElementById("codex-remote-mobile-project-panel");
+      const firstChild = panelElement.firstElementChild;
+      const oldToggle = document.querySelector("#native-project [data-app-action-sidebar-project-collapsed]");
+      let oldClicks = 0;
+      let currentClicks = 0;
+      oldToggle.addEventListener("click", () => { oldClicks += 1; });
+      const currentToggle = oldToggle.cloneNode(true);
+      currentToggle.addEventListener("click", () => { currentClicks += 1; });
+      oldToggle.replaceWith(currentToggle);
+      fixture.render();
+      panelElement.querySelector(".crmp-project-toggle").click();
+      return { replaced: firstChild !== panelElement.firstElementChild, oldClicks, currentClicks };
+    });
+    assert.deepEqual(nativeActionRefresh, { replaced: true, oldClicks: 0, currentClicks: 1 }, "a same-markup native control replacement must refresh the custom action closure");
+    // Replacing and clicking the native toggle intentionally schedules a renderer
+    // pass. Drain it before taking the unrelated-mutation counter baseline.
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     const before = await page.evaluate(() => ({ ...__crmpBrowserFixture.state.counters }));
     await page.evaluate(() => { for (let index = 0; index < 200; index++) document.getElementById("outside").appendChild(document.createElement("span")); });
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));

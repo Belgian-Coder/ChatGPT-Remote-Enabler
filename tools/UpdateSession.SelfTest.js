@@ -367,6 +367,8 @@ async function testExactRelaunchArguments() {
   assert.equal(invocation.args.includes("-ReplaceRunningApp"), false, "update resume must never replace a process that appeared during update");
   assert.ok(invocation.args.includes("-UseProxy"), "saved protected-proxy mode must be reloaded by the updated launcher");
   assert.equal(invocation.args.some((value) => /https?:\/\//u.test(value)), false, "relaunch args must not persist proxy credentials or URLs");
+  assert.equal(invocation.options.detached, false, "Windows PowerShell must execute in the coordinator process group so its script is not skipped");
+  assert.equal(invocation.options.windowsHide, true, "Windows relaunch must remain hidden");
 }
 
 async function testUpdaterMappingsAndPrettyJson() {

@@ -167,6 +167,8 @@
       hostDiscoveryScans: 0,
       inventoryDirtyRequests: 0,
       inventoryHydrationRuns: 0,
+      panelRenderSkips: 0,
+      panelReplacements: 0,
       remoteRuntimeScans: 0,
       renders: 0,
       updateActivityScans: 0,
@@ -202,6 +204,7 @@
     observer: null,
     observerTarget: null,
     panel: null,
+    panelActionSignature: null,
     pendingNewThreads: new Set(),
     peerCacheStates: new Map(),
     peerTransfers: new Map(),
@@ -5299,6 +5302,13 @@
     tasks.appendChild(wrapper);
   }
 
+  function currentTaskForAction(task) {
+    const model = collectModel();
+    const tasks = model.tasks ?? [...(model.projects ?? []), ...(model.recents ?? [])].flatMap((project) => project.tasks ?? []);
+    return tasks.find((candidate) => candidate.hostId === task.hostId
+      && candidate.conversationKey === task.conversationKey) ?? task;
+  }
+
   function appendGroup(fragment, project) {
     const nativeToggle = nativeProjectItem(project)?.querySelector('[data-app-action-sidebar-project-collapsed]');
     if (nativeToggle) {
@@ -5417,9 +5427,10 @@
         if (task.selected) taskButton.setAttribute("aria-current", "page");
         taskButton.addEventListener("click", async () => {
           if (performance.now() - state.dragJustEndedAt >= 250) {
-            const acknowledge = task.unread && task.hostId !== "local";
-            const opened = await openNativeTask(task);
-            if (opened && acknowledge) acknowledgeRemoteUnread(task);
+            const currentTask = currentTaskForAction(task);
+            const acknowledge = currentTask.unread && currentTask.hostId !== "local";
+            const opened = await openNativeTask(currentTask);
+            if (opened && acknowledge) acknowledgeRemoteUnread(currentTask);
             render();
           }
         });
@@ -5496,6 +5507,84 @@
     };
   }
 
+  function renderedContentSignature(root) {
+    const parts = [];
+    const childrenOf = (node) => [...(node?.childNodes ?? [])];
+    const visit = (node) => {
+      if (!node) return;
+      if (node.nodeType === 3) {
+        parts.push(["text", node.nodeValue ?? ""]);
+        return;
+      }
+      if (node.nodeType === 11) {
+        for (const child of childrenOf(node)) visit(child);
+        return;
+      }
+      if (!(node instanceof Element)) return;
+      const attributes = [...(node.attributes ?? [])].map((entry) => Array.isArray(entry)
+        ? [String(entry[0]), String(entry[1])]
+        : [String(entry.name), String(entry.value)]);
+      for (const attribute of attributes) {
+        if (attribute[0] !== "style") continue;
+        attribute[1] = attribute[1].split(";").map((declaration) => declaration.trim()).filter(Boolean)
+          .filter((declaration) => !(node.classList.contains("crmp-status-spin") && /^animation-delay\s*:/iu.test(declaration)))
+          .filter((declaration) => !(node.classList.contains("crmp-task") && /^padding-right\s*:/iu.test(declaration)))
+          .sort((left, right) => left.localeCompare(right)).join(";");
+      }
+      attributes.sort((left, right) => left[0].localeCompare(right[0]) || left[1].localeCompare(right[1]));
+      const properties = [];
+      if (typeof node.title === "string" && node.title) properties.push(["title", node.title]);
+      if (/^(?:BUTTON|INPUT|SELECT|TEXTAREA)$/u.test(node.tagName)) properties.push(["disabled", node.disabled === true]);
+      if (/^(?:INPUT|SELECT|TEXTAREA)$/u.test(node.tagName)) properties.push(["value", String(node.value ?? "")], ["checked", node.checked === true]);
+      if (node.tagName === "DETAILS") properties.push(["open", node.open === true]);
+      parts.push(["open", node.tagName, attributes, properties]);
+      for (const child of childrenOf(node)) visit(child);
+      parts.push(["close", node.tagName]);
+    };
+    for (const child of childrenOf(root)) visit(child);
+    return JSON.stringify(parts);
+  }
+
+  const renderReferenceIds = new WeakMap();
+  let nextRenderReferenceId = 1;
+
+  function renderReferenceId(value) {
+    if ((typeof value !== "object" || value === null) && typeof value !== "function") return null;
+    if (!renderReferenceIds.has(value)) renderReferenceIds.set(value, nextRenderReferenceId++);
+    return renderReferenceIds.get(value);
+  }
+
+  function renderActionSignature(model) {
+    const tasks = model.tasks ?? [...(model.projects ?? []), ...(model.recents ?? [])].flatMap((project) => project.tasks ?? []);
+    return JSON.stringify({
+      bridges: [state.localFetchFromHost, state.localRuntime?.requestClient, state.navigationBridge, state.projectService, state.queryClient, globalThis[UPDATE_SLOT]].map(renderReferenceId),
+      projects: (model.projects ?? []).map((project) => {
+        const item = nativeProjectItem(project);
+        return [project.key, project.hostId, project.projectId, project.cwd, project.rootPaths ?? [], renderReferenceId(item),
+          renderReferenceId(item?.querySelector('[data-app-action-sidebar-project-collapsed]')),
+          renderReferenceId(nativeProjectNewAction(project)), renderReferenceId(nativeProjectAction(project))];
+      }),
+      tasks: tasks.map((task) => [task.hostId, task.conversationKey, task.conversationId, task.projectId, task.cwd,
+        renderReferenceId(task.originalRow), renderReferenceId(nativeThreadAction(task, "pin")), renderReferenceId(nativeThreadAction(task, "archive")),
+        renderReferenceId(state.threadManagers.get(task.hostId))]),
+    });
+  }
+
+  function replacePanelContent(fragment, model) {
+    const actionSignature = renderActionSignature(model);
+    const unchanged = state.panel?.isConnected
+      && state.panelActionSignature === actionSignature
+      && renderedContentSignature(state.panel) === renderedContentSignature(fragment);
+    if (unchanged) {
+      state.counters.panelRenderSkips += 1;
+      return false;
+    }
+    state.panel.replaceChildren(fragment);
+    state.panelActionSignature = actionSignature;
+    state.counters.panelReplacements += 1;
+    return true;
+  }
+
   function render() {
     state.counters.renders += 1;
     const focus = captureSidebarFocus();
@@ -5565,68 +5654,70 @@
     settings.className = "crmp-settings";
     settings.setAttribute("aria-label", "Remote Enabler settings");
     settings.hidden = !state.settingsOpen;
-    settings.appendChild(updateStatusPanel(update));
-    const autoControls = document.createElement("div");
-    autoControls.className = "crmp-auto-controls";
-    const autoEnabled = readBoolean(AUTO_ENABLED_KEY);
-    const autoToggle = button("crmp-auto-control", autoEnabled ? "Auto-register: on" : "Auto-register: off");
-    setFocusKey(autoToggle, "auto", "register");
-    autoToggle.setAttribute("aria-pressed", String(autoEnabled));
-    autoToggle.title = "Mirror active projects published by connected injected devices";
-    autoToggle.addEventListener("click", () => setAutoRegistration(!autoEnabled));
-    autoControls.appendChild(autoToggle);
-    const managedCount = Object.keys(readRecords(AUTO_MANAGED_KEY)).length;
-    const removeManaged = button("crmp-auto-control", `Remove auto projects (${managedCount})`);
-    setFocusKey(removeManaged, "auto", "remove-projects");
-    removeManaged.disabled = managedCount === 0;
-    removeManaged.title = managedCount
-      ? "Remove only projects created by this client's automatic registration"
-      : "This client has no automation-created project registrations to remove";
-    removeManaged.addEventListener("click", () => {
-      if (globalThis.confirm(`Remove ${managedCount} auto-registered remote ${managedCount === 1 ? "project" : "projects"} from this client? Chats and folders are not deleted.`)) {
-        void removeAllAutoRegistered();
-      }
-    });
-    autoControls.appendChild(removeManaged);
-    const autoArchiveEnabled = readOptionalBoolean(AUTO_ARCHIVE_ENABLED_KEY);
-    const autoArchive = button("crmp-auto-control", autoArchiveEnabled ? "Auto-cleanup: on" : "Auto-cleanup: off");
-    setFocusKey(autoArchive, "auto", "cleanup");
-    autoArchive.setAttribute("aria-pressed", String(autoArchiveEnabled));
-    autoArchive.title = autoArchiveEnabled
-      ? "Archive inactive local chats after 7 days and permanently delete them after 7 more archived days; click to disable"
-      : "Optionally archive inactive local chats after 7 days and permanently delete them after 7 more archived days";
-    autoArchive.addEventListener("click", () => {
-      if (autoArchiveEnabled) {
-        setAutoArchive(false);
-        return;
-      }
-      if (globalThis.confirm("Enable automatic chat cleanup on this device? Inactive, unpinned local chats move to Archived chats after seven days. After seven more days in Archived chats they are permanently deleted. Working, selected, pinned, remote, and insufficiently dated chats are skipped.")) {
-        setAutoArchive(true);
-      }
-    });
-    autoControls.appendChild(autoArchive);
-    settings.appendChild(autoControls);
+    if (state.settingsOpen) {
+      settings.appendChild(updateStatusPanel(update));
+      const autoControls = document.createElement("div");
+      autoControls.className = "crmp-auto-controls";
+      const autoEnabled = readBoolean(AUTO_ENABLED_KEY);
+      const autoToggle = button("crmp-auto-control", autoEnabled ? "Auto-register: on" : "Auto-register: off");
+      setFocusKey(autoToggle, "auto", "register");
+      autoToggle.setAttribute("aria-pressed", String(autoEnabled));
+      autoToggle.title = "Mirror active projects published by connected injected devices";
+      autoToggle.addEventListener("click", () => setAutoRegistration(!autoEnabled));
+      autoControls.appendChild(autoToggle);
+      const managedCount = Object.keys(readRecords(AUTO_MANAGED_KEY)).length;
+      const removeManaged = button("crmp-auto-control", `Remove auto projects (${managedCount})`);
+      setFocusKey(removeManaged, "auto", "remove-projects");
+      removeManaged.disabled = managedCount === 0;
+      removeManaged.title = managedCount
+        ? "Remove only projects created by this client's automatic registration"
+        : "This client has no automation-created project registrations to remove";
+      removeManaged.addEventListener("click", () => {
+        if (globalThis.confirm(`Remove ${managedCount} auto-registered remote ${managedCount === 1 ? "project" : "projects"} from this client? Chats and folders are not deleted.`)) {
+          void removeAllAutoRegistered();
+        }
+      });
+      autoControls.appendChild(removeManaged);
+      const autoArchiveEnabled = readOptionalBoolean(AUTO_ARCHIVE_ENABLED_KEY);
+      const autoArchive = button("crmp-auto-control", autoArchiveEnabled ? "Auto-cleanup: on" : "Auto-cleanup: off");
+      setFocusKey(autoArchive, "auto", "cleanup");
+      autoArchive.setAttribute("aria-pressed", String(autoArchiveEnabled));
+      autoArchive.title = autoArchiveEnabled
+        ? "Archive inactive local chats after 7 days and permanently delete them after 7 more archived days; click to disable"
+        : "Optionally archive inactive local chats after 7 days and permanently delete them after 7 more archived days";
+      autoArchive.addEventListener("click", () => {
+        if (autoArchiveEnabled) {
+          setAutoArchive(false);
+          return;
+        }
+        if (globalThis.confirm("Enable automatic chat cleanup on this device? Inactive, unpinned local chats move to Archived chats after seven days. After seven more days in Archived chats they are permanently deleted. Working, selected, pinned, remote, and insufficiently dated chats are skipped.")) {
+          setAutoArchive(true);
+        }
+      });
+      autoControls.appendChild(autoArchive);
+      settings.appendChild(autoControls);
 
-    const cleanupSummary = document.createElement("p");
-    cleanupSummary.className = "crmp-help";
-    cleanupSummary.textContent = autoArchiveEnabled
-      ? "Cleanup is enabled on this device: inactive local chats are archived after 7 days, then permanently deleted after 7 more archived days."
-      : "Cleanup is off. Enabling it archives inactive local chats after 7 days, then permanently deletes them after 7 more archived days.";
-    settings.appendChild(cleanupSummary);
-    const maintenanceSummary = document.createElement("p");
-    maintenanceSummary.className = "crmp-help";
-    maintenanceSummary.textContent = "Startup maintenance runs only while the app is closed. It maintains local databases and diagnostic logs.";
-    settings.appendChild(maintenanceSummary);
-    const check = button("crmp-auto-control", "Check for updates");
-    check.disabled = !["current", "error", "unavailable"].includes(update.state) || typeof globalThis[UPDATE_SLOT]?.request !== "function";
-    setFocusKey(check, "settings", "check");
-    check.addEventListener("click", () => { void requestUpdateAction("check"); });
-    settings.appendChild(check);
-    appendCleanupPanel(settings);
-    appendUpdateDetails(settings, update);
-    appendDiagnosticsPanel(settings, model);
-    appendConnectionTroubleshooting(settings, model);
-    appendDeviceHealth(settings, model);
+      const cleanupSummary = document.createElement("p");
+      cleanupSummary.className = "crmp-help";
+      cleanupSummary.textContent = autoArchiveEnabled
+        ? "Cleanup is enabled on this device: inactive local chats are archived after 7 days, then permanently deleted after 7 more archived days."
+        : "Cleanup is off. Enabling it archives inactive local chats after 7 days, then permanently deletes them after 7 more archived days.";
+      settings.appendChild(cleanupSummary);
+      const maintenanceSummary = document.createElement("p");
+      maintenanceSummary.className = "crmp-help";
+      maintenanceSummary.textContent = "Startup maintenance runs only while the app is closed. It maintains local databases and diagnostic logs.";
+      settings.appendChild(maintenanceSummary);
+      const check = button("crmp-auto-control", "Check for updates");
+      check.disabled = !["current", "error", "unavailable"].includes(update.state) || typeof globalThis[UPDATE_SLOT]?.request !== "function";
+      setFocusKey(check, "settings", "check");
+      check.addEventListener("click", () => { void requestUpdateAction("check"); });
+      settings.appendChild(check);
+      appendCleanupPanel(settings);
+      appendUpdateDetails(settings, update);
+      appendDiagnosticsPanel(settings, model);
+      appendConnectionTroubleshooting(settings, model);
+      appendDeviceHealth(settings, model);
+    }
     fragment.appendChild(settings);
 
     scheduleLocalProjectInventoryPublication();
@@ -5641,7 +5732,7 @@
 
     if (state.view === "native") {
       state.nativeContainer.style.display = state.originalDisplay;
-      state.panel.replaceChildren(fragment);
+      replacePanelContent(fragment, model);
       restoreRenderedFocus(focus);
       return renderReport(model);
     }
@@ -5652,21 +5743,24 @@
     filters.className = "crmp-filters";
     filters.setAttribute("role", "group");
     filters.setAttribute("aria-label", "Filter tasks by device");
+    const remoteHosts = model.hosts.filter((host) => host.id !== "local").sort((left, right) => (
+      displayDeviceName(left.id, left.name).localeCompare(displayDeviceName(right.id, right.name), undefined, { sensitivity: "base", numeric: true })
+    ));
     const filterItems = [
-      ...model.hosts.filter((host) => host.id === "local"),
       { id: "all", name: "All" },
-      ...model.hosts.filter((host) => host.id !== "local"),
+      ...model.hosts.filter((host) => host.id === "local"),
+      ...remoteHosts,
     ];
     for (const host of filterItems) {
       const currentDevice = host.id === "local";
-      const deviceName = host.id === "all" ? host.name : displayDeviceName(host.id, host.name);
-      const chip = button("crmp-chip", currentDevice ? `${deviceName} (this device)` : deviceName);
+      const deviceName = currentDevice ? "This device" : host.id === "all" ? host.name : displayDeviceName(host.id, host.name);
+      const chip = button("crmp-chip", deviceName);
       setFocusKey(chip, "filter", host.id);
       chip.style.maxWidth = "100%";
       chip.style.overflow = "hidden";
       chip.style.textOverflow = "ellipsis";
       chip.title = currentDevice ? `${host.name} — this device` : host.name;
-      chip.setAttribute("aria-label", host.id === "all" ? "All devices" : currentDevice ? `${deviceName}, this device` : `${deviceName}, ${connectionLabel(host)}`);
+      chip.setAttribute("aria-label", host.id === "all" ? "All devices" : currentDevice ? `${deviceName}, ${host.name}` : `${deviceName}, ${connectionLabel(host)}`);
       chip.setAttribute("aria-pressed", String(state.filter === host.id));
       if (host.id !== "all") {
         const dot = document.createElement("span");
@@ -5728,7 +5822,7 @@
         : emptyInventoryMessage(state.filter, true);
       fragment.appendChild(empty);
     }
-    state.panel.replaceChildren(fragment);
+    replacePanelContent(fragment, model);
     const cardProject = [...visibleProjects, ...visibleRecents].find((project) => project.key === state.actionCardKey);
     if (cardProject?.kind === "project") document.body.appendChild(projectCard(cardProject));
     const contextProject = visibleProjects.find((project) => project.key === state.contextProjectKey);
@@ -5996,6 +6090,7 @@
     if (state.nativeContainer?.isConnected) state.nativeContainer.style.display = state.originalDisplay;
     state.nativeContainer = null;
     state.panel?.remove();
+    state.panelActionSignature = null;
     state.liveRegion?.remove();
     document.getElementById(CARD_ID)?.remove();
     document.getElementById(CONTEXT_ID)?.remove();

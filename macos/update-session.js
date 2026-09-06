@@ -42,6 +42,10 @@ function validSha256(value) {
   return typeof value === "string" && /^[0-9a-f]{64}$/iu.test(value);
 }
 
+function sha256File(file) {
+  return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+}
+
 function parseLastJson(stdout) {
   const complete = String(stdout ?? "").trim();
   if (complete) {
@@ -232,7 +236,52 @@ function ensureConfig(config) {
   if (!allowedEntries.has(config.relaunch?.entryPointRelative)) {
     throw new Error("The update-session relaunch entry point is not allowed.");
   }
+  if (config.launchReceipt !== undefined) {
+    const receiptPath = path.resolve(config.launchReceipt?.path ?? "");
+    const identityPath = path.resolve(config.launchReceipt?.identityPath ?? "");
+    if (!validSha256(config.launchReceipt?.nonce) || !validSha256(config.launchReceipt?.nodeSha256) ||
+        !validSha256(config.launchReceipt?.scriptSha256) || path.dirname(receiptPath) !== sessionDirectory ||
+        path.basename(receiptPath) !== "coordinator-ready.json" || path.dirname(identityPath) !== sessionDirectory ||
+        path.basename(identityPath) !== "coordinator-identity.json" || !Number.isSafeInteger(config.launchReceipt.expiresAtUnixMs) ||
+        config.launchReceipt.expiresAtUnixMs <= Date.now()) {
+      throw new Error("The update-session launch receipt binding is invalid.");
+    }
+  }
   return config;
+}
+
+function writeLaunchReceipt(config, configSha256) {
+  if (!config.launchReceipt) return;
+  const nodePath = path.resolve(process.execPath);
+  const scriptPath = path.resolve(__filename);
+  const nodeSha256 = sha256File(nodePath);
+  const scriptSha256 = sha256File(scriptPath);
+  if (nodeSha256 !== config.launchReceipt.nodeSha256 || scriptSha256 !== config.launchReceipt.scriptSha256) {
+    throw new Error("The detached update-session executable or script changed before readiness.");
+  }
+  const identityPath = path.resolve(config.launchReceipt.identityPath);
+  const deadline = Date.now() + 5_000;
+  let identity;
+  do {
+    try { identity = JSON.parse(fs.readFileSync(identityPath, "utf8")); } catch {}
+    if (identity?.nonce === config.launchReceipt.nonce && identity?.pid === process.pid &&
+        typeof identity?.startTimeFileTimeUtc === "string" && /^\d{16,20}$/u.test(identity.startTimeFileTimeUtc)) break;
+    identity = null;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+  } while (Date.now() < deadline);
+  if (!identity) throw new Error("The detached update-session process identity was not bound by the launcher.");
+  const receiptPath = path.resolve(config.launchReceipt.path);
+  const temporaryPath = `${receiptPath}.${process.pid}.tmp`;
+  fs.writeFileSync(temporaryPath, `${JSON.stringify({
+    ready: true,
+    nonce: config.launchReceipt.nonce,
+    pid: process.pid,
+    startTimeFileTimeUtc: identity.startTimeFileTimeUtc,
+    configSha256,
+    nodeSha256,
+    scriptSha256,
+  })}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 });
+  fs.renameSync(temporaryPath, receiptPath);
 }
 
 class PlatformAdapter {
@@ -648,22 +697,29 @@ class UpdateSessionController {
       await this.setStatus({ state: "closing", version: release.version, message: "Closing ChatGPT to install the verified update…" });
       this.closingInitiated = true;
       this.transport.setClosingExpected?.(true);
+      this.config.log?.("close-request", { version: release.version });
       if (await this.platform.closeGracefully() !== true) throw new Error("ChatGPT refused the graceful close request; the update was not applied.");
       appClosed = true;
+      this.config.log?.("app-closed", { version: release.version });
       await this.setStatus({ state: "updating", version: release.version, message: "Installing the verified update…" });
+      this.config.log?.("apply-start", { version: release.version, archiveSha256: release.archiveSha256 });
       const result = await this.updater.applyPrepared(release, retainedDirectory);
       if (result?.updated !== true || result.version !== release.version ||
           String(result.archiveSha256).toLowerCase() !== release.archiveSha256) {
         throw new Error("The updater did not confirm the pinned release was installed.");
       }
       applied = true;
+      this.config.log?.("apply-complete", { version: release.version, archiveSha256: release.archiveSha256 });
       const recovery = await this.updater.recover();
       if (recovery?.integrityValid !== true) throw new Error("Post-update integrity verification failed; relaunch was blocked.");
       recovered = true;
+      this.config.log?.("recovery-complete", { version: release.version });
       this.installedVersion = release.version;
       await this.setStatus({ state: "restarting", version: release.version, message: "Restarting ChatGPT…" });
       relaunchAttempted = true;
+      this.config.log?.("relaunch-start", { version: release.version, entryPointRelative: this.config.relaunch.entryPointRelative });
       await this.platform.relaunch();
+      this.config.log?.("relaunch-confirmed", { version: release.version, entryPointRelative: this.config.relaunch.entryPointRelative });
       this.recordHistory("restart-confirmed", release.version);
       this.stopping = true;
     } catch (error) {
@@ -843,7 +899,14 @@ async function main() {
     throw new Error("Usage: update-session.js --config <absolute-path> [--best-effort]");
   }
   const configPath = path.resolve(process.argv[configIndex + 1]);
-  const config = ensureConfig(JSON.parse(fs.readFileSync(configPath, "utf8")));
+  const hashIndex = process.argv.indexOf("--expected-config-sha256");
+  const expectedConfigSha256 = hashIndex >= 0 ? String(process.argv[hashIndex + 1] ?? "").toLowerCase() : null;
+  const configBytes = fs.readFileSync(configPath);
+  const configSha256 = crypto.createHash("sha256").update(configBytes).digest("hex");
+  if (expectedConfigSha256 !== null && (!validSha256(expectedConfigSha256) || expectedConfigSha256 !== configSha256)) {
+    throw new Error("The update-session configuration changed before coordinator startup.");
+  }
+  const config = ensureConfig(JSON.parse(configBytes.toString("utf8")));
   config.configPath = configPath;
   config.bestEffort = process.argv.includes("--best-effort");
   config.log = (stage, detail) => writeLog(config.logPath, stage, detail);
@@ -855,6 +918,8 @@ async function main() {
   try {
     const running = await new PlatformAdapter(config).probe();
     if (!running) throw new Error("The exact ChatGPT process no longer exists.");
+    writeLaunchReceipt(config, configSha256);
+    config.log("coordinator-ready", { pid: process.pid });
     const cdp = require(path.join(path.dirname(__filename), "cdp.js"));
     const nonce = crypto.randomBytes(32).toString("hex");
     transport = new CdpTransport(config, nonce, cdp);

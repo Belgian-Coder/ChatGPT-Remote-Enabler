@@ -6,6 +6,7 @@ $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $stablePath = Join-Path $root 'windows\CodexRemoteSimple\CodexRemoteSimple.ps1'
 $launcherSource = Join-Path $root 'windows\CodexRemoteMobileProject\ChatGPTCustomLauncher.cs'
 $rootLauncherSource = Join-Path $root 'windows\ChatGPTRemoteLauncher.cs'
+$taskHostSource = Join-Path $root 'windows\CodexRemoteMobileProject\UpdateSessionTaskHost.cs'
 $stableSourceText = Get-Content -LiteralPath $stablePath -Raw
 foreach ($contract in @(
     'PackageContextEnvironmentProxy',
@@ -200,6 +201,12 @@ try {
     if (-not $compiler) { throw 'The .NET Framework C# compiler was not found.' }
     $launcher = Join-Path $temporaryRoot 'ChatGPT Custom.exe'
     $rootLauncher = Join-Path $temporaryRoot 'ChatGPT Remote Enabler.exe'
+    $taskHost = Join-Path $temporaryRoot 'UpdateSessionTaskHost.exe'
+    & $compiler /nologo /target:winexe "/out:$taskHost" $taskHostSource
+    if ($LASTEXITCODE -ne 0) { throw 'Temporary GUI task-host compilation failed.' }
+    $rootTaskHostDirectory = Join-Path $temporaryRoot 'CodexRemoteMobileProject'
+    New-Item -ItemType Directory -Path $rootTaskHostDirectory | Out-Null
+    Copy-Item -LiteralPath $taskHost -Destination (Join-Path $rootTaskHostDirectory 'UpdateSessionTaskHost.exe')
     & $compiler /nologo /target:winexe "/out:$launcher" $launcherSource
     if ($LASTEXITCODE -ne 0) { throw 'Temporary custom launcher compilation failed.' }
     & $compiler /nologo /target:winexe "/out:$rootLauncher" $rootLauncherSource
@@ -210,6 +217,25 @@ try {
     $finishedLog = Join-Path $temporaryRoot 'worker-finished.log'
     $workerIdentityLog = Join-Path $temporaryRoot 'worker-identity.log'
     $workerErrorLog = Join-Path $temporaryRoot 'worker-error.log'
+    $descendantReadyLog = Join-Path $temporaryRoot 'descendant-ready.log'
+    $descendantSignal = Join-Path $temporaryRoot 'release-descendants.signal'
+    $descendantMarkerLog = Join-Path $temporaryRoot 'descendant-finished.log'
+    $descendantScript = Join-Path $temporaryRoot 'descendant-sentinel.ps1'
+    $descendantSource = @"
+param([string]`$ReadyLog, [string]`$SignalPath, [string]`$MarkerLog)
+`$self = [Diagnostics.Process]::GetCurrentProcess()
+try {
+    `$start = `$self.StartTime.ToUniversalTime().ToFileTimeUtc()
+    [IO.File]::AppendAllText(`$ReadyLog, "`$PID|`$start$([Environment]::NewLine)")
+} finally { `$self.Dispose() }
+`$deadline = [DateTime]::UtcNow.AddSeconds(45)
+while (-not (Test-Path -LiteralPath `$SignalPath -PathType Leaf)) {
+    if ([DateTime]::UtcNow -ge `$deadline) { exit 31 }
+    Start-Sleep -Milliseconds 25
+}
+[IO.File]::AppendAllText(`$MarkerLog, "`$PID$([Environment]::NewLine)")
+"@
+    [IO.File]::WriteAllText($descendantScript, $descendantSource, [Text.UTF8Encoding]::new($false))
     $workerScript = @"
 param(
     [string]`$Action,
@@ -246,6 +272,17 @@ try {
     [void]`$ready.Set()
     if (-not `$parent.WaitForExit(30000)) { throw 'parent did not exit' }
     [IO.File]::AppendAllText('$($afterParentLog.Replace("'", "''"))', "`$kind$([Environment]::NewLine)")
+    `$descendant = Start-Process -FilePath '$($env:SystemRoot.Replace("'", "''"))\System32\WindowsPowerShell\v1.0\powershell.exe' -ArgumentList @(
+        '-NoLogo','-NoProfile','-NonInteractive','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File',
+        '$($descendantScript.Replace("'", "''"))','-ReadyLog','$($descendantReadyLog.Replace("'", "''"))',
+        '-SignalPath','$($descendantSignal.Replace("'", "''"))','-MarkerLog','$($descendantMarkerLog.Replace("'", "''"))'
+    ) -WindowStyle Hidden -PassThru
+    `$descendant.Dispose()
+    `$descendantDeadline = [DateTime]::UtcNow.AddSeconds(5)
+    while (@(if (Test-Path -LiteralPath '$($descendantReadyLog.Replace("'", "''"))') { [IO.File]::ReadAllLines('$($descendantReadyLog.Replace("'", "''"))') }).Count -lt @(if (Test-Path -LiteralPath '$($afterParentLog.Replace("'", "''"))') { [IO.File]::ReadAllLines('$($afterParentLog.Replace("'", "''"))') }).Count) {
+        if ([DateTime]::UtcNow -ge `$descendantDeadline) { throw 'descendant sentinel did not start' }
+        Start-Sleep -Milliseconds 25
+    }
     `$holdMilliseconds = if ((`$kind -eq 'custom' -and `$UseProxy -and -not `$ReplaceRunningApp) -or `$kind -eq 'root') { 15000 } else { 100 }
     Start-Sleep -Milliseconds `$holdMilliseconds
 } catch {
@@ -277,6 +314,17 @@ try {
     Wait-ForFixtureWorkerExit -Path $workerIdentityLog -Index 2 -ExpectedOutcome rejected
     Wait-ForLineCount -Path $finishedLog -Count 1 -TimeoutSeconds 30
     Wait-ForFixtureWorkerExit -Path $workerIdentityLog -Index 1 -ExpectedOutcome acquired
+    $firstTaskHostDeadline = [DateTime]::UtcNow.AddSeconds(5)
+    do {
+        $firstTaskHosts = @(Get-CimInstance Win32_Process -Filter "Name='UpdateSessionTaskHost.exe'" -ErrorAction SilentlyContinue | Where-Object {
+            [string]$_.ExecutablePath -and [IO.Path]::GetFullPath([string]$_.ExecutablePath).StartsWith($temporaryRoot, [StringComparison]::OrdinalIgnoreCase)
+        })
+        if ($firstTaskHosts.Count -eq 0) { break }
+        Start-Sleep -Milliseconds 25
+    } while ([DateTime]::UtcNow -lt $firstTaskHostDeadline)
+    if ($firstTaskHosts.Count -ne 0) { throw 'The first transient GUI launch-worker host did not exit normally.' }
+    [IO.File]::WriteAllText($descendantSignal, 'release', [Text.UTF8Encoding]::new($false))
+    Wait-ForLineCount -Path $descendantMarkerLog -Count 1 -TimeoutSeconds 10
 
     foreach ($case in @(
         [pscustomobject]@{ Arguments = '--startup'; ReadyCount = 2; FinishedCount = 2; WorkerIndex = 3 },
@@ -327,6 +375,20 @@ try {
     )
     if (($invocations -join "`n") -ne ($expectedInvocations -join "`n")) { throw "Launcher arguments changed across handoff: $($invocations -join '; ')" }
     if (@([IO.File]::ReadAllLines($afterParentLog)).Count -ne 5) { throw 'A worker continued before its exact launcher parent exited.' }
+    $taskHostDeadline = [DateTime]::UtcNow.AddSeconds(5)
+    do {
+        $remainingTaskHosts = @(Get-CimInstance Win32_Process -Filter "Name='UpdateSessionTaskHost.exe'" -ErrorAction SilentlyContinue | Where-Object {
+            [string]$_.ExecutablePath -and [IO.Path]::GetFullPath([string]$_.ExecutablePath).StartsWith($temporaryRoot, [StringComparison]::OrdinalIgnoreCase)
+        })
+        if ($remainingTaskHosts.Count -eq 0) { break }
+        Start-Sleep -Milliseconds 25
+    } while ([DateTime]::UtcNow -lt $taskHostDeadline)
+    if ($remainingTaskHosts.Count -ne 0) { throw 'A transient GUI launch-worker host did not exit after its worker completed.' }
+    $residualTasks = @(Get-ScheduledTask -ErrorAction Stop | Where-Object { $_.TaskName -like 'ChatGPTRemoteEnabler-LaunchWorker-*' })
+    if ($residualTasks.Count -ne 0) { throw 'A transient launch-worker task remained registered.' }
+    if (@([IO.File]::ReadAllLines($descendantReadyLog)).Count -ne 5) { throw 'A successful worker did not start exactly one descendant sentinel.' }
+    Wait-ForLineCount -Path $descendantMarkerLog -Count 5 -TimeoutSeconds 10
+    if (@([IO.File]::ReadAllLines($descendantMarkerLog)).Count -ne 5) { throw 'A descendant sentinel was lost when its worker task host exited.' }
 
     [pscustomobject]@{
         WorkerOwnsCrossEntryMutex = $true
@@ -344,11 +406,26 @@ try {
         AmbiguousSessionRejected = $true
         ConcurrentLauncherExitCode = $concurrent.ExitCode
         CrossEntryExitCode = $crossEntry.ExitCode
+        GuiTaskHostsExited = $true
+        WorkerDescendantsSurvivedTaskHostExit = $true
+        NoTransientTaskResidual = $true
     } | ConvertTo-Json
 } finally {
     foreach ($process in $processes) {
         if ($process -and -not $process.HasExited) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
         if ($process) { $process.Dispose() }
+    }
+    if (Test-Path -LiteralPath $descendantReadyLog -PathType Leaf) {
+        foreach ($line in [IO.File]::ReadAllLines($descendantReadyLog)) {
+            $parts = $line.Split('|')
+            if ($parts.Count -ne 2) { continue }
+            $candidate = Get-Process -Id ([int]$parts[0]) -ErrorAction SilentlyContinue
+            if ($candidate) {
+                try {
+                    if ($candidate.StartTime.ToUniversalTime().ToFileTimeUtc() -eq [long]$parts[1]) { Stop-Process -Id $candidate.Id -Force -ErrorAction SilentlyContinue }
+                } finally { $candidate.Dispose() }
+            }
+        }
     }
     $resolved = [IO.Path]::GetFullPath($temporaryRoot)
     $temporary = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())

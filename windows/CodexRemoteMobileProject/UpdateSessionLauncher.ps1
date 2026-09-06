@@ -158,23 +158,28 @@ $config = [ordered]@{
         useProxy = [bool]$UseProxy
         replaceRunningApp = [bool]$ReplaceRunningApp
     }
+    launchReceipt = [ordered]@{
+        path = Join-Path $sessionDirectory 'coordinator-ready.json'
+        identityPath = Join-Path $sessionDirectory 'coordinator-identity.json'
+        nonce = ([guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N'))
+        nodeSha256 = (Get-FileHash -LiteralPath $node -Algorithm SHA256).Hash.ToLowerInvariant()
+        scriptSha256 = (Get-FileHash -LiteralPath (Join-Path $bundle 'update-session.js') -Algorithm SHA256).Hash.ToLowerInvariant()
+        expiresAtUnixMs = [DateTimeOffset]::UtcNow.AddSeconds(30).ToUnixTimeMilliseconds()
+    }
 }
 $temporaryConfig = "$configPath.tmp"
 [IO.File]::WriteAllText($temporaryConfig, (($config | ConvertTo-Json -Depth 8) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
 Move-Item -LiteralPath $temporaryConfig -Destination $configPath -Force
 
 $helperPath = Join-Path $bundle 'update-session.js'
-foreach ($value in @($node, $helperPath, $configPath)) {
-    if ($value -match '[\x00\r\n"]') { throw 'An update-session launch path contains unsupported characters.' }
-}
-$arguments = '--no-warnings "{0}" --config "{1}" --best-effort' -f $helperPath,$configPath
-$process = Start-Process -FilePath $node -ArgumentList $arguments -WorkingDirectory $bundle -WindowStyle Hidden -PassThru
+$survivorLauncher = Join-Path $sourceRoot 'UpdateSessionSurvivorLauncher.ps1'
+$configHash = (Get-FileHash -LiteralPath $configPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$launchResult = & $survivorLauncher -NodePath $node -ScriptPath $helperPath -ConfigPath $configPath -ExpectedConfigSha256 $configHash | ConvertFrom-Json -ErrorAction Stop
 [pscustomobject][ordered]@{
-    started = $true
-    processId = $process.Id
+    started = [bool]$launchResult.started
+    processId = [int]$launchResult.processId
     appProcessId = $identity.pid
     rendererPort = $identity.rendererPort
     bundleHash = [IO.Path]::GetFileName($bundle)
     configPath = $configPath
 } | ConvertTo-Json -Compress
-$process.Dispose()

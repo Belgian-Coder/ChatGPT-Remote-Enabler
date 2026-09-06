@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.5.42
+
+- Launch Windows startup workers and update coordinators through a transient task running as the interactive user. A GUI helper starts their processes without a console, so closing the originating app or its process job no longer kills the update/relaunch sequence.
+- Verify the detached coordinator with hashes and a nonce-bound process identity and readiness receipt; remove transient tasks after handoff. Preserve launched app descendants when the startup worker exits.
+- Fix macOS prepared-update application under zsh `set -u`: initialize rollback paths sequentially and propagate unsafe prepared-directory rejection. This fixes an update that restarted the old version after returning non-JSON output.
+- Add native Windows process-job, descendant-survival, and visible-console checks, plus an isolated native macOS apply/rollback fixture. Log the close, apply, recovery, and relaunch stages separately for live diagnosis.
+
 ## v1.5.41
 
 - Replace an existing Windows session record atomically with a valid same-volume backup path. Windows PowerShell otherwise bound the absent backup argument as an empty path, falsely failed a healthy launch, and could tear it down during the guarded retry.

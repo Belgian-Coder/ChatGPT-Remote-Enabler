@@ -344,9 +344,11 @@ prepare_release() {
 
 apply_prepared_release() {
   local requested_version="$1" expected_hash="$2" requested_source="$3"
-  local source="$(assert_safe_prepared_directory "$requested_source")"
-  local safe_version="${requested_version//[^A-Za-z0-9._-]/_}"
-  local backup_base="$rollback_root/$(date +%Y%m%d-%H%M%S)-$safe_version" backup_root="$backup_base"
+  local source safe_version backup_base backup_root
+  source="$(assert_safe_prepared_directory "$requested_source")" || return 1
+  safe_version="${requested_version//[^A-Za-z0-9._-]/_}"
+  backup_base="$rollback_root/$(date +%Y%m%d-%H%M%S)-$safe_version"
+  backup_root="$backup_base"
   mkdir -p "$rollback_root"
   if [[ -e "$backup_root" ]]; then backup_root="$(mktemp -d "$backup_base.XXXXXX")"; rmdir "$backup_root"; fi
   invoke_transaction_helper apply --install-root "$install_root" --prepared-root "$source" \

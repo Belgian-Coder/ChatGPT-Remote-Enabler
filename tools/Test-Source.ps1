@@ -39,8 +39,10 @@ $powershell = @(
     'tools\Test-LegacyUpdateBootstrap.ps1',
     'windows\Update-ChatGPTRemote.ps1',
     'windows\CodexRemoteMobileProject\UpdateSessionLauncher.ps1',
+    'windows\CodexRemoteMobileProject\UpdateSessionSurvivorLauncher.ps1',
     'windows\CodexRemoteMobileProject\UpdateSessionPlatform.ps1',
     'tools\Test-UpdateSessionWindows.ps1',
+    'tools\Test-UpdateSessionSurvivalWindows.ps1',
     'windows\CodexRemoteMobileProject\MobileProjectView.ps1',
     'windows\CodexRemoteMobileProject\DesktopShortcut.ps1',
     'windows\CodexRemoteMobileProject\StartupShortcut.ps1',
@@ -73,6 +75,31 @@ foreach ($relative in $powershell) {
     $errors = $null
     [Management.Automation.Language.Parser]::ParseFile((Join-Path $root $relative), [ref]$tokens, [ref]$errors) | Out-Null
     if ($errors.Count) { throw "PowerShell syntax validation failed: $relative - $($errors[0].Message)" }
+}
+
+$taskHostSource = Join-Path $root 'windows\CodexRemoteMobileProject\UpdateSessionTaskHost.cs'
+$taskHostBinary = Join-Path $root 'windows\CodexRemoteMobileProject\UpdateSessionTaskHost.exe'
+$compilerCandidates = @(
+    (Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'),
+    (Join-Path $env:SystemRoot 'Microsoft.NET\Framework\v4.0.30319\csc.exe')
+)
+$compiler = $compilerCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+if (-not $compiler) { throw 'The .NET Framework C# compiler was not found.' }
+$compiledTaskHost = Join-Path ([IO.Path]::GetTempPath()) ('UpdateSessionTaskHost-' + [guid]::NewGuid().ToString('N') + '.exe')
+try {
+    & $compiler /nologo /target:winexe "/out:$compiledTaskHost" $taskHostSource
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $compiledTaskHost -PathType Leaf)) {
+        throw 'UpdateSessionTaskHost.cs did not compile as a GUI executable.'
+    }
+    foreach ($candidate in @($compiledTaskHost, $taskHostBinary)) {
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { throw "Required GUI task-host binary is missing: $candidate" }
+        $stream = [IO.File]::OpenRead($candidate)
+        try {
+            if ($stream.ReadByte() -ne 0x4d -or $stream.ReadByte() -ne 0x5a) { throw "GUI task-host binary is not a PE image: $candidate" }
+        } finally { $stream.Dispose() }
+    }
+} finally {
+    Remove-Item -LiteralPath $compiledTaskHost -Force -ErrorAction SilentlyContinue
 }
 
 foreach ($platform in @('windows','macos')) {

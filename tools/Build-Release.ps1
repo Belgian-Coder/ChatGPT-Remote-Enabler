@@ -109,6 +109,7 @@ try {
         $requiredUpdateFiles = if ($platform.Source -eq 'windows') {
             @('Update-ChatGPTRemote.ps1', 'update-transaction.js', 'CodexRemoteMobileProject/update-session.js',
               'CodexRemoteMobileProject/update-session-cdp.js', 'CodexRemoteMobileProject/UpdateSessionLauncher.ps1',
+              'CodexRemoteMobileProject/UpdateSessionSurvivorLauncher.ps1', 'CodexRemoteMobileProject/UpdateSessionTaskHost.exe',
               'CodexRemoteMobileProject/UpdateSessionPlatform.ps1', 'CodexRemoteSimple/runtime/lib/cdp.js')
         } else {
             @('Update-ChatGPTRemote.sh', 'update-transaction.js', 'update-session.js', 'update-session-cdp.js',

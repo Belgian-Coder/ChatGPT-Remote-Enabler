@@ -68,7 +68,7 @@
     "unknown",
   ]);
   const PUBLISHER_VERSION = 53;
-  const VERSION = 73;
+  const VERSION = 74;
   // Keep outstanding writes locked across renderer reinjection until the underlying RPC settles.
   const peerWriteLocks = globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ instanceof Map
     ? globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ : (globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ = new Map());
@@ -3398,13 +3398,13 @@
   }
 
   function emptyInventoryMessage(hostId, filtered = false) {
-    if (hostId === "local") return state.inventoryHydrationPending || state.inventoryHydrationError
+    if (hostId === "local") return state.inventoryHydrationError || !readiness().authoritativeInventoryReady
       ? "Loading local tasks. Waiting for current inventory." : (filtered ? "No projects or tasks on this device." : "No chats");
     const host = state.displayedHosts.find(item => item.id === hostId);
     if (host?.availabilityKnown && host.available === false) return "Device disconnected. Reconnect it using Remote to load tasks.";
     const inventory = state.remoteProjectInventories.get(hostId);
-    if (!inventory || inventory.pending) return "Loading tasks from this device…";
-    if (!freshInventory(hostId) || inventory.error) return "Task information is out of date. Waiting for the device to refresh.";
+    if (!inventory || (!inventory.fetchedAt && !inventory.error)) return "Loading tasks from this device…";
+    if (!freshInventory(hostId)) return "Task information is out of date. Waiting for the device to refresh.";
     if (!inventory.threadsAuthoritative) return "Waiting for a complete task inventory.";
     return filtered ? "No projects or tasks match this device. Choose All to see other devices." : "No chats";
   }

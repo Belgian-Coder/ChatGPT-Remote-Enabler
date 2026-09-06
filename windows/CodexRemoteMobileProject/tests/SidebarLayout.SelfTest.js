@@ -171,7 +171,7 @@ const testSource = originalSource
   bindReorder = () => {};
   probe = () => ({});
   nativeThreadAction = () => null;
-  return { appendEmptyProjectState, appendGroup, commonAncestor, ensureStyle, install, nativeFolderIcon, nativeListContainer, plainFolderIcon, reactRootFibers, render, state,
+  return { appendEmptyProjectState, appendGroup, commonAncestor, emptyInventoryMessage, ensureStyle, install, nativeFolderIcon, nativeListContainer, plainFolderIcon, reactRootFibers, render, state,
     useModel(model) { collectModel = () => model; }
   };
 })();`);
@@ -275,6 +275,7 @@ const reactRoot = { return: null };
 const sectionFiber = { return: { return: reactRoot } };
 projectsSection["__reactFiber$fixture"] = sectionFiber;
 layout.state.filter = "local";
+layout.state.threadInventories.set("local", { error: null, fetchedAt: Date.now(), threads: [], truncated: false });
 
 // Empty folders retain native text, indentation and spacing only while open.
 const expandedFragment = document.createDocumentFragment();
@@ -415,6 +416,79 @@ assert.equal(nativeContainer.style.display, "none", "Mobile projects must replac
 layout.state.view = "native";
 layout.render();
 assert.notEqual(nativeContainer.style.display, "none", "switching back must restore the native container display");
+
+// Refreshing a known empty inventory must keep its authoritative empty label
+// and preserve the rendered nodes. Initial, stale, failed, disconnected and
+// incomplete inventories must retain their distinct non-authoritative states.
+const boundaryHost = `${aliasEnvironmentPrefix}refresh_boundaries`;
+const freshEmptyInventory = {
+  error: null,
+  fetchedAt: Date.now(),
+  generatedAt: Date.now(),
+  pending: false,
+  projects: [],
+  tasks: new Map(),
+  threads: [],
+  threadsAuthoritative: true,
+};
+layout.state.displayedHosts = [
+  { id: "local", name: "Fixture Desktop", available: true, availabilityKnown: true },
+  { id: boundaryHost, name: "Boundary device", available: true, availabilityKnown: true },
+];
+layout.state.threadInventories.delete("local");
+layout.state.inventoryHydrationPending = true;
+layout.state.inventoryHydrationError = null;
+assert.equal(layout.emptyInventoryMessage("local"), "Loading local tasks. Waiting for current inventory.", "initial local hydration must remain visibly non-authoritative");
+layout.state.threadInventories.set("local", { error: null, fetchedAt: Date.now(), threads: [], truncated: false });
+assert.equal(layout.emptyInventoryMessage("local"), "No chats", "a known authoritative local empty result must remain stable while refresh is pending");
+layout.state.inventoryHydrationError = "fixture failure";
+assert.equal(layout.emptyInventoryMessage("local"), "Loading local tasks. Waiting for current inventory.", "a global hydration failure must outrank an older healthy local inventory");
+layout.state.inventoryHydrationError = null;
+layout.state.threadInventories.set("local", { error: null, fetchedAt: Date.now(), threads: [], truncated: true });
+assert.equal(layout.emptyInventoryMessage("local"), "Loading local tasks. Waiting for current inventory.", "a truncated local inventory must not be presented as authoritative");
+layout.state.threadInventories.set("local", { error: "fixture failure", fetchedAt: Date.now(), threads: [], truncated: false });
+assert.equal(layout.emptyInventoryMessage("local"), "Loading local tasks. Waiting for current inventory.", "a failed local inventory must not be presented as authoritative");
+
+layout.state.remoteProjectInventories.delete(boundaryHost);
+assert.equal(layout.emptyInventoryMessage(boundaryHost), "Loading tasks from this device…", "an initial remote load must remain visibly pending");
+layout.state.remoteProjectInventories.set(boundaryHost, { ...freshEmptyInventory, pending: true });
+assert.equal(layout.emptyInventoryMessage(boundaryHost), "No chats", "a fresh authoritative remote empty result must remain stable while refresh is pending");
+assert.equal(layout.emptyInventoryMessage(boundaryHost, true), "No projects or tasks match this device. Choose All to see other devices.");
+layout.state.remoteProjectInventories.set(boundaryHost, { ...freshEmptyInventory, fetchedAt: Date.now() - 600000, generatedAt: Date.now() - 600000, pending: true });
+assert.equal(layout.emptyInventoryMessage(boundaryHost), "Task information is out of date. Waiting for the device to refresh.", "a stale pending inventory must not borrow an authoritative empty label");
+layout.state.remoteProjectInventories.set(boundaryHost, { ...freshEmptyInventory, error: "fixture failure", pending: true });
+assert.equal(layout.emptyInventoryMessage(boundaryHost), "Task information is out of date. Waiting for the device to refresh.", "a failed pending inventory must retain its failure boundary");
+layout.state.displayedHosts[1].available = false;
+assert.equal(layout.emptyInventoryMessage(boundaryHost), "Device disconnected. Reconnect it using Remote to load tasks.", "disconnection must outrank retained inventory");
+layout.state.displayedHosts[1].available = true;
+layout.state.remoteProjectInventories.set(boundaryHost, { ...freshEmptyInventory, pending: true, threadsAuthoritative: false });
+assert.equal(layout.emptyInventoryMessage(boundaryHost), "Waiting for a complete task inventory.", "an incomplete pending inventory must not appear authoritatively empty");
+
+layout.state.threadInventories.set("local", { error: null, fetchedAt: Date.now(), threads: [], truncated: false });
+layout.state.inventoryHydrationPending = false;
+layout.state.inventoryHydrationError = null;
+layout.state.remoteProjectInventories.set(boundaryHost, { ...freshEmptyInventory });
+layout.state.settingsOpen = false;
+layout.state.filter = "all";
+layout.state.view = "mobile";
+const refreshModel = {
+  rows: [], nativeProjectItems: [opened],
+  hosts: layout.state.displayedHosts, remoteRuntimes: new Map(),
+  projects: [project("empty-open"), { ...project("remote-empty"), key: `${boundaryHost}:remote-empty`, hostId: boundaryHost, hostName: "Boundary device", projectId: null, cwd: "/fixture/remote-empty" }],
+  recents: [],
+};
+layout.useModel(refreshModel);
+layout.render();
+const refreshChildren = [...layout.state.panel.children];
+const refreshReplacementCount = layout.state.panel.replaceChildrenCalls;
+const refreshSkipCount = layout.state.counters.panelRenderSkips;
+layout.state.inventoryHydrationPending = true;
+layout.state.remoteProjectInventories.set(boundaryHost, { ...freshEmptyInventory, pending: true });
+layout.render();
+assert.deepEqual(layout.state.panel.querySelectorAll(".crmp-empty-project-message").map((item) => item.textContent), ["No chats", "No chats"], "a pending refresh must retain both known authoritative empty labels");
+assert.equal(layout.state.panel.replaceChildrenCalls, refreshReplacementCount, "a pending refresh with unchanged authoritative empty results must not replace the panel");
+assert.ok(layout.state.panel.children.every((child, index) => child === refreshChildren[index]), "the pending refresh must retain rendered node identity");
+assert.equal(layout.state.counters.panelRenderSkips, refreshSkipCount + 1, "the real render path must classify a known-empty refresh as a semantic no-op");
 
 const legacyContainer = nav.appendChild(element("div", "legacy-native-list"));
 const legacyRow = legacyContainer.appendChild(element("button"));

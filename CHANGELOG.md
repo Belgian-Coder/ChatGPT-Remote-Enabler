@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.5.49
+
+- Keep authoritative empty task lists stable during background local and remote inventory refreshes. Initial, stale, failed, disconnected and incomplete inventories still show their distinct status instead of being presented as current empty results.
+
 ## v1.5.48
 
 - Give Windows startup workers and update coordinators a stable per-user temporary directory. This lets the native close helper compile when a scheduled task inherits Windows TEMP under a normal user.

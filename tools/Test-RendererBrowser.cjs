@@ -240,20 +240,32 @@ async function main() {
     assert.match(emptyStates.filtered, /Choose All/);
     assert.match(emptyStates.stale, /out of date/);
 
-    // Exercise aliases through actual controls, preserving both caret and verified identity.
+    // Exercise shared aliases through the actual Device health controls while
+    // preserving both caret position and the separate verified identity.
     await setSettingsOpen(true);
     await panel.locator(".crmp-devices > summary").click();
-    let aliasInput = panel.getByRole("textbox", { name: "Local alias for Peer desktop", exact: true });
-    await aliasInput.fill("My local alias");
+    assert.ok(await panel.getByText("Saved aliases sync automatically with updated connected devices. Offline devices catch up when they reconnect.", { exact: true }).count() >= 1);
+    let aliasInput = panel.getByRole("textbox", { name: "Shared alias for Peer desktop", exact: true });
+    await aliasInput.fill("My shared alias");
     await aliasInput.press("Home");
     await aliasInput.press("ArrowRight");
     await page.evaluate(() => __crmpBrowserFixture.render());
-    aliasInput = panel.getByRole("textbox", { name: "Local alias for Peer desktop", exact: true });
-    assert.equal(await aliasInput.inputValue(), "My local alias");
+    aliasInput = panel.getByRole("textbox", { name: "Shared alias for Peer desktop", exact: true });
+    assert.equal(await aliasInput.inputValue(), "My shared alias");
     assert.equal(await aliasInput.evaluate(element => element.selectionStart), 1);
     await aliasInput.press("Enter");
-    await chips.filter({ hasText: "My local alias" }).waitFor();
+    await chips.filter({ hasText: "My shared alias" }).waitFor();
+    await panel.getByText("Alias saved. Sharing is queued and retries when devices reconnect.", { exact: true }).waitFor();
+    const savedAliasRecord = await page.evaluate(() => JSON.parse(localStorage.getItem("codex-remote-mobile-device-alias-records-v2"))[__fixtureHost]);
+    assert.equal(savedAliasRecord.schemaVersion, 1);
+    assert.equal(savedAliasRecord.value, "My shared alias");
+    assert.ok(Number.isFinite(savedAliasRecord.updatedAt) && savedAliasRecord.updatedAt > 0);
+    assert.equal(typeof savedAliasRecord.writerId, "string");
     assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem("codex-remote-mobile-host-names-v1"))[__fixtureHost]), "Peer desktop");
+    assert.deepEqual(await chips.allTextContents(), ["All", "This device", "My shared alias", "Remote device"], "a shared alias must participate in friendly-name filter ordering without moving the current device");
+    if (screenshotPath) {
+      await panel.locator(".crmp-device-card").filter({ hasText: "Reported name: Peer desktop" }).screenshot({ path: screenshotPath.replace(/\.png$/u, "-shared-alias.png") });
+    }
     await page.evaluate(() => __CODEX_REMOTE_MOBILE_PROJECT_VIEW__.uninstall());
     await page.evaluate(fixtureSource);
     await page.evaluate(() => {
@@ -261,11 +273,20 @@ async function main() {
       __crmpBrowserFixture.state.remoteProjectInventories.set(__fixtureOlderHost, __fixtureInventory(null, "/fixture/older"));
       __crmpBrowserFixture.install();
     });
-    await chips.filter({ hasText: "My local alias" }).waitFor();
+    await chips.filter({ hasText: "My shared alias" }).waitFor();
+    assert.deepEqual(await chips.allTextContents(), ["All", "This device", "My shared alias", "Remote device"], "the shared alias and filter order must survive a full renderer reinstall");
     await setSettingsOpen(true);
     await panel.locator(".crmp-devices > summary").click();
-    await panel.locator(".crmp-device-card").filter({ hasText: "My local alias" }).getByRole("button", {name:"Reset alias", exact:true}).click();
+    aliasInput = panel.getByRole("textbox", { name: "Shared alias for Peer desktop", exact: true });
+    assert.equal(await aliasInput.inputValue(), "My shared alias");
+    await panel.locator(".crmp-device-card").filter({ hasText: "My shared alias" }).getByRole("button", {name:"Reset alias", exact:true}).click();
     await chips.filter({ hasText: "Peer desktop" }).waitFor();
+    await panel.getByText("Alias reset. Sharing is queued and retries when devices reconnect.", { exact: true }).waitFor();
+    const resetAliasRecord = await page.evaluate(() => JSON.parse(localStorage.getItem("codex-remote-mobile-device-alias-records-v2"))[__fixtureHost]);
+    assert.equal(resetAliasRecord.schemaVersion, 1);
+    assert.equal(resetAliasRecord.value, null, "reset must retain a shareable tombstone rather than deleting the v2 record");
+    assert.ok(resetAliasRecord.updatedAt > savedAliasRecord.updatedAt);
+    assert.deepEqual(await chips.allTextContents(), ["All", "This device", "Peer desktop", "Remote device"], "reset must restore verified-name ordering while keeping the current device second");
     const refreshed = await page.evaluate(() => {
       const a = __crmpBrowserFixture.refreshDeviceHealth();
       const b = __crmpBrowserFixture.refreshDeviceHealth();
@@ -291,7 +312,7 @@ async function main() {
     assert.equal(await panel.getByRole("link", {name:"Installed release notes: v1.5.34", exact:true}).getAttribute("href"), "https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.34");
     await panel.getByRole("button", { name: "Generate diagnostic preview", exact: true }).click();
     const json = await panel.getByRole("textbox", {name:"Diagnostic JSON preview", exact:true}).inputValue();
-    assert.doesNotMatch(json, /Peer desktop|My local alias|primary_fixture|older_fixture|Design project|\/fixture\//);
+    assert.doesNotMatch(json, /Peer desktop|My shared alias|primary_fixture|older_fixture|Design project|\/fixture\//);
     await panel.getByRole("button", { name: "Copy preview", exact: true }).click();
     await page.waitForFunction(() => typeof globalThis.__copiedDiagnostic === "string");
     assert.equal(await page.evaluate(() => __copiedDiagnostic), json);
@@ -439,7 +460,7 @@ async function main() {
     if (screenshotPath) await lifecyclePanel.screenshot({ path: screenshotPath.replace(/\.png$/u, "-authorization.png") });
     await lifecycleContext.close();
     assert.deepEqual(errors, [], "the real renderer must not raise browser errors");
-    console.log(JSON.stringify({ nativeConnectionLifecycle: true, nativeLabelsWithoutRows: true, fullDocumentReloadRetainsLabels: true, authorizationPauseVisible: true, settingsContainUpdatesAndHealth: true, missingUpdaterRecoveryBothViews: true, guidedConnectionTroubleshooting: true, transferDiagnosticsAllowlisted: true, featureControls: true, aliasReload: true, caretPreserved: true, healthRefreshCoalesced: true, diagnosticCopyAndNativeSave: true, diagnosticCancelAndError: true, uxStates: 10, themes: 2, sidebarWidths: [280,320,400], scaling: [1,2], fixtureTextContrast: true, stableAnnouncements: true, focusRestored: true, realChromium: true, realModelAndRender: true, neutralName: true, metadataArrival: true, reinjection: true, updateEventBothTargets: true, keyboardQueue: true, nativeViewUpdate: true, cancel: true, unrelatedMutations: 200, extraRenders: after.renders - before.renders, extraHostScans: after.hostDiscoveryScans - before.hostDiscoveryScans }));
+    console.log(JSON.stringify({ nativeConnectionLifecycle: true, nativeLabelsWithoutRows: true, fullDocumentReloadRetainsLabels: true, authorizationPauseVisible: true, settingsContainUpdatesAndHealth: true, missingUpdaterRecoveryBothViews: true, guidedConnectionTroubleshooting: true, transferDiagnosticsAllowlisted: true, featureControls: true, sharedAliasSaveReset: true, sharedAliasReload: true, sharedAliasTombstone: true, sharedAliasFilterOrdering: true, caretPreserved: true, healthRefreshCoalesced: true, diagnosticCopyAndNativeSave: true, diagnosticCancelAndError: true, uxStates: 10, themes: 2, sidebarWidths: [280,320,400], scaling: [1,2], fixtureTextContrast: true, stableAnnouncements: true, focusRestored: true, realChromium: true, realModelAndRender: true, neutralName: true, metadataArrival: true, reinjection: true, updateEventBothTargets: true, keyboardQueue: true, nativeViewUpdate: true, cancel: true, unrelatedMutations: 200, extraRenders: after.renders - before.renders, extraHostScans: after.hostDiscoveryScans - before.hostDiscoveryScans }));
   } finally { await browser.close(); }
 }
 

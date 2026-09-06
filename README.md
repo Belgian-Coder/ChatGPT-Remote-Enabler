@@ -8,12 +8,12 @@ Unofficial Windows and macOS helpers for ChatGPT/Codex Remote. Windows exposes h
 
 ## Install without administrator access
 
-Download a platform ZIP from [v1.5.45 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.45), then follow its step-by-step guide:
+Download a platform ZIP from [v1.5.46 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.46), then follow its step-by-step guide:
 
 - **[Windows 11 x64](windows/README.md)**: per-user folder, optional portable Node, double-click launch, Desktop/Start-menu shortcuts and optional sign-in shortcut.
 - **[macOS Apple Silicon](macos/README.md)**: home-folder setup, optional portable Node, Terminal first launch, Dock shortcut and per-user sign-in startup.
 
-Neither setup requires administrator permissions. A supported desktop app/account and Node.js 22+ are prerequisites; organization policies can still block execution. **v1.5.45 is a normal release. See the validation scope below; source tests and installed-app acceptance are separate.**
+Neither setup requires administrator permissions. A supported desktop app/account and Node.js 22+ are prerequisites; organization policies can still block execution. **v1.5.46 is a normal release. See the validation scope below; source tests and installed-app acceptance are separate.**
 
 The **[feature guide](FEATURES.md)** explains controls, defaults, update behavior, and cleanup consequences. Both ZIPs include their installation and feature guides.
 
@@ -123,11 +123,11 @@ correction also passed native extraction and startup checks. A fresh login
 trigger and each newly installed release remain separate acceptance checks.
 ## UX roadmap
 
-The interface polish and per-user setup assistants are included in v1.5.45. See [the prioritized feature backlog](UX-ROADMAP.md) for ideas intentionally outside this release.
+The interface polish and per-user setup assistants are included in v1.5.46. See [the prioritized feature backlog](UX-ROADMAP.md) for ideas intentionally outside this release.
 
 ## Health, history, and diagnostics
 
-Settings now includes cleanup preview/history, update details/history, and an explicit diagnostic export preview. Device health includes refresh, reported helper versions, and aliases that stay on this client. See the [feature guide](FEATURES.md) for retention and privacy boundaries.
+Settings now includes cleanup preview/history, update details/history, and an explicit diagnostic export preview. Device health includes refresh, reported helper versions, and aliases shared automatically with updated connected clients. See the [feature guide](FEATURES.md) for retention and privacy boundaries.
 
 ## Connection troubleshooting and transfer
 

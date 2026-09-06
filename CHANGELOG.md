@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.5.46
+
+- Share saved device aliases and resets automatically through the existing authenticated peer inventory connection. Keep aliases separate from device identity, connection settings and cache paths.
+- Retain existing local aliases, resolve concurrent edits consistently, and preserve reset records so reconnecting or newly upgraded clients cannot restore older cleared names.
 ## v1.5.45
 
 - Run the Windows post-update startup script without the detached-process flag that caused PowerShell to exit 0 before executing the script. Keep the already independent update coordinator alive until the readiness handoff; retain hidden windows and descendant survival.

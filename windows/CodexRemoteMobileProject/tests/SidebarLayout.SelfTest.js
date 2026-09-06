@@ -177,7 +177,8 @@ const testSource = originalSource
 })();`);
 assert.notEqual(testSource, originalSource, "test entrypoint extraction must succeed");
 const microtasks = [];
-const storage = new Map([["codex-remote-mobile-device-aliases-v1", JSON.stringify({ "fixture-zulu": "Bravo Alias" })]]);
+const aliasEnvironmentPrefix = "remote-control:" + "env" + "_";
+const storage = new Map([["codex-remote-mobile-device-aliases-v1", JSON.stringify({ [`${aliasEnvironmentPrefix}fixture_zulu`]: "Bravo Alias" })]]);
 const context = vm.createContext({
   CSS: { escape: value => String(value) },
   Element: FixtureElement,
@@ -365,11 +366,11 @@ layout.state.view = "mobile";
 layout.useModel({
   rows: [nativeRecentRow], nativeProjectItems: [opened, closed],
   hosts: [
-    { id: "fixture-zulu", name: "Zulu Desktop", available: true, availabilityKnown: true },
+    { id: `${aliasEnvironmentPrefix}fixture_zulu`, name: "Zulu Desktop", available: true, availabilityKnown: true },
     { id: "local", name: "Fixture Desktop", available: true, availabilityKnown: true },
-    { id: "fixture-alpha", name: "alpha Desktop", available: true, availabilityKnown: true },
-    { id: "fixture-ten", name: "Peer 10", available: true, availabilityKnown: true },
-    { id: "fixture-two", name: "Peer 2", available: true, availabilityKnown: true },
+    { id: `${aliasEnvironmentPrefix}fixture_alpha`, name: "alpha Desktop", available: true, availabilityKnown: true },
+    { id: `${aliasEnvironmentPrefix}fixture_ten`, name: "Peer 10", available: true, availabilityKnown: true },
+    { id: `${aliasEnvironmentPrefix}fixture_two`, name: "Peer 2", available: true, availabilityKnown: true },
   ], remoteRuntimes: [],
   projects: [project("empty-open"), project("empty-closed")],
   recents: [{ key: "fixture-recent", kind: "recent", hostId: "local", hostName: "Fixture Desktop", name: "Recent chats", tasks: [{ ...task, statusType: "loading" }] }],

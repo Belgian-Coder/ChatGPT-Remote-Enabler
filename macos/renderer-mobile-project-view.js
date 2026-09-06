@@ -19,6 +19,11 @@
   const AUTO_ARCHIVED_RECORDS_KEY = "codex-remote-mobile-auto-archived-records-v1";
   const AUTO_ARCHIVE_LOCK_KEY = "codex-remote-mobile-auto-archive-lock-v1";
   const DEVICE_ALIASES_KEY = "codex-remote-mobile-device-aliases-v1";
+  const DEVICE_ALIAS_RECORDS_KEY = "codex-remote-mobile-device-alias-records-v2";
+  const DEVICE_ALIAS_WRITER_KEY = "codex-remote-mobile-device-alias-writer-v1";
+  const DEVICE_ALIAS_SCHEMA_VERSION = 1;
+  const DEVICE_ALIAS_MAX_RECORDS = 100;
+  const DEVICE_ALIAS_FUTURE_SKEW_MS = 5 * 60 * 1000;
   const CLEANUP_HISTORY_KEY = "codex-remote-mobile-cleanup-history-v1";
   const HISTORY_MAX_AGE_MS = 90 * 86400000;
   const UPDATE_SLOT = "__CHATGPT_REMOTE_UPDATE__";
@@ -63,7 +68,7 @@
     "unknown",
   ]);
   const PUBLISHER_VERSION = 53;
-  const VERSION = 72;
+  const VERSION = 73;
   // Keep outstanding writes locked across renderer reinjection until the underlying RPC settles.
   const peerWriteLocks = globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ instanceof Map
     ? globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ : (globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ = new Map());
@@ -233,6 +238,7 @@
     featureOpen: {},
     aliasDrafts: new Map(),
     aliasFeedback: new Map(),
+    aliasWriterId: null,
     healthRefreshUntil: 0,
     healthRefreshTimer: null,
     cleanupPreview: null,
@@ -375,6 +381,150 @@
 
   function writeRecords(key, value) {
     try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+  }
+
+  function normalizeDeviceAliasHostId(hostId, allowLocal = false) {
+    const normalized = normalizeHostId(hostId);
+    if (allowLocal && normalized === "local") return normalized;
+    return typeof normalized === "string"
+      && normalized.length <= 220
+      && /^remote-control:env_[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(normalized)
+      ? normalized : null;
+  }
+
+  function normalizeDeviceAliasValue(value, allowNull = false) {
+    if (value === null) return allowNull ? null : undefined;
+    if (typeof value !== "string") return undefined;
+    const alias = value.trim();
+    return alias && alias.length <= 60 && !/[\u0000-\u001f\u007f]/u.test(alias) ? alias : undefined;
+  }
+
+  function validDeviceAliasWriterId(value) {
+    return typeof value === "string" && value.length <= 128 && /^[A-Za-z0-9][A-Za-z0-9._:-]*$/u.test(value);
+  }
+
+  function deviceAliasWriterId() {
+    if (validDeviceAliasWriterId(state.aliasWriterId)) return state.aliasWriterId;
+    try {
+      const stored = localStorage.getItem(DEVICE_ALIAS_WRITER_KEY);
+      if (validDeviceAliasWriterId(stored)) {
+        state.aliasWriterId = stored;
+        return stored;
+      }
+    } catch {}
+    const generated = `replica:${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}:${Math.random().toString(36).slice(2)}`}`;
+    state.aliasWriterId = validDeviceAliasWriterId(generated) ? generated : `replica:${Date.now()}`;
+    try { localStorage.setItem(DEVICE_ALIAS_WRITER_KEY, state.aliasWriterId); } catch {}
+    return state.aliasWriterId;
+  }
+
+  function parseDeviceAliasRecord(value, now = Date.now()) {
+    if (!value || typeof value !== "object" || Array.isArray(value) || value.schemaVersion !== DEVICE_ALIAS_SCHEMA_VERSION) return null;
+    const alias = normalizeDeviceAliasValue(value.value, true);
+    const updatedAt = value.updatedAt;
+    if (alias === undefined
+      || typeof updatedAt !== "number"
+      || !Number.isSafeInteger(updatedAt)
+      || updatedAt < 0
+      || updatedAt > now + DEVICE_ALIAS_FUTURE_SKEW_MS
+      || !validDeviceAliasWriterId(value.writerId)) return null;
+    return { schemaVersion: DEVICE_ALIAS_SCHEMA_VERSION, updatedAt, value: alias, writerId: value.writerId };
+  }
+
+  function compareDeviceAliasRecords(left, right) {
+    if (!left && !right) return 0;
+    if (!left) return -1;
+    if (!right) return 1;
+    if (left.updatedAt !== right.updatedAt) return left.updatedAt > right.updatedAt ? 1 : -1;
+    const writerOrder = left.writerId === right.writerId ? 0 : left.writerId > right.writerId ? 1 : -1;
+    if (writerOrder) return writerOrder;
+    if (left.value === right.value) return 0;
+    if (left.value === null) return 1;
+    if (right.value === null) return -1;
+    return left.value === right.value ? 0 : left.value > right.value ? 1 : -1;
+  }
+
+  function writeDeviceAliasRecords(records) {
+    const normalized = {};
+    const now = Date.now();
+    for (const [hostId, rawRecord] of Object.entries(records ?? {})) {
+      const id = normalizeDeviceAliasHostId(hostId, true);
+      const record = parseDeviceAliasRecord(rawRecord, now);
+      if (id && record) normalized[id] = record;
+    }
+    if (Object.keys(normalized).length > DEVICE_ALIAS_MAX_RECORDS) return false;
+    const ordered = Object.fromEntries(Object.entries(normalized).sort(([left], [right]) => left === right ? 0 : left > right ? 1 : -1));
+    try {
+      localStorage.setItem(DEVICE_ALIAS_RECORDS_KEY, JSON.stringify(ordered));
+      return true;
+    } catch { return false; }
+  }
+
+  function readDeviceAliasRecords() {
+    const now = Date.now();
+    const records = {};
+    for (const [hostId, rawRecord] of Object.entries(readRecords(DEVICE_ALIAS_RECORDS_KEY)).slice(0, DEVICE_ALIAS_MAX_RECORDS)) {
+      const id = normalizeDeviceAliasHostId(hostId, true);
+      const record = parseDeviceAliasRecord(rawRecord, now);
+      if (id && record) records[id] = record;
+    }
+    let migrated = false;
+    const legacyWriterId = "legacy";
+    for (const [hostId, rawAlias] of Object.entries(readRecords(DEVICE_ALIASES_KEY)).slice(0, DEVICE_ALIAS_MAX_RECORDS)) {
+      const id = normalizeDeviceAliasHostId(hostId, true);
+      const alias = normalizeDeviceAliasValue(rawAlias);
+      if (!id || alias === undefined || Object.prototype.hasOwnProperty.call(records, id)) continue;
+      if (Object.keys(records).length >= DEVICE_ALIAS_MAX_RECORDS) break;
+      // Legacy aliases have no edit clock. Keeping them at revision zero preserves
+      // the name without allowing a late upgrade to override a shared save/reset.
+      records[id] = { schemaVersion: DEVICE_ALIAS_SCHEMA_VERSION, updatedAt: 0, value: alias, writerId: legacyWriterId };
+      migrated = true;
+    }
+    if (migrated) writeDeviceAliasRecords(records);
+    return records;
+  }
+
+  function deviceAliasRecord(hostId) {
+    const id = normalizeDeviceAliasHostId(hostId, true);
+    return id ? readDeviceAliasRecords()[id] ?? null : null;
+  }
+
+  function currentDeviceAlias(hostId) {
+    const value = deviceAliasRecord(hostId)?.value;
+    return typeof value === "string" ? value : "";
+  }
+
+  function nextDeviceAliasTimestamp(records, hostId) {
+    const now = Date.now();
+    const current = records[hostId];
+    const next = Math.max(now, Number(current?.updatedAt ?? -1) + 1);
+    return next <= now + DEVICE_ALIAS_FUTURE_SKEW_MS ? next : null;
+  }
+
+  function markDeviceAliasesChanged() {
+    state.localInventoryPublishedAt = 0;
+    state.localInventoryStatusSignature = "";
+    if (state.active) schedule();
+  }
+
+  function mergeDeviceAliasRecords(candidates, trustedHostIds = []) {
+    const trusted = new Set([...trustedHostIds].map((hostId) => normalizeDeviceAliasHostId(hostId)).filter(Boolean));
+    const current = readDeviceAliasRecords();
+    const next = { ...current };
+    let changed = false;
+    const now = Date.now();
+    for (const [hostId, rawRecord] of candidates instanceof Map ? candidates : Object.entries(candidates ?? {})) {
+      const id = normalizeDeviceAliasHostId(hostId, true);
+      const record = parseDeviceAliasRecord(rawRecord, now);
+      if (!id || !record || id !== "local" && !trusted.has(id)) continue;
+      if (compareDeviceAliasRecords(record, next[id]) <= 0) continue;
+      if (!Object.prototype.hasOwnProperty.call(next, id) && Object.keys(next).length >= DEVICE_ALIAS_MAX_RECORDS) continue;
+      next[id] = record;
+      changed = true;
+    }
+    if (!changed || !writeDeviceAliasRecords(next)) return false;
+    markDeviceAliasesChanged();
+    return true;
   }
 
   function loadVerifiedThreadIds() {
@@ -1401,6 +1551,94 @@
     return new TextDecoder().decode(bytes);
   }
 
+  function parseDeviceAliasEnvelope(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value) || value.schemaVersion !== DEVICE_ALIAS_SCHEMA_VERSION) return null;
+    const records = {};
+    const now = Date.now();
+    if (value.records && typeof value.records === "object" && !Array.isArray(value.records)) {
+      for (const [hostId, rawRecord] of Object.entries(value.records).slice(0, DEVICE_ALIAS_MAX_RECORDS)) {
+        const id = normalizeDeviceAliasHostId(hostId);
+        const record = parseDeviceAliasRecord(rawRecord, now);
+        if (id && record) records[id] = record;
+      }
+    }
+    const selfAlias = parseDeviceAliasRecord(value.selfAlias, now);
+    const recipientAlias = parseDeviceAliasRecord(value.recipientAlias, now);
+    return {
+      records: Object.fromEntries(Object.entries(records).sort(([left], [right]) => left === right ? 0 : left > right ? 1 : -1)),
+      recipientAlias,
+      schemaVersion: DEVICE_ALIAS_SCHEMA_VERSION,
+      selfAlias,
+    };
+  }
+
+  function serializeDeviceAliasEnvelope(value, includeRecipient = false) {
+    const parsed = parseDeviceAliasEnvelope(value);
+    if (!parsed) return null;
+    const result = { records: parsed.records, schemaVersion: DEVICE_ALIAS_SCHEMA_VERSION };
+    if (parsed.selfAlias) result.selfAlias = parsed.selfAlias;
+    if (includeRecipient && parsed.recipientAlias) result.recipientAlias = parsed.recipientAlias;
+    return Object.keys(result.records).length || result.selfAlias || result.recipientAlias ? result : null;
+  }
+
+  function publishedDeviceAliases() {
+    const records = readDeviceAliasRecords();
+    const remoteRecords = Object.fromEntries(Object.entries(records)
+      .filter(([hostId]) => hostId !== "local")
+      .sort(([left], [right]) => left === right ? 0 : left > right ? 1 : -1));
+    const envelope = { records: remoteRecords, schemaVersion: DEVICE_ALIAS_SCHEMA_VERSION };
+    if (records.local) envelope.selfAlias = records.local;
+    return serializeDeviceAliasEnvelope(envelope);
+  }
+
+  function deviceAliasesForDestination(value, hostId) {
+    const parsed = parseDeviceAliasEnvelope(value);
+    const destinationId = normalizeDeviceAliasHostId(hostId);
+    if (!parsed || !destinationId) return serializeDeviceAliasEnvelope(parsed);
+    const records = { ...parsed.records };
+    const recipientAlias = records[destinationId] ?? null;
+    delete records[destinationId];
+    return serializeDeviceAliasEnvelope({
+      records,
+      recipientAlias,
+      schemaVersion: DEVICE_ALIAS_SCHEMA_VERSION,
+      selfAlias: parsed.selfAlias,
+    }, true);
+  }
+
+  function knownDeviceAliasHostIds(additional = []) {
+    const ids = new Set();
+    const add = (hostId) => {
+      const id = normalizeDeviceAliasHostId(hostId);
+      if (id) ids.add(id);
+    };
+    for (const host of state.displayedHosts) add(host?.id);
+    for (const connection of state.nativeConnectionSnapshot?.connections ?? []) add(connection?.hostId);
+    for (const collection of [state.remoteProjectInventories, state.hostConnectivity, state.remoteRuntimeCache]) {
+      for (const hostId of collection.keys()) add(hostId);
+    }
+    for (const hostId of additional) add(hostId);
+    return ids;
+  }
+
+  function mergeInventoryDeviceAliases(value, sourceHostId, acceptRecipient = false, additionalTrustedIds = []) {
+    const aliases = parseDeviceAliasEnvelope(value);
+    const sourceId = normalizeDeviceAliasHostId(sourceHostId);
+    if (!aliases || !sourceId) return false;
+    const trusted = knownDeviceAliasHostIds([sourceId, ...additionalTrustedIds]);
+    const candidates = new Map();
+    const addCandidate = (hostId, record) => {
+      const current = candidates.get(hostId);
+      if (!current || compareDeviceAliasRecords(record, current) > 0) candidates.set(hostId, record);
+    };
+    if (aliases.selfAlias) addCandidate(sourceId, aliases.selfAlias);
+    for (const [hostId, record] of Object.entries(aliases.records)) {
+      if (trusted.has(hostId)) addCandidate(hostId, record);
+    }
+    if (acceptRecipient && aliases.recipientAlias) addCandidate("local", aliases.recipientAlias);
+    return mergeDeviceAliasRecords(candidates, trusted);
+  }
+
   function parseInventoryPayload(value, includePeers = false) {
     const generatedAt = Date.parse(value?.generatedAt);
     if (value?.schemaVersion !== 1 || !Number.isFinite(generatedAt)) throw new Error("Remote project inventory has an unsupported format");
@@ -1456,6 +1694,7 @@
       if (titleRecord.title) parsedThread.title = titleRecord.title;
       return [parsedThread];
     });
+    const deviceAliases = parseDeviceAliasEnvelope(value.deviceAliases);
     const peers = new Map();
     if (includePeers && value?.peers && typeof value.peers === "object" && !Array.isArray(value.peers)) {
       for (const [peerHostId, peerValue] of Object.entries(value.peers).slice(0, 20)) {
@@ -1466,7 +1705,7 @@
         } catch {}
       }
     }
-    return { generatedAt, hostDisplayName, helperVersion: releaseVersion(value.helperVersion), peers, projects: [...projects.values()].sort((left, right) => left.name.localeCompare(right.name)), projectsAuthoritative: !projectsTruncated, projectsTruncated, publisherVersion, tasks, tasksTruncated, threadScope, threadScopeGeneratedAt, threads, threadsAuthoritative, threadsTruncated };
+    return { deviceAliases, generatedAt, hostDisplayName, helperVersion: releaseVersion(value.helperVersion), peers, projects: [...projects.values()].sort((left, right) => left.name.localeCompare(right.name)), projectsAuthoritative: !projectsTruncated, projectsTruncated, publisherVersion, tasks, tasksTruncated, threadScope, threadScopeGeneratedAt, threads, threadsAuthoritative, threadsTruncated };
   }
 
   function serializePeerInventory(inventory) {
@@ -1488,6 +1727,8 @@
     if (inventory.threadScope === "user-visible" && Number.isFinite(threadScopeGeneratedAt)) {
       payload.threadScopeGeneratedAt = new Date(threadScopeGeneratedAt).toISOString();
     }
+    const deviceAliases = serializeDeviceAliasEnvelope(inventory.deviceAliases);
+    if (deviceAliases) payload.deviceAliases = deviceAliases;
     return payload;
   }
 
@@ -1528,6 +1769,7 @@
         stats.reads += 1; stats.receivedBase64Bytes += typeof result?.dataBase64 === "string" ? result.dataBase64.length : 0;
         stats.lastReadMs = Math.max(0, Date.now() - readStartedAt);
         const parsed = parseRemoteProjectInventory(result);
+        mergeInventoryDeviceAliases(parsed.deviceAliases, hostId);
         state.hostConnectivity.set(hostId, { available: true, checkedAt: Date.now() });
         const latest = state.remoteProjectInventories.get(hostId);
         if (Number.isFinite(latest?.generatedAt) && latest.generatedAt > parsed.generatedAt && latest.error == null && !latest.sourcePeerHostId && latest.sourcePeerCache !== true) {
@@ -1536,6 +1778,7 @@
         }
         const threadInventory = preferredThreadInventory(latest, parsed);
         state.remoteProjectInventories.set(hostId, {
+          deviceAliases: parsed.deviceAliases,
           error: null,
           fetchedAt: Date.now(),
           generatedAt: parsed.generatedAt,
@@ -1555,8 +1798,12 @@
           threadScopeGeneratedAt: threadInventory?.threadScope === "user-visible" ? (threadInventory.threadScopeGeneratedAt ?? threadInventory.generatedAt) : undefined,
           threadsTruncated: threadInventory?.threadsTruncated === true,
         });
+        const previouslyKnownAliasIds = knownDeviceAliasHostIds();
         for (const [peerHostId, peer] of parsed.peers) {
           if (peerHostId === hostId) continue;
+          if (previouslyKnownAliasIds.has(normalizeDeviceAliasHostId(peerHostId))) {
+            mergeInventoryDeviceAliases(peer.deviceAliases, peerHostId);
+          }
           if (inventoryMatchesLocal(peer)) {
             if (!remoteHostHasDirectProof(peerHostId)) removeRemoteHostState(peerHostId);
             continue;
@@ -1566,6 +1813,7 @@
           if (Number.isFinite(existing?.generatedAt) && existing.generatedAt >= peer.generatedAt && existing.error == null) continue;
           const threadInventory = preferredThreadInventory(existing, peer);
           state.remoteProjectInventories.set(peerHostId, {
+            deviceAliases: peer.deviceAliases,
             error: null,
             fetchedAt: Date.now(),
             generatedAt: peer.generatedAt,
@@ -1602,6 +1850,7 @@
           return;
         }
         state.remoteProjectInventories.set(hostId, {
+          deviceAliases: latest?.deviceAliases ?? current.deviceAliases,
           error: error?.message || String(error),
           fetchedAt: latest?.fetchedAt ?? 0,
           generatedAt: latest?.generatedAt,
@@ -1633,8 +1882,8 @@
     return JSON.stringify(peers, (key, value) => ["generatedAt", "threadScopeGeneratedAt"].includes(key) ? undefined : value);
   }
 
-  function publicationSignature(peers, projects, tasks, threads, threadFetchedAt) {
-    return JSON.stringify({ peers: peerContentSignature(peers), projects, tasks, threads, threadFetchedAt });
+  function publicationSignature(peers, projects, tasks, threads, threadFetchedAt, deviceAliases = null) {
+    return JSON.stringify({ deviceAliases, peers: peerContentSignature(peers), projects, tasks, threads, threadFetchedAt });
   }
 
   function compactInventoryText(payload) {
@@ -1644,7 +1893,10 @@
 
   function peerTransferText(payload, hostId) {
     const peers = Object.fromEntries(Object.entries(payload.peers ?? {}).filter(([id]) => normalizeHostId(id) !== normalizeHostId(hostId)));
-    return compactInventoryText({ ...payload, peers });
+    const deviceAliases = deviceAliasesForDestination(payload.deviceAliases, hostId);
+    const transferred = { ...payload, peers };
+    if (deviceAliases) transferred.deviceAliases = deviceAliases; else delete transferred.deviceAliases;
+    return compactInventoryText(transferred);
   }
 
   function transferStats(hostId) {
@@ -1760,6 +2012,7 @@
       sendRequestWithTimeout(runtime.requestClient, "fs/readFile", { path: peerInventoryPath(state.localCodexHome, host.name) }).then((result) => {
         if (state.disposed) return;
         const parsed = parseRemoteProjectInventory(result);
+        mergeInventoryDeviceAliases(parsed.deviceAliases, host.id, true);
         const existing = state.remoteProjectInventories.get(host.id);
         if (!directInventoryHasPriority(host.id, existing)
           && (!Number.isFinite(existing?.generatedAt)
@@ -1767,6 +2020,7 @@
           || Date.now() - existing.generatedAt > REMOTE_INVENTORY_MAX_AGE_MS)) {
           const threadInventory = preferredThreadInventory(existing, parsed);
           state.remoteProjectInventories.set(host.id, {
+            deviceAliases: parsed.deviceAliases,
             error: null,
             fetchedAt: Date.now(),
             generatedAt: parsed.generatedAt,
@@ -1888,7 +2142,8 @@
     }));
     const localThreadInventory = state.threadInventories.get("local");
     const nativeProjectSnapshot = publishedLocalProjectSnapshot(null);
-    const statusSignature = publicationSignature(peers, nativeProjectSnapshot.projects, tasks, threads, localThreadInventory?.fetchedAt ?? 0);
+    const deviceAliases = publishedDeviceAliases();
+    const statusSignature = publicationSignature(peers, nativeProjectSnapshot.projects, tasks, threads, localThreadInventory?.fetchedAt ?? 0, deviceAliases);
     const publishInterval = inventoryHasWork(tasks, threads) ? REMOTE_INVENTORY_ACTIVE_MS : REMOTE_INVENTORY_IDLE_MS;
     const statusChanged = statusSignature !== state.localInventoryStatusSignature;
     if (!statusChanged && now - state.localInventoryPublishedAt < publishInterval) return;
@@ -1918,6 +2173,7 @@
       const generatedAt = new Date().toISOString();
       const threadScopeGeneratedAt = new Date(currentThreadInventory.fetchedAt).toISOString();
       const payload = { generatedAt, hostDisplayName: config.localDisplayName || null, helperVersion: releaseVersion(config.helperVersion), peers, projects, publisherVersion: PUBLISHER_VERSION, schemaVersion: 1, tasks, threadScope: "user-visible", threadScopeGeneratedAt, threads };
+      if (deviceAliases) payload.deviceAliases = deviceAliases;
       const dataBase64 = encodeText(compactInventoryText(payload));
       return sendRequestWithTimeout(runtime.requestClient, "fs/writeFile", { dataBase64, path: inventoryPath(codexHome) })
         .then(() => pushLocalInventoryToPeers(payload));
@@ -2619,27 +2875,63 @@
   }
 
   function displayDeviceName(hostId, verifiedName) {
-    const aliases = readRecords(DEVICE_ALIASES_KEY);
-    const value = aliases[normalizeHostId(hostId)];
-    return typeof value === "string" && value.trim() && value.length <= 60 ? value : verifiedName;
+    return currentDeviceAlias(hostId) || verifiedName;
   }
 
   function saveDeviceAlias(hostId, value) {
-    const id = normalizeHostId(hostId);
+    const id = normalizeDeviceAliasHostId(hostId, true);
     if (!state.displayedHosts.some(host => normalizeHostId(host.id) === id)) return false;
     const alias = String(value ?? "").trim();
     if (alias.length > 60 || /[\u0000-\u001f\u007f]/u.test(alias)) {
       state.aliasFeedback.set(id, "Use up to 60 characters without control characters.");
       return false;
     }
-    const aliases = Object.assign(Object.create(null), readRecords(DEVICE_ALIASES_KEY));
-    if (alias) aliases[id] = alias; else delete aliases[id];
-    try {
-      localStorage.setItem(DEVICE_ALIASES_KEY, JSON.stringify(aliases));
+    const records = readDeviceAliasRecords();
+    const nextValue = alias || null;
+    if (records[id]?.value === nextValue && !(records[id].updatedAt === 0 && records[id].writerId === "legacy")) {
       state.aliasDrafts.delete(id);
-      state.aliasFeedback.set(id, alias ? "Alias saved on this device only." : "Using the verified device name.");
+      state.aliasFeedback.set(id, alias ? "Alias already saved. Sharing continues when devices are connected." : "The verified device name is already in use.");
       return true;
-    } catch { state.aliasFeedback.set(id, "The alias could not be saved in local storage."); return false; }
+    }
+    if (!Object.prototype.hasOwnProperty.call(records, id) && Object.keys(records).length >= DEVICE_ALIAS_MAX_RECORDS) {
+      state.aliasFeedback.set(id, "The shared alias list reached its 100-device limit.");
+      return false;
+    }
+    const updatedAt = nextDeviceAliasTimestamp(records, id);
+    if (updatedAt === null) {
+      state.aliasFeedback.set(id, "The saved alias clock is too far ahead. Try again after the device clocks catch up.");
+      return false;
+    }
+    records[id] = {
+      schemaVersion: DEVICE_ALIAS_SCHEMA_VERSION,
+      updatedAt,
+      value: nextValue,
+      writerId: deviceAliasWriterId(),
+    };
+    if (!writeDeviceAliasRecords(records)) {
+      state.aliasFeedback.set(id, "The alias could not be saved in local storage.");
+      return false;
+    }
+    try {
+      const aliases = Object.assign(Object.create(null), readRecords(DEVICE_ALIASES_KEY));
+      if (alias) aliases[id] = alias; else delete aliases[id];
+      localStorage.setItem(DEVICE_ALIASES_KEY, JSON.stringify(aliases));
+    } catch {}
+    state.aliasDrafts.delete(id);
+    state.aliasFeedback.set(id, alias
+      ? "Alias saved. Sharing is queued and retries when devices reconnect."
+      : "Alias reset. Sharing is queued and retries when devices reconnect.");
+    markDeviceAliasesChanged();
+    return true;
+  }
+
+  function handleDeviceAliasStorage(event) {
+    if (event?.key === DEVICE_ALIAS_WRITER_KEY && validDeviceAliasWriterId(event.newValue)) {
+      state.aliasWriterId = event.newValue;
+      return;
+    }
+    if (event?.key !== null && ![DEVICE_ALIAS_RECORDS_KEY, DEVICE_ALIASES_KEY].includes(event?.key)) return;
+    markDeviceAliasesChanged();
   }
 
   function featureDetails(label, key) {
@@ -2800,13 +3092,13 @@
       const id = normalizeHostId(host.id);
       const label = document.createElement("label");
       label.className = "crmp-help";
-      label.textContent = "Local alias";
+      label.textContent = "Shared alias";
       const input = document.createElement("input");
       input.type = "text";
       input.maxLength = 60;
       input.className = "crmp-input";
-      input.setAttribute("aria-label", `Local alias for ${host.name}`);
-      input.value = state.aliasDrafts.get(id) ?? readRecords(DEVICE_ALIASES_KEY)[id] ?? "";
+      input.setAttribute("aria-label", `Shared alias for ${host.name}`);
+      input.value = state.aliasDrafts.get(id) ?? currentDeviceAlias(id);
       input.addEventListener("input", () => state.aliasDrafts.set(id, input.value));
       setFocusKey(input, "alias", id);
       const save = button("crmp-auto-control", "Save alias");
@@ -2818,11 +3110,12 @@
         if (event.key === "Escape") { event.stopPropagation(); state.aliasDrafts.delete(id); render(); }
       });
       const reset = button("crmp-auto-control", "Reset alias");
-      reset.disabled = !readRecords(DEVICE_ALIASES_KEY)[id];
+      reset.disabled = !currentDeviceAlias(id);
       setFocusKey(reset, "alias-reset", id);
       reset.addEventListener("click", () => { saveDeviceAlias(id, ""); render(); });
       label.appendChild(input);
       card.append(label, save, reset);
+      helpText(card, "Saved aliases sync automatically with updated connected devices. Offline devices catch up when they reconnect.");
       if (state.aliasFeedback.has(id)) helpText(card, state.aliasFeedback.get(id));
       details.appendChild(card);
     }
@@ -6016,7 +6309,10 @@
     document.addEventListener("keydown", dismissOnEscape);
     document.addEventListener(UPDATE_EVENT, handleUpdateStatus);
     void ensureLocalStateBridge();
-    if (globalThis !== document && typeof globalThis.addEventListener === "function") globalThis.addEventListener(UPDATE_EVENT, handleUpdateStatus);
+    if (globalThis !== document && typeof globalThis.addEventListener === "function") {
+      globalThis.addEventListener(UPDATE_EVENT, handleUpdateStatus);
+      globalThis.addEventListener("storage", handleDeviceAliasStorage);
+    }
     if (!state.mountObserver) {
       state.mountObserver = new MutationObserver((mutations) => {
         if (!state.observerTarget?.isConnected || !state.nativeContainer?.isConnected) schedule(mutations);
@@ -6060,7 +6356,10 @@
     document.removeEventListener("pointerdown", dismissOverlays);
     document.removeEventListener("keydown", dismissOnEscape);
     document.removeEventListener(UPDATE_EVENT, handleUpdateStatus);
-    if (globalThis !== document && typeof globalThis.removeEventListener === "function") globalThis.removeEventListener(UPDATE_EVENT, handleUpdateStatus);
+    if (globalThis !== document && typeof globalThis.removeEventListener === "function") {
+      globalThis.removeEventListener(UPDATE_EVENT, handleUpdateStatus);
+      globalThis.removeEventListener("storage", handleDeviceAliasStorage);
+    }
     state.observer?.disconnect();
     state.observer = null;
     state.observerTarget = null;

@@ -54,11 +54,13 @@ Participating devices publish active inventory through the app's authenticated R
 The helper requires a supported desktop app, a signed-in account with Remote, Node.js 22+, and a writable package folder. It adds no central catalogue, account entitlement or firewall exception. It uses the special-session loopback debugger connection and private desktop internals, which can change between app versions.
 
 
-## Device health and local aliases
+## Device health and shared aliases
 
 Open **Device health** to see the reported name, connection-check time, inventory age/source, publisher protocol, and helper version when supplied by the peer. **Refresh devices** coalesces requests and is limited to once every ten seconds; cached inventory is not proof of connectivity.
 
-Set or reset a device alias in that panel. Aliases are stored only in this client's local storage, survive renderer reloads, and change display labels only. They never replace device identity, reported names, cache keys, or published inventory. Clearing the app's local storage removes them.
+Set or reset a device alias in that panel. The change is saved locally and shared automatically with updated clients through the existing authenticated device connection. Offline clients catch up when they reconnect. Newer edits win over older copies, and simultaneous edits resolve consistently. Reset is shared too, so an old offline copy cannot restore a cleared alias.
+
+Aliases change display labels only. They never replace device identity, reported names, connection settings, paths, or cache keys. Existing local aliases are migrated without giving them priority over newer shared edits. Clearing app storage removes that client's copy, but peer synchronization can restore it; use Reset to clear a shared alias across clients.
 
 ## Cleanup preview and history
 

@@ -34,8 +34,11 @@ try {
 
     $originalController = 'Tle=class extends n.$t{constructor(e){let t=wC(e.desktopApiOptions),i=e.globalState,a=e.deviceKeyClient;super({envId:e.hostConfig.env_id,connectionGroup:e.appServerClient,connectionKey:t,websocketUrl:n.en(r.H(e.desktopApiOptions,`/codex/remote/control/client`)),getAuthHeaders:({headers:t}={})=>EC({appServerClient:e.appServerClient,desktopApiOptions:e.desktopApiOptions,headers:t}),enrollClient:({headers:n})=>DC({appServerClient:e.appServerClient,deviceKeyClient:a,desktopApiOptions:e.desktopApiOptions,enrollmentKey:t,globalState:i,headers:n,onEnrollmentAuthorizationRequired:e.onEnrollmentAuthorizationRequired,requestRemoteControlEnrollmentStepUpToken:e.requestRemoteControlEnrollmentStepUpToken}),authorizeDeviceKeyChallenge:e=>Yle({challenge:e,deviceKeyClient:a,enrollmentKey:t,globalState:i})})}}'
     $originalChallengeValidator = 'function vQ(e,t){let n=new URL(t),r=n.protocol===`wss:`?`https:`:n.protocol===`ws:`?`http:`:null;return r!=null&&e.targetOrigin===`${r}//${n.host}`&&e.targetPath===n.pathname}'
-    $originalKeyLoader = 'return this.addon??=Yke((0,p.join)(this.resourcesPath,`native`,Xke)),this.addon'
-    [IO.File]::WriteAllText((Join-Path $resources 'app.asar'), "header${originalController};async function Ele;${originalChallengeValidator};${originalKeyLoader};trailer", [Text.UTF8Encoding]::new($false))
+    $currentKeyLoader = 'return this.addon??=Xke((0,p.join)(this.resourcesPath,`native`,Zke)),this.addon'
+    $currentKeyProvider = 'var Xke=(0,F.createRequire)(__filename),Zke=`remote-control-device-key.node`,Qke=`codex-device-key-sign-payload/v1`;$ke=class{resourcesPath;addon=null;constructor(e){this.resourcesPath=e}createDeviceKey(e){return this.getAddon().createDeviceKey(e??`hardware_only`)}deleteDeviceKey(e){return this.getAddon().deleteDeviceKey(e)}getDeviceKeyPublic(e){return this.getAddon().getDeviceKeyPublic(e)}async signDeviceKey(e,t){let n=eAe(t);return{...await this.getAddon().signDeviceKey(e,n),signedPayloadBase64:n.toString(`base64`)}}getAddon(){if(process.platform!==`darwin`&&process.platform!==`win32`)throw Error(`Remote control device keys are only available on macOS and Windows`);if(this.resourcesPath==null)throw Error(`Remote control device keys require resourcesPath`);return this.addon??=Xke((0,p.join)(this.resourcesPath,`native`,Zke)),this.addon}}'
+    $legacyKeyLoader = 'return this.addon??=Yke((0,p.join)(this.resourcesPath,`native`,Xke)),this.addon'
+    $legacyKeyProvider = 'var Yke=(0,F.createRequire)(__filename),Xke=`remote-control-device-key.node`,Qke=`codex-device-key-sign-payload/v1`;$ke=class{resourcesPath;addon=null;constructor(e){this.resourcesPath=e}createDeviceKey(e){return this.getAddon().createDeviceKey(e??`hardware_only`)}deleteDeviceKey(e){return this.getAddon().deleteDeviceKey(e)}getDeviceKeyPublic(e){return this.getAddon().getDeviceKeyPublic(e)}async signDeviceKey(e,t){let n=eAe(t);return{...await this.getAddon().signDeviceKey(e,n),signedPayloadBase64:n.toString(`base64`)}}getAddon(){if(process.platform!==`darwin`&&process.platform!==`win32`)throw Error(`Remote control device keys are only available on macOS and Windows`);if(this.resourcesPath==null)throw Error(`Remote control device keys require resourcesPath`);return this.addon??=Yke((0,p.join)(this.resourcesPath,`native`,Xke)),this.addon}}'
+    [IO.File]::WriteAllText((Join-Path $resources 'app.asar'), "header${originalController};async function Ele;${originalChallengeValidator};${currentKeyProvider};trailer", [Text.UTF8Encoding]::new($false))
     $sourceAsarHash = (Get-FileHash -LiteralPath (Join-Path $resources 'app.asar') -Algorithm SHA256).Hash
     $sourceChromeHash = (Get-FileHash -LiteralPath (Join-Path $source 'chrome.dll') -Algorithm SHA256).Hash
 
@@ -78,7 +81,7 @@ try {
     $keyResult = [string]$keyOutput[0] | ConvertFrom-Json
     $keyAsar = Get-Content -LiteralPath ([string]$keyResult.appAsarPath) -Raw
     if (-not $keyAsar.Contains($originalController) -or -not $keyAsar.Contains($originalChallengeValidator) -or
-        $keyAsar.Contains($originalKeyLoader) -or -not $keyAsar.Contains('Yke(this.resourcesPath+`/crk.cjs`)()')) {
+        $keyAsar.Contains($currentKeyLoader) -or -not $keyAsar.Contains('Xke(this.resourcesPath+`/crk.cjs`)()')) {
         throw 'Direct existing-key compatibility must change only the native key loader, preserving network and challenge validation.'
     }
     if ((Get-Item -LiteralPath ([string]$keyResult.appAsarPath)).Length -ne (Get-Item -LiteralPath (Join-Path $resources 'app.asar')).Length) { throw 'The existing-key patch changed ASAR length.' }
@@ -95,7 +98,38 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Combined compatibility preparation failed: $($combined -join ' ')" }
     $combinedResult = [string]$combined[0] | ConvertFrom-Json
     $combinedAsar = Get-Content -LiteralPath ([string]$combinedResult.appAsarPath) -Raw
-    if (-not $combinedAsar.Contains('Yke(this.resourcesPath+`/crk.cjs`)()') -or -not $combinedAsar.Contains('process.env.CHATGPT_REMOTE_WS_URL??')) { throw 'Proxy and existing-key compatibility were not composed.' }
+    if (-not $combinedAsar.Contains('Xke(this.resourcesPath+`/crk.cjs`)()') -or -not $combinedAsar.Contains('process.env.CHATGPT_REMOTE_WS_URL??')) { throw 'Proxy and existing-key compatibility were not composed.' }
+
+    $legacySource = Join-Path $temporaryRoot 'legacy-installed-app'
+    Copy-Item -LiteralPath $source -Destination $legacySource -Recurse
+    $legacyAsarPath = Join-Path $legacySource 'resources\app.asar'
+    $legacyAsar = (Get-Content -LiteralPath $legacyAsarPath -Raw).Replace($currentKeyProvider, $legacyKeyProvider)
+    [IO.File]::WriteAllText($legacyAsarPath, $legacyAsar, [Text.UTF8Encoding]::new($false))
+    $legacyOutput = @(& $node $preparer '--source-app' $legacySource '--package-version' '1.2.3.5' '--proxy-enabled' 'false' '--legacy-device-keys' 'true' 2>&1)
+    if ($LASTEXITCODE -ne 0 -or $legacyOutput.Count -ne 1) { throw "Legacy minifier fixture failed: $($legacyOutput -join ' ')" }
+    $legacyResult = [string]$legacyOutput[0] | ConvertFrom-Json
+    $legacyPatchedAsar = Get-Content -LiteralPath ([string]$legacyResult.appAsarPath) -Raw
+    if ($legacyPatchedAsar.Contains($legacyKeyLoader) -or -not $legacyPatchedAsar.Contains('Yke(this.resourcesPath+`/crk.cjs`)()')) {
+        throw 'The audited legacy minifier signature was not patched with its own require binding.'
+    }
+
+    $mismatchedSource = Join-Path $temporaryRoot 'mismatched-installed-app'
+    Copy-Item -LiteralPath $source -Destination $mismatchedSource -Recurse
+    $mismatchedAsarPath = Join-Path $mismatchedSource 'resources\app.asar'
+    $mismatchedProvider = $currentKeyProvider.Replace($currentKeyLoader, $currentKeyLoader.Replace('=Xke(', '=Rke('))
+    [IO.File]::WriteAllText($mismatchedAsarPath, $mismatchedProvider, [Text.UTF8Encoding]::new($false))
+    $savedErrorPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $mismatchedOutput = @(& $node $preparer '--source-app' $mismatchedSource '--package-version' '1.2.3.6' '--proxy-enabled' 'false' '--legacy-device-keys' 'true' 2>&1)
+    } finally {
+        $ErrorActionPreference = $savedErrorPreference
+    }
+    if ($LASTEXITCODE -eq 0 -or ($mismatchedOutput -join ' ') -notmatch 'does not contain the audited existing protected device-key loader signature') {
+        throw 'A loader whose require binding did not match the audited native provider identity was accepted.'
+    }
+    # The rejected child is the expected result, not this fixture's exit code.
+    $global:LASTEXITCODE = 0
 
     [pscustomobject]@{
         SourceAppPreserved = $true
@@ -107,6 +141,9 @@ try {
         TransientRenameRetried = $true
         VerifiedRuntimeReused = $true
         ExistingKeyLoaderPatched = $true
+        CurrentMinifierSignaturePatched = $true
+        LegacyMinifierSignaturePatched = $true
+        MismatchedRequireBindingRejected = $true
         DirectNetworkAndChallengesPreserved = $true
         ExistingKeyHelpersVerified = $true
         ModifiedHelperRebuilt = $true

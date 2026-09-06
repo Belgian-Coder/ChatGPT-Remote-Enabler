@@ -277,6 +277,22 @@ invoke_transaction_helper() {
   print -r -- "$output"
 }
 
+normalize_prepared_executable_modes() {
+  local root="$1" relative candidate
+  local -a executable_paths=(
+    MacOSShortcut.sh
+    MobileProjectView-macOS-arm64.sh
+    Setup.command
+    Update-ChatGPTRemote.sh
+    UpdateSessionPlatform.sh
+  )
+  for relative in "${executable_paths[@]}"; do
+    candidate="$root/$relative"
+    [[ -f "$candidate" && ! -L "$candidate" ]] || { print -u2 "Prepared executable is missing or linked: $relative"; return 1; }
+    /bin/chmod 755 "$candidate"
+  done
+}
+
 assert_safe_prepared_directory() {
   local requested="$1" resolved_path="${1:A}" install_prefix="${install_root%/}/" prepared_prefix
   prepared_prefix="${resolved_path%/}/"
@@ -333,6 +349,7 @@ prepare_release() {
   mkdir "$temporary_staging"
   /bin/cp -pR "$release_root"/. "$temporary_staging"/
   /bin/cp -p -- "$archive_path" "$temporary_staging/.chatgpt-remote-release.zip"
+  normalize_prepared_executable_modes "$temporary_staging"
   invoke_transaction_helper seal-prepared --prepared-root "$temporary_staging" --platform "$platform_name" --version "$requested_version" --archive-sha256 "$expected_hash" >/dev/null
   if ! mv -- "$temporary_staging" "$destination" 2>/dev/null; then
     [[ -d "$destination" ]] || { print -u2 'Prepared update could not be committed atomically.'; return 1; }
@@ -346,6 +363,7 @@ apply_prepared_release() {
   local requested_version="$1" expected_hash="$2" requested_source="$3"
   local source safe_version backup_base backup_root
   source="$(assert_safe_prepared_directory "$requested_source")" || return 1
+  normalize_prepared_executable_modes "$source"
   safe_version="${requested_version//[^A-Za-z0-9._-]/_}"
   backup_base="$rollback_root/$(date +%Y%m%d-%H%M%S)-$safe_version"
   backup_root="$backup_base"

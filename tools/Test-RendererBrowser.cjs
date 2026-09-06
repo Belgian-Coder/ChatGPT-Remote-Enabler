@@ -198,7 +198,7 @@ async function main() {
     });
     assert.match(emptyStates.offline, /disconnected/);
     assert.match(emptyStates.loading, /Loading/);
-    assert.match(emptyStates.empty, /No tasks in this project/);
+    assert.equal(emptyStates.empty, "No chats");
     assert.match(emptyStates.filtered, /Choose All/);
     assert.match(emptyStates.stale, /out of date/);
 

@@ -267,10 +267,12 @@ const expandedFragment = document.createDocumentFragment();
 layout.appendGroup(expandedFragment, project("empty-open"));
 const expandedGroup = expandedFragment.firstElementChild;
 assert.equal(expandedGroup.querySelector(".crmp-project-toggle").getAttribute("aria-expanded"), "true");
-const empty = expandedGroup.querySelector(".crmp-tasks .crmp-help");
+const empty = expandedGroup.querySelector(".crmp-tasks .crmp-empty-project-message");
 assert.ok(empty, "an expanded empty project must show the native empty-chat placeholder");
-assert.equal(empty.textContent, "No tasks in this project yet.");
-assert.ok(empty.classList.contains("crmp-help"), "empty states must use readable secondary text");
+assert.equal(empty.textContent, "No chats");
+for (const name of ["text-codex-description", "opacity-50", "px-8", "py-1", "text-base"]) {
+  assert.ok(empty.classList.contains(name), `empty states must preserve native ${name} geometry and typography`);
+}
 assert.ok(empty.closest('[class*="pt-0.5"][class*="pb-2"]'), "native child-list vertical spacing must survive");
 assert.notEqual(empty, opened.querySelector(".text-codex-description"), "native DOM must be cloned, never moved");
 assert.ok(opened.querySelector(".text-codex-description"), "rendering must preserve the native empty state");
@@ -281,6 +283,14 @@ layout.appendGroup(collapsedFragment, project("empty-closed"));
 assert.equal(collapsedFragment.querySelector(".crmp-project-toggle").getAttribute("aria-expanded"), "false", "native collapsed state must outrank stale custom expansion");
 assert.equal(collapsedFragment.querySelector(".crmp-tasks"), null, "collapsed folders must not reserve a child-list gap");
 assert.equal(collapsedFragment.textContent.includes("No chats"), false, "collapsed empty folders must not show a placeholder");
+
+const collapsedActiveFragment = document.createDocumentFragment();
+layout.appendGroup(collapsedActiveFragment, project("empty-closed", [{
+  title: "Active fixture", conversationId: "active-fixture", hostId: "local", statusType: "loading", selected: false, unread: false,
+}]));
+const collapsedActiveHead = collapsedActiveFragment.querySelector(".crmp-project-head");
+assert.equal(collapsedActiveHead.dataset.hasStatus, "true", "collapsed active folders must reserve the native trailing status rail");
+assert.ok(collapsedActiveHead.querySelector(".crmp-project-status-loading"), "collapsed active folders must retain their aggregate spinner");
 
 const task = { title: "Fixture task", conversationId: "fixture-task", hostId: "local", statusType: "idle", selected: false, unread: false };
 const populatedFragment = document.createDocumentFragment();
@@ -391,7 +401,9 @@ nativeContainer.remove();
 const remoteEmpty = element("div", "crmp-tasks");
 layout.appendEmptyProjectState(remoteEmpty, { ...project("unregistered"), hostId: "fixture-peer" });
 assert.equal(remoteEmpty.textContent, "Loading tasks from this device…", "missing remote inventory must not be represented as an authoritative empty project");
-assert.ok(remoteEmpty.querySelector(".crmp-help"), "missing inventories must have a readable status");
+for (const name of ["text-codex-description", "opacity-50", "px-8", "py-1", "text-base"]) {
+  assert.ok(remoteEmpty.querySelector(".crmp-empty-project-message")?.classList.contains(name), `missing inventories must retain native ${name} geometry and typography`);
+}
 
 layout.ensureStyle();
 const stylesheet = document.getElementById("codex-remote-mobile-project-style").textContent;

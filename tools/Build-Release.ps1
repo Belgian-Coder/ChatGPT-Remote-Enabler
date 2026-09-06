@@ -13,7 +13,8 @@ function New-PortableReleaseArchive {
         [Parameter(Mandatory)]
         [string]$SourceDirectory,
         [Parameter(Mandatory)]
-        [string]$DestinationPath
+        [string]$DestinationPath,
+        [switch]$UnixExecutableScripts
     )
 
     if (Test-Path -LiteralPath $DestinationPath) { Remove-Item -LiteralPath $DestinationPath -Force }
@@ -22,15 +23,50 @@ function New-PortableReleaseArchive {
     try {
         foreach ($file in Get-ChildItem -LiteralPath $SourceDirectory -File -Recurse | Sort-Object FullName) {
             $entryName = $file.FullName.Substring($sourceParent.Length + 1).Replace('\', '/')
-            [IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+            $entry = [IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
                 $archive,
                 $file.FullName,
                 $entryName,
                 [IO.Compression.CompressionLevel]::Optimal
-            ) | Out-Null
+            )
+            if ($UnixExecutableScripts) {
+                $unixMode = if ($entryName -match '(?i)\.(?:sh|command)$') {
+                    [uint32](([uint64]0x81ED) * 65536)
+                } else {
+                    [uint32](([uint64]0x81A4) * 65536)
+                }
+                $entry.ExternalAttributes = [BitConverter]::ToInt32([BitConverter]::GetBytes($unixMode), 0)
+            }
         }
     } finally {
         $archive.Dispose()
+    }
+
+    if ($UnixExecutableScripts) {
+        $bytes = [IO.File]::ReadAllBytes($DestinationPath)
+        $eocdOffset = -1
+        for ($offset = $bytes.Length - 22; $offset -ge [Math]::Max(0, $bytes.Length - 22 - 65535); $offset--) {
+            if ($bytes[$offset] -eq 0x50 -and $bytes[$offset + 1] -eq 0x4b -and $bytes[$offset + 2] -eq 0x05 -and $bytes[$offset + 3] -eq 0x06) {
+                $eocdOffset = $offset
+                break
+            }
+        }
+        if ($eocdOffset -lt 0) { throw "ZIP end-of-central-directory record is missing: $DestinationPath" }
+        $entryCount = [BitConverter]::ToUInt16($bytes, $eocdOffset + 10)
+        $centralOffset = [int][BitConverter]::ToUInt32($bytes, $eocdOffset + 16)
+        for ($index = 0; $index -lt $entryCount; $index++) {
+            if ($centralOffset + 46 -gt $bytes.Length -or [BitConverter]::ToUInt32($bytes, $centralOffset) -ne 0x02014b50) {
+                throw "ZIP central directory is malformed: $DestinationPath"
+            }
+            # ZIP readers honor the upper Unix mode bits only when the creator
+            # platform in the central-directory version field is Unix (3).
+            $bytes[$centralOffset + 5] = 3
+            $nameLength = [BitConverter]::ToUInt16($bytes, $centralOffset + 28)
+            $extraLength = [BitConverter]::ToUInt16($bytes, $centralOffset + 30)
+            $commentLength = [BitConverter]::ToUInt16($bytes, $centralOffset + 32)
+            $centralOffset += 46 + $nameLength + $extraLength + $commentLength
+        }
+        [IO.File]::WriteAllBytes($DestinationPath, $bytes)
     }
 }
 
@@ -130,7 +166,7 @@ try {
         Assert-ReleasePrivacy -StageRoot $stageRoot -AdditionalPattern $ForbiddenPattern
 
         $archivePath = Join-Path $OutputDirectory "$rootName.zip"
-        New-PortableReleaseArchive -SourceDirectory $stageRoot -DestinationPath $archivePath
+        New-PortableReleaseArchive -SourceDirectory $stageRoot -DestinationPath $archivePath -UnixExecutableScripts:($platform.Source -eq 'macos')
         $archives.Add([pscustomobject]@{
             Name = [IO.Path]::GetFileName($archivePath)
             Path = $archivePath

@@ -2421,10 +2421,11 @@
       #${PANEL_ID} .crmp-folder svg { display:block; width:16px; height:16px; flex:none; }
       #${PANEL_ID} .crmp-project-name { overflow:hidden; font-size:inherit; font-weight:inherit; text-overflow:ellipsis; white-space:nowrap; }
       #${PANEL_ID} .crmp-project-host { max-width:82px; overflow:hidden; color:var(--color-text-tertiary,#888); font-size:9px; text-align:right; text-overflow:ellipsis; white-space:nowrap; transition:opacity 100ms ease; }
+      #${PANEL_ID} .crmp-project-head[data-has-status="true"] .crmp-project-host { margin-right:23px; }
       #${PANEL_ID} .crmp-project-head:hover .crmp-project-host, #${PANEL_ID} .crmp-project-head:focus-within .crmp-project-host, #${PANEL_ID} .crmp-project-head[data-actions-open="true"] .crmp-project-host { opacity:0; }
       #${PANEL_ID} .crmp-tasks { display:flex; flex-direction:column; }
       #${PANEL_ID} .crmp-task-row { position:relative; min-width:0; }
-      #${PANEL_ID} .crmp-task { display:block; width:100%; overflow:hidden; border:0; padding:5px 62px 5px 25px; color:var(--color-text,#ddd); background:transparent; font-size:12px; line-height:18px; text-align:left; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; }
+      #${PANEL_ID} .crmp-task { display:block; width:100%; overflow:hidden; border:0; padding:5px 62px 5px 32px; color:var(--color-text,#ddd); background:transparent; font-size:12px; line-height:18px; text-align:left; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; }
       #${PANEL_ID} .crmp-task[aria-current="page"] { background:var(--color-background-primary-hover,rgba(127,127,127,.15)); }
       #${PANEL_ID} .crmp-task-actions { position:absolute!important; top:0!important; right:0!important; display:flex; height:100%; align-items:center; justify-content:flex-end; gap:2px; padding-right:6px; opacity:0; pointer-events:none; transition:opacity 100ms ease; }
       #${PANEL_ID} .crmp-task-row:hover .crmp-task-actions, #${PANEL_ID} .crmp-task-row:focus-within .crmp-task-actions { opacity:1; pointer-events:auto; }
@@ -2460,6 +2461,7 @@
       @media (hover:none), (pointer:coarse) {
         #${PANEL_ID} .crmp-project-action, #${PANEL_ID} .crmp-project-new, #${PANEL_ID} .crmp-task-actions { opacity:1; pointer-events:auto; }
         #${PANEL_ID} .crmp-project-host { margin-right:52px; }
+        #${PANEL_ID} .crmp-project-head[data-has-status="true"] .crmp-project-host { margin-right:52px; }
       }
 
       #${PANEL_ID} .crmp-feature { margin-top:8px; border-top:1px solid var(--color-border-default,#777); }
@@ -3079,14 +3081,14 @@
 
   function emptyInventoryMessage(hostId, filtered = false) {
     if (hostId === "local") return state.inventoryHydrationPending || state.inventoryHydrationError
-      ? "Loading local tasks. Waiting for current inventory." : (filtered ? "No projects or tasks on this device." : "No tasks in this project yet.");
+      ? "Loading local tasks. Waiting for current inventory." : (filtered ? "No projects or tasks on this device." : "No chats");
     const host = state.displayedHosts.find(item => item.id === hostId);
     if (host?.availabilityKnown && host.available === false) return "Device disconnected. Reconnect it using Remote to load tasks.";
     const inventory = state.remoteProjectInventories.get(hostId);
     if (!inventory || inventory.pending) return "Loading tasks from this device…";
     if (!freshInventory(hostId) || inventory.error) return "Task information is out of date. Waiting for the device to refresh.";
     if (!inventory.threadsAuthoritative) return "Waiting for a complete task inventory.";
-    return filtered ? "No projects or tasks match this device. Choose All to see other devices." : "No tasks in this project yet.";
+    return filtered ? "No projects or tasks match this device. Choose All to see other devices." : "No chats";
   }
 
   function updateExplanation(status) {
@@ -3549,15 +3551,17 @@
   function nativeProjectStatus(project) {
     const item = nativeProjectItem(project);
     const row = item?.querySelector('[data-app-action-sidebar-project-row],[data-app-action-sidebar-project-collapsed]');
+    const collapsedAttribute = row?.getAttribute("data-app-action-sidebar-project-collapsed");
+    const collapsed = collapsedAttribute === "true" ? true : collapsedAttribute === "false" ? false : null;
     for (let fiber = row && getFiber(row), level = 0; fiber && level < 12; fiber = fiber.return, level += 1) {
       const props = fiber.memoizedProps;
       for (const candidate of [props, props?.actions?.props]) {
         if (!candidate || !Object.prototype.hasOwnProperty.call(candidate, "collapsedStatusState")) continue;
-        return { known: true, row, statusState: candidate.collapsedStatusState == null ? null : normalizeSidebarStatus(candidate.collapsedStatusState) };
+        return { collapsed, known: true, row, statusState: candidate.collapsedStatusState == null ? null : normalizeSidebarStatus(candidate.collapsedStatusState) };
       }
       if (props?.group) break;
     }
-    return { known: false, row, statusState: null };
+    return { collapsed, known: false, row, statusState: null };
   }
 
   function sidebarStatusTemplate(root, status) {
@@ -3675,7 +3679,7 @@
   function projectStatusIndicator(project, expanded) {
     if (expanded || project.flatRecent) return null;
     const native = nativeProjectStatus(project);
-    const statusState = native.known ? native.statusState : aggregateSidebarStatus(project.tasks);
+    const statusState = native.statusState ?? (!native.known || native.collapsed === false ? aggregateSidebarStatus(project.tasks) : null);
     const kind = sidebarStatusKind(statusState);
     if (!kind) return null;
     const status = document.createElement("span");
@@ -5247,7 +5251,7 @@
     wrapper.className = "pt-0.5 pb-2 crmp-empty-project";
     const content = document.createElement("div");
     const empty = nativeEmpty?.cloneNode(true) ?? document.createElement("div");
-    empty.className = "crmp-help";
+    empty.className = `${nativeEmpty?.className || "text-codex-description opacity-50 px-8 py-1 text-base"} crmp-empty-project-message`;
     empty.textContent = emptyInventoryMessage(project.hostId);
     content.appendChild(empty);
     wrapper.appendChild(content);
@@ -5312,6 +5316,7 @@
     });
     head.appendChild(toggle);
     const groupStatus = projectStatusIndicator(project, expanded);
+    head.dataset.hasStatus = String(Boolean(groupStatus));
     if (groupStatus) head.appendChild(groupStatus);
     if (project.kind === "project") {
       const create = cloneNativeButton(nativeProjectButtonTemplate(project, "new"), "crmp-project-new", "✎");

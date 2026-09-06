@@ -15,6 +15,10 @@ mkdir -p "$fixture_home" "$install_root" "$prepared_root"
 
 cp -p -- "$updater" "$install_root/Update-ChatGPTRemote.sh"
 cp -p -- "$transaction_helper" "$install_root/update-transaction.js"
+for name in MacOSShortcut.sh MobileProjectView-macOS-arm64.sh Setup.command UpdateSessionPlatform.sh; do
+  cp -p -- "$updater" "$install_root/$name"
+done
+/bin/chmod 755 "$install_root"/*.sh "$install_root"/*.command
 print -r -- v1.5.40 > "$install_root/VERSION"
 print -r -- old > "$install_root/payload.txt"
 print -r -- removed > "$install_root/removed.txt"
@@ -24,10 +28,17 @@ print -r -- removed > "$install_root/removed.txt"
   print -r -- "$(/usr/bin/shasum -a 256 "$install_root/VERSION" | /usr/bin/awk '{print $1}') *VERSION"
   print -r -- "$(/usr/bin/shasum -a 256 "$install_root/payload.txt" | /usr/bin/awk '{print $1}') *payload.txt"
   print -r -- "$(/usr/bin/shasum -a 256 "$install_root/removed.txt" | /usr/bin/awk '{print $1}') *removed.txt"
+  for name in MacOSShortcut.sh MobileProjectView-macOS-arm64.sh Setup.command UpdateSessionPlatform.sh; do
+    print -r -- "$(/usr/bin/shasum -a 256 "$install_root/$name" | /usr/bin/awk '{print $1}') *$name"
+  done
 } > "$install_root/RELEASE-MANIFEST.sha256"
 
 cp -p -- "$updater" "$prepared_root/Update-ChatGPTRemote.sh"
 cp -p -- "$transaction_helper" "$prepared_root/update-transaction.js"
+for name in MacOSShortcut.sh MobileProjectView-macOS-arm64.sh Setup.command UpdateSessionPlatform.sh; do
+  cp -p -- "$updater" "$prepared_root/$name"
+done
+/bin/chmod 644 "$prepared_root"/*.sh "$prepared_root"/*.command
 print -r -- v1.5.41 > "$prepared_root/VERSION"
 print -r -- new > "$prepared_root/payload.txt"
 print -r -- added > "$prepared_root/added.txt"
@@ -37,6 +48,9 @@ print -r -- added > "$prepared_root/added.txt"
   print -r -- "$(/usr/bin/shasum -a 256 "$prepared_root/VERSION" | /usr/bin/awk '{print $1}') *VERSION"
   print -r -- "$(/usr/bin/shasum -a 256 "$prepared_root/payload.txt" | /usr/bin/awk '{print $1}') *payload.txt"
   print -r -- "$(/usr/bin/shasum -a 256 "$prepared_root/added.txt" | /usr/bin/awk '{print $1}') *added.txt"
+  for name in MacOSShortcut.sh MobileProjectView-macOS-arm64.sh Setup.command UpdateSessionPlatform.sh; do
+    print -r -- "$(/usr/bin/shasum -a 256 "$prepared_root/$name" | /usr/bin/awk '{print $1}') *$name"
+  done
 } > "$prepared_root/RELEASE-MANIFEST.sha256"
 print -rn -- fixture-archive > "$prepared_root/.chatgpt-remote-release.zip"
 archive_hash="$(/usr/bin/shasum -a 256 "$prepared_root/.chatgpt-remote-release.zip" | /usr/bin/awk '{print $1}')"
@@ -52,6 +66,10 @@ rollback_path="$("$node_bin" -e 'const result = JSON.parse(process.argv[1]); if 
 [[ "$(<"$install_root/payload.txt")" == new && "$(<"$install_root/added.txt")" == added ]]
 [[ ! -e "$install_root/removed.txt" ]]
 [[ -d "$rollback_path" && "$(<"$rollback_path/VERSION")" == v1.5.40 ]]
+for name in MacOSShortcut.sh MobileProjectView-macOS-arm64.sh Setup.command Update-ChatGPTRemote.sh UpdateSessionPlatform.sh; do
+  [[ -x "$install_root/$name" ]]
+  [[ -x "$rollback_path/$name" ]]
+done
 [[ -f "$fixture_home/Library/Application Support/ChatGPTRemoteEnabler/update/last-check.json" ]]
 [[ ! -f "$fixture_home/Library/Application Support/ChatGPTRemoteEnabler/update/transaction.json" ]]
 [[ ! -d "$fixture_home/Library/Application Support/ChatGPTRemoteEnabler/update/update.lock" ]]

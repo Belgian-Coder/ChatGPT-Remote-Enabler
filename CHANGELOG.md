@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.5.43
+
+- Match the native sidebar's `No chats` empty state, child-row indentation, and status placement. A collapsed Device project can show child activity when the underlying native project is expanded; an explicitly idle collapsed native project still clears stale status.
+- Recognize the verified native device-key provider structure across minifier identifier changes. Existing protected keys continue through the same compatibility adapter, with matching require/module bindings and platform/resource guards retained.
+- Store executable Unix modes in macOS release ZIPs and normalize the five launcher/setup entry points during preparation and apply. This preserves direct shortcut and LaunchAgent execution after an update.
+- Cover current/previous device-key loader layouts, rejected binding mismatches, native status and layout behavior, archive creator/mode metadata, and native executable-mode preservation through apply and rollback.
+
 ## v1.5.42
 
 - Launch Windows startup workers and update coordinators through a transient task running as the interactive user. A GUI helper starts their processes without a console, so closing the originating app or its process job no longer kills the update/relaunch sequence.

@@ -239,6 +239,7 @@ projectItem.appendChild(projectHeader);
 projects.push(projectItem);
 const collapsedStatus = sidebar.nativeProjectStatus(project);
 assert.equal(collapsedStatus.known, true);
+assert.equal(collapsedStatus.collapsed, true);
 assert.equal(collapsedStatus.statusState.type, "loading");
 assert.equal(project.tasks.length, 0);
 assert.ok(sidebar.projectStatusIndicator(project, false).classList.contains("crmp-project-status-loading"), "collapsed native aggregate must survive completely unmounted task rows");
@@ -247,7 +248,10 @@ assert.equal(sidebar.projectStatusIndicator({ ...project, flatRecent: true }, fa
 projectHeader.__reactFiber$fixture.return.memoizedProps.actions.props.collapsedStatusState = { type: "idle", unread: true };
 assert.ok(sidebar.projectStatusIndicator({ ...project, tasks: [loading] }, false).classList.contains("crmp-project-status-unread"), "the full native aggregate outranks partial visible child inventory");
 projectHeader.__reactFiber$fixture.return.memoizedProps.actions.props.collapsedStatusState = null;
-assert.equal(sidebar.projectStatusIndicator({ ...project, tasks: [loading] }, false), null, "known native empty status must clear a stale fallback spinner");
+assert.equal(sidebar.projectStatusIndicator({ ...project, tasks: [loading] }, false), null, "known native collapsed idle status must clear a stale fallback spinner");
+projectHeader.setAttribute("data-app-action-sidebar-project-collapsed", "false");
+assert.equal(sidebar.nativeProjectStatus(project).collapsed, false);
+assert.ok(sidebar.projectStatusIndicator({ ...project, tasks: [loading] }, false).classList.contains("crmp-project-status-loading"), "an expanded native row has no collapsed aggregate, so current child activity must supply the custom collapsed status");
 projects.length = 0;
 assert.ok(sidebar.projectStatusIndicator({ ...project, tasks: [loading] }, false).classList.contains("crmp-project-status-loading"), "inventory-only folders compute their own aggregate");
 
@@ -257,6 +261,8 @@ assert.match(stylesheet, /@media \(prefers-reduced-motion:no-preference\)[^\n]+c
 assert.match(stylesheet, /@media \(prefers-reduced-motion:reduce\)[^\n]+crmp-status-spin[^\n]+animation:none!important/);
 assert.doesNotMatch(stylesheet, /850ms/);
 assert.match(stylesheet, /crmp-project-head\[data-actions-open="true"\] \.crmp-project-status \{ visibility:hidden/);
+assert.match(stylesheet, /crmp-project-head\[data-has-status="true"\] \.crmp-project-host \{ margin-right:23px/);
+assert.match(stylesheet, /\.crmp-task \{[^}]*padding:5px 62px 5px 32px/, "task titles must share the native 32-pixel child indent");
 assert.deepEqual(plain(sidebar.normalizeSidebarStatus({ type: "loading", unread: true, unreadCount: 3 })), { type: "loading", unread: true, unreadCount: 3 });
 
 console.log("Sidebar status self-test passed (task priority, attention, collapsed aggregation, unmounted rows, native cloning, animation, and reduced motion).");

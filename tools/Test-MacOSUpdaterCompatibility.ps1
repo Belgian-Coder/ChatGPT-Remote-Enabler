@@ -24,7 +24,9 @@ foreach ($contract in @(
     'local source safe_version backup_base backup_root',
     'source="$(assert_safe_prepared_directory "$requested_source")" || return 1',
     'backup_base="$rollback_root/$(date +%Y%m%d-%H%M%S)-$safe_version"',
-    'backup_root="$backup_base"'
+    'backup_root="$backup_base"',
+    'normalize_prepared_executable_modes "$temporary_staging"',
+    'normalize_prepared_executable_modes "$source"'
 )) {
     if (-not $updater.Contains($contract)) {
         throw "The macOS updater does not preserve sequential apply-path initialization: $contract"
@@ -34,7 +36,9 @@ foreach ($contract in @(
     '/bin/zsh "$install_root/Update-ChatGPTRemote.sh" apply-prepared',
     'CHATGPT_REMOTE_UPDATE_INSTALL_ROOT="$install_root"',
     '"$node_bin" -e ''const result = JSON.parse(process.argv[1]);',
-    '[[ "$(<"$install_root/VERSION")" == v1.5.41 ]]'
+    '[[ "$(<"$install_root/VERSION")" == v1.5.41 ]]',
+    '[[ -x "$install_root/$name" ]]',
+    '[[ -x "$rollback_path/$name" ]]'
 )) {
     if (-not $nativeApplyTest.Contains($contract)) {
         throw "The native macOS updater apply regression fixture is incomplete: $contract"
@@ -46,5 +50,6 @@ $global:LASTEXITCODE = 0
     SpecialPathVariableAbsent = $true
     AbsoluteIntegrityTools = $true
     SequentialApplyInitialization = $true
+    PreparedExecutablesNormalized = $true
     NativeApplyRegressionPresent = $true
 } | ConvertTo-Json

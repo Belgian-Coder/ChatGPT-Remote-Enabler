@@ -20,6 +20,19 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+function Set-ProcessUserTemporaryDirectory {
+    $localApplicationData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+    if ([string]::IsNullOrWhiteSpace($localApplicationData)) {
+        throw 'The per-user local application-data directory is unavailable.'
+    }
+    $temporaryDirectory = [IO.Path]::GetFullPath((Join-Path $localApplicationData 'Temp'))
+    [IO.Directory]::CreateDirectory($temporaryDirectory) | Out-Null
+    $env:TEMP = $temporaryDirectory
+    $env:TMP = $temporaryDirectory
+}
+
+Set-ProcessUserTemporaryDirectory
 $taskName = 'Codex Remote Mobile Features at Logon'
 $computerName = $env:COMPUTERNAME.ToUpperInvariant()
 

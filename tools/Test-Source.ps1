@@ -43,6 +43,7 @@ $powershell = @(
     'windows\CodexRemoteMobileProject\UpdateSessionPlatform.ps1',
     'tools\Test-UpdateSessionLauncherBundleRoot.ps1',
     'tools\Test-UpdateSessionWindows.ps1',
+    'tools\Test-UpdateSessionTaskHostTemp.ps1',
     'tools\Test-UpdateSessionSurvivalWindows.ps1',
     'windows\CodexRemoteMobileProject\MobileProjectView.ps1',
     'windows\CodexRemoteMobileProject\DesktopShortcut.ps1',
@@ -251,6 +252,9 @@ if ($LASTEXITCODE -ne 0) { throw 'Update session self-test failed.' }
 & (Join-Path $root 'tools\Test-UpdateSessionWindows.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Native Windows update session self-test failed.' }
 
+& (Join-Path $root 'tools\Test-UpdateSessionTaskHostTemp.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Windows update-session task-host temp self-test failed.' }
+
 & (Join-Path $root 'tools\Test-UpdateSessionLauncherBundleRoot.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Update-session bundle-root self-test failed.' }
 
@@ -319,6 +323,7 @@ if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
     UpdateSessionSelfTest = $true
     UpdateSessionCdpSelfTest = $true
     NativeWindowsUpdateSessionSelfTest = $true
+    UpdateSessionTaskHostTempSelfTest = $true
     UpdateSessionBundleRootSelfTest = $true
     UpdateSessionSurvivalSelfTest = $true
     PeerTransferSelfTest = $true

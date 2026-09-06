@@ -12,6 +12,19 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+function Set-ProcessUserTemporaryDirectory {
+    $localApplicationData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+    if ([string]::IsNullOrWhiteSpace($localApplicationData)) {
+        throw 'The per-user local application-data directory is unavailable.'
+    }
+    $temporaryDirectory = [IO.Path]::GetFullPath((Join-Path $localApplicationData 'Temp'))
+    [IO.Directory]::CreateDirectory($temporaryDirectory) | Out-Null
+    $env:TEMP = $temporaryDirectory
+    $env:TMP = $temporaryDirectory
+}
+
+Set-ProcessUserTemporaryDirectory
 $stable = Join-Path $PSScriptRoot 'CodexRemoteSimple\CodexRemoteSimple.ps1'
 $mobile = Join-Path $PSScriptRoot 'CodexRemoteMobileProject\MobileProjectView.ps1'
 $updater = Join-Path $PSScriptRoot 'Update-ChatGPTRemote.ps1'

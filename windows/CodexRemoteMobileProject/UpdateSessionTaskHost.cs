@@ -62,6 +62,17 @@ internal static class UpdateSessionTaskHost
         return string.Equals(Path.GetDirectoryName(child), parent, StringComparison.OrdinalIgnoreCase);
     }
 
+    private static void UseStableUserTemporaryDirectory(ProcessStartInfo start)
+    {
+        string localApplicationData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        if (string.IsNullOrWhiteSpace(localApplicationData))
+            throw new InvalidOperationException("The per-user local application-data directory is unavailable.");
+        string temporaryDirectory = Path.GetFullPath(Path.Combine(localApplicationData, "Temp"));
+        Directory.CreateDirectory(temporaryDirectory);
+        start.EnvironmentVariables["TEMP"] = temporaryDirectory;
+        start.EnvironmentVariables["TMP"] = temporaryDirectory;
+    }
+
     private static string ProcessImagePath(Process process)
     {
         var deadline = DateTime.UtcNow.AddSeconds(2);
@@ -123,6 +134,7 @@ internal static class UpdateSessionTaskHost
             UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden
         };
         start.EnvironmentVariables.Remove("PSModulePath");
+        UseStableUserTemporaryDirectory(start);
         IntPtr job = CreateJobObject(IntPtr.Zero, null);
         if (job == IntPtr.Zero) return 23;
         var limits = new ExtendedLimitInformation();
@@ -212,6 +224,7 @@ internal static class UpdateSessionTaskHost
                 CreateNoWindow = true,
                 WindowStyle = ProcessWindowStyle.Hidden
             };
+            UseStableUserTemporaryDirectory(start);
             using (Process process = Process.Start(start))
             {
                 if (process == null) return 6;

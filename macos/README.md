@@ -2,11 +2,11 @@
 
 You need an Apple Silicon Mac (arm64), the ChatGPT/Codex desktop app installed and signed in with Remote available on your account, and Node.js 22 or newer. This helper does not install the app or unlock account features.
 
-**Testing status:** a real queued macOS update to v1.5.43 passed graceful quit, apply, recovery and relaunch. Executable modes and manual startup passed. A fresh login trigger and each newly installed release remain separate acceptance checks. v1.5.47 is a normal release.
+**Testing status:** a real queued macOS update to v1.5.43 passed graceful quit, apply, recovery and relaunch. Executable modes and manual startup passed. A fresh login trigger and each newly installed release remain separate acceptance checks. v1.5.48 is a normal release.
 
 ## 1. Download and extract
 
-1. Download **ChatGPT-Remote-Enabler-macOS-arm64-v1.5.47.zip** from [v1.5.47 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.47).
+1. Download **ChatGPT-Remote-Enabler-macOS-arm64-v1.5.48.zip** from [v1.5.48 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.48).
 2. Double-click the ZIP in Finder. Create **ChatGPTRemoteEnabler** in your home folder and move the extracted package contents into it.
 3. `MobileProjectView-macOS-arm64.sh` must be directly inside that folder. Keep the complete package together in this writable per-user location.
 
@@ -200,7 +200,7 @@ Drag the revealed app to the Dock. The startup launcher waits 60 seconds by defa
 ```
 
 Requires Apple Silicon and Node.js 22 or newer with built-in WebSocket support.
-The v1.5.47 release shares the Windows renderer and automated fixtures.
+The v1.5.48 release shares the Windows renderer and automated fixtures.
 Native macOS startup, graceful quit, and update/relaunch were verified for
 v1.5.43 and must be rechecked for subsequent releases; a future ChatGPT update
 can still break the private renderer integration.
@@ -223,4 +223,4 @@ Settings now provides per-device connection findings, next steps, explicit evide
 
 ## Version or update icon missing
 
-Fully quit the app when your work is safe and launch through Remote Enabler in the latest extracted folder. An older Dock launcher can still reference another folder. Open Settings to see the loaded helper version and update controls; a missing updater has recovery instructions. v1.5.47 is a normal release available to the existing updater.
+Fully quit the app when your work is safe and launch through Remote Enabler in the latest extracted folder. An older Dock launcher can still reference another folder. Open Settings to see the loaded helper version and update controls; a missing updater has recovery instructions. v1.5.48 is a normal release available to the existing updater.

@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.5.48
+
+- Give Windows startup workers and update coordinators a stable per-user temporary directory. This lets the native close helper compile when a scheduled task inherits Windows TEMP under a normal user.
+- Apply the same process-only environment setup to direct startup scripts before recovery. Child updater and relaunch processes inherit it; user and machine environment settings remain unchanged.
+
 ## v1.5.47
 
 - Complete Windows update preparation when a normal user's temporary folder is Windows TEMP. Use the same scoped cleanup for checks, preparation staging and completed update staging.

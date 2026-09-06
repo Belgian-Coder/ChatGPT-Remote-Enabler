@@ -36,7 +36,7 @@ async function main() {
     await page.evaluate(() => {
       globalThis.__fixtureHost = "remote-control:" + "env" + "_" + "primary_fixture";
       globalThis.__fixtureOlderHost = "remote-control:" + "env" + "_" + "older_fixture";
-      globalThis.__CODEX_REMOTE_MOBILE_CONFIG__ = { localDisplayName: "Local device", helperVersion: "v1.5.36", hostDisplayNames: {} };
+      globalThis.__CODEX_REMOTE_MOBILE_CONFIG__ = { localDisplayName: "Local device", helperVersion: "v1.5.49", hostDisplayNames: {} };
       localStorage.setItem("codex-remote-mobile-auto-register-enabled-v1", "false");
       localStorage.setItem("codex-remote-mobile-auto-archive-enabled-v1", "false");
       const project = document.getElementById("native-project");
@@ -70,7 +70,7 @@ async function main() {
     assert.equal(await panel.locator(":scope > .crmp-update-panel,:scope > .crmp-devices").count(), 0);
     await setSettingsOpen(true);
     await panel.locator(".crmp-version").waitFor();
-    assert.match(await panel.locator(".crmp-version").innerText(), /Remote Enabler · v1\.5\.36/u);
+    assert.match(await panel.locator(".crmp-version").innerText(), /Remote Enabler · v1\.5\.49/u);
     assert.equal(await panel.locator(".crmp-version svg").count(), 1);
     assert.equal(await panel.locator(".crmp-settings").isVisible(), true, "version is available inside Settings");
     if (screenshotPath) await panel.locator(".crmp-update-panel").screenshot({ path: screenshotPath.replace(/\.png$/u, "-version.png") });
@@ -84,7 +84,7 @@ async function main() {
       __crmpBrowserFixture.render();
     });
     assert.match(await panel.locator(".crmp-update-panel").innerText(), /update service is not attached/u);
-    assert.match(await panel.locator(".crmp-version").innerText(), /v1\.5\.36/u);
+    assert.match(await panel.locator(".crmp-version").innerText(), /v1\.5\.49/u);
     assert.equal(await panel.locator(".crmp-version").isDisabled(), true);
     if (screenshotPath) await panel.locator(".crmp-update-panel").screenshot({ path: screenshotPath.replace(/\.png$/u, "-missing-updater.png") });
     assert.equal(await panel.getByRole("link", { name: "Release notes and downloads" }).count(), 1);
@@ -402,22 +402,52 @@ async function main() {
       if (screenshotPath) await troubleshooting.screenshot({ path: screenshotPath.replace(/\.png$/u, `-connection-${theme}.png`) });
     }
     if (screenshotPath) {
+      // Documentation captures use representative synthetic data after the
+      // edge-case assertions. Only the isolated fixture inventory is changed.
+      await page.evaluate(() => {
+        const state = __crmpBrowserFixture.state;
+        state.collapsed.clear();
+        state.filter = "all";
+        state.inventoryHydrationError = null;
+        state.threadInventories.set("local", { fetchedAt: Date.now(), threads: [], error: null, truncated: false });
+        const desktop = __fixtureInventory("Studio desktop", "/fixture/design");
+        desktop.helperVersion = "v1.5.49";
+        desktop.threads = [
+          { id: "demo-layout", cwd: "/fixture/design", title: "Refine the dashboard layout", status: "loading", hasUnreadTurn: false },
+          { id: "demo-tests", cwd: "/fixture/design", title: "Review the accessibility checks", status: "idle", hasUnreadTurn: true },
+        ];
+        const laptop = __fixtureInventory("Travel laptop", "/fixture/older");
+        laptop.helperVersion = "v1.5.49";
+        laptop.projects[0].name = "Weekend planner";
+        laptop.threads = [{ id: "demo-plan", cwd: "/fixture/older", title: "Draft the weekend itinerary", status: "idle", hasUnreadTurn: false }];
+        state.remoteProjectInventories.set(__fixtureHost, desktop);
+        state.remoteProjectInventories.set(__fixtureOlderHost, laptop);
+        for (const id of [__fixtureHost, __fixtureOlderHost]) state.hostConnectivity.set(id, { available: true, checkedAt: Date.now() });
+        localStorage.setItem("codex-remote-mobile-host-names-v1", JSON.stringify({ [__fixtureHost]: "Studio desktop", [__fixtureOlderHost]: "Travel laptop" }));
+        localStorage.setItem("codex-remote-mobile-native-host-names-v1", JSON.stringify({ [__fixtureHost]: "Studio desktop", [__fixtureOlderHost]: "Travel laptop" }));
+        state.hostDiscoveryDirty = true;
+      });
       await page.evaluate(() => {
         __crmpBrowserFixture.state.settingsOpen = true;
         __crmpBrowserFixture.state.deviceDetailsOpen = false;
         __crmpBrowserFixture.state.featureOpen = { cleanup: true, updates: true, diagnostics: true };
-        __fixtureUpdateStatus = { state: "current", version: "v1.5.36", details: { installedVersion: "v1.5.36", lastCheckedAt: Date.now(), historyAvailable: true, history: [{ at: Date.now(), state: "checked", version: "v1.5.36" }] } };
+        __fixtureUpdateStatus = { state: "current", version: "v1.5.49", details: { installedVersion: "v1.5.49", lastCheckedAt: Date.now(), historyAvailable: true, history: [{ at: Date.now(), state: "checked", version: "v1.5.49" }] } };
         globalThis.dispatchEvent(new CustomEvent("chatgpt-remote-update-status", { detail: __fixtureUpdateStatus }));
       });
       await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
       await panel.screenshot({ path: screenshotPath.replace(/\.png$/u, "-features.png") });
+      await page.evaluate(() => {
+        __crmpBrowserFixture.state.featureOpen = {};
+        __crmpBrowserFixture.render();
+      });
+      await panel.screenshot({ path: screenshotPath.replace(/\.png$/u, "-settings.png") });
     }
     await page.emulateMedia({ reducedMotion: "reduce" });
     assert.ok(await page.evaluate(() => matchMedia("(prefers-reduced-motion: reduce)").matches));
     await page.evaluate(() => {
       __crmpBrowserFixture.state.settingsOpen = false;
       __crmpBrowserFixture.state.deviceDetailsOpen = false;
-      __fixtureUpdateStatus = { state: "current", version: "v1.5.36", canQueue: false };
+      __fixtureUpdateStatus = { state: "current", version: "v1.5.49", canQueue: false };
       globalThis.dispatchEvent(new CustomEvent("chatgpt-remote-update-status", { detail: __fixtureUpdateStatus }));
     });
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));

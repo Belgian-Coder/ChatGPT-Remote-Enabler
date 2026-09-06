@@ -1,134 +1,194 @@
 # ChatGPT Remote Enabler
 
-Unofficial Windows and macOS helpers for ChatGPT/Codex Remote. Windows exposes hidden native remote controls in affected desktop builds; both platforms add a **Device projects** sidebar with device filters, project grouping, drag ordering, empty remote projects, project-hover new-chat actions, and synchronized working/unread indicators. Device Projects preserves the user's Native sidebar grouping preference.
+Unofficial per-user helpers for ChatGPT/Codex Remote on Windows 11 x64 and
+macOS Apple Silicon. The helper uses the desktop app's existing loopback
+debugger session and private renderer interfaces. Windows also exposes the
+native **Control other devices** surface on desktop builds that hide it.
+
+Both platforms add **Device projects**: a device-aware project sidebar with
+device filters, native project grouping and ordering, empty remote projects,
+project-hover new-chat actions, and working/unread indicators. The original
+**Native sidebar** remains available, with its grouping preference preserved.
+
+## What it looks like
+
+These images are from the v1.5.49 renderer in a synthetic browser fixture with
+synthetic demo data. They show the interface and responsive states; they are
+not native Windows or macOS screenshots and do not prove a particular desktop
+app build is compatible.
 
 | Device projects | Settings and update status |
 | --- | --- |
-| ![Device projects](assets/screenshots/device-projects-v1.5.36.png) | ![Settings and update status](assets/screenshots/settings-v1.5.36.png) |
+| ![Device projects](assets/screenshots/device-projects-v1.5.49.png) | ![Settings and update status](assets/screenshots/settings-v1.5.49.png) |
 
-## Install without administrator access
+See the [complete feature guide](FEATURES.md) for defaults, limits, privacy,
+and recovery behavior.
 
-Download a platform ZIP from [v1.5.49 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.49), then follow its step-by-step guide:
+## Install v1.5.49 without administrator access
 
-- **[Windows 11 x64](windows/README.md)**: per-user folder, optional portable Node, double-click launch, Desktop/Start-menu shortcuts and optional sign-in shortcut.
-- **[macOS Apple Silicon](macos/README.md)**: home-folder setup, optional portable Node, Terminal first launch, Dock shortcut and per-user sign-in startup.
+Prerequisites are a supported ChatGPT/Codex desktop app signed in with Remote
+available on the account, Node.js 22 or newer, and a writable per-user package
+folder. Organization policy, account access, MFA, or desktop-app policy can
+still block Remote independently of this helper.
 
-Neither setup requires administrator permissions. A supported desktop app/account and Node.js 22+ are prerequisites; organization policies can still block execution. **v1.5.49 is a normal release. See the validation scope below; source tests and installed-app acceptance are separate.**
+- **[Download Windows 11 x64](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/download/v1.5.49/ChatGPT-Remote-Enabler-Windows-x64-v1.5.49.zip)** and follow the [Windows installation guide](windows/README.md).
+- **[Download macOS Apple Silicon](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/download/v1.5.49/ChatGPT-Remote-Enabler-macOS-arm64-v1.5.49.zip)** and follow the [macOS installation guide](macos/README.md).
+- Use the [v1.5.49 release page](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.49) to inspect release notes and published checksums.
 
-The **[feature guide](FEATURES.md)** explains controls, defaults, update behavior, and cleanup consequences. Both ZIPs include their installation and feature guides.
+Both are per-user installs and do not require administrator access. Keep the
+complete package in a writable user-owned folder. Run the platform launcher
+after quitting the ordinary desktop app; it opens the app with Device projects
+and Native sidebar available. Optional shortcut and sign-in startup setup is
+documented separately in each platform guide.
 
-## Mobile-project buttons
+## Remote connection roles
 
-Project rows reuse native folder icons and empty-project styling. Working and
-unread indicators appear on expanded task rows and aggregate on collapsed
-projects. Confirmed device names are remembered locally when metadata is
-temporarily unavailable; unknown connectivity uses a neutral indicator.
-Sidebar refreshes preserve keyboard focus, and unavailable native commands
-are disabled. These adapters depend on private desktop internals, so behavior
-on a future app build may require another compatibility update.
+The helper does not create account authorization. Native Remote still decides
+which devices may connect.
 
-Unknown peers display **Remote device** until a verified device name arrives.
-Verified names are remembered per device across restarts; native placeholder
-labels cannot replace them. Full task inventories refresh every 60 seconds
-and after detected task-list changes, while working/unread status continues
-to refresh independently at its faster cadence.
+- **Authorize the outgoing/controller side.** In ChatGPT/Codex, open
+  **Settings → Connections → Control other devices** and complete the native
+  authorization flow for this computer. If authorization, sign-in, or account
+  access is missing, project synchronization pauses and the helper explains the
+  next native step. A remembered device name or cached project list is not
+  authorization proof.
+- **Run the incoming/publisher side.** On every device whose projects should be
+  visible, launch the helper-enabled desktop app and keep its native Remote
+  connection available. The publisher exposes active user-facing projects,
+  tasks, empty projects, and working/unread state through the existing
+  authenticated Remote channel.
+- **Auto-connect/reconnect belongs to native Remote.** If the native
+  connection UI exposes an Auto-connect or automatic reconnect option, enable
+  or disable it there. The helper reads native connection state; it does not
+  toggle authorization or native connection preferences. After a native
+  reconnect it retries discovery and inventory, and queued alias transfers
+  retry with bounded backoff.
 
-- **Auto-register: on/off** mirrors active remote projects on this client, including empty projects. Enabling it only adds registrations; removal is always explicit.
-- **Remove auto projects (N)** removes only registrations created by that automation. It never deletes chats or folders.
-- **Auto-cleanup: on/off** optionally archives this device's inactive, unpinned local chats after seven days, then permanently deletes them after a tracked seven-day recovery window in **Archived chats**. It skips selected, working, pinned, remote, and insufficiently dated chats and defaults to off. Disabling it clears the timers, so re-enabling grants a new recovery window.
-- A suppressed project's **Allow auto-registration** action permits automatic registration again.
+Launch the helper on every participating device, and optionally configure its
+sign-in startup. Keep the app open and signed in on a publisher device when its
+projects need to be available. Direct reads, inventory freshness, and native
+connection state are shown separately in **Settings → Device health**; cached
+inventory alone never marks a device online.
 
-PowerShell and macOS command equivalents:
+The connection panel is intentionally evidence-based. Its light and dark
+troubleshooting states use the same synthetic demo data and illustrate how
+authorization, disconnection, stale inventory, and refresh guidance are shown.
+
+| Light theme | Dark theme |
+| --- | --- |
+| ![Connection troubleshooting in light theme](assets/screenshots/connection-light-v1.5.49.png) | ![Connection troubleshooting in dark theme](assets/screenshots/connection-dark-v1.5.49.png) |
+
+## Everyday features
+
+- Device filters show **All**, **This device**, and other known devices in
+  display-name order. Verified names and aliases are remembered; an unknown
+  peer is shown as **Remote device**, never as an internal environment ID.
+- Project rows preserve native folder styling and order, include active empty
+  projects, and offer a native project-hover new-chat action when the installed
+  app exposes it. Working spinners and unread dots are synchronized separately
+  and aggregate on collapsed projects.
+- **Auto-register** mirrors active remote project registrations on this client.
+  **Remove auto projects** removes only registrations created by that automation
+  and suppresses immediate recreation. It never deletes chats or source
+  folders; **Allow auto-registration** reverses a suppression.
+- Settings includes Device health, shared aliases, cleanup preview/history,
+  update details/history, diagnostic export preview, connection
+  troubleshooting, and session-transfer statistics.
+- Aliases change display labels only. They are shared through the existing
+  authenticated peer connection, converge across updated clients, and queue
+  while an offline device reconnects. They never replace identity, connection
+  settings, paths, or cache keys.
+
+![Shared device alias](assets/screenshots/shared-alias-v1.5.49.png)
+
+<details>
+<summary>Preview, history, and diagnostic panels</summary>
+
+The Settings panels cover cleanup preview/history, update details/history,
+diagnostic export preview, device health, and connection findings. Preview is
+read-only until an explicit cleanup action. Diagnostic JSON is allowlisted and
+must be reviewed before copying or saving.
+
+![Feature panels](assets/screenshots/features-v1.5.49.png)
+
+</details>
+
+## Updates, rollback, and optional cleanup
+
+The launcher checks asynchronously at startup and every 30 minutes while the
+app is open. The loaded helper version and **Update available** state are in
+Settings. An update is installed only after you click: the helper pins and
+verifies the selected release and SHA-256, waits for authoritative idle state,
+requests a graceful close of the exact app instance, applies the package, and
+relaunches with the saved direct/proxy and startup options. Unknown activity
+keeps it queued, **Cancel** remains available until shutdown starts, and a
+refused close is never force-killed.
+
+Interrupted replacement uses a durable journal and verified recovery. A failed
+update restores the previous verified installation. Protected or
+administrator-owned folders show an unavailable action; the helper never
+self-elevates. Automatic checks can be disabled with the platform command in
+the installation guide, and explicit `Update`/`update` commands remain
+available. The [feature guide](FEATURES.md) documents update history and
+rollback details.
+
+![Loaded helper version and update control](assets/screenshots/version-v1.5.49.png)
+
+**Auto-cleanup is off by default.** When enabled, eligible inactive, unpinned
+local chats are archived after seven days and permanently deleted only after a
+tracked seven-day recovery window in **Archived chats**. Selected, working,
+pinned, remote, and insufficiently dated chats are skipped; missing evidence
+fails closed. Disabling cleanup clears timers, and re-enabling starts a new
+recovery window. Preview and history are local and read-only until an actual
+cleanup action is run. Removing project registrations never deletes chats.
+
+The launcher also performs best-effort local maintenance before startup:
+diagnostic logs older than seven days are pruned within a 96 MiB cap, SQLite
+WAL files are checkpointed, databases are optimized, and materially fragmented
+databases may be vacuumed. It skips physical maintenance while ChatGPT/Codex
+is already running and reports maintenance errors separately.
+
+## Privacy and boundaries
+
+The helper publishes only native or persisted user-facing chat titles and
+active project/task state. Internal exec and subagent runs are used for local
+update-safety checks but are excluded from project chats. Diagnostic export is
+an allowlisted JSON preview that you review before copying or saving; nothing
+is uploaded automatically. The export excludes real device names and aliases,
+device/task IDs, titles, paths, raw logs/errors, and credentials.
+
+The package does not bypass account authorization, MFA, workspace policy,
+server permissions, or native Remote enrollment. It adds no central catalogue
+or entitlement and does not modify the installed WindowsApps payload. It uses
+private desktop internals, so a future ChatGPT/Codex update may require a
+compatibility update. Do not publish real hostnames, usernames, environment
+IDs, network addresses, private paths, or credentials in examples, screenshots,
+issues, packages, or logs.
+
+## Validation scope
+
+Source self-tests, renderer fixtures, real Chromium/CDP integration,
+transaction interruption/recovery, update-session checks, privacy checks, and
+shared-source parity are covered by `tools/Test-Source.ps1` and the other
+commands in the [validation section](FEATURES.md). Current v1.5.49 acceptance
+also includes an ordinary Windows close/apply/recover/relaunch update flow,
+an ordinary macOS restart flow on the preceding installed build followed by a
+manual v1.5.49 installation, and live v1.5.49 renderer readiness on the
+participating test devices. Shared alias synchronization converged across
+three clients.
+
+With Node.js 22 and Playwright available through `NODE_PATH`, the minimal
+browser checks are:
 
 ```powershell
-.\CodexRemoteMobileProject\MobileProjectView.ps1 -Action EnableAutoRegistration
-.\CodexRemoteMobileProject\MobileProjectView.ps1 -Action EnableAutoMaintenance
-.\CodexRemoteMobileProject\MobileProjectView.ps1 -Action DisableAutoMaintenance
-.\CodexRemoteMobileProject\MobileProjectView.ps1 -Action PreviewAutoMaintenance
-.\CodexRemoteMobileProject\MobileProjectView.ps1 -Action RunAutoMaintenance
+pwsh ./tools/Test-Source.ps1
+node tools/Test-RendererBrowser.cjs
+node tools/Test-RendererBrowser.cjs --screenshot "$env:TEMP\remote-enabler-preview.png"
 ```
 
-```zsh
-./MobileProjectView-macOS-arm64.sh enable-auto-registration
-./MobileProjectView-macOS-arm64.sh enable-auto-maintenance
-./MobileProjectView-macOS-arm64.sh disable-auto-maintenance
-./MobileProjectView-macOS-arm64.sh preview-auto-maintenance
-./MobileProjectView-macOS-arm64.sh run-auto-maintenance
-```
+These checks establish the documented behavior under the tested app/account
+conditions. They do not certify every desktop-app build, account policy,
+sign-in trigger, screen reader, or future release. Release publication is not
+proof that a package is installed or that native Remote authorization exists.
 
-## Updates and rollback
-
-Launchers check asynchronously on every start and every 30 minutes while the
-app remains open. **Update available · vX.Y.Z** appears beside the view controls
-in both views. Updates install only after you click: the helper downloads and
-verifies the selected release, waits for active work to finish, closes ChatGPT
-normally, applies the update, and restarts with the same direct/proxy and
-startup options. **Update queued** offers **Cancel** until shutdown begins.
-Unknown activity keeps the update queued. An application that refuses to close
-is never force-killed by the update action.
-
-The session helper uses the existing loopback debugger connection and exits
-with ChatGPT, except while completing an explicitly requested restart. It does
-not install a service or scheduled task. A failed update recovers the previous
-verified installation; an interrupted transaction is recovered before another
-injected launch. Installation folders that require administration show an
-unavailable action instead of changing permissions or self-elevating.
-
-Explicit command-line `Update`/`update` remains available. Packaged installs
-accept only a platform archive whose published SHA-256 and internal manifest
-pass. Disable automatic checks with
-`Update-ChatGPTRemote.ps1 -Action DisableAutoUpdate` or
-`./Update-ChatGPTRemote.sh disable-auto-update`. Forks and mirrors can set
-`CHATGPT_REMOTE_UPDATE_REPOSITORY`, `CHATGPT_REMOTE_UPDATE_API_BASE`, or
-`CHATGPT_REMOTE_UPDATE_LATEST_URL`.
-
-Before starting ChatGPT, the packaged launcher prunes diagnostic logs older than seven days (96 MiB cap), checkpoints WAL files, runs SQLite optimization, and vacuums materially fragmented databases. It always skips this physical maintenance when ChatGPT/Codex is already running. Maintenance errors are reported separately and do not prevent ordinary launch. Permanent chat deletion requires a known managed archive path and an exclusive cross-window lock.
-
-Restore normal Windows ChatGPT with `Disable-ChatGPTRemote.ps1`; on macOS run `./MobileProjectView-macOS-arm64.sh disable`. See [Windows details](windows/README.md) and [macOS details](macos/README.md).
-
-This project uses loopback Electron debugging and private renderer internals. It does not bypass account authorization, MFA, workspace policy, or server permissions. Examples, screenshots, packages, commits, and release notes must not contain real hostnames, usernames, environment IDs, network addresses, or private paths.
-
-## Candidate validation
-
-Run `tools/Test-Source.ps1` with Node.js 22 or newer on PATH. This includes
-runtime and renderer fixtures, journal interruption/recovery, updater adapters,
-Windows native-window lifecycle checks, maintenance, and shared-source parity.
-The transaction fixture interrupts every durable operation boundary.
-
-Run `tools/Test-UpdateSessionSurvivalWindows.ps1` on Windows to verify the
-coordinator survives termination of its initiating process job, with no visible
-console windows or leftover scheduled tasks. On macOS, run
-`zsh tools/Test-MacOSUpdaterApply.zsh` to exercise the real prepared updater in
-an isolated home and installation, including retained rollback and path rejection.
-
-For Windows per-user package acceptance, run
-`tools/Test-UserInstallWindows.ps1 -ArchivePath <Windows-release.zip>`.
-It runs under the interactive user's Medium token (duplicating Explorer's token
-when the parent is elevated), verifies extraction/write access and shortcut
-install/probe/remove in isolated folders, exercises portable Node discovery,
-and performs a read-only installed-app readiness check. It does not create a
-fresh account, use real shortcut folders, launch/stop the app, or prove sign-in
-execution. The fixture removes its own files on completion.
-
-With Playwright available through `NODE_PATH`, optional Chromium integration
-checks are `node tools/Test-RendererBrowser.cjs` and
-`node tools/Test-UpdateSessionCdpBrowser.cjs`. They exercise the complete
-renderer flow and real debugger bindings in isolated browser fixtures.
-
-Automated Windows and browser coverage does not establish an actual ChatGPT
-update/relaunch. Real v1.5.42 transactional installation and installed-launcher
-restart passed on Windows; macOS completed a real queued update to v1.5.43,
-including graceful quit, apply, and relaunch. Its executable-mode packaging
-correction also passed native extraction and startup checks. A fresh login
-trigger and each newly installed release remain separate acceptance checks.
-## UX roadmap
-
-The interface polish and per-user setup assistants are included in v1.5.49. See [the prioritized feature backlog](UX-ROADMAP.md) for ideas intentionally outside this release.
-
-## Health, history, and diagnostics
-
-Settings now includes cleanup preview/history, update details/history, and an explicit diagnostic export preview. Device health includes refresh, reported helper versions, and aliases shared automatically with updated connected clients. See the [feature guide](FEATURES.md) for retention and privacy boundaries.
-
-## Connection troubleshooting and transfer
-
-Settings now provides per-device connection findings, next steps, explicit evidence refresh, and session transfer statistics. Inventory exchange avoids recipient echoes, coalesces slow-peer writes, and retries with backoff. A 1,000-task-per-client fixture measured a 64% smaller push payload; live network speed is not yet measured. See the [feature guide](FEATURES.md) for scope and compatibility.
+For platform-specific commands and troubleshooting, use the [Windows guide](windows/README.md) or [macOS guide](macos/README.md).

@@ -2,7 +2,11 @@
 
 You need an Apple Silicon Mac (arm64), the ChatGPT/Codex desktop app installed and signed in with Remote available on your account, and Node.js 22 or newer. This helper does not install the app or unlock account features.
 
-**Testing status:** a real queued macOS update to v1.5.43 passed graceful quit, apply, recovery and relaunch. Executable modes and manual startup passed. A fresh login trigger and each newly installed release remain separate acceptance checks. v1.5.49 is a normal release.
+**Testing status:** an ordinary macOS update/restart flow passed on the
+preceding installed build. v1.5.49 was then manually installed and its live
+renderer readiness was checked on the participating test devices. The next
+sign-in startup trigger and future desktop-app builds remain separate checks.
+v1.5.49 is a normal release.
 
 ## 1. Download and extract
 
@@ -41,7 +45,11 @@ In Terminal, still in the extracted package folder, run:
 
 The native setup dialog shows separate app, Node, folder, integration-file, shortcut, and startup checks. Choose **Create Dock shortcut** or **Enable sign-in startup** only if wanted. New shortcuts are called **ChatGPT Remote Enabler** and live in `~/Applications`; drag the revealed app to your Dock. Existing **ChatGPT Mobile Projects** shortcuts are preserved.
 
-Use **Recheck**, **Open installation guide**, or **Copy diagnostic summary** as needed. Setup does not launch or quit the desktop app. Checks establish package readiness; live injection is checked on launch. Startup installation does not prove next-sign-in execution. Native macOS execution of this assistant remains pending validation.
+Use **Recheck**, **Open installation guide**, or **Copy diagnostic summary** as
+needed. Setup does not launch or quit the desktop app. Checks establish package
+readiness; live injection is checked on launch. Startup installation does not
+prove next-sign-in execution, so treat that trigger as a separate acceptance
+step.
 
 ## 5. Updates and removal
 
@@ -80,7 +88,7 @@ In Device Projects, **Auto-register: on/off** locally enables or pauses remote-p
 
 macOS already exposes native ChatGPT remote connections. This package adds the optional Device projects view.
 
-Renderer version 66 preserves the original folder states, native-backed drag
+The v1.5.49 renderer preserves the original folder states, native-backed drag
 ordering, and the user's **By project**/**By connection** preference. It
 automatically paginates the authoritative active task list for the app-server's
 interactive CLI/VS Code sources used by the desktop UI. Internal exec and subagent runs remain available to
@@ -200,18 +208,22 @@ Drag the revealed app to the Dock. The startup launcher waits 60 seconds by defa
 ```
 
 Requires Apple Silicon and Node.js 22 or newer with built-in WebSocket support.
-The v1.5.49 release shares the Windows renderer and automated fixtures.
-Native macOS startup, graceful quit, and update/relaunch were verified for
-v1.5.43 and must be rechecked for subsequent releases; a future ChatGPT update
-can still break the private renderer integration.
+The v1.5.49 release shares the Windows renderer and automated fixtures. An
+ordinary macOS restart flow passed on the preceding installed build, then
+v1.5.49 was manually installed and live renderer readiness was checked on the
+participating test devices. The next sign-in startup trigger remains a separate
+acceptance step; a future ChatGPT update can still break the private renderer
+integration.
 
 ## Revised sidebar
 
-These screenshots show the shared renderer in a browser fixture; they are not native macOS acceptance evidence.
+These screenshots show the current v1.5.49 renderer with synthetic demo data
+in a browser fixture. They illustrate the interface; they are not native
+macOS screenshots or proof of live Remote connectivity.
 
-![Device projects](assets/screenshots/device-projects-v1.5.36.png)
+![Device projects](assets/screenshots/device-projects-v1.5.49.png)
 
-![Settings and update status](assets/screenshots/settings-v1.5.36.png)
+![Settings and update status](assets/screenshots/settings-v1.5.49.png)
 
 ## Health, history, and diagnostics
 

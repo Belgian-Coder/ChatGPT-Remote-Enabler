@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased documentation
+
+- Expand the README into a complete feature overview with refreshed v1.5.49 renderer screenshots using synthetic demo data, connection authorization guidance, and current validation scope. Include a reproducible screenshot capture in the browser fixture.
+
 ## v1.5.49
 
 - Keep authoritative empty task lists stable during background local and remote inventory refreshes. Initial, stale, failed, disconnected and incomplete inventories still show their distinct status instead of being presented as current empty results.

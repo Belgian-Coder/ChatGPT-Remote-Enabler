@@ -15,6 +15,10 @@ recovers a stale remote **Steer** submission only after a fresh authoritative
 idle check. Background discovery stays quiet. See the [feature guide](FEATURES.md)
 for behavior and validation limits.
 
+The current development branch also contains unreleased renderer v76: loaded
+project/chat search, more compact Settings and sync guidance, and guarded task
+navigation. These source changes have not been published or installed.
+
 ## Install when hosted ZIP downloads are blocked
 
 Clone the public source into a new user-owned folder with Git, then run the
@@ -222,6 +226,8 @@ browser checks are:
 ```powershell
 pwsh ./tools/Test-Source.ps1
 node tools/Test-RendererBrowser.cjs
+node tools/Test-RendererSearch.cjs
+node tools/Test-RendererSearch.cjs --screenshot "$env:TEMP\remote-enabler-search.png"
 node tools/Test-RendererBrowser.cjs --screenshot "$env:TEMP\remote-enabler-preview.png"
 ```
 

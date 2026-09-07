@@ -69,7 +69,7 @@
     "unknown",
   ]);
   const PUBLISHER_VERSION = 53;
-  const VERSION = 75;
+  const VERSION = 76;
   // Keep outstanding writes locked across renderer reinjection until the underlying RPC settles.
   const peerWriteLocks = globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ instanceof Map
     ? globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ : (globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ = new Map());
@@ -242,6 +242,15 @@
     view: "mobile",
     updateStatus: null,
     settingsOpen: false,
+    searchDraft: "",
+    searchQuery: "",
+    searchTimer: null,
+    searchComposing: false,
+    searchModelDirty: false,
+    searchRendering: false,
+    searchCollapsed: new Set(),
+    lastRenderedModel: null,
+    taskOpenGeneration: 0,
     featureOpen: {},
     aliasDrafts: new Map(),
     aliasFeedback: new Map(),
@@ -3018,6 +3027,13 @@
 
       #${PANEL_ID} .crmp-update-panel, #${PANEL_ID} .crmp-settings, #${PANEL_ID} .crmp-devices { min-width:0; padding:6px; border:1px solid var(--color-border-default,#777); border-radius:8px; }
       #${PANEL_ID} .crmp-settings[hidden] { display:none; }
+      #${PANEL_ID} .crmp-search { margin:6px 0 8px; }
+      #${PANEL_ID} .crmp-search-field { display:flex; align-items:center; gap:4px; }
+      #${PANEL_ID} .crmp-search-input { flex:1; min-height:34px; padding:6px 8px; }
+      #${PANEL_ID} .crmp-search-clear { flex:none; min-width:30px; min-height:34px; border-radius:5px; font-size:18px; }
+      #${PANEL_ID} .crmp-search-clear:disabled { visibility:hidden; }
+      #${PANEL_ID} .crmp-search-scope { margin:4px 2px 0; color:var(--color-text-secondary,inherit); font-size:11px; line-height:1.4; }
+      #${PANEL_ID} .crmp-sync-details { display:inline-flex; align-items:center; min-height:24px; padding:0; font:inherit; color:inherit; text-decoration:underline; cursor:pointer; }
       #${PANEL_ID} .crmp-help { margin:6px 0; font-size:12px; line-height:1.5; color:var(--color-text-secondary,inherit); overflow-wrap:anywhere; }
       #${PANEL_ID} summary { min-height:28px; font-size:12px; line-height:28px; cursor:pointer; overflow-wrap:anywhere; }
       #${PANEL_ID} summary:focus-visible { outline:2px solid var(--color-accent,#74b9ff); }
@@ -4979,16 +4995,20 @@
     }
   }
 
-  async function registerRemoteProjectForTask(project, task) {
+  async function registerRemoteProjectForTask(project, task, isCurrent = () => !state.disposed) {
     if (!project || project.hostId === "local" || !project.cwd) return null;
     const navigate = nativeNavigationDispatcher();
     if ((!project.projectId && !navigate) || state.pendingTaskOpens.has(project.key)) return null;
     state.pendingTaskOpens.add(project.key);
     let ownedDialog = null;
     try {
-      const registeredProjects = await refreshLocalRegisteredProjects();
+      // A known native project can open even while the local state bridge is
+      // unavailable. Only registration needs to read that bridge.
+      const registeredProjects = project.projectId ? state.localRegisteredProjects : await refreshLocalRegisteredProjects();
+      if (!isCurrent()) return null;
       if (!project.projectId && !registeredProjectMatches(registeredProjects, project)) {
         await registerRemoteProjectAndOpen(project, navigate, (dialog) => { ownedDialog = dialog; });
+        if (!isCurrent()) return null;
       }
       void state.queryClient?.invalidateQueries?.();
       state.hostDiscoveryDirty = true;
@@ -4997,16 +5017,20 @@
       let nativeProject = null;
       if (!nativeProjectItem({ ...project, projectId: registered?.projectId ?? project.projectId })) revealNativeProjects();
       try {
-        nativeProject = await waitFor(() => nativeProjectItem({ ...project, projectId: registered?.projectId ?? project.projectId }) ?? nativeThreadRow(task), 10000);
+        nativeProject = await waitFor(() => nativeProjectItem({ ...project, projectId: registered?.projectId ?? project.projectId }) ?? nativeThreadRow(task), 10000, isCurrent);
       } catch {
         return null;
       }
+      if (!isCurrent()) return null;
       const row = nativeThreadRow(task);
       if (row?.isConnected) return row;
       const toggle = nativeProject?.querySelector?.('[data-app-action-sidebar-project-collapsed="true"]');
       if (toggle) invokeNativeElement(toggle);
+      // An already expanded project has no further hydration action. Use the
+      // available navigation bridge instead of waiting 15 seconds for no event.
+      else if (typeof state.navigationBridge?.navigateToLocalConversation === "function") return null;
       try {
-        return await waitFor(() => nativeThreadRow(task), 15000);
+        return await waitFor(() => nativeThreadRow(task), 15000, isCurrent);
       } catch {
         return null;
       }
@@ -5016,7 +5040,7 @@
     }
   }
 
-  async function recoverUnconfirmedRemoteSteer(task, manager = state.threadManagers.get(task?.hostId)) {
+  async function recoverUnconfirmedRemoteSteer(task, manager = state.threadManagers.get(task?.hostId), isCurrent = () => !state.disposed) {
     if (!task?.conversationId || task.hostId === "local" || typeof manager?.getConversation !== "function"
         || typeof manager?.updateConversationState !== "function") return 0;
     const conversation = manager.getConversation(task.conversationId);
@@ -5033,7 +5057,7 @@
           || typeof item?.requestId !== "string" || !item.requestId)) return 0;
     const refreshStartedAt = Date.now();
     const refreshed = await requestDeviceRefresh();
-    if (refreshed?.complete !== true) return 0;
+    if (!isCurrent() || refreshed?.complete !== true) return 0;
     const inventory = state.threadInventories.get(task.hostId);
     if (!inventory || inventory.error || inventory.truncated === true
         || !Number.isFinite(inventory.fetchedAt) || inventory.fetchedAt < refreshStartedAt) return 0;
@@ -5056,10 +5080,14 @@
   }
 
   async function openNativeTask(task, project = null) {
+    const generation = ++state.taskOpenGeneration;
+    const isCurrent = () => !state.disposed && state.taskOpenGeneration === generation;
+    if (!isCurrent()) return false;
     const conversationId = task.conversationId || rawConversationId(task.conversationKey);
     let manager = state.threadManagers.get(task.hostId);
     try {
-      const recoveredSubmissions = await recoverUnconfirmedRemoteSteer({ ...task, conversationId }, manager);
+      const recoveredSubmissions = await recoverUnconfirmedRemoteSteer({ ...task, conversationId }, manager, isCurrent);
+      if (!isCurrent()) return false;
       const nativeRow = nativeThreadRow(task) ?? task.originalRow;
       if (nativeRow?.isConnected) {
         const invoked = invokeNativeElement(nativeRow);
@@ -5070,7 +5098,19 @@
       if (!(await confirmRemoteTaskMembership({ ...task, conversationId }))) {
         throw new Error("Remote task navigation was blocked because fresh membership could not be confirmed");
       }
-      const hydratedRow = await registerRemoteProjectForTask(project, task);
+      if (!isCurrent()) return false;
+      // Resolve late navigation before waiting for native hydration, so an
+      // already expanded project can immediately use the available bridge.
+      if (typeof state.navigationBridge?.navigateToLocalConversation !== "function") {
+        state.hostDiscoveryDirty = true;
+        state.hostDiscoveryCache = null;
+        state.remoteRuntimeScannedAt = 0;
+        const discovery = discoverHostNames();
+        discoverRemoteRuntimes(discovery.runtimes);
+        manager = state.threadManagers.get(task.hostId);
+      }
+      const hydratedRow = await registerRemoteProjectForTask(project, task, isCurrent);
+      if (!isCurrent()) return false;
       if (hydratedRow?.isConnected) {
         const invoked = invokeNativeElement(hydratedRow);
         state.lastAction = { commandId: "open-thread", conversationId, found: true, hostId: task.hostId, invoked, mode: "registered-remote-project" };
@@ -5093,11 +5133,13 @@
       manager?.ensureRecentConversationId?.(conversationId);
       if (manager) {
         try {
-          const hydratedRow = await waitFor(() => nativeThreadRow(task), 3000);
+          const hydratedRow = await waitFor(() => nativeThreadRow(task), 3000, isCurrent);
+          if (!isCurrent()) return false;
           hydratedRow.click();
           return true;
         } catch {}
       }
+      if (!isCurrent()) return false;
       const markRead = manager?.markConversationAsRead?.(conversationId);
       if (markRead?.catch) void markRead.catch(() => {});
       if (typeof state.navigationBridge?.navigateToLocalConversation !== "function") throw new Error("Native conversation navigation is unavailable");
@@ -5106,15 +5148,17 @@
       state.lastAction = { commandId: "open-thread", conversationId, found: true, hostId: task.hostId, invoked: true };
       return true;
     } catch (error) {
+      if (!isCurrent()) return false;
       state.lastAction = { commandId: "open-thread", conversationId, error: error?.message || String(error), found: true, hostId: task.hostId, invoked: false };
       return false;
     }
   }
 
-  function waitFor(check, timeoutMilliseconds = 15000) {
+  function waitFor(check, timeoutMilliseconds = 15000, isCurrent = () => true) {
     const deadline = Date.now() + timeoutMilliseconds;
     return new Promise((resolve, reject) => {
       const poll = () => {
+        if (!isCurrent()) return reject(new Error("Task activation was cancelled"));
         try {
           const result = check();
           if (result) return resolve(result);
@@ -6191,7 +6235,7 @@
   }
 
   function appendEmptyProjectState(tasks, project) {
-    if (project.kind !== "project" || project.tasks.length || state.collapsed.has(project.key)) return;
+    if (project.kind !== "project" || project.tasks.length || (!project.searchResult && state.collapsed.has(project.key))) return;
     const nativeItem = nativeProjectItem(project);
     const nativeEmpty = [...(nativeItem?.querySelectorAll("div.text-codex-description.opacity-50") ?? [])]
       .find((element) => element.children.length === 0);
@@ -6215,7 +6259,7 @@
 
   function appendGroup(fragment, project) {
     const nativeToggle = nativeProjectItem(project)?.querySelector('[data-app-action-sidebar-project-collapsed]');
-    if (nativeToggle) {
+    if (nativeToggle && !project.searchResult) {
       if (nativeToggle.getAttribute("data-app-action-sidebar-project-collapsed") === "true") state.collapsed.add(project.key);
       else state.collapsed.delete(project.key);
     }
@@ -6230,11 +6274,12 @@
     const toggle = button("crmp-project-toggle", "");
     setFocusKey(toggle, "project", project.key, "toggle");
     toggle.title = project.cwd || project.name;
-    toggle.setAttribute("aria-expanded", String(!state.collapsed.has(project.key)));
+    const collapsed = project.searchResult ? state.searchCollapsed : state.collapsed;
+    toggle.setAttribute("aria-expanded", String(!collapsed.has(project.key)));
     const folder = document.createElement("span");
     folder.className = "crmp-folder";
     folder.dataset.remoteInventory = String(project.hostId !== "local" && !nativeProjectItem(project));
-    const expanded = !state.collapsed.has(project.key);
+    const expanded = !collapsed.has(project.key);
     const folderIcon = project.kind === "recent" ? null : nativeFolderIcon(project, expanded);
     if (folderIcon) folder.appendChild(folderIcon);
     else folder.textContent = project.kind === "recent" ? "◷" : "▱";
@@ -6243,10 +6288,15 @@
     name.textContent = project.name;
     const suffix = document.createElement("span");
     suffix.className = "crmp-project-host";
-    suffix.textContent = state.filter === "all" ? displayDeviceName(project.hostId, project.hostName) : (state.collapsed.has(project.key) ? "›" : "⌄");
+    suffix.textContent = state.filter === "all" ? displayDeviceName(project.hostId, project.hostName) : (expanded ? "⌄" : "›");
     toggle.append(folder, name, suffix);
     toggle.addEventListener("click", () => {
       if (performance.now() - state.dragJustEndedAt < 250) return;
+      if (project.searchResult) {
+        if (collapsed.has(project.key)) collapsed.delete(project.key); else collapsed.add(project.key);
+        renderLoadedSearch();
+        return;
+      }
       if (nativeToggle) {
         nativeToggle.click();
         schedule();
@@ -6255,7 +6305,7 @@
       if (state.collapsed.has(project.key)) state.collapsed.delete(project.key); else state.collapsed.add(project.key);
       render();
     });
-    bindReorder(toggle, head, reorderReference("project", project));
+    if (!project.searchResult) bindReorder(toggle, head, reorderReference("project", project));
     toggle.addEventListener("keydown", (event) => {
       if (project.kind !== "project" || (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10"))) return;
       event.preventDefault();
@@ -6306,7 +6356,7 @@
       head.appendChild(actions);
     }
     if (!project.flatRecent) section.appendChild(head);
-    if (project.flatRecent || !state.collapsed.has(project.key)) {
+    if (project.flatRecent || expanded) {
       const tasks = document.createElement("div");
       tasks.className = "crmp-tasks";
       if (project.tasks.length && !project.flatRecent) tasks.style.padding = "2px 0 8px";
@@ -6350,7 +6400,7 @@
             view: globalThis,
           }));
         });
-        bindReorder(taskButton, taskRow, reorderReference("task", task, project.key));
+        if (!project.searchResult) bindReorder(taskButton, taskRow, reorderReference("task", task, project.key));
         taskRow.appendChild(taskButton);
         const statusIndicator = taskStatusIndicator(task);
         if (statusIndicator) {
@@ -6490,7 +6540,107 @@
     return true;
   }
 
+  function normalizeSearch(value) {
+    return String(value ?? "").normalize("NFKC").toLocaleLowerCase().trim();
+  }
+
+  function filterLoadedGroups(groups, query = state.searchQuery, hostId = state.filter) {
+    const terms = normalizeSearch(query).split(/\s+/u).filter(Boolean);
+    const matches = (value) => {
+      const normalized = normalizeSearch(value);
+      return terms.every((term) => normalized.includes(term));
+    };
+    return groups.flatMap((project) => {
+      if (hostId !== "all" && project.hostId !== hostId) return [];
+      if (!terms.length) return [project];
+      const projectMatches = project.kind === "project" && matches(project.name);
+      const tasks = projectMatches ? project.tasks : project.tasks.filter((task) => matches(task.title));
+      return projectMatches || tasks.length ? [{ ...project, tasks, searchResult: true }] : [];
+    });
+  }
+
+  function renderLoadedSearch() {
+    state.searchRendering = true;
+    try { return render(); } finally { state.searchRendering = false; }
+  }
+
+  function applyLoadedSearch() {
+    if (state.searchTimer !== null) clearTimeout(state.searchTimer);
+    state.searchTimer = null;
+    if (!state.active || state.disposed || state.searchComposing) return;
+    state.searchQuery = state.searchDraft;
+    state.searchCollapsed.clear();
+    renderLoadedSearch();
+  }
+
+  function appendLoadedSearch(fragment) {
+    const search = document.createElement("div");
+    search.className = "crmp-search";
+    search.setAttribute("role", "search");
+    search.setAttribute("aria-label", "Search loaded projects and chats");
+    const field = document.createElement("div");
+    field.className = "crmp-search-field";
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "crmp-input crmp-search-input";
+    input.placeholder = "Find projects and chats";
+    input.setAttribute("aria-label", "Find projects and chats");
+    input.setAttribute("aria-describedby", `${PANEL_ID}-search-scope`);
+    input.setAttribute("autocomplete", "off");
+    input.setAttribute("spellcheck", "false");
+    input.value = state.searchDraft;
+    setFocusKey(input, "search");
+    const clear = button("crmp-search-clear", "×");
+    clear.setAttribute("aria-label", "Clear search");
+    clear.title = "Clear search (Escape)";
+    clear.disabled = !state.searchDraft;
+    setFocusKey(clear, "search", "clear");
+    const clearSearch = () => {
+      state.searchDraft = "";
+      state.searchComposing = false;
+      applyLoadedSearch();
+      focusSidebarElement(state.panel?.querySelector(".crmp-search-input"));
+    };
+    clear.addEventListener("click", clearSearch);
+    input.addEventListener("compositionstart", () => { state.searchComposing = true; });
+    input.addEventListener("compositionend", () => {
+      state.searchComposing = false;
+      state.searchDraft = input.value;
+      applyLoadedSearch();
+    });
+    input.addEventListener("input", (event) => {
+      state.searchDraft = input.value;
+      clear.disabled = !input.value;
+      if (state.searchTimer !== null) clearTimeout(state.searchTimer);
+      state.searchTimer = null;
+      if (event.isComposing || state.searchComposing) return;
+      state.searchTimer = setTimeout(applyLoadedSearch, 120);
+    });
+    input.addEventListener("keydown", (event) => {
+      if (event.isComposing || state.searchComposing) return;
+      if (event.key === "Escape" && state.searchDraft) {
+        event.preventDefault();
+        event.stopPropagation();
+        clearSearch();
+      } else if (event.key === "Enter") {
+        event.preventDefault();
+        applyLoadedSearch();
+      }
+    });
+    field.append(input, clear);
+    search.appendChild(field);
+    const scope = document.createElement("p");
+    scope.id = `${PANEL_ID}-search-scope`;
+    scope.className = "crmp-search-scope";
+    scope.textContent = "Searches loaded project names and chat titles.";
+    search.appendChild(scope);
+    fragment.appendChild(search);
+  }
+
   function render() {
+    // Replacing an input mid-composition cancels IME text. Resume with the
+    // current model as soon as the user commits the composition.
+    if (state.searchComposing) { state.searchModelDirty = true; state.scheduledFrame = null; return renderReport(state.lastRenderedModel); }
     state.counters.renders += 1;
     const focus = captureSidebarFocus();
     state.scrollSnapshot = [];
@@ -6501,7 +6651,9 @@
     document.getElementById(CARD_ID)?.remove();
     document.getElementById(CONTEXT_ID)?.remove();
     if (!state.active) return renderReport();
-    const model = collectModel();
+    const model = state.searchRendering && !state.searchModelDirty && state.lastRenderedModel ? state.lastRenderedModel : collectModel();
+    state.lastRenderedModel = model;
+    state.searchModelDirty = false;
     state.displayedHosts = model.hosts;
     // Current Codex separates Projects and Recents into sibling sections.
     // Include both sets so the replacement covers the complete native list.
@@ -6576,6 +6728,9 @@
     settings.hidden = !state.settingsOpen;
     if (state.settingsOpen) {
       settings.appendChild(updateStatusPanel(update));
+      appendDeviceHealth(settings, model);
+      appendConnectionTroubleshooting(settings, model);
+      const automation = featureDetails("Automatic cleanup", "automation");
       const autoControls = document.createElement("div");
       autoControls.className = "crmp-auto-controls";
       const managedCount = Object.keys(readRecords(AUTO_MANAGED_KEY)).length;
@@ -6608,28 +6763,22 @@
         }
       });
       autoControls.appendChild(autoArchive);
-      settings.appendChild(autoControls);
+      automation.appendChild(autoControls);
 
       const cleanupSummary = document.createElement("p");
       cleanupSummary.className = "crmp-help";
       cleanupSummary.textContent = autoArchiveEnabled
         ? "Cleanup is enabled on this device: inactive local chats are archived after 7 days, then permanently deleted after 7 more archived days."
         : "Cleanup is off. Enabling it archives inactive local chats after 7 days, then permanently deletes them after 7 more archived days.";
-      settings.appendChild(cleanupSummary);
+      automation.appendChild(cleanupSummary);
       const maintenanceSummary = document.createElement("p");
       maintenanceSummary.className = "crmp-help";
       maintenanceSummary.textContent = "Startup maintenance runs only while the app is closed. It maintains local databases and diagnostic logs.";
-      settings.appendChild(maintenanceSummary);
-      const check = button("crmp-auto-control", "Check for updates");
-      check.disabled = !["current", "error", "unavailable"].includes(update.state) || typeof globalThis[UPDATE_SLOT]?.request !== "function";
-      setFocusKey(check, "settings", "check");
-      check.addEventListener("click", () => { void requestUpdateAction("check"); });
-      settings.appendChild(check);
+      automation.appendChild(maintenanceSummary);
+      settings.appendChild(automation);
       appendCleanupPanel(settings);
       appendUpdateDetails(settings, update);
       appendDiagnosticsPanel(settings, model);
-      appendConnectionTroubleshooting(settings, model);
-      appendDeviceHealth(settings, model);
     }
     fragment.appendChild(settings);
 
@@ -6645,19 +6794,33 @@
     if (state.deviceRefreshPending) syncStatus.textContent = state.deviceRefreshQueued
       ? "Refreshing device data… A follow-up pass is queued."
       : "Refreshing device data and chat lists…";
-    else if (state.deviceRefreshLastError) syncStatus.textContent = "Refresh incomplete; cached device data may be stale. Check Device health for details.";
-    else if (staleHosts.length) syncStatus.textContent = `Last successful sync: ${timeLabel(state.deviceRefreshLastSuccessfulAt)}. Cached data from ${staleHosts.length} ${staleHosts.length === 1 ? "device is" : "devices are"} unavailable or out of date.`;
-    else if (state.deviceRefreshLastSuccessfulAt) syncStatus.textContent = `Last successful sync: ${timeLabel(state.deviceRefreshLastSuccessfulAt)}.`;
-    else syncStatus.textContent = "Device data has not completed an initial sync yet.";
+    else if (state.deviceRefreshLastError) syncStatus.textContent = "Refresh incomplete. Showing saved data. ";
+    else if (staleHosts.length) syncStatus.textContent = `Saved data from ${staleHosts.length} ${staleHosts.length === 1 ? "device needs" : "devices need"} refreshing. `;
+    else if (state.deviceRefreshLastSuccessfulAt) syncStatus.textContent = "Device data is up to date.";
+    else syncStatus.textContent = "Waiting for the first device sync. ";
+    syncStatus.title = `Last successful sync: ${timeLabel(state.deviceRefreshLastSuccessfulAt)}.`;
+    if (syncState === "stale" || syncState === "error" || (!state.deviceRefreshPending && !state.deviceRefreshLastSuccessfulAt)) {
+      const details = button("crmp-sync-details", "Device health");
+      setFocusKey(details, "sync", "details");
+      details.addEventListener("click", () => {
+        state.settingsOpen = true;
+        state.deviceDetailsOpen = true;
+        render();
+        focusSidebarElement(state.panel?.querySelector(".crmp-devices > summary"));
+      });
+      syncStatus.appendChild(details);
+    }
     fragment.appendChild(syncStatus);
 
-    scheduleLocalProjectInventoryPublication();
-    scheduleLocalPeerCacheInventory(model.hosts);
-    scheduleLocalRegisteredProjectsRefresh();
-    scheduleRemoteProjectInventory(model.remoteRuntimes, state.nativeConnectionRefreshPending);
-    state.nativeConnectionRefreshPending = false;
-    scheduleAutoArchive();
-    scheduleNativeInventoryHydration();
+    if (!state.searchRendering) {
+      scheduleLocalProjectInventoryPublication();
+      scheduleLocalPeerCacheInventory(model.hosts);
+      scheduleLocalRegisteredProjectsRefresh();
+      scheduleRemoteProjectInventory(model.remoteRuntimes, state.nativeConnectionRefreshPending);
+      state.nativeConnectionRefreshPending = false;
+      scheduleAutoArchive();
+      scheduleNativeInventoryHydration();
+    }
 
     if (state.view === "native") {
       state.nativeContainer.style.display = state.originalDisplay;
@@ -6705,6 +6868,7 @@
     }
 
     fragment.appendChild(filters);
+    appendLoadedSearch(fragment);
 
     const unavailableInventoryHosts = model.hosts.filter((host) => host.id !== "local" && state.remoteProjectInventories.get(host.id)?.error);
     const nativeStatus = nativeConnectionStatus();
@@ -6717,7 +6881,7 @@
           ? "Project sync paused: Codex requires sign-in for remote connections."
           : "Project sync paused: check remote connection access in Settings > Connections.";
       fragment.appendChild(status);
-    } else if (unavailableInventoryHosts.length) {
+    } else if (unavailableInventoryHosts.length && syncState !== "stale" && syncState !== "error") {
       const status = document.createElement("div");
       status.className = "crmp-inventory-status";
       status.textContent = `Project sync paused: waiting for a current inventory from ${unavailableInventoryHosts.map((host) => host.name).join(", ")}.`;
@@ -6727,8 +6891,13 @@
     panelTitle.className = "crmp-title text-base font-medium text-tertiary opacity-75";
     panelTitle.textContent = "Projects";
     fragment.appendChild(panelTitle);
-    const visibleProjects = model.projects.filter((project) => state.filter === "all" || project.hostId === state.filter);
-    const visibleRecents = model.recents.filter((project) => state.filter === "all" || project.hostId === state.filter);
+    const visibleProjects = filterLoadedGroups(model.projects);
+    const visibleRecents = filterLoadedGroups(model.recents);
+    if (normalizeSearch(state.searchQuery)) {
+      const count = [...visibleProjects, ...visibleRecents].reduce((total, project) => total + project.tasks.length, 0);
+      const scope = fragment.querySelector(".crmp-search-scope");
+      scope.textContent = `${visibleProjects.length} ${visibleProjects.length === 1 ? "project" : "projects"} · ${count} ${count === 1 ? "chat" : "chats"}. Loaded names and titles only.`;
+    }
     const projectList = document.createElement("div");
     projectList.className = "crmp-project-list";
     for (const project of visibleProjects) appendGroup(projectList, project);
@@ -6746,7 +6915,9 @@
     if (!visibleProjects.length && !visibleRecents.length) {
       const empty = document.createElement("div");
       empty.className = "crmp-empty";
-      empty.textContent = state.filter === "all"
+      empty.textContent = normalizeSearch(state.searchQuery)
+        ? "No matches in loaded projects or chats. Try another name or clear search."
+        : state.filter === "all"
         ? "No projects or tasks to show yet. Connect a device using Remote to load its projects."
         : emptyInventoryMessage(state.filter, true);
       fragment.appendChild(empty);
@@ -6983,6 +7154,12 @@
   }
 
   function uninstall() {
+    state.taskOpenGeneration += 1;
+    if (state.searchTimer !== null) clearTimeout(state.searchTimer);
+    state.searchTimer = null;
+    state.searchComposing = false;
+    state.searchModelDirty = false;
+    state.lastRenderedModel = null;
     state.disposed = true;
     state.discoveryGeneration += 1;
     state.deviceRefreshGeneration += 1;

@@ -12,9 +12,14 @@ const testSource = originalSource
   .replace(/  return install\(\);\r?\n\}\)\(\);\s*$/u, `  return {
     state, openNativeTask, recoverUnconfirmedRemoteSteer, rememberTaskActivation, retainRecentTaskActivations,
     configure(fixture) {
-      confirmRemoteTaskMembership = async () => fixture.membership !== false;
+      confirmRemoteTaskMembership = async () => fixture.membershipPromise ?? fixture.membership !== false;
       nativeNavigationDispatcher = () => fixture.navigate;
-      refreshLocalRegisteredProjects = async () => state.localRegisteredProjects;
+      discoverHostNames = () => ({ runtimes: new Map() });
+      discoverRemoteRuntimes = () => new Map();
+      refreshLocalRegisteredProjects = async () => {
+        if (fixture.bridgeUnavailable) throw new Error("Local project-state bridge is unavailable");
+        return state.localRegisteredProjects;
+      };
       registerRemoteProjectAndOpen = async (project) => {
         fixture.registrations += 1;
         state.localRegisteredProjects.set("registered-project", {
@@ -76,10 +81,12 @@ const task = { conversationId: "01a07ab9-07e9-7671-a2b9-e99236f4e986", conversat
   const toggle = { click() { fixture.hydrated = true; } };
   fixture.nativeProject = { isConnected: true, querySelector: () => toggle };
   const registeredProject = { ...project, projectId: "registered-project" };
+  fixture.bridgeUnavailable = true;
   const reopened = await navigation.openNativeTask(task, registeredProject);
   assert.equal(reopened, true, "a synthetic task in an existing remote project must hydrate and open");
   assert.equal(fixture.registrations, 0, "an existing remote project must not be registered again");
   assert.equal(nativeRow.clicks, 1, "expanding the native project must expose and invoke the task row");
+  fixture.bridgeUnavailable = false;
 
   fixture.hydrated = false;
   fixture.projectReveals = 0;
@@ -98,6 +105,26 @@ const task = { conversationId: "01a07ab9-07e9-7671-a2b9-e99236f4e986", conversat
   assert.equal(blocked, false, "stale synthetic navigation must fail closed");
   assert.equal(nativeRow.clicks, 0, "unconfirmed membership must never invoke a native row");
   assert.match(navigation.state.lastAction.error, /fresh membership could not be confirmed/u);
+
+  // Cancelling a deferred activation must leave the current task untouched.
+  fixture.membership = true;
+  let resolveMembership;
+  fixture.membershipPromise = new Promise(resolve => { resolveMembership = resolve; });
+  const pendingOpen = navigation.openNativeTask(task, registeredProject);
+  await new Promise(resolve => setImmediate(resolve));
+  navigation.state.taskOpenGeneration += 1;
+  resolveMembership(true);
+  assert.equal(await pendingOpen, false, "a newer activation cancels an older membership read");
+  assert.equal(nativeRow.clicks, 0);
+  fixture.membershipPromise = new Promise(resolve => { resolveMembership = resolve; });
+  const disposedOpen = navigation.openNativeTask(task, registeredProject);
+  await new Promise(resolve => setImmediate(resolve));
+  navigation.state.disposed = true;
+  resolveMembership(true);
+  assert.equal(await disposedOpen, false, "disposed renderers cannot complete navigation");
+  assert.equal(nativeRow.clicks, 0);
+  navigation.state.disposed = false;
+  fixture.membershipPromise = null;
 
   navigation.rememberTaskActivation(task);
   const retained = new Map();

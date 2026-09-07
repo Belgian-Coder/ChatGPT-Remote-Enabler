@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — 2026-09-08
+
+- Add loaded-content search to Device projects. Search project names and chat titles within device filters, reveal matching chats, and restore the original project expansion when cleared. Keep queries in memory, support literal Unicode text and IME input, and disable reordering while results are filtered.
+- Shorten sync messages and open the relevant Device health section directly from a stale or incomplete status. Put device health and connection help before cleanup; group cleanup controls and consequences under Automatic cleanup and remove the duplicate update-check button.
+- Debounce search for 120 ms and reuse the loaded model without scheduling remote discovery per keystroke. Cancel search timers on teardown and protect composition, focus, caret, drafts, and scroll.
+- Fix opening known remote projects when the local project-state bridge is unavailable. An already expanded native project can use the navigation bridge immediately instead of waiting for hydration it cannot trigger. Cancel delayed task navigation after a newer activation or renderer teardown.
+- Renderer v76 is source-only. No release, installation, hot injection, updater request, or ChatGPT exit/restart was performed. Native Windows/macOS acceptance and live cross-device timing remain unverified.
+- Validation: all 15 renderer self-tests and both isolated Chromium suites passed, including direct/publisher task navigation, late bridge discovery, 10,000-chat search, IME/caret preservation, 280/320/400-pixel sidebars, both themes, 1x/2x scaling, minimum control sizes and teardown. Windows/macOS renderer and feature-guide parity, source harness parsing, and diff checks passed. New preview images use synthetic data.
+
 ## v1.5.53 — 2026-09-07
 
 - Open inventory-only remote chats by registering and expanding their native remote project on demand, including projects beyond the native five-project collapsed limit. Confirm current task membership before synthetic navigation and retain a recently activated task until a newer authoritative inventory arrives.

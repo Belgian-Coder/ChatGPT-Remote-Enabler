@@ -1,5 +1,12 @@
 # Feature roadmap
 
+Implemented in unreleased renderer v76: search loaded project names and chat
+titles within device filters; temporary expansion of matching projects; concise
+sync status with a Device health shortcut; and cleanup controls in a disclosure.
+Search is local, debounced, and preserves saved expansion, input composition,
+focus and drafts. Known remote projects no longer require the local project-state
+bridge just to open; superseded or disposed task activations cannot navigate late.
+
 Implemented in v1.5.50: quiet background discovery, Force refresh,
 stale-sidebar recovery, and inline sync freshness. Published-package and actual
 two-desktop acceptance remain separate from source and browser-fixture checks.
@@ -12,10 +19,9 @@ Implemented in v1.5.35: guided connection troubleshooting and a compatible inven
 
 Potential next features, in suggested order:
 
-1. Search loaded project names and task titles, clearly indicating that unloaded content is not searched.
-2. Working, Needs input, and Unread filters, plus saved views, without modifying native task state.
-3. Opt-in completion/input notifications with per-device controls and deduplication.
-4. Portable preferences export/import with a review step, excluding credentials, identities, and task content.
-5. A user-triggered two-device transfer benchmark; consider a negotiated delta/compression protocol only after measuring the remaining bottleneck.
+1. Working, Needs input, and Unread filters, plus saved views, without modifying native task state.
+2. Opt-in completion/input notifications with per-device controls and deduplication.
+3. Portable preferences export/import with a review step, excluding credentials, identities, and task content.
+4. A user-triggered two-device transfer benchmark; consider a negotiated delta/compression protocol only after measuring the remaining bottleneck.
 
 These are suggestions, not implemented capabilities or automatic commitments. Native macOS, real sign-in, full live-app update/relaunch, and assistive-technology acceptance remain separate validation work.

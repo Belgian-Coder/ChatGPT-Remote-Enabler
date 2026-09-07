@@ -7,6 +7,13 @@ projects renderer and the feature behavior below; the
 platform guides document their different launchers, setup assistants, proxy
 options, and shortcut/startup commands.
 
+The unreleased renderer v76 adds the search and Settings improvements described
+below. They require the new source; installing published v1.5.53 does not add them.
+
+![Unreleased search in a synthetic Chromium fixture](assets/screenshots/search-unreleased.png)
+
+This preview uses synthetic data and is not a capture of the running ChatGPT app.
+
 ## Interface overview
 
 **Device projects** and **Native sidebar** are switchable views. Device
@@ -18,12 +25,13 @@ connection** preference.
 | Feature | Behavior | Default or limit |
 | --- | --- | --- |
 | Device filters | Show All, This device, or one other known device. | Display-name order; cached inventory does not prove online state. |
+| Find projects and chats (unreleased) | Search loaded project names and chat titles within the selected device filter. Matching projects include their loaded chats; matching chats reveal their project. | Case-insensitive literal words; no remote search or saved queries. Escape or Clear search restores normal expansion. Reordering is unavailable while searching. |
 | Device names | Remember verified native or inventory names across reloads and restarts. | Unknown peers display **Remote device**; internal environment IDs are never labels. |
 | Project rows | Show active projects, including empty projects, with native folder styling and project-hover new-chat actions when supported. | Last-known rows survive unavailable or incomplete refreshes with stale status; fresh authoritative membership determines removals. |
 | Task state | Show a spinner while working and a blue unread dot after completion until viewed. | State and membership are refreshed independently; collapsed folders aggregate child state. |
 | Quiet discovery | Discover remote projects and chats without opening registration dialogs or navigating away. | Applies even when an older installation enabled Auto-register; explicit project actions can still open native registration. |
 | Force refresh | Rediscover connections and request fresh chat membership from connected devices. | Preserves the current chat, draft, filters, expansion, focus, and scroll; repeated requests are coalesced. |
-| Sync status | Show refresh progress, last successful sync, and stale data inline. | A failed or incomplete read retains existing rows and does not renew inventory authority. |
+| Sync status | Show concise refresh progress and stale-data status with a direct Device health shortcut. Last successful sync remains in the status tooltip and Device health. | A failed or incomplete read retains existing rows and does not renew inventory authority. |
 | Remove auto projects | Remove registrations created by older Auto-register versions. | Manual registrations, chats, folders, and source data are kept. |
 
 Keyboard focus and sidebar scroll position survive refreshes. Updates use a
@@ -71,6 +79,19 @@ Settings is available from both views and contains automation, cleanup, update,
 diagnostic, health, and connection controls. Moving a control into Settings
 does not change its stored preference; cleanup remains active in Native sidebar
 when it was enabled.
+
+In unreleased renderer v76, update status, Device health, and connection
+troubleshooting come first. **Automatic cleanup** contains the cleanup switch,
+its consequences, and removal of older auto-created project registrations.
+Opening or closing this section never changes cleanup preferences. The loaded
+version button checks for updates; the duplicate check button has been removed.
+
+Search waits 120 ms after typing stops and filters the current loaded model.
+It does not trigger inventory discovery per keystroke. Input composition,
+keyboard focus, caret, and the existing chat draft are preserved. Search is
+limited to names and titles already loaded by the helper, including cached
+data whose freshness is shown separately; it does not search message bodies
+or fetch unloaded history.
 
 **Device health** shows each reported device name, native connection
 availability, connection-check time, inventory age/source, publisher protocol,

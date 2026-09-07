@@ -325,6 +325,7 @@ async function main() {
     await updateButton.waitFor();
     // Settings stays reachable in both views, with no preference mutation.
     await setSettingsOpen(true);
+    await panel.locator(".crmp-feature > summary").filter({ hasText: /^Automatic cleanup$/u }).click();
     await panel.getByRole("button", { name: "Auto-cleanup: off", exact: true }).waitFor();
     await panel.getByRole("button", { name: "Native sidebar", exact: true }).click();
     assert.match(await panel.innerText(), /permanently deletes/);

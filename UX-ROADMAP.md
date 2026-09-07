@@ -1,5 +1,9 @@
 # Feature roadmap
 
+Implemented in v1.5.50: quiet background discovery, Force refresh,
+stale-sidebar recovery, and inline sync freshness. Published-package and actual
+two-desktop acceptance remain separate from source and browser-fixture checks.
+
 Implemented in v1.5.36: compact main sidebar, utility controls behind Settings, native diagnostic Save As, local state-bridge recovery, and clearer cleanup/connection-refresh feedback.
 
 Implemented in v1.5.34: device health with refresh/version evidence, cleanup preview/history, local device aliases, update details/history, and diagnostic export preview. See FEATURES.md for exact scope.

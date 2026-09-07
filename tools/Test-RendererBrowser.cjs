@@ -10,7 +10,7 @@ const { chromium } = require("playwright");
 
 const sourcePath = path.join(__dirname, "..", "windows", "CodexRemoteMobileProject", "renderer-mobile-project-view.js");
 const source = fs.readFileSync(sourcePath, "utf8").replace(/\r\n/gu, "\n");
-const fixtureSource = source.replace("  return install();\n})();", "  globalThis.__crmpBrowserFixture = { state, install, render, collectModel, emptyInventoryMessage, refreshDeviceHealth, diagnosticSnapshot };\n})();");
+const fixtureSource = source.replace("  return install();\n})();", "  globalThis.__crmpBrowserFixture = { state, install, render, collectModel, emptyInventoryMessage, refreshDeviceHealth, requestDeviceRefresh, diagnosticSnapshot, discoverHostNames, discoverRemoteRuntimes, hydrateNativeInventory, invalidateDiscoveryCaches, schedule, scheduleNativeInventoryHydration, scheduleRemoteProjectInventory, startNativeProjectThread, uninstall };\n})();");
 assert.notEqual(fixtureSource, source, "The fixture must expose the real renderer entrypoints.");
 
 async function main() {
@@ -40,6 +40,12 @@ async function main() {
       localStorage.setItem("codex-remote-mobile-auto-register-enabled-v1", "false");
       localStorage.setItem("codex-remote-mobile-auto-archive-enabled-v1", "false");
       const project = document.getElementById("native-project");
+      project.setAttribute("data-app-action-sidebar-project-list-id", "fixture-project");
+      const projectNew = document.createElement("button");
+      projectNew.setAttribute("aria-label", "Start new chat in Design project");
+      projectNew.textContent = "New chat";
+      project.appendChild(projectNew);
+      globalThis.__fixtureProject = project;
       project.__reactFiber$fixture = { memoizedProps: { group: {
         projectKind: "remote", projectId: "fixture-project", hostId: __fixtureHost,
         hostDisplayName: "Remote " + "env" + "_" + "primary_fixture", cwd: "/fixture/design", label: "Design project",
@@ -55,6 +61,13 @@ async function main() {
         pending: false, projects: [{ cwd, name: "Design project", rootPaths: [cwd] }], projectsAuthoritative: true,
         publisherVersion: 53, retryAt: 0, tasks: new Map(), threadScope: "user-visible", threadScopeGeneratedAt: Date.now(), threads: [], threadsAuthoritative: true,
       });
+      globalThis.__setFixtureRuntime = runtime => {
+        globalThis.__fixtureProject.__reactFiber$fixture.memoizedState = runtime ? [{ hostId: __fixtureHost, requestClient: runtime.requestClient, fetchFromHost: runtime.fetchFromHost }] : null;
+        if (globalThis.__crmpBrowserFixture?.state) {
+          globalThis.__crmpBrowserFixture.state.remoteRuntimeCache.clear();
+          globalThis.__crmpBrowserFixture.state.remoteRuntimeScannedAt = 0;
+        }
+      };
     });
     await page.evaluate(fixtureSource);
     await page.evaluate(() => {
@@ -64,11 +77,99 @@ async function main() {
     const panel = page.locator("#codex-remote-mobile-project-panel");
     const settingsButton = panel.getByRole("button", { name: "Settings", exact: true });
     const setSettingsOpen = async open => { if (await settingsButton.getAttribute("aria-expanded") !== String(open)) await settingsButton.click(); };
+    // The replacement must leave the native global navigation and explicit
+    // project New chat action usable. Background discovery with the legacy
+    // preference enabled must never open the native Add project dialog.
+    await page.evaluate(() => {
+      globalThis.__fixtureNativeGlobalNewChats = 0;
+      document.querySelector("nav > button.global").addEventListener("click", () => { globalThis.__fixtureNativeGlobalNewChats += 1; });
+      globalThis.__fixtureNativeProjectNewChats = 0;
+      document.querySelector("#native-project button[aria-label^=\"Start new chat in \"]").addEventListener("click", () => { globalThis.__fixtureNativeProjectNewChats += 1; });
+      localStorage.setItem("codex-remote-mobile-auto-register-enabled-v1", "true");
+      __crmpBrowserFixture.state.localRegisteredProjectsFetchedAt = Date.now();
+      __crmpBrowserFixture.render();
+    });
+    await page.locator("nav > button.global").first().click();
+    await panel.getByRole("button", { name: "Start new chat in Design project", exact: true }).click({ force: true });
+    assert.equal(await page.evaluate(() => __fixtureNativeGlobalNewChats), 1, "global New chat must remain connected outside the replacement panel");
+    assert.equal(await page.evaluate(() => __fixtureNativeProjectNewChats), 1, "explicit project New chat must invoke the native action");
+    assert.equal(await page.locator('[role="dialog"],.codex-dialog').count(), 0, "explicit New chat must not open a remote-project registration dialog");
+    await page.evaluate(() => { localStorage.setItem("codex-remote-mobile-auto-register-enabled-v1", "false"); __crmpBrowserFixture.render(); });
+
+    // Install a runtime through the mounted React fiber and force a refresh
+    // through the browser-visible control. The selected filter must survive,
+    // retry gates must be bypassed, and a refresh must remain dialog-free.
+    await page.evaluate(() => {
+      const hostId = __fixtureHost;
+      const cwd = "/fixture/design";
+      const threadId = "browser-refresh-thread";
+      const payload = { generatedAt: new Date().toISOString(), hostDisplayName: "Peer desktop", projects: [{ cwd, name: "Design project", rootPaths: [cwd] }], publisherVersion: 53, schemaVersion: 1, tasks: [], threadScope: "user-visible", threadScopeGeneratedAt: new Date().toISOString(), threads: [{ cwd, id: threadId, projectId: "fixture-project", status: "idle", title: "Fresh browser response" }] };
+      const encode = text => btoa(String.fromCharCode(...new TextEncoder().encode(text)));
+      globalThis.__fixtureDiscoveryCalls = [];
+      const runtime = { requestClient: { sendRequest: async (method, params) => {
+        __fixtureDiscoveryCalls.push({ method, params });
+        if (method === "thread/list") return { data: [{ cwd, id: threadId, projectId: "fixture-project", status: "idle", title: "Fresh browser response" }], nextCursor: null };
+        if (method === "config/read") return { codexHome: "C:\\Fixture\\browser-refresh\\.codex" };
+        if (method === "fs/readFile") return { dataBase64: encode(JSON.stringify(payload)) };
+        throw new Error(`Unexpected fixture request: ${method}`);
+      } } };
+      __setFixtureRuntime(runtime);
+      __crmpBrowserFixture.state.threadInventories.set(hostId, { error: null, fetchedAt: Date.now() - 1000, hostId, pages: 1, retryAt: Date.now() + 60000, threads: [{ cwd, id: "browser-old-thread", status: "idle", title: "Old browser response" }], truncated: false });
+      __crmpBrowserFixture.state.filter = hostId;
+      if (__crmpBrowserFixture.state.inventoryHydrationTimer !== null) clearTimeout(__crmpBrowserFixture.state.inventoryHydrationTimer);
+      __crmpBrowserFixture.state.inventoryHydrationTimer = null;
+      __crmpBrowserFixture.state.inventoryHydrationStarted = true;
+      __crmpBrowserFixture.state.inventoryHydrationDirty = false;
+    });
+    await page.evaluate(() => {
+      const composer = document.createElement("textarea");
+      composer.id = "refresh-draft";
+      composer.value = "Keep this unsent draft";
+      document.body.appendChild(composer);
+      history.replaceState(null, "", "#open-chat-preserved");
+      const nav = document.querySelector("nav");
+      nav.style.cssText += ";height:200px;min-height:0;overflow:auto";
+      nav.scrollTop = 35;
+      __crmpBrowserFixture.state.collapsed.add("refresh-collapsed-fixture");
+      composer.focus({ preventScroll: true });
+      composer.setSelectionRange(5, 9);
+      globalThis.__refreshPreservation = { scroll: nav.scrollTop, route: location.href, collapsed: [...__crmpBrowserFixture.state.collapsed] };
+      document.querySelector(".crmp-force-refresh").click();
+    });
+    await page.waitForFunction(() => !__crmpBrowserFixture.state.deviceRefreshPending);
+    const browserRefresh = await page.evaluate(() => ({
+      calls: __fixtureDiscoveryCalls.filter(call => call.method === "thread/list").length,
+      filter: __crmpBrowserFixture.state.filter,
+      dialogs: document.querySelectorAll('[role="dialog"],.codex-dialog').length,
+      thread: __crmpBrowserFixture.state.threadInventories.get(__fixtureHost)?.threads?.[0]?.id,
+    }));
+    assert.deepEqual(browserRefresh, { calls: 1, filter: await page.evaluate(() => __fixtureHost), dialogs: 0, thread: "browser-refresh-thread" }, "Force refresh must preserve the selected device, read fresh membership once, and stay dialog-free");
+    const preservedRefresh = await page.evaluate(() => ({
+      draft: document.getElementById("refresh-draft").value,
+      selection: [document.getElementById("refresh-draft").selectionStart, document.getElementById("refresh-draft").selectionEnd],
+      focus: document.activeElement.id,
+      scroll: document.querySelector("nav").scrollTop === __refreshPreservation.scroll,
+      route: location.href === __refreshPreservation.route,
+      collapsed: JSON.stringify([...__crmpBrowserFixture.state.collapsed]) === JSON.stringify(__refreshPreservation.collapsed),
+    }));
+    assert.deepEqual(preservedRefresh, { draft: "Keep this unsent draft", selection: [5, 9], focus: "refresh-draft", scroll: true, route: true, collapsed: true }, "refresh must preserve the open route, composer, caret, focus, scroll and expanded state");
+    await page.evaluate(() => { document.getElementById("refresh-draft").remove(); document.querySelector("nav").removeAttribute("style"); __crmpBrowserFixture.state.collapsed.delete("refresh-collapsed-fixture"); });
+    await page.evaluate(() => {
+      __setFixtureRuntime(null);
+      __crmpBrowserFixture.state.filter = "all";
+      __crmpBrowserFixture.state.threadInventories.delete(__fixtureHost);
+      __crmpBrowserFixture.state.remoteProjectInventories.set(__fixtureHost, __fixtureInventory(null, "/fixture/design"));
+      localStorage.removeItem("codex-remote-mobile-host-names-v1");
+      localStorage.removeItem("codex-remote-mobile-native-host-names-v1");
+      __crmpBrowserFixture.state.hostDiscoveryDirty = true;
+      __crmpBrowserFixture.render();
+    });
     assert.equal(await panel.locator(".crmp-settings").isVisible(), false);
     assert.equal(await panel.locator(".crmp-version").isVisible(), false, "update details must stay behind Settings");
     assert.equal(await panel.locator(".crmp-devices").isVisible(), false, "device health must stay behind Settings");
     assert.equal(await panel.locator(":scope > .crmp-update-panel,:scope > .crmp-devices").count(), 0);
     await setSettingsOpen(true);
+    assert.equal(await page.evaluate(() => __crmpBrowserFixture.state.settingsOpen), true, "Settings must remain open after Force refresh");
     await panel.locator(".crmp-version").waitFor();
     assert.match(await panel.locator(".crmp-version").innerText(), /Remote Enabler · v1\.5\.49/u);
     assert.equal(await panel.locator(".crmp-version svg").count(), 1);
@@ -390,7 +491,7 @@ async function main() {
         }
       }
       await page.locator("nav").evaluate(element => { element.style.width = "320px"; element.style.zoom = 1; });
-      const colors = await panel.locator(".crmp-help,.crmp-mode,.crmp-chip").evaluateAll(elements => elements.filter(el => el.getBoundingClientRect().height).map(el => ({ text: el.textContent, color: getComputedStyle(el).color })));
+      const colors = await panel.locator(".crmp-help,.crmp-mode,.crmp-chip,.crmp-sync-status").evaluateAll(elements => elements.filter(el => el.getBoundingClientRect().height).map(el => ({ text: el.textContent, color: getComputedStyle(el).color })));
       const luminance = rgb => rgb.map(value => { value /= 255; return value <= .04045 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4; }).reduce((sum, value, index) => sum + value * [.2126,.7152,.0722][index], 0);
       const background = luminance(theme === "dark" ? [27,34,47] : [255,255,255]);
       for (const item of colors) {
@@ -488,9 +589,236 @@ async function main() {
     await lifecyclePanel.locator(".crmp-chip").filter({ hasText: "Named test workstation" }).waitFor();
     await lifecyclePanel.locator(".crmp-inventory-status").filter({ hasText: "authorize this computer" }).waitFor();
     if (screenshotPath) await lifecyclePanel.screenshot({ path: screenshotPath.replace(/\.png$/u, "-authorization.png") });
+
+    // Keep failure and truncation checks in a clean browser profile. The
+    // mounted React fiber is the only runtime discovery fixture; all request
+    // responses below are local in-memory values.
+    const retainedContext = await browser.newContext();
+    const retainedPage = await retainedContext.newPage();
+    retainedPage.setDefaultTimeout(6000);
+    retainedPage.on("pageerror", error => errors.push(error.message));
+    await retainedPage.route("http://retained-inventory.invalid/**", route => route.fulfill({ contentType: "text/html", body: '<!doctype html><html><body><nav style="width:320px"><button aria-label="Project sidebar options" hidden></button><div id="native-list"><div id="native-project" data-sidebar-project-kind="remote" role="listitem"><div role="button" data-app-action-sidebar-project-collapsed="false">Retained project</div></div></div></nav></body></html>' }));
+    await retainedPage.goto("http://retained-inventory.invalid/");
+    await retainedPage.evaluate(() => {
+      globalThis.__retainedHost = "remote-control:" + "env" + "_browser_retained";
+      globalThis.__CODEX_REMOTE_MOBILE_CONFIG__ = { localDisplayName: "Fixture local" };
+      localStorage.setItem("codex-remote-mobile-auto-register-enabled-v1", "false");
+      localStorage.setItem("codex-remote-mobile-auto-archive-enabled-v1", "false");
+      const project = document.getElementById("native-project");
+      project.setAttribute("data-app-action-sidebar-project-list-id", "retained-project");
+      project.__reactFiber$fixture = { memoizedProps: { group: { projectKind: "remote", projectId: "retained-project", hostId: __retainedHost, hostDisplayName: "Retained device", cwd: "/fixture/retained", label: "Retained project" } }, memoizedState: null, return: null, updateQueue: null };
+      globalThis.__retainedProject = project;
+    });
+    await retainedPage.evaluate(fixtureSource);
+    await retainedPage.evaluate(() => __crmpBrowserFixture.install());
+    await retainedPage.evaluate(async () => {
+      const state = __crmpBrowserFixture.state;
+      if (state.inventoryHydrationTimer !== null) clearTimeout(state.inventoryHydrationTimer);
+      state.inventoryHydrationTimer = null;
+      if (state.inventoryHydrationPromise) await state.inventoryHydrationPromise;
+      state.inventoryHydrationStarted = true;
+      state.inventoryHydrationDirty = false;
+    });
+    const retainedFailure = await retainedPage.evaluate(async () => {
+      const fixture = __crmpBrowserFixture;
+      const state = fixture.state;
+      const fetchedAt = Date.now() - 1000;
+      const oldThread = { cwd: "/fixture/retained", id: "retained-old", status: "idle", title: "Retained chat" };
+      state.threadInventories.set(__retainedHost, { error: null, fetchedAt, hostId: __retainedHost, pages: 1, retryAt: 0, threads: [oldThread], truncated: false });
+      state.remoteRuntimeCache.clear();
+      state.remoteRuntimeScannedAt = 0;
+      globalThis.__retainedCalls = [];
+      const runtime = { requestClient: { sendRequest: async method => { __retainedCalls.push(method); if (method === "thread/list") throw new Error("device unavailable"); throw new Error(`Unexpected fixture request: ${method}`); } } };
+      __retainedProject.__reactFiber$fixture.memoizedState = [{ hostId: __retainedHost, requestClient: runtime.requestClient }];
+      state.remoteRuntimeCache.set(__retainedHost, runtime);
+      state.remoteRuntimeScannedAt = Date.now();
+      await fixture.hydrateNativeInventory(true, state.discoveryGeneration);
+      const current = state.threadInventories.get(__retainedHost);
+      return { calls: __retainedCalls, error: current.error, fetchedAt: current.fetchedAt, ids: current.threads.map(thread => thread.id), truncated: current.truncated, hydrationError: state.inventoryHydrationError };
+    });
+    assert.deepEqual(retainedFailure.calls, ["thread/list"], "a direct failed inventory must make one bounded request");
+    assert.equal(retainedFailure.error, "device unavailable");
+    assert.equal(retainedFailure.fetchedAt < Date.now(), true, "a failed inventory must retain its prior timestamp");
+    assert.deepEqual(retainedFailure.ids, ["retained-old"], "a failed inventory must retain the last valid rows");
+    assert.equal(retainedFailure.truncated, false, "a failed refresh must preserve a previously complete snapshot");
+    assert.match(retainedFailure.hydrationError, /device unavailable/u);
+
+    const retainedTruncation = await retainedPage.evaluate(async () => {
+      const fixture = __crmpBrowserFixture;
+      const state = fixture.state;
+      if (state.inventoryHydrationTimer !== null) clearTimeout(state.inventoryHydrationTimer);
+      state.inventoryHydrationTimer = null;
+      state.inventoryHydrationDirty = false;
+      state.inventoryHydrationStarted = true;
+      const priorFetchedAt = Date.now() - 2000;
+      state.threadInventories.set(__retainedHost, { error: null, fetchedAt: priorFetchedAt, hostId: __retainedHost, pages: 1, retryAt: 0, threads: [{ cwd: "/fixture/retained", id: "retained-old", status: "idle", title: "Retained chat" }], truncated: false });
+      globalThis.__retainedPageCount = 0;
+      const runtime = { requestClient: { sendRequest: async method => {
+        if (method !== "thread/list") throw new Error(`Unexpected fixture request: ${method}`);
+        __retainedPageCount += 1;
+        return { data: [{ cwd: "/fixture/retained", id: `truncated-${__retainedPageCount}`, status: "idle", title: `Page ${__retainedPageCount}` }], nextCursor: `cursor-${__retainedPageCount}` };
+      } } };
+      __retainedProject.__reactFiber$fixture.memoizedState = [{ hostId: __retainedHost, requestClient: runtime.requestClient }];
+      state.remoteRuntimeCache.set(__retainedHost, runtime);
+      state.remoteRuntimeScannedAt = Date.now();
+      await fixture.hydrateNativeInventory(true, state.discoveryGeneration);
+      const current = state.threadInventories.get(__retainedHost);
+      return { pages: __retainedPageCount, attemptTruncated: current.attemptTruncated, error: current.error, fetchedAt: current.fetchedAt, ids: current.threads.map(thread => thread.id), truncated: current.truncated, hydrationTruncated: state.inventoryHydrationTruncated };
+    });
+    assert.equal(retainedTruncation.pages, 200, "a bounded browser fixture must reach the renderer page limit");
+    assert.equal(retainedTruncation.attemptTruncated, true, "a bounded pagination attempt must be marked incomplete");
+    assert.equal(retainedTruncation.error, "thread/list returned an incomplete inventory");
+    assert.equal(retainedTruncation.fetchedAt < Date.now(), true, "a truncated inventory must retain its prior timestamp");
+    assert.deepEqual(retainedTruncation.ids, ["retained-old"], "a truncated inventory must retain the last valid rows");
+    assert.equal(retainedTruncation.truncated, false, "a truncated attempt must not discard a prior complete snapshot");
+    assert.equal(retainedTruncation.hydrationTruncated, true);
+
+    const focusThrottle = await retainedPage.evaluate(async () => {
+      const fixture = __crmpBrowserFixture;
+      const state = fixture.state;
+      if (state.inventoryHydrationTimer !== null) clearTimeout(state.inventoryHydrationTimer);
+      state.inventoryHydrationTimer = null;
+      state.inventoryHydrationStarted = true;
+      state.inventoryHydrationDirty = false;
+      __retainedProject.__reactFiber$fixture.memoizedState = null;
+      state.remoteRuntimeCache.clear();
+      state.remoteRuntimeScannedAt = 0;
+      state.remoteProjectInventories.set(__retainedHost, { error: null, fetchedAt: Date.now() - 181000, generatedAt: Date.now() - 181000, hostDisplayName: "Retained stale device", pending: false, projects: [{ cwd: "/fixture/retained", name: "Retained project", rootPaths: ["/fixture/retained"] }], projectsAuthoritative: true, retryAt: 0, tasks: new Map(), threads: [], threadsAuthoritative: true });
+      state.healthRefreshUntil = 0;
+      window.dispatchEvent(new Event("focus"));
+      const firstRefresh = state.deviceRefreshPromise;
+      const firstStartedAt = state.deviceRefreshLastStartedAt;
+      await firstRefresh;
+      const firstGeneration = state.deviceRefreshGeneration;
+      window.dispatchEvent(new Event("focus"));
+      await Promise.resolve();
+      return { firstStarted: firstStartedAt > 0, firstGeneration, secondGeneration: state.deviceRefreshGeneration, pending: state.deviceRefreshPending };
+    });
+    assert.equal(focusThrottle.firstStarted, true, "a visible focus must refresh stale device data");
+    assert.equal(focusThrottle.secondGeneration, focusThrottle.firstGeneration, "focus refreshes must be throttled during the cooldown");
+    assert.equal(focusThrottle.pending, false);
+
+    // A frame is coalesced to one render, and all event/focus listeners are
+    // removed by uninstall. This also exercises the real mounted teardown
+    // path after pending inventory work has settled.
+    const teardown = await retainedPage.evaluate(async () => {
+      const fixture = __crmpBrowserFixture;
+      const state = fixture.state;
+      if (state.scheduledFrame !== null) cancelAnimationFrame(state.scheduledFrame);
+      state.scheduledFrame = null;
+      if (state.inventoryHydrationTimer !== null) clearTimeout(state.inventoryHydrationTimer);
+      state.inventoryHydrationTimer = null;
+      state.inventoryHydrationStarted = true;
+      state.inventoryHydrationDirty = false;
+      const before = state.counters.renders;
+      for (let index = 0; index < 100; index += 1) fixture.schedule();
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const renderDelta = state.counters.renders - before;
+      const report = fixture.uninstall();
+      const afterUninstall = state.counters.renders;
+      window.dispatchEvent(new Event("focus"));
+      window.dispatchEvent(new Event("storage"));
+      document.dispatchEvent(new Event("visibilitychange"));
+      fixture.schedule();
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      return {
+        active: state.active,
+        disposed: state.disposed,
+        observer: state.observer,
+        mountObserver: state.mountObserver,
+        panelPresent: Boolean(document.getElementById("codex-remote-mobile-project-panel")),
+        liveRegionPresent: Boolean(document.querySelector(".crmp-sr-only[role=status]")),
+        renderDelta,
+        postUninstallRenderDelta: state.counters.renders - afterUninstall,
+        reportActive: report.active,
+      };
+    });
+    assert.equal(teardown.renderDelta, 1, "repeated schedule calls must coalesce to one animation frame");
+    assert.deepEqual({ active: teardown.active, disposed: teardown.disposed, observer: teardown.observer, mountObserver: teardown.mountObserver, panelPresent: teardown.panelPresent, liveRegionPresent: teardown.liveRegionPresent, postUninstallRenderDelta: teardown.postUninstallRenderDelta }, { active: false, disposed: true, observer: null, mountObserver: null, panelPresent: false, liveRegionPresent: false, postUninstallRenderDelta: 0 }, "uninstall must tear down listeners, DOM, and future renders");
+    assert.equal(teardown.reportActive, false);
+    await retainedContext.close();
+
+    // Reinstall the same renderer closure while two remote reads are still
+    // pending. A late successful read and a late failed read must both be
+    // ignored after uninstall invalidates that generation.
+    const raceContext = await browser.newContext();
+    const racePage = await raceContext.newPage();
+    racePage.setDefaultTimeout(6000);
+    racePage.on("pageerror", error => errors.push(error.message));
+    await racePage.route("http://reinstall-race.invalid/**", route => route.fulfill({ contentType: "text/html", body: '<!doctype html><html><body><nav style="width:320px"><button aria-label="Project sidebar options" hidden></button><div id="native-list"><div id="native-project" data-sidebar-project-kind="remote" role="listitem"><div role="button" data-app-action-sidebar-project-collapsed="false">Race project</div></div></div></nav></body></html>' }));
+    await racePage.goto("http://reinstall-race.invalid/");
+    await racePage.evaluate(() => {
+      globalThis.__raceHostSuccess = "remote-control:" + "env" + "_browser_late_success";
+      globalThis.__raceHostFailure = "remote-control:" + "env" + "_browser_late_failure";
+      globalThis.__CODEX_REMOTE_MOBILE_CONFIG__ = { localDisplayName: "Fixture local" };
+      localStorage.setItem("codex-remote-mobile-auto-register-enabled-v1", "false");
+      localStorage.setItem("codex-remote-mobile-auto-archive-enabled-v1", "false");
+      const project = document.getElementById("native-project");
+      project.setAttribute("data-app-action-sidebar-project-list-id", "race-project");
+      project.__reactFiber$fixture = { memoizedProps: { group: { projectKind: "remote", projectId: "race-project", hostId: __raceHostSuccess, hostDisplayName: "Race device", cwd: "/fixture/race", label: "Race project" } }, memoizedState: null, return: null, updateQueue: null };
+      globalThis.__raceProject = project;
+    });
+    await racePage.evaluate(fixtureSource);
+    await racePage.evaluate(() => __crmpBrowserFixture.install());
+    await racePage.evaluate(async () => {
+      const fixture = __crmpBrowserFixture;
+      const state = fixture.state;
+      if (state.inventoryHydrationTimer !== null) clearTimeout(state.inventoryHydrationTimer);
+      state.inventoryHydrationTimer = null;
+      if (state.inventoryHydrationPromise) await state.inventoryHydrationPromise;
+      state.inventoryHydrationStarted = true;
+      const makeOldInventory = hostId => ({ error: null, fetchedAt: Date.now() - 1000, generatedAt: Date.now() - 1000, hostDisplayName: "Prior snapshot", pending: false, projects: [], projectsAuthoritative: true, publisherVersion: 53, retryAt: 0, tasks: new Map(), threads: [], threadsAuthoritative: true });
+      state.remoteProjectInventories.set(__raceHostSuccess, makeOldInventory(__raceHostSuccess));
+      state.remoteProjectInventories.set(__raceHostFailure, makeOldInventory(__raceHostFailure));
+      const oldSuccessHome = new Promise((resolve, reject) => { globalThis.__resolveOldSuccess = resolve; globalThis.__rejectOldSuccess = reject; });
+      const oldFailureHome = new Promise((resolve, reject) => { globalThis.__resolveOldFailure = resolve; globalThis.__rejectOldFailure = reject; });
+      const oldPayload = hostDisplayName => ({ generatedAt: new Date().toISOString(), hostDisplayName, projects: [{ cwd: "/fixture/race", name: "Old response", rootPaths: ["/fixture/race"] }], publisherVersion: 53, schemaVersion: 1, tasks: [], threadScope: "user-visible", threadScopeGeneratedAt: new Date().toISOString(), threads: [] });
+      const encode = value => btoa(String.fromCharCode(...new TextEncoder().encode(JSON.stringify(value))));
+      const oldRuntime = (home, payload, failure = false) => ({ requestClient: { sendRequest: async method => {
+        if (method === "config/read") return home;
+        if (method === "fs/readFile") { if (failure) throw new Error("unexpected old file read"); return { dataBase64: encode(payload) }; }
+        throw new Error(`Unexpected fixture request: ${method}`);
+      } } });
+      const oldSuccess = oldRuntime(oldSuccessHome, oldPayload("Late old success"));
+      const oldFailure = oldRuntime(oldFailureHome, oldPayload("Should not appear"), true);
+      state.remoteRuntimeCache.set(__raceHostSuccess, oldSuccess);
+      state.remoteRuntimeCache.set(__raceHostFailure, oldFailure);
+      globalThis.__oldReinstallFixture = fixture;
+      globalThis.__oldReinstallPromise = fixture.scheduleRemoteProjectInventory(new Map([[__raceHostSuccess, oldSuccess], [__raceHostFailure, oldFailure]]), true, state.discoveryGeneration);
+    });
+    await racePage.waitForTimeout(0);
+    await racePage.evaluate(() => {
+      const fixture = __oldReinstallFixture;
+      // Remove the runtime from the mounted graph so install() cannot start a
+      // second request while the intentionally delayed old requests settle.
+      __raceProject.__reactFiber$fixture.memoizedState = null;
+      fixture.uninstall();
+      fixture.install();
+      const state = fixture.state;
+      const freshInventory = (name) => ({ error: null, fetchedAt: Date.now(), generatedAt: Date.now(), hostDisplayName: name, pending: false, projects: [{ cwd: "/fixture/race", name: "Fresh after reinstall", rootPaths: ["/fixture/race"] }], projectsAuthoritative: true, publisherVersion: 53, retryAt: 0, tasks: new Map(), threads: [], threadsAuthoritative: true });
+      state.remoteRuntimeCache.clear();
+      state.remoteProjectInventories.set(__raceHostSuccess, freshInventory("Fresh success device"));
+      state.remoteProjectInventories.set(__raceHostFailure, freshInventory("Fresh failure device"));
+    });
+    const reinstallRace = await racePage.evaluate(async () => {
+      __resolveOldSuccess({ codexHome: "C:\\Fixture\\late-old-success\\.codex" });
+      __rejectOldFailure(new Error("late old failure"));
+      await __oldReinstallPromise;
+      const state = __oldReinstallFixture.state;
+      return {
+        disposed: state.disposed,
+        active: state.active,
+        success: { name: state.remoteProjectInventories.get(__raceHostSuccess)?.hostDisplayName, error: state.remoteProjectInventories.get(__raceHostSuccess)?.error },
+        failure: { name: state.remoteProjectInventories.get(__raceHostFailure)?.hostDisplayName, error: state.remoteProjectInventories.get(__raceHostFailure)?.error },
+      };
+    });
+    assert.deepEqual(reinstallRace, { disposed: false, active: true, success: { name: "Fresh success device", error: null }, failure: { name: "Fresh failure device", error: null } }, "late success and failure must be ignored after same-closure uninstall and reinstall");
+    await racePage.evaluate(() => __oldReinstallFixture.uninstall());
+    await raceContext.close();
+
     await lifecycleContext.close();
     assert.deepEqual(errors, [], "the real renderer must not raise browser errors");
-    console.log(JSON.stringify({ nativeConnectionLifecycle: true, nativeLabelsWithoutRows: true, fullDocumentReloadRetainsLabels: true, authorizationPauseVisible: true, settingsContainUpdatesAndHealth: true, missingUpdaterRecoveryBothViews: true, guidedConnectionTroubleshooting: true, transferDiagnosticsAllowlisted: true, featureControls: true, sharedAliasSaveReset: true, sharedAliasReload: true, sharedAliasTombstone: true, sharedAliasFilterOrdering: true, caretPreserved: true, healthRefreshCoalesced: true, diagnosticCopyAndNativeSave: true, diagnosticCancelAndError: true, uxStates: 10, themes: 2, sidebarWidths: [280,320,400], scaling: [1,2], fixtureTextContrast: true, stableAnnouncements: true, focusRestored: true, realChromium: true, realModelAndRender: true, neutralName: true, metadataArrival: true, reinjection: true, updateEventBothTargets: true, keyboardQueue: true, nativeViewUpdate: true, cancel: true, unrelatedMutations: 200, extraRenders: after.renders - before.renders, extraHostScans: after.hostDiscoveryScans - before.hostDiscoveryScans }));
+    console.log(JSON.stringify({ nativeConnectionLifecycle: true, nativeLabelsWithoutRows: true, fullDocumentReloadRetainsLabels: true, authorizationPauseVisible: true, settingsContainUpdatesAndHealth: true, missingUpdaterRecoveryBothViews: true, guidedConnectionTroubleshooting: true, transferDiagnosticsAllowlisted: true, featureControls: true, sharedAliasSaveReset: true, sharedAliasReload: true, sharedAliasTombstone: true, sharedAliasFilterOrdering: true, caretPreserved: true, healthRefreshCoalesced: true, diagnosticCopyAndNativeSave: true, diagnosticCancelAndError: true, directFailureRowsRetained: true, directTruncatedRowsRetained: true, scheduleFrameCoalesced: true, focusRefreshThrottled: true, focusListenerTeardown: true, uninstallTeardown: true, lateSuccessFailureIgnoredAfterReinstall: true, uxStates: 10, themes: 2, sidebarWidths: [280,320,400], scaling: [1,2], fixtureTextContrast: true, stableAnnouncements: true, focusRestored: true, realChromium: true, realModelAndRender: true, neutralName: true, metadataArrival: true, reinjection: true, updateEventBothTargets: true, keyboardQueue: true, nativeViewUpdate: true, cancel: true, unrelatedMutations: 200, extraRenders: after.renders - before.renders, extraHostScans: after.hostDiscoveryScans - before.hostDiscoveryScans }));
   } finally { await browser.close(); }
 }
 

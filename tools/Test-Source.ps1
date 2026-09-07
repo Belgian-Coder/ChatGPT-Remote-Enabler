@@ -235,7 +235,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Thread visibility self-test failed.' }
 & $node (Join-Path $root 'windows\CodexRemoteMobileProject\tests\TaskStatus.SelfTest.js')
 if ($LASTEXITCODE -ne 0) { throw 'Task status self-test failed.' }
 
-foreach ($test in @('HostNames', 'SidebarLayout', 'SidebarStatus', 'SidebarBehavior', 'RendererReliability', 'FeatureState', 'PeerTransfer', 'NativeStateBridge', 'NativeConnectionLifecycle')) {
+foreach ($test in @('HostNames', 'SidebarLayout', 'SidebarStatus', 'SidebarBehavior', 'RendererReliability', 'FeatureState', 'PeerTransfer', 'NativeStateBridge', 'NativeConnectionLifecycle', 'DiscoveryRefresh')) {
     & $node (Join-Path $root "windows\CodexRemoteMobileProject\tests\$test.SelfTest.js")
     if ($LASTEXITCODE -ne 0) { throw "$test self-test failed." }
 }
@@ -329,6 +329,7 @@ if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
     PeerTransferSelfTest = $true
     NativeStateBridgeSelfTest = $true
     NativeConnectionLifecycleSelfTest = $true
+    DiscoveryRefreshSelfTest = $true
     LegacyDeviceKeyCompatibilitySelfTest = $true
     LegacyDeviceKeyStartupSelfTest = $true
     MobileReadinessPollingSelfTest = $true

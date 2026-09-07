@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.5.50 — 2026-09-07
+
+- Stop background project discovery from opening native Add project dialogs, including on clients that previously enabled automatic registration. Preserve discovered rows, existing registrations, and explicit project actions.
+- Add Force refresh and a shared sidebar refresh coordinator with cache invalidation, bounded follow-up requests, and stale-result protection. Retain cached rows on failed or incomplete reads and show sync freshness inline.
+- Refresh stale chat membership when returning to the app and retain the periodic membership refresh. Add regression coverage for quiet discovery, stale runtime recovery, refresh races, and draft/sidebar preservation.
+- Baseline reproduction: the discovery fixture against the original renderer observes one unwanted native navigation call; the isolated forced-refresh case performs zero chat-list reads while a retry gate is active. These reproduce source defects, not the already-recovered live two-desktop incident.
+- Validation: full `tools/Test-Source.ps1` passed in an isolated standalone checkout (the canonical Infrastructure package is a source mirror); the final four additional discovery-race regressions also passed separately. Both package archive checks and privacy gates passed, and Windows/macOS renderers plus all three feature guides are byte-identical. `git diff --check` passed.
+- Independent final review resolved reconnect, replaced-runtime, local project-read, and scheduled-refresh races. Legacy background reconciliation is also retired so refresh cannot remove registrations or clear the selected project.
+- Browser validation passed in Chromium with synthetic runtimes: fresh membership without registration dialogs, retained failed/incomplete inventories, focus throttling, teardown/reinstall races, and preservation of the open route, typed draft, caret, focus, filters, collapsed state, and sidebar scroll. Checked both themes at 280/320/400-pixel sidebar widths and 1x/2x scaling; inspected the rendered fixture screenshot.
+- The optional, older `EmptySidebarDiscovery.SelfTest.js` still references removed `nativeSidebarMountContainer`; it fails identically on the unchanged baseline and is not part of `Test-Source.ps1`. Current empty/native connection behavior is covered by the maintained lifecycle and browser fixtures.
+- Published package validation does not imply installation or actual two-Windows-client acceptance; those live checks remain pending.
+
 ## Unreleased documentation
 
 - Expand the README into a complete feature overview with refreshed v1.5.49 renderer screenshots using synthetic demo data, connection authorization guidance, and current validation scope. Include a reproducible screenshot capture in the browser fixture.

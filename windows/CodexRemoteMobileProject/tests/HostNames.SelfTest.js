@@ -131,20 +131,20 @@ nativeProjects = [new FixtureElement({
   projectId: "local-project",
   projectKind: "local",
 })];
-flow.state.threadInventories.set("local", { error: null, threads: [localThread("active", false)] });
+flow.state.threadInventories.set("local", { error: null, fetchedAt: Date.now(), truncated: false, threads: [localThread("active", false)] });
 let localProject = flow.collectModel().projects.find((project) => project.projectId === "local-project");
 assert.equal(localProject.taskStatusAuthoritative, true);
 assert.equal(localProject.taskUnreadAuthoritative, true);
 assert.equal(localProject.tasksAuthoritative, true);
 assert.equal(localProject.tasks[0].statusType, "loading", "current local app-server status must establish the busy phase");
-flow.state.threadInventories.set("local", { error: null, threads: [localThread("completed", true)] });
+flow.state.threadInventories.set("local", { error: null, fetchedAt: Date.now(), truncated: false, threads: [localThread("completed", true)] });
 localProject = flow.collectModel().projects.find((project) => project.projectId === "local-project");
 assert.equal(localProject.tasks[0].statusType, "idle");
 assert.equal(localProject.tasks[0].unread, true, "current local app-server unread state must establish the completed-unread phase");
-flow.state.threadInventories.set("local", { error: null, threads: [localThread("completed", false)] });
+flow.state.threadInventories.set("local", { error: null, fetchedAt: Date.now(), truncated: false, threads: [localThread("completed", false)] });
 localProject = flow.collectModel().projects.find((project) => project.projectId === "local-project");
 assert.equal(localProject.tasks[0].unread, false, "current local app-server unread state must establish the read phase");
-flow.state.threadInventories.set("local", { error: null, threads: [localThread("completed", undefined)] });
+flow.state.threadInventories.set("local", { error: null, fetchedAt: Date.now(), truncated: false, threads: [localThread("completed", undefined)] });
 localProject = flow.collectModel().projects.find((project) => project.projectId === "local-project");
 assert.equal(localProject.taskStatusAuthoritative, true, "known completion stays authoritative when unread metadata is absent");
 assert.equal(localProject.taskUnreadAuthoritative, false, "missing unread metadata must remain independently unknown");

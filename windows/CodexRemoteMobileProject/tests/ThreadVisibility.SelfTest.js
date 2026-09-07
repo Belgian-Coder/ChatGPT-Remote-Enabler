@@ -98,7 +98,7 @@ let authoritative = visibility.collectAuthoritativeThreadIds();
 assert.equal(visibility.taskIsAuthoritative({ conversationId: "verified-user", hostId: "local", selected: false }, authoritative), true);
 assert.equal(visibility.taskIsAuthoritative({ conversationId: "internal-child", hostId: "local", selected: true }, authoritative), false);
 
-visibility.state.threadInventories.set("local", { error: null, threads: [] });
+visibility.state.threadInventories.set("local", { error: null, fetchedAt: Date.now(), truncated: false, threads: [] });
 authoritative = visibility.collectAuthoritativeThreadIds();
 assert.equal(authoritative.has("local"), true);
 assert.equal(authoritative.get("local").size, 0);
@@ -136,7 +136,7 @@ authoritative = visibility.collectAuthoritativeThreadIds();
 assert.equal(authoritative.has(hostId), true);
 assert.equal(authoritative.get(hostId).size, 0);
 
-visibility.state.threadInventories.set(hostId, { error: null, threads: [{ id: "direct-user" }] });
+visibility.state.threadInventories.set(hostId, { error: null, fetchedAt: Date.now(), truncated: false, threads: [{ id: "direct-user" }] });
 authoritative = visibility.collectAuthoritativeThreadIds();
 assert.deepEqual([...authoritative.get(hostId)], ["direct-user"]);
 visibility.state.threadInventories.clear();
@@ -197,7 +197,7 @@ visibility.state.remoteProjectInventories.clear();
 visibility.state.hostConnectivity.clear();
 visibility.state.remoteCodexHomes.clear();
 visibility.state.remoteRuntimeCache.clear();
-visibility.state.threadInventories.set("local", { error: null, threads: [{ id: "local-user" }] });
+visibility.state.threadInventories.set("local", { error: null, fetchedAt: Date.now(), truncated: false, threads: [{ id: "local-user" }] });
 visibility.state.localInventoryProjects = [{ cwd: "C:\\work\\local-project" }];
 
 const selfEchoHostId = "remote-control:test-self";
@@ -285,7 +285,7 @@ assert.equal(visibility.state.localRuntimeHostIds.has(pathDriftSelfEchoHostId), 
 visibility.state.hostConnectivity.set(pathDriftSelfEchoHostId, { available: false, checkedAt: now });
 visibility.state.remoteCodexHomes.set(pathDriftSelfEchoHostId, "C:\\orphan-home");
 visibility.state.peerCacheStates.set(pathDriftSelfEchoHostId, { fetchedAt: now });
-visibility.state.threadInventories.set(pathDriftSelfEchoHostId, { error: null, threads: [{ id: "local-user" }] });
+visibility.state.threadInventories.set(pathDriftSelfEchoHostId, { error: null, fetchedAt: Date.now(), truncated: false, threads: [{ id: "local-user" }] });
 visibility.state.threadManagers.set(pathDriftSelfEchoHostId, {});
 visibility.state.verifiedThreadIds.set(pathDriftSelfEchoHostId, { ids: new Set(["local-user"]), verifiedAt: now });
 visibility.state.remoteRuntimeCache.set(pathDriftSelfEchoHostId, { requestClient: { sendRequest() {} } });
@@ -327,7 +327,7 @@ assert.match(originalSource, /state\.inventoryHydrationRounds = 0;/u);
 assert.doesNotMatch(originalSource, /inventoryHydrationPending = true;\s*state\.inventoryHydrationError = null;/u);
 assert.match(originalSource, /MAX_THREAD_LIST_PAGES = 200;/u);
 assert.match(originalSource, /retryAt: Date\.now\(\) \+ NATIVE_INVENTORY_ERROR_RETRY_MS/u);
-assert.match(originalSource, /finally \{\s*state\.inventoryHydrationPending = false;/u);
+assert.match(originalSource, /finally \{\s*const ownsHydration = state\.inventoryHydrationGeneration === operationGeneration;\s*if \(!ownsHydration\) return;\s*state\.inventoryHydrationPending = false;/u);
 assert.doesNotMatch(originalSource, /!authoritativeIds\.has\(task\.hostId\) && !task\.selected/);
 assert.match(originalSource, /threadScopeGeneratedAt/);
 
@@ -787,7 +787,7 @@ assert.match(originalSource, /threadScopeGeneratedAt/);
   vm.runInContext(testSource, context, { filename: rendererPath });
   const legacyUpgradeVisibility = context.__visibilityTest;
   const legacyPendingClient = { sendRequest: async () => ({ data: [], nextCursor: null }) };
-  legacyUpgradeVisibility.state.threadInventories.set("local", { error: null, threads: [{ id: "cached-user" }] });
+  legacyUpgradeVisibility.state.threadInventories.set("local", { error: null, fetchedAt: Date.now(), truncated: false, threads: [{ id: "cached-user" }] });
   legacyUpgradeVisibility.state.localInventoryProjects = [{ cwd: "D:\\Fixture", projectId: "cached-project" }];
   legacyUpgradeVisibility.assignLocalRuntime(null, legacyPendingClient);
   assert.equal(legacyUpgradeVisibility.state.localRuntime, null, "the first local client discovered after an idle v61 timeout must be treated as legacy-suspect");

@@ -195,6 +195,10 @@
     localRegisteredProjectsError: null,
     localRegisteredProjectsFetchedAt: 0,
     localRegisteredProjectsPending: false,
+    localRegisteredProjectsPendingGeneration: null,
+    localRegisteredProjectsPendingPromise: null,
+    localRegisteredProjectsQueuedGeneration: null,
+    localRegisteredProjectsQueuedPromise: null,
     localRuntime: null,
     localRuntimeGeneration: 0,
     localThreadListActiveClients: new Set(),
@@ -241,11 +245,25 @@
     aliasWriterId: null,
     healthRefreshUntil: 0,
     healthRefreshTimer: null,
+    deviceRefreshPending: false,
+    deviceRefreshQueued: false,
+    deviceRefreshQueueEligible: false,
+    deviceRefreshActiveGeneration: null,
+    deviceRefreshPromise: null,
+    deviceRefreshGeneration: 0,
+    deviceRefreshLastStartedAt: 0,
+    deviceRefreshLastSuccessfulAt: 0,
+    deviceRefreshLastError: null,
+    discoveryGeneration: 0,
+    inventoryHydrationPromise: null,
+    inventoryHydrationScheduled: null,
+    inventoryHydrationGeneration: null,
     cleanupPreview: null,
     cleanupPreviewPending: null,
     cleanupPreviewError: null,
     cleanupHistoryUnavailable: false,
     nativeStateBridgePending: null,
+    nativeStateBridgeGeneration: null,
     nativeStateBridgeRetryAt: 0,
     nativeStateBridgeControllers: new Set(),
     nativeConnectionSnapshot: null,
@@ -253,6 +271,7 @@
     nativeConnectionTimer: null,
     nativeConnectionRefreshPending: false,
     healthRefreshOutcomes: new Map(),
+    resumeRefreshHandler: null,
     diagnosticSavePending: false,
     diagnosticPreview: null,
     diagnosticFeedback: null,
@@ -264,6 +283,27 @@
     lastAnnouncement: "",
     displayedHosts: [],
   };
+
+  function isCurrentDiscoveryGeneration(generation) {
+    return !state.disposed && generation === state.discoveryGeneration;
+  }
+
+  function invalidateDiscoveryCaches() {
+    state.discoveryGeneration += 1;
+    state.deviceRefreshGeneration += 1;
+    state.hostDiscoveryCache = null;
+    state.hostDiscoveryDirty = true;
+    state.hostDiscoveryScannedAt = 0;
+    state.remoteRuntimeCache.clear();
+    state.remoteRuntimeScannedAt = 0;
+    // A force refresh must bypass a pending config/read lookup too. The old
+    // promise is allowed to settle, but its completion is generation-guarded.
+    state.remoteHomeRequests.clear();
+    state.remoteCodexHomes.clear();
+    state.localRegisteredProjectsFetchedAt = 0;
+    state.inventoryHydrationDirty = true;
+    return state.discoveryGeneration;
+  }
 
   function assignLocalRuntime(fetchFromHost, requestClient) {
     if (typeof requestClient?.sendRequest !== "function") return;
@@ -312,17 +352,20 @@
       && typeof Object.getOwnPropertyDescriptor(prototype, "onFetchResponse")?.value === "function");
   }
 
-  function ensureLocalStateBridge(importModule = url => import(url)) {
+  function ensureLocalStateBridge(importModule = url => import(url), force = false, generation = state.discoveryGeneration) {
     if (state.disposed) return Promise.resolve(null);
+    const operationGeneration = Number.isInteger(generation) ? generation : state.discoveryGeneration;
+    if (force === true) state.nativeStateBridgeRetryAt = 0;
     if (typeof state.localFetchFromHost === "function") return Promise.resolve(state.localFetchFromHost);
     if (state.nativeStateBridgePending) return state.nativeStateBridgePending;
-    if (Date.now() < state.nativeStateBridgeRetryAt) return Promise.resolve(null);
+    if (force !== true && Date.now() < state.nativeStateBridgeRetryAt) return Promise.resolve(null);
     state.nativeStateBridgeRetryAt = Date.now() + 10000;
+    state.nativeStateBridgeGeneration = operationGeneration;
     state.nativeStateBridgePending = (async () => {
       for (const url of nativeStateModuleUrls()) {
         try {
           const module = await importModule(url);
-          if (state.disposed) return null;
+           if (!isCurrentDiscoveryGeneration(operationGeneration)) return null;
           const candidates = [...new Set(Object.values(module).filter(nativeStateClientClass))];
           if (candidates.length !== 1) continue;
           const client = candidates[0].getInstance();
@@ -346,14 +389,17 @@
           // Confirm a read through this client before using it for local state.
           const probe = await fetchFromHost("get-global-state", { params: { key: "pinned-thread-ids" } });
           if (!probe || typeof probe !== "object" || !Object.prototype.hasOwnProperty.call(probe, "value")) continue;
-          if (state.disposed) return null;
-          state.localFetchFromHost = fetchFromHost;
+           if (!isCurrentDiscoveryGeneration(operationGeneration)) return null;
+           state.localFetchFromHost = fetchFromHost;
           if (state.localRuntime?.requestClient) assignLocalRuntime(fetchFromHost, state.localRuntime.requestClient);
           return fetchFromHost;
-        } catch { if (state.disposed) return null; }
+        } catch { if (!isCurrentDiscoveryGeneration(operationGeneration)) return null; }
       }
       return null;
-    })().finally(() => { state.nativeStateBridgePending = null; if (!state.disposed) schedule(); });
+    })().finally(() => {
+      if (state.nativeStateBridgeGeneration === operationGeneration) state.nativeStateBridgePending = null;
+      if (isCurrentDiscoveryGeneration(operationGeneration)) schedule();
+    });
     return state.nativeStateBridgePending;
   }
 
@@ -998,10 +1044,11 @@
     }
     // Native connection changes need not mutate the sidebar DOM. Invalidate
     // discovery on authorization/reconnect as well as on initial installation.
-    state.hostDiscoveryDirty = true;
-    state.remoteRuntimeCache.clear();
-    state.remoteRuntimeScannedAt = 0;
-    state.inventoryHydrationDirty = true;
+    // Cached project/task rows remain available until a complete replacement
+    // arrives, while the generation prevents an old read from winning later.
+    const refreshWasPending = state.deviceRefreshPending;
+    invalidateDiscoveryCaches();
+    if (refreshWasPending) state.deviceRefreshQueued = true;
     state.nativeConnectionRefreshPending = true;
     if (state.active) {
       scheduleNativeInventoryHydration();
@@ -1317,9 +1364,10 @@
     return projects;
   }
 
-  async function refreshLocalRegisteredProjects() {
+  async function refreshLocalRegisteredProjects(generation = state.discoveryGeneration) {
     if (typeof state.localFetchFromHost !== "function") throw new Error("Local project-state bridge is unavailable");
     const result = await fetchFromHostWithTimeout(state.localFetchFromHost, "get-global-state", { params: { key: "remote-projects" } });
+    if (!isCurrentDiscoveryGeneration(generation)) throw new Error("Discovery generation superseded");
     const projects = parseRegisteredRemoteProjects(result?.value);
     state.localRegisteredProjects = projects;
     state.localRegisteredProjectsError = null;
@@ -1327,16 +1375,42 @@
     return projects;
   }
 
-  function scheduleLocalRegisteredProjectsRefresh() {
+  function scheduleLocalRegisteredProjectsRefresh(force = false, generation = state.discoveryGeneration) {
+    const operationGeneration = Number.isInteger(generation) ? generation : state.discoveryGeneration;
     const now = Date.now();
-    if (typeof state.localFetchFromHost !== "function" || state.localRegisteredProjectsPending || now - state.localRegisteredProjectsFetchedAt < LOCAL_REMOTE_PROJECTS_TTL_MS) return;
+    if (typeof state.localFetchFromHost !== "function") return Promise.resolve(null);
+    if (state.localRegisteredProjectsPending) {
+      if (!force) return state.localRegisteredProjectsPendingPromise ?? Promise.resolve(null);
+      if (state.localRegisteredProjectsQueuedPromise && state.localRegisteredProjectsQueuedGeneration === operationGeneration) return state.localRegisteredProjectsQueuedPromise;
+      const pending = state.localRegisteredProjectsPendingPromise ?? Promise.resolve(null);
+      const queued = pending.then(() => {
+        if (!isCurrentDiscoveryGeneration(operationGeneration) || state.disposed) return null;
+        return scheduleLocalRegisteredProjectsRefresh(true, operationGeneration);
+      }).finally(() => {
+        if (state.localRegisteredProjectsQueuedPromise === queued) {
+          state.localRegisteredProjectsQueuedPromise = null;
+          state.localRegisteredProjectsQueuedGeneration = null;
+        }
+      });
+      state.localRegisteredProjectsQueuedPromise = queued;
+      state.localRegisteredProjectsQueuedGeneration = operationGeneration;
+      return queued;
+    }
+    if (!force && now - state.localRegisteredProjectsFetchedAt < LOCAL_REMOTE_PROJECTS_TTL_MS) return Promise.resolve(null);
     state.localRegisteredProjectsPending = true;
-    refreshLocalRegisteredProjects().catch((error) => {
-      state.localRegisteredProjectsError = error?.message || String(error);
+    state.localRegisteredProjectsPendingGeneration = operationGeneration;
+    const promise = refreshLocalRegisteredProjects(operationGeneration).catch((error) => {
+      if (isCurrentDiscoveryGeneration(operationGeneration)) state.localRegisteredProjectsError = error?.message || String(error);
+      return null;
     }).finally(() => {
+      if (state.localRegisteredProjectsPendingPromise === promise) state.localRegisteredProjectsPendingPromise = null;
+      if (state.localRegisteredProjectsPendingGeneration !== operationGeneration) return;
       state.localRegisteredProjectsPending = false;
-      schedule();
+      state.localRegisteredProjectsPendingGeneration = null;
+      if (isCurrentDiscoveryGeneration(operationGeneration)) schedule();
     });
+    state.localRegisteredProjectsPendingPromise = promise;
+    return promise;
   }
 
   function registeredProjectMatches(projects, project) {
@@ -1434,10 +1508,17 @@
   function inventoryProjects() {
     const projects = [];
     for (const hostId of state.remoteProjectInventories.keys()) {
-      const inventory = freshInventory(hostId);
-      if (!inventory) continue;
+      const inventory = state.remoteProjectInventories.get(hostId);
+      if (!inventory || !Array.isArray(inventory.projects)) continue;
       for (const project of inventory.projects ?? []) {
-        projects.push({ ...project, hostId });
+        projects.push({
+          ...project,
+          hostId,
+          inventoryError: inventory.error ?? null,
+          inventoryFresh: Boolean(freshInventory(hostId)),
+          inventoryPending: inventory.pending === true,
+          inventoryGeneratedAt: inventory.generatedAt,
+        });
       }
     }
     return projects;
@@ -1450,6 +1531,9 @@
 
   function remoteTaskStatusIsFresh(inventory, taskState, now = Date.now()) {
     if (!taskState?.statusType || taskState.statusKnown === false) return false;
+    if (inventory?.error || !Number.isFinite(inventory?.generatedAt)
+      || now - inventory.generatedAt > REMOTE_INVENTORY_MAX_AGE_MS
+      || inventory.generatedAt - now > REMOTE_INVENTORY_FUTURE_SKEW_MS) return false;
     if (taskState.statusType !== "loading") return true;
     return Number.isFinite(inventory?.generatedAt)
       && now - inventory.generatedAt >= -REMOTE_INVENTORY_FUTURE_SKEW_MS
@@ -1738,137 +1822,215 @@
     return parseInventoryPayload(JSON.parse(decodeText(result.dataBase64)), true);
   }
 
-  function scheduleRemoteProjectInventory(runtimes, force = false) {
-    if (state.disposed) return;
+  function currentRemoteRuntime(hostId, runtime) {
+    const cached = state.remoteRuntimeCache.get(hostId);
+    return !cached || cached.requestClient === runtime?.requestClient;
+  }
+
+  function currentRemoteInventoryOperation(hostId, runtime, token) {
+    if (!isCurrentDiscoveryGeneration(token?.generation)) return false;
+    if (!currentRemoteRuntime(hostId, runtime)) return false;
+    const latest = state.remoteProjectInventories.get(hostId);
+    return !latest?.pendingToken || latest.pendingToken === token;
+  }
+
+  function scheduleRemoteProjectInventory(runtimes, force = false, generation = state.discoveryGeneration) {
+    if (state.disposed) return Promise.resolve([]);
+    const operationGeneration = Number.isInteger(generation) ? generation : state.discoveryGeneration;
     const now = Date.now();
+    const promises = [];
     for (const hostId of new Set([...state.remoteProjectInventories.keys(), ...state.hostConnectivity.keys()])) {
-      if (!runtimes.has(hostId)) state.hostConnectivity.set(hostId, { available: false, checkedAt: now });
-    }
-    for (const [hostId, inventory] of state.remoteProjectInventories) {
-      if (!runtimes.has(hostId) && (!inventory.generatedAt || now - inventory.generatedAt > REMOTE_INVENTORY_MAX_AGE_MS)) {
-        state.remoteProjectInventories.delete(hostId);
-        state.remoteCodexHomes.delete(hostId);
+      if (isCurrentDiscoveryGeneration(operationGeneration) && !runtimes.has(hostId)) {
+        // Keep the last known inventory so an unavailable device does not make
+        // its projects disappear. Connectivity and freshness carry the truth.
+        state.hostConnectivity.set(hostId, { available: false, checkedAt: now });
       }
     }
     for (const [hostId, runtime] of runtimes) {
+      if (!isCurrentDiscoveryGeneration(operationGeneration)) break;
+      if (hostId === "local" || state.localRuntimeHostIds.has(hostId)) continue;
       const current = state.remoteProjectInventories.get(hostId) ?? { projects: [], tasks: new Map(), threads: [] };
       const refreshTtl = current.tasks?.size ? REMOTE_INVENTORY_ACTIVE_TTL_MS : REMOTE_INVENTORY_IDLE_TTL_MS;
-      if (current.pending || !force && (current.retryAt > now || current.fetchedAt && now - current.fetchedAt < refreshTtl)) continue;
+      if (current.pending) {
+        if (force && current.pendingPromise) {
+          // A force refresh superseding a background read must retain one
+          // waiter for this host and perform one fresh read after the old
+          // operation settles. The old promise is generation-guarded, so its
+          // completion cannot replace the newer runtime's inventory.
+          if (current.pendingGeneration !== operationGeneration) {
+            if (current.pendingFollowupPromise && current.pendingFollowupGeneration === operationGeneration) {
+              promises.push(current.pendingFollowupPromise);
+            } else {
+              const pending = current.pendingPromise;
+              let followup;
+              followup = pending.then(() => {
+                if (!isCurrentDiscoveryGeneration(operationGeneration) || state.disposed) return { stale: true, hostId };
+                return scheduleRemoteProjectInventory(new Map([[hostId, runtime]]), true, operationGeneration);
+              }).finally(() => {
+                const latest = state.remoteProjectInventories.get(hostId);
+                if (latest?.pendingFollowupPromise === followup) {
+                  state.remoteProjectInventories.set(hostId, {
+                    ...latest,
+                    pendingFollowup: false,
+                    pendingFollowupGeneration: null,
+                    pendingFollowupPromise: null,
+                  });
+                }
+              });
+              state.remoteProjectInventories.set(hostId, {
+                ...current,
+                pendingFollowup: true,
+                pendingFollowupGeneration: operationGeneration,
+                pendingFollowupPromise: followup,
+              });
+              promises.push(followup);
+            }
+          } else {
+            promises.push(current.pendingPromise);
+          }
+        }
+        continue;
+      }
+      if (!force && (current.retryAt > now || current.fetchedAt && now - current.fetchedAt < refreshTtl)) continue;
       if (typeof runtime?.requestClient?.sendRequest !== "function") continue;
-      state.remoteProjectInventories.set(hostId, { ...current, pending: true });
+      const token = { generation: operationGeneration, requestClient: runtime.requestClient };
       let connectionProven = false;
       const readStartedAt = Date.now();
-      const resolveCodexHome = resolveRemoteHome(hostId, runtime);
-      resolveCodexHome.then((codexHome) => {
-        connectionProven = state.hostConnectivity.get(hostId)?.checkedAt >= readStartedAt;
-        return sendRequestWithTimeout(runtime.requestClient, "fs/readFile", { path: inventoryPath(codexHome) });
-      }).then((result) => {
-        if (state.disposed) return;
-        connectionProven = true;
-        const stats = transferStats(hostId);
-        stats.reads += 1; stats.receivedBase64Bytes += typeof result?.dataBase64 === "string" ? result.dataBase64.length : 0;
-        stats.lastReadMs = Math.max(0, Date.now() - readStartedAt);
-        const parsed = parseRemoteProjectInventory(result);
-        mergeInventoryDeviceAliases(parsed.deviceAliases, hostId);
-        state.hostConnectivity.set(hostId, { available: true, checkedAt: Date.now() });
-        const latest = state.remoteProjectInventories.get(hostId);
-        if (Number.isFinite(latest?.generatedAt) && latest.generatedAt > parsed.generatedAt && latest.error == null && !latest.sourcePeerHostId && latest.sourcePeerCache !== true) {
-          state.remoteProjectInventories.set(hostId, { ...latest, pending: false, retryAt: 0 });
-          return;
-        }
-        const threadInventory = preferredThreadInventory(latest, parsed);
-        state.remoteProjectInventories.set(hostId, {
-          deviceAliases: parsed.deviceAliases,
-          error: null,
-          fetchedAt: Date.now(),
-          generatedAt: parsed.generatedAt,
-          hostDisplayName: parsed.hostDisplayName,
-          helperVersion: parsed.helperVersion,
-          pending: false,
-          projects: parsed.projects,
-          projectsAuthoritative: parsed.projectsAuthoritative,
-          projectsTruncated: parsed.projectsTruncated,
-          publisherVersion: threadInventory?.publisherVersion,
-          retryAt: 0,
-          tasks: parsed.tasks,
-          tasksTruncated: parsed.tasksTruncated,
-          threads: threadInventory?.threads ?? [],
-          threadsAuthoritative: threadInventory?.threadsAuthoritative === true,
-          threadScope: threadInventory?.threadScope ?? null,
-          threadScopeGeneratedAt: threadInventory?.threadScope === "user-visible" ? (threadInventory.threadScopeGeneratedAt ?? threadInventory.generatedAt) : undefined,
-          threadsTruncated: threadInventory?.threadsTruncated === true,
-        });
-        const previouslyKnownAliasIds = knownDeviceAliasHostIds();
-        for (const [peerHostId, peer] of parsed.peers) {
-          if (peerHostId === hostId) continue;
-          if (previouslyKnownAliasIds.has(normalizeDeviceAliasHostId(peerHostId))) {
-            mergeInventoryDeviceAliases(peer.deviceAliases, peerHostId);
+      if (!currentRemoteInventoryOperation(hostId, runtime, token)) continue;
+      const operation = resolveRemoteHome(hostId, runtime, operationGeneration)
+        .then((codexHome) => {
+          if (!currentRemoteInventoryOperation(hostId, runtime, token)) return { stale: true, hostId };
+          connectionProven = state.hostConnectivity.get(hostId)?.checkedAt >= readStartedAt;
+          return sendRequestWithTimeout(runtime.requestClient, "fs/readFile", { path: inventoryPath(codexHome) });
+        }).then((result) => {
+          if (result?.stale === true || !currentRemoteInventoryOperation(hostId, runtime, token)) return { stale: true, hostId };
+          connectionProven = true;
+          const stats = transferStats(hostId);
+          stats.reads += 1; stats.receivedBase64Bytes += typeof result?.dataBase64 === "string" ? result.dataBase64.length : 0;
+          stats.lastReadMs = Math.max(0, Date.now() - readStartedAt);
+          const parsed = parseRemoteProjectInventory(result);
+          if (!currentRemoteInventoryOperation(hostId, runtime, token)) return { stale: true, hostId };
+          mergeInventoryDeviceAliases(parsed.deviceAliases, hostId);
+          state.hostConnectivity.set(hostId, { available: true, checkedAt: Date.now() });
+          const latest = state.remoteProjectInventories.get(hostId);
+          if (Number.isFinite(latest?.generatedAt) && latest.generatedAt > parsed.generatedAt && latest.error == null && !latest.sourcePeerHostId && latest.sourcePeerCache !== true) {
+            state.remoteProjectInventories.set(hostId, { ...latest, pending: false, pendingPromise: null, pendingToken: null, retryAt: 0 });
+            return { hostId, ok: true };
           }
-          if (inventoryMatchesLocal(peer)) {
-            if (!remoteHostHasDirectProof(peerHostId)) removeRemoteHostState(peerHostId);
-            continue;
-          }
-          const existing = state.remoteProjectInventories.get(peerHostId);
-          if (directInventoryHasPriority(peerHostId, existing)) continue;
-          if (Number.isFinite(existing?.generatedAt) && existing.generatedAt >= peer.generatedAt && existing.error == null) continue;
-          const threadInventory = preferredThreadInventory(existing, peer);
-          state.remoteProjectInventories.set(peerHostId, {
-            deviceAliases: peer.deviceAliases,
+          const threadInventory = preferredThreadInventory(latest, parsed);
+          state.remoteProjectInventories.set(hostId, {
+            deviceAliases: parsed.deviceAliases,
             error: null,
             fetchedAt: Date.now(),
-            generatedAt: peer.generatedAt,
-            hostDisplayName: peer.hostDisplayName,
-            helperVersion: peer.helperVersion,
+            generatedAt: parsed.generatedAt,
+            hostDisplayName: parsed.hostDisplayName,
+            helperVersion: parsed.helperVersion,
             pending: false,
-            projects: peer.projects,
-            projectsAuthoritative: peer.projectsAuthoritative,
-            projectsTruncated: peer.projectsTruncated,
+            pendingPromise: null,
+            pendingToken: null,
+            projects: parsed.projects,
+            projectsAuthoritative: parsed.projectsAuthoritative,
+            projectsTruncated: parsed.projectsTruncated,
             publisherVersion: threadInventory?.publisherVersion,
-            retryAt: existing?.retryAt ?? 0,
-            sourcePeerHostId: hostId,
-            tasks: peer.tasks,
-            tasksTruncated: peer.tasksTruncated,
+            retryAt: 0,
+            tasks: parsed.tasks,
+            tasksTruncated: parsed.tasksTruncated,
             threads: threadInventory?.threads ?? [],
             threadsAuthoritative: threadInventory?.threadsAuthoritative === true,
             threadScope: threadInventory?.threadScope ?? null,
             threadScopeGeneratedAt: threadInventory?.threadScope === "user-visible" ? (threadInventory.threadScopeGeneratedAt ?? threadInventory.generatedAt) : undefined,
             threadsTruncated: threadInventory?.threadsTruncated === true,
           });
-        }
-        removeGossipedLocalInventoryDuplicates();
-      }).catch((error) => {
-        if (state.disposed) return;
-        transferStats(hostId).failures += 1;
-        state.remoteRuntimeCache.delete(hostId);
-        state.remoteRuntimeScannedAt = 0;
-        if (connectionProven) state.hostConnectivity.set(hostId, { available: true, checkedAt: Date.now() });
-        else state.hostConnectivity.delete(hostId);
-        state.remoteCodexHomes.delete(hostId);
-        const latest = state.remoteProjectInventories.get(hostId);
-        if (latest?.sourcePeerCache && freshInventory(hostId)) {
-          state.remoteProjectInventories.set(hostId, { ...latest, pending: false, retryAt: Date.now() + REMOTE_INVENTORY_RETRY_MS });
-          return;
-        }
-        state.remoteProjectInventories.set(hostId, {
-          deviceAliases: latest?.deviceAliases ?? current.deviceAliases,
-          error: error?.message || String(error),
-          fetchedAt: latest?.fetchedAt ?? 0,
-          generatedAt: latest?.generatedAt,
-          hostDisplayName: latest?.hostDisplayName ?? current.hostDisplayName,
-          pending: false,
-          projects: latest?.projects ?? current.projects ?? [],
-          publisherVersion: latest?.publisherVersion ?? current.publisherVersion,
-          retryAt: Date.now() + REMOTE_INVENTORY_RETRY_MS,
-          sourcePeerCache: latest?.sourcePeerCache === true,
-          sourcePeerHostId: latest?.sourcePeerHostId,
-          tasks: latest?.tasks ?? current.tasks ?? new Map(),
-          threads: latest?.threads ?? current.threads ?? [],
-          threadsAuthoritative: latest?.threadsAuthoritative === true || current.threadsAuthoritative === true,
-          threadScope: latest?.threadScope ?? current.threadScope ?? null,
-          threadScopeGeneratedAt: latest?.threadScopeGeneratedAt ?? current.threadScopeGeneratedAt ?? latest?.generatedAt ?? current.generatedAt,
+          const previouslyKnownAliasIds = knownDeviceAliasHostIds();
+          for (const [peerHostId, peer] of parsed.peers) {
+            if (!currentRemoteInventoryOperation(hostId, runtime, token)) return { stale: true, hostId };
+            if (peerHostId === hostId) continue;
+            if (previouslyKnownAliasIds.has(normalizeDeviceAliasHostId(peerHostId))) {
+              mergeInventoryDeviceAliases(peer.deviceAliases, peerHostId);
+            }
+            if (inventoryMatchesLocal(peer)) {
+              if (!remoteHostHasDirectProof(peerHostId)) removeRemoteHostState(peerHostId);
+              continue;
+            }
+            const existing = state.remoteProjectInventories.get(peerHostId);
+            if (directInventoryHasPriority(peerHostId, existing)) continue;
+            if (Number.isFinite(existing?.generatedAt) && existing.generatedAt >= peer.generatedAt && existing.error == null) continue;
+            const peerThreads = preferredThreadInventory(existing, peer);
+            state.remoteProjectInventories.set(peerHostId, {
+              deviceAliases: peer.deviceAliases,
+              error: null,
+              fetchedAt: Date.now(),
+              generatedAt: peer.generatedAt,
+              hostDisplayName: peer.hostDisplayName,
+              helperVersion: peer.helperVersion,
+              pending: false,
+              projects: peer.projects,
+              projectsAuthoritative: peer.projectsAuthoritative,
+              projectsTruncated: peer.projectsTruncated,
+              publisherVersion: peerThreads?.publisherVersion,
+              retryAt: existing?.retryAt ?? 0,
+              sourcePeerHostId: hostId,
+              tasks: peer.tasks,
+              tasksTruncated: peer.tasksTruncated,
+              threads: peerThreads?.threads ?? [],
+              threadsAuthoritative: peerThreads?.threadsAuthoritative === true,
+              threadScope: peerThreads?.threadScope ?? null,
+              threadScopeGeneratedAt: peerThreads?.threadScope === "user-visible" ? (peerThreads.threadScopeGeneratedAt ?? peerThreads.generatedAt) : undefined,
+              threadsTruncated: peerThreads?.threadsTruncated === true,
+            });
+          }
+          removeGossipedLocalInventoryDuplicates();
+          return { hostId, ok: true };
+        }).catch((error) => {
+          if (!currentRemoteInventoryOperation(hostId, runtime, token)) return { stale: true, hostId };
+          transferStats(hostId).failures += 1;
+          state.remoteRuntimeCache.delete(hostId);
+          state.remoteRuntimeScannedAt = 0;
+          if (connectionProven) state.hostConnectivity.set(hostId, { available: true, checkedAt: Date.now() });
+          else state.hostConnectivity.set(hostId, { available: false, checkedAt: Date.now() });
+          state.remoteCodexHomes.delete(hostId);
+          const latest = state.remoteProjectInventories.get(hostId);
+          if (latest?.sourcePeerCache && freshInventory(hostId)) {
+            state.remoteProjectInventories.set(hostId, { ...latest, pending: false, pendingPromise: null, pendingToken: null, retryAt: Date.now() + REMOTE_INVENTORY_RETRY_MS });
+            return { error: error?.message || String(error), hostId, ok: false };
+          }
+          state.remoteProjectInventories.set(hostId, {
+            deviceAliases: latest?.deviceAliases ?? current.deviceAliases,
+            error: error?.message || String(error),
+            fetchedAt: latest?.fetchedAt ?? 0,
+            generatedAt: latest?.generatedAt,
+            hostDisplayName: latest?.hostDisplayName ?? current.hostDisplayName,
+            pending: false,
+            pendingPromise: null,
+            pendingToken: null,
+            projects: latest?.projects ?? current.projects ?? [],
+            projectsAuthoritative: latest?.projectsAuthoritative ?? current.projectsAuthoritative,
+            publisherVersion: latest?.publisherVersion ?? current.publisherVersion,
+            projectsTruncated: latest?.projectsTruncated ?? current.projectsTruncated,
+            retryAt: Date.now() + REMOTE_INVENTORY_RETRY_MS,
+            sourcePeerCache: latest?.sourcePeerCache === true,
+            sourcePeerHostId: latest?.sourcePeerHostId,
+            tasks: latest?.tasks ?? current.tasks ?? new Map(),
+            tasksTruncated: latest?.tasksTruncated ?? current.tasksTruncated,
+            threads: latest?.threads ?? current.threads ?? [],
+            threadsAuthoritative: latest?.threadsAuthoritative === true || current.threadsAuthoritative === true,
+            threadScope: latest?.threadScope ?? current.threadScope ?? null,
+            threadScopeGeneratedAt: latest?.threadScopeGeneratedAt ?? current.threadScopeGeneratedAt ?? latest?.generatedAt ?? current.generatedAt,
+            threadsTruncated: latest?.threadsTruncated === true || current.threadsTruncated === true,
+          });
+          return { error: error?.message || String(error), hostId, ok: false };
+        }).finally(() => {
+          const latest = state.remoteProjectInventories.get(hostId);
+          if (latest?.pendingToken === token) {
+            state.remoteProjectInventories.set(hostId, { ...latest, pending: false, pendingPromise: null, pendingToken: null });
+          }
+          if (isCurrentDiscoveryGeneration(operationGeneration)) schedule();
         });
-      }).finally(() => { if (!state.disposed) schedule(); });
+      token.promise = operation;
+      state.remoteProjectInventories.set(hostId, { ...current, pending: true, pendingGeneration: operationGeneration, pendingPromise: operation, pendingToken: token });
+      promises.push(operation);
     }
+    return Promise.all(promises);
   }
 
   function inventoryHasWork(tasks, threads = []) {
@@ -1904,12 +2066,19 @@
     return state.transferStats.get(hostId);
   }
 
-  function resolveRemoteHome(hostId, runtime) {
+  function resolveRemoteHome(hostId, runtime, generation = state.discoveryGeneration) {
+    if (!currentRemoteRuntime(hostId, runtime)) {
+      state.remoteCodexHomes.delete(hostId);
+      state.remoteHomeRequests.delete(hostId);
+      return Promise.reject(new Error("Remote runtime changed during home discovery"));
+    }
     if (state.remoteCodexHomes.has(hostId)) return Promise.resolve(state.remoteCodexHomes.get(hostId));
     if (state.remoteHomeRequests.has(hostId)) return state.remoteHomeRequests.get(hostId);
     const request = sendRequestWithTimeout(runtime.requestClient, "config/read", { cwd: null, includeLayers: true }).then(result => {
       const home = findCodexHome(result);
       if (!home) throw new Error("Remote Codex home was not reported");
+      if (generation !== null && !isCurrentDiscoveryGeneration(generation)) throw new Error("Discovery generation superseded");
+      if (!currentRemoteRuntime(hostId, runtime)) throw new Error("Remote runtime changed during home discovery");
       if (!state.disposed) { state.remoteCodexHomes.set(hostId, home); state.hostConnectivity.set(hostId, { available: true, checkedAt: Date.now() }); }
       return home;
     }).finally(() => { if (state.remoteHomeRequests.get(hostId) === request) state.remoteHomeRequests.delete(hostId); });
@@ -2344,7 +2513,9 @@
     const directAuthoritativeHosts = new Set();
     for (const [hostId, record] of state.verifiedThreadIds) authoritativeIds.set(hostId, new Set(record.ids));
     for (const [hostId, inventory] of state.threadInventories) {
-      if (!inventory.error) {
+      const fresh = !inventory.error && inventory.truncated !== true
+        && Number.isFinite(inventory.fetchedAt) && Date.now() - inventory.fetchedAt <= REMOTE_INVENTORY_MAX_AGE_MS;
+      if (fresh) {
         authoritativeIds.set(hostId, new Set((inventory.threads ?? []).map((thread) => rawConversationId(thread?.id ?? thread?.conversationId ?? "")).filter(Boolean)));
         directAuthoritativeHosts.add(hostId);
       }
@@ -2374,26 +2545,49 @@
       taskMap.set(`${task.hostId}::${task.conversationId}`, task);
     }
     for (const [hostId, inventory] of state.threadInventories) {
-      if (inventory.error) continue;
+      const inventoryFresh = !inventory.error && inventory.truncated !== true
+        && Number.isFinite(inventory.fetchedAt) && Date.now() - inventory.fetchedAt <= REMOTE_INVENTORY_MAX_AGE_MS;
+      const cachedIds = authoritativeIds.get(hostId);
       for (const thread of inventory.threads ?? []) {
         const task = taskFromThread(thread, hostId);
         if (!task) continue;
+        if (inventoryFresh ? !cachedIds?.has(task.conversationId) : !Array.isArray(inventory.threads)) continue;
+        task.inventoryFresh = inventoryFresh;
+        task.inventoryStale = !inventoryFresh;
+        task.inventoryPending = state.inventoryHydrationPending;
+        if (!inventoryFresh) {
+          // Keep the row and its last known unread/title data, but do not let
+          // an old activity value become authoritative while membership is
+          // being revalidated.
+          task.directStatusKnown = false;
+          task.threadStatusKnown = false;
+          task.statusKnown = false;
+          task.unreadKnown = false;
+        }
         task.directStatusKnown = task.statusKnown;
         const key = `${hostId}::${task.conversationId}`;
         const nativeTask = taskMap.get(key);
         if (nativeTask) {
+          if (!inventoryFresh) {
+            nativeTask.inventoryFresh = false;
+            nativeTask.inventoryStale = true;
+            nativeTask.directStatusKnown = false;
+            nativeTask.threadStatusKnown = false;
+            nativeTask.statusKnown = false;
+            nativeTask.unreadKnown = false;
+          }
           if (task.cwd) nativeTask.cwd = task.cwd;
           if (task.projectId) nativeTask.projectId = task.projectId;
           if (task.projectLabel) nativeTask.projectLabel = task.projectLabel;
           nativeTask.sourceThread = thread;
           mergeTaskTitle(nativeTask, task);
-          if (task.statusKnown) {
+          if (task.statusKnown && inventoryFresh) {
             nativeTask.directStatusKnown = true;
             nativeTask.statusKnown = true;
             nativeTask.threadStatusKnown = true;
             nativeTask.statusType = task.statusType;
           }
-          if (task.unreadKnown) {
+          if (task.unreadKnown && inventoryFresh) {
             nativeTask.unread = task.unread;
             nativeTask.unreadKnown = true;
           }
@@ -2403,8 +2597,9 @@
       }
     }
     for (const [hostId] of state.remoteProjectInventories) {
-      const inventory = freshInventory(hostId);
-      if (!authoritativeIds.has(hostId)) continue;
+      const inventory = state.remoteProjectInventories.get(hostId);
+      const allowCachedRows = inventory?.threadsAuthoritative === true && Array.isArray(inventory?.threads);
+      if (!authoritativeIds.has(hostId) && !allowCachedRows) continue;
       for (const thread of inventory?.threads ?? []) {
         const task = taskFromThread(thread, hostId);
         if (!task) continue;
@@ -2413,20 +2608,31 @@
           task.threadStatusKnown = false;
           task.statusType = "idle";
         }
+        task.inventoryFresh = Boolean(freshInventory(hostId));
+        task.inventoryStale = !task.inventoryFresh;
+        task.inventoryPending = inventory?.pending === true;
         if (authoritativeIds.has(hostId) && !authoritativeIds.get(hostId).has(task.conversationId)) continue;
         const key = `${hostId}::${task.conversationId}`;
         const existing = taskMap.get(key);
         if (existing) {
+          if (!task.inventoryFresh) {
+            existing.inventoryFresh = false;
+            existing.inventoryStale = true;
+            existing.directStatusKnown = false;
+            existing.threadStatusKnown = false;
+            existing.statusKnown = false;
+            existing.unreadKnown = false;
+          }
           if (task.cwd) existing.cwd = task.cwd;
           if (task.projectId) existing.projectId = task.projectId;
           existing.sourceThread = thread;
           mergeTaskTitle(existing, task);
-          if (task.statusKnown && !existing.directStatusKnown) {
+          if (task.statusKnown && task.inventoryFresh !== false && !existing.directStatusKnown) {
             existing.statusKnown = true;
             existing.statusType = task.statusType;
             existing.threadStatusKnown = true;
           }
-          if (task.unreadKnown) {
+          if (task.unreadKnown && task.inventoryFresh !== false) {
             existing.unread = task.unread;
             existing.unreadKnown = true;
           }
@@ -2563,6 +2769,10 @@
         kind: "project",
         name: project.label,
         projectId: project.projectId,
+        inventoryError: project.inventoryError ?? null,
+        inventoryFresh: project.inventoryFresh !== false,
+        inventoryPending: project.inventoryPending === true,
+        inventoryStale: project.inventoryFresh === false,
         tasks: [],
       };
       groupsByKey.set(key, group);
@@ -2588,6 +2798,10 @@
         name: project.name,
         projectId: null,
         source: project.source,
+        inventoryError: project.inventoryError ?? null,
+        inventoryFresh: project.inventoryFresh !== false,
+        inventoryPending: project.inventoryPending === true,
+        inventoryStale: project.inventoryFresh === false,
         tasks: [],
       };
       groupsByKey.set(key, group);
@@ -2611,6 +2825,10 @@
           kind: recent ? "recent" : "project",
           name: recent ? "Recent chats" : (task.projectLabel || projectName(task.cwd)),
           projectId: recent ? null : task.projectId,
+          inventoryError: task.inventoryError ?? null,
+          inventoryFresh: task.inventoryFresh !== false,
+          inventoryPending: task.inventoryPending === true,
+          inventoryStale: task.inventoryStale === true,
           tasks: [],
         };
         groupsByKey.set(key, group);
@@ -2620,7 +2838,13 @@
       group.tasks.push(task);
     }
     for (const group of groups) {
-      const membershipAuthoritative = authoritativeIds.has(group.hostId);
+      const directInventory = state.threadInventories.get(group.hostId);
+      const remoteInventory = state.remoteProjectInventories.get(group.hostId);
+      const directMembershipFresh = Boolean(directInventory && !directInventory.error
+        && directInventory.truncated !== true && Number.isFinite(directInventory.fetchedAt)
+        && Date.now() - directInventory.fetchedAt <= REMOTE_INVENTORY_MAX_AGE_MS);
+      const membershipAuthoritative = authoritativeIds.has(group.hostId)
+        && (directMembershipFresh || scopedThreadsAreFresh(remoteInventory));
       group.taskStatusAuthoritative = membershipAuthoritative && group.tasks.every((task) => (
         task.statusKnown === true || task.directStatusKnown === true || task.threadStatusKnown === true
       ));
@@ -2662,6 +2886,10 @@
       #${PANEL_ID} .crmp-auto-control { border:1px solid var(--color-border-default,#555); border-radius:6px; padding:3px 7px; color:var(--color-text-tertiary,#888); background:transparent; font-size:10px; cursor:pointer; }
       #${PANEL_ID} .crmp-auto-control[aria-pressed="true"] { color:var(--color-text,#eee); background:var(--color-background-primary-hover,rgba(127,127,127,.15)); }
       #${PANEL_ID} .crmp-auto-control:disabled { cursor:not-allowed; opacity:.5; }
+      #${PANEL_ID} .crmp-force-refresh { margin-inline-start:auto; color:var(--color-text,#eee); }
+      #${PANEL_ID} .crmp-sync-status { padding:0 8px 4px; color:var(--color-text-secondary,var(--color-text,#eee)); font-size:11px; line-height:1.35; }
+      #${PANEL_ID} .crmp-sync-status[data-state="refreshing"] { color:var(--color-text,#eee); }
+      #${PANEL_ID} .crmp-sync-status[data-state="stale"], #${PANEL_ID} .crmp-sync-status[data-state="error"] { color:var(--color-text-warning,var(--color-text-secondary,var(--color-text,#eee))); }
       #${PANEL_ID} .crmp-title { padding:0 8px 2px; }
       #${PANEL_ID} .crmp-project-list { display:flex; flex-direction:column; gap:1px; }
       #${PANEL_ID} .crmp-chip { flex:0 0 auto; border:1px solid var(--color-border-default,#555); border-radius:999px; padding:4px 9px; color:var(--color-text-secondary,#aaa); background:var(--color-background-secondary,transparent); font-size:11px; line-height:16px; text-align:left; white-space:nowrap; cursor:pointer; }
@@ -2963,25 +3191,177 @@
     return Number.isFinite(value) && value > 0 && value <= Date.now() + 60000 ? Math.max(0, Math.floor((Date.now() - value) / 1000)) : null;
   }
 
-  function refreshDeviceHealth() {
-    if (state.disposed || Date.now() < state.healthRefreshUntil) return false;
-    state.healthRefreshUntil = Date.now() + 10000;
-    state.hostDiscoveryDirty = true;
-    state.inventoryHydrationDirty = true;
-    scheduleNativeInventoryHydration();
+  function deviceDataIsStale() {
     const model = collectModel();
-    state.healthRefreshOutcomes = new Map(model.hosts.filter(host => host.id !== "local").map(host => [host.id, model.remoteRuntimes.has(host.id) ? "requested" : "no-runtime"]));
-    void ensureLocalStateBridge().then(() => {
-      if (state.disposed) return;
-      state.hostDiscoveryDirty = true;
-      scheduleLocalRegisteredProjectsRefresh();
-      scheduleLocalProjectInventoryPublication();
-      schedule();
+    const now = Date.now();
+    const recentlyListed = (hostId) => {
+      const inventory = state.threadInventories.get(hostId);
+      return Boolean(inventory && !inventory.error && inventory.truncated !== true
+        && Number.isFinite(inventory.fetchedAt) && now - inventory.fetchedAt <= NATIVE_INVENTORY_REFRESH_MS);
+    };
+    if (state.localRuntime?.requestClient && !recentlyListed("local")) return true;
+    return model.hosts.some((host) => host.id !== "local" && (() => {
+      if (recentlyListed(host.id)) return false;
+      const inventory = freshInventory(host.id);
+      const membershipAt = inventory?.threadScopeGeneratedAt ?? inventory?.generatedAt;
+      // A status heartbeat must not conceal an overdue chat-list refresh when
+      // the app returns to the foreground after its timers were throttled.
+      return !scopedThreadsAreFresh(inventory) || !Number.isFinite(membershipAt)
+        || now - membershipAt > NATIVE_INVENTORY_REFRESH_MS;
+    })());
+  }
+
+  function refreshStaleDeviceDataOnResume() {
+    if (state.disposed || (document.visibilityState && document.visibilityState !== "visible")) return;
+    if (deviceDataIsStale()) refreshDeviceHealth();
+  }
+
+  async function runDeviceRefresh(generation) {
+    const hydrationWasPending = state.inventoryHydrationPending;
+    const bridgeWasPending = Boolean(state.nativeStateBridgePending);
+    const remoteInventoryWasPending = [...state.remoteProjectInventories.values()].some((inventory) => inventory?.pending === true);
+    const localBridge = ensureLocalStateBridge(undefined, true, generation);
+    const discovery = discoverHostNames();
+    if (!isCurrentDiscoveryGeneration(generation)) return { complete: false, error: "Refresh was superseded" };
+    const runtimes = new Map(discoverRemoteRuntimes(discovery.runtimes));
+    if (state.localRuntime?.requestClient) runtimes.set("local", state.localRuntime);
+    const remoteRuntimes = new Map([...runtimes].filter(([hostId]) => hostId !== "local" && !state.localRuntimeHostIds.has(hostId)));
+    state.healthRefreshOutcomes = new Map([...new Set([...discovery.names.keys(), ...discovery.availability.keys(), ...runtimes.keys()])]
+      .filter((hostId) => hostId !== "local")
+      .map((hostId) => [hostId, runtimes.has(hostId) ? "requested" : "no-runtime"]));
+    // The invalidation itself marks hydration dirty. The forced pass consumes
+    // that marker; mutations arriving after this point set it again and are
+    // handled by the normal dirty follow-up path.
+    state.inventoryHydrationDirty = false;
+    const hydration = scheduleNativeInventoryHydration(true, generation);
+    const remote = scheduleRemoteProjectInventory(remoteRuntimes, true, generation);
+    await Promise.all([hydration, remote, localBridge]);
+    if (!isCurrentDiscoveryGeneration(generation)) {
+      if (!state.disposed) state.deviceRefreshQueued = true;
+      return { complete: false, error: "Refresh was superseded" };
+    }
+
+    // If a normal 60-second read was already in flight, the force request
+    // waits for it and then performs exactly one fresh pass for those hosts.
+    // This keeps a click from being lost without starting duplicate reads for
+    // hosts that were idle when the click arrived.
+    if (hydrationWasPending || bridgeWasPending) {
+      if (bridgeWasPending && isCurrentDiscoveryGeneration(generation)) {
+        await ensureLocalStateBridge(undefined, true, generation);
+      }
+      const refreshedDiscovery = discoverHostNames();
+      const refreshedRuntimes = new Map(discoverRemoteRuntimes(refreshedDiscovery.runtimes));
+      if (state.localRuntime?.requestClient) refreshedRuntimes.set("local", state.localRuntime);
+      const refreshedRemoteRuntimes = new Map([...refreshedRuntimes].filter(([hostId]) => hostId !== "local" && !state.localRuntimeHostIds.has(hostId)));
+      const followups = [];
+      if (hydrationWasPending) followups.push(scheduleNativeInventoryHydration(true, generation));
+      // Remote inventory scheduling already queues one generation-safe read
+      // behind an old pending operation. Avoid issuing a second read when the
+      // hydration/bridge follow-up above is also needed.
+      if (!remoteInventoryWasPending && !hydrationWasPending) {
+        followups.push(scheduleRemoteProjectInventory(refreshedRemoteRuntimes, true, generation));
+      }
+      await Promise.all(followups);
+    }
+    if (!isCurrentDiscoveryGeneration(generation)) {
+      if (!state.disposed) state.deviceRefreshQueued = true;
+      return { complete: false, error: "Refresh was superseded" };
+    }
+    if (typeof state.localFetchFromHost === "function") {
+      await scheduleLocalRegisteredProjectsRefresh(true, generation);
+      if (isCurrentDiscoveryGeneration(generation)) {
+        scheduleLocalProjectInventoryPublication();
+        schedule();
+      }
+    }
+    const startedAt = state.deviceRefreshLastStartedAt;
+    const hosts = [...new Set([
+      ...runtimes.keys(),
+      ...discovery.names.keys(),
+      ...discovery.availability.keys(),
+    ])].filter((hostId) => !state.localRuntimeHostIds.has(hostId));
+    const freshMembership = (hostId) => {
+      const inventory = state.threadInventories.get(hostId);
+      return Boolean(inventory && !inventory.error && inventory.truncated !== true
+        && Number.isFinite(inventory.fetchedAt) && inventory.fetchedAt >= startedAt);
+    };
+    const complete = hosts.length > 0 && hosts.every(freshMembership);
+    const connectedHosts = new Set(hosts);
+    const failures = [...state.threadInventories.values()]
+      .filter((inventory) => connectedHosts.has(inventory.hostId) && inventory.error)
+      .map((inventory) => `${inventory.hostId}: ${inventory.error}`);
+    for (const [hostId, inventory] of state.remoteProjectInventories) {
+      if (inventory?.error && runtimes.has(hostId)) failures.push(`${hostId}: ${inventory.error}`);
+    }
+    for (const hostId of hosts) {
+      if (!runtimes.has(hostId)) failures.push(`${hostId}: direct runtime unavailable`);
+    }
+    if (!complete && !failures.length) failures.push("One or more connected devices returned incomplete membership");
+    return { complete, error: failures.length ? failures.join("; ").slice(0, 240) : null };
+  }
+
+  function requestDeviceRefresh(options = {}) {
+    if (state.disposed) return Promise.resolve(false);
+    if (state.deviceRefreshPending) {
+      if (state.discoveryGeneration !== state.deviceRefreshActiveGeneration) state.deviceRefreshQueued = true;
+      return state.deviceRefreshPromise ?? Promise.resolve(false);
+    }
+    if (options.respectCooldown === true && Date.now() < state.healthRefreshUntil) return Promise.resolve(false);
+    const backgroundPending = state.inventoryHydrationPending
+      || [...state.remoteProjectInventories.values()].some((inventory) => inventory?.pending === true);
+    refreshNativeConnectionSnapshot();
+    const generation = invalidateDiscoveryCaches();
+    state.deviceRefreshPending = true;
+    state.deviceRefreshQueueEligible = backgroundPending;
+    state.deviceRefreshActiveGeneration = generation;
+    state.deviceRefreshLastStartedAt = Date.now();
+    state.deviceRefreshLastError = null;
+    state.nativeConnectionRefreshPending = true;
+    const promise = runDeviceRefresh(generation).then((result) => {
+      if (!state.disposed && state.deviceRefreshActiveGeneration === generation
+        && state.deviceRefreshPromise === promise && isCurrentDiscoveryGeneration(generation)) {
+        if (result?.complete === true && !result.error) state.deviceRefreshLastSuccessfulAt = Date.now();
+        state.deviceRefreshLastError = result?.error ?? null;
+      }
+      return result;
+    }).catch((error) => {
+      const message = String(error?.message ?? error).slice(0, 240);
+      if (!state.disposed && state.deviceRefreshActiveGeneration === generation
+        && state.deviceRefreshPromise === promise && isCurrentDiscoveryGeneration(generation)) state.deviceRefreshLastError = message;
+      return { complete: false, error: message };
+    }).finally(() => {
+      const ownsCycle = state.deviceRefreshActiveGeneration === generation && state.deviceRefreshPromise === promise;
+      if (state.deviceRefreshPromise === promise) state.deviceRefreshPromise = null;
+      if (!ownsCycle) return;
+      state.deviceRefreshPending = false;
+      state.deviceRefreshQueueEligible = false;
+      state.deviceRefreshActiveGeneration = null;
+      if (!state.disposed) {
+        schedule();
+        if (state.deviceRefreshQueued) {
+          state.deviceRefreshQueued = false;
+          void requestDeviceRefresh();
+        }
+      }
     });
-    scheduleRemoteProjectInventory(model.remoteRuntimes, true);
+    state.deviceRefreshPromise = promise;
+    schedule();
+    return promise;
+  }
+
+  function refreshDeviceHealth() {
+    if (state.disposed) return false;
+    if (state.deviceRefreshPending) {
+      if (state.discoveryGeneration !== state.deviceRefreshActiveGeneration) {
+        state.deviceRefreshQueued = true;
+      }
+      return false;
+    }
+    if (Date.now() < state.healthRefreshUntil) return false;
+    state.healthRefreshUntil = Date.now() + 10000;
+    void requestDeviceRefresh();
     if (state.healthRefreshTimer !== null) clearTimeout(state.healthRefreshTimer);
     state.healthRefreshTimer = setTimeout(() => { state.healthRefreshTimer = null; if (!state.disposed) schedule(); }, 10000);
-    schedule();
     return true;
   }
 
@@ -3287,6 +3667,14 @@
       rendererVersion: VERSION,
       nativeConnectionState: nativeConnectionStatus(),
       view: state.view === "native" ? "native" : "mobile",
+      refresh: {
+        pending: state.deviceRefreshPending,
+        queued: state.deviceRefreshQueued,
+        generation: state.deviceRefreshGeneration,
+        lastStartedAt: state.deviceRefreshLastStartedAt || null,
+        lastSuccessfulAt: state.deviceRefreshLastSuccessfulAt || null,
+        error: state.deviceRefreshLastError ? "refresh-incomplete" : null,
+      },
       devices: model.hosts.map((host, index) => {
         const inventory = state.remoteProjectInventories.get(host.id);
         return { label: `Device ${index + 1}`, local: host.id === "local", connection: connectionLabel(host),
@@ -3697,24 +4085,37 @@
     return Number(state.threadInventories.get(hostId)?.retryAt ?? 0) <= now;
   }
 
-  async function hydrateNativeInventory() {
-    if (state.inventoryHydrationPending) return;
+  async function hydrateNativeInventory(force = false, generation = state.discoveryGeneration) {
+    if (state.inventoryHydrationPending) return state.inventoryHydrationPromise;
+    const operationGeneration = Number.isInteger(generation) ? generation : state.discoveryGeneration;
+    const hydrationStartedAt = Date.now();
+    let completedInventories = null;
     state.counters.inventoryHydrationRuns += 1;
     state.inventoryHydrationDirty = false;
     state.inventoryHydrationPending = true;
+    state.inventoryHydrationGeneration = operationGeneration;
     state.inventoryHydrationPhase = "listing-threads";
     state.inventoryHydrationRounds = 0;
     state.inventoryHydrationTruncated = false;
     try {
       const discovery = discoverHostNames();
+      if (!isCurrentDiscoveryGeneration(operationGeneration)) return;
       const runtimes = new Map(discoverRemoteRuntimes(discovery.runtimes));
       if (state.localRuntime?.requestClient) runtimes.set("local", state.localRuntime);
-      const tasks = [...runtimes].filter(([hostId]) => !state.localRuntimeHostIds.has(hostId) && runtimeThreadInventoryDue(hostId)).map(async ([hostId, runtime]) => {
+      const tasks = [...runtimes].filter(([hostId]) => !state.localRuntimeHostIds.has(hostId) && (force || runtimeThreadInventoryDue(hostId))).map(async ([hostId, runtime]) => {
+        const requestClient = runtime?.requestClient;
+        const localRuntimeGeneration = hostId === "local" ? state.localRuntimeGeneration : null;
+        const runtimeIsCurrent = () => isCurrentDiscoveryGeneration(operationGeneration)
+          && (hostId === "local"
+            ? state.localRuntime?.requestClient === requestClient && state.localRuntimeGeneration === localRuntimeGeneration
+            : state.remoteRuntimeCache.get(hostId)?.requestClient === requestClient);
         try {
+          if (!runtimeIsCurrent()) return null;
           const deadline = Date.now() + 90000;
           const result = await (hostId === "local"
-            ? listAllLocalThreadInventory(runtime.requestClient, false, deadline, false, "local inventory hydration", state.localRuntimeGeneration)
-            : listAllRuntimeThreads(runtime.requestClient, false, deadline));
+            ? listAllLocalThreadInventory(requestClient, false, deadline, false, "local inventory hydration", localRuntimeGeneration)
+            : listAllRuntimeThreads(requestClient, false, deadline));
+          if (!runtimeIsCurrent()) return null;
           const attemptedAt = Date.now();
           const prior = state.threadInventories.get(hostId);
           const truncated = result.truncated === true || result.threads.length >= 9800;
@@ -3732,6 +4133,7 @@
               truncated: priorComplete ? false : true,
             }
             : { attemptedAt, error: null, fetchedAt: attemptedAt, hostId, pages: result.pages, retryAt: 0, threads: result.threads, truncated: false };
+          if (!isCurrentDiscoveryGeneration(operationGeneration)) return null;
           state.threadInventories.set(hostId, inventory);
           if (!truncated) rememberVerifiedThreadIds(hostId, inventory.threads);
           state.inventoryHydrationRounds += result.pages;
@@ -3739,6 +4141,7 @@
           if (!state.disposed) schedule();
           return inventory;
         } catch (error) {
+          if (!runtimeIsCurrent()) return null;
           const attemptedAt = Date.now();
           const prior = state.threadInventories.get(hostId);
           const inventory = {
@@ -3757,36 +4160,87 @@
         }
       });
       const results = await Promise.all(tasks);
+      completedInventories = results;
+      if (!isCurrentDiscoveryGeneration(operationGeneration)) return;
       const errors = [...state.threadInventories.values()].filter((result) => result.error).map((result) => `${result.hostId}: ${result.error}`);
       state.inventoryHydrationError = errors.length ? errors.join("; ").slice(0, 240) : null;
-      state.inventoryHydrationTruncated = results.some((result) => result.attemptTruncated === true || result.truncated === true || result.threads.length >= 9800);
+      state.inventoryHydrationTruncated = results.some((result) => result && (result.attemptTruncated === true || result.truncated === true || result.threads.length >= 9800));
     } catch (error) {
       state.inventoryHydrationError = String(error?.message ?? error).slice(0, 240);
     } finally {
+      const ownsHydration = state.inventoryHydrationGeneration === operationGeneration;
+      if (!ownsHydration) return;
       state.inventoryHydrationPending = false;
       state.inventoryHydrationPhase = "idle";
-      if (!state.disposed) render();
+      if (!state.disposed) {
+        if (!state.deviceRefreshPending && isCurrentDiscoveryGeneration(operationGeneration) && completedInventories?.length) {
+          const discovery = discoverHostNames();
+          const runtimes = new Map(discoverRemoteRuntimes(discovery.runtimes));
+          if (state.localRuntime?.requestClient) runtimes.set("local", state.localRuntime);
+          const membershipComplete = [...runtimes.keys()]
+            .filter((hostId) => !state.localRuntimeHostIds.has(hostId))
+            .every((hostId) => {
+              const inventory = state.threadInventories.get(hostId);
+              return inventory && !inventory.error && inventory.truncated !== true
+                && Array.isArray(inventory.threads) && Number.isFinite(inventory.fetchedAt)
+                && (hostId === "local" || Date.now() - inventory.fetchedAt <= REMOTE_INVENTORY_MAX_AGE_MS);
+            });
+          const successful = completedInventories.every((inventory) => inventory && !inventory.error && inventory.truncated !== true)
+            && membershipComplete;
+          if (successful) {
+            state.deviceRefreshLastSuccessfulAt = Math.max(state.deviceRefreshLastSuccessfulAt || 0, Date.now());
+            state.deviceRefreshLastError = null;
+          }
+        }
+        // A reconnect or force invalidation can happen while this bounded
+        // listing is pending. Its results are discarded, but the dirty marker
+        // must immediately schedule a fresh generation after settlement.
+        if (state.inventoryHydrationDirty) scheduleNativeInventoryHydration();
+        schedule();
+      }
     }
   }
 
-  function scheduleNativeInventoryHydration() {
-    if (state.inventoryHydrationPending || !document.querySelector('[aria-label="Project sidebar options"]')) return;
+  function scheduleNativeInventoryHydration(force = false, generation = state.discoveryGeneration) {
+    if (state.disposed) return Promise.resolve(null);
+    if (state.inventoryHydrationPending) return state.inventoryHydrationPromise ?? Promise.resolve(null);
+    if (!force && !document.querySelector('[aria-label="Project sidebar options"]')) return Promise.resolve(null);
     if (state.inventoryHydrationTimer !== null) {
-      if (!state.inventoryHydrationDirty) return;
+      if (!force && !state.inventoryHydrationDirty) return state.inventoryHydrationScheduled?.promise ?? Promise.resolve(null);
       clearTimeout(state.inventoryHydrationTimer);
       state.inventoryHydrationTimer = null;
     }
     if (!state.inventoryHydrationStarted) {
       state.inventoryHydrationStarted = true;
-      void hydrateNativeInventory();
-      return;
+      const promise = hydrateNativeInventory(force, generation);
+      state.inventoryHydrationPromise = promise;
+      const clearPending = () => { if (state.inventoryHydrationPromise === promise) state.inventoryHydrationPromise = null; };
+      void promise.then(clearPending, clearPending);
+      return promise;
     }
-    const delay = state.inventoryHydrationDirty ? NATIVE_INVENTORY_DIRTY_DEBOUNCE_MS : NATIVE_INVENTORY_REFRESH_MS;
+    // Rescheduling must preserve both the original waiter and its force flag.
+    // A membership mutation before the timer fires must not strand the refresh
+    // coordinator on a cancelled timer's promise or restore a retry gate.
+    const scheduled = state.inventoryHydrationScheduled ?? { force: false, generation, promise: null, resolve: null };
+    if (!scheduled.promise) scheduled.promise = new Promise((resolve) => { scheduled.resolve = resolve; });
+    scheduled.force ||= force;
+    scheduled.generation = generation;
+    state.inventoryHydrationScheduled = scheduled;
+    const delay = scheduled.force ? 0 : state.inventoryHydrationDirty ? NATIVE_INVENTORY_DIRTY_DEBOUNCE_MS : NATIVE_INVENTORY_REFRESH_MS;
     state.inventoryHydrationStarted = true;
     state.inventoryHydrationTimer = setTimeout(() => {
+      if (state.inventoryHydrationScheduled !== scheduled) return;
       state.inventoryHydrationTimer = null;
-      void hydrateNativeInventory();
+      state.inventoryHydrationScheduled = null;
+      const hydration = hydrateNativeInventory(scheduled.force, scheduled.generation);
+      state.inventoryHydrationPromise = hydration;
+      const settle = (result) => {
+        if (state.inventoryHydrationPromise === hydration) state.inventoryHydrationPromise = null;
+        scheduled.resolve(result);
+      };
+      void hydration.then(settle, settle);
     }, delay);
+    return scheduled.promise;
   }
 
   function normalizeSidebarStatus(value) {
@@ -4488,7 +4942,7 @@
       .find((item) => /New remote project/i.test(item.innerText || "")) ?? null;
   }
 
-  function dismissAutoRegistrationDialog(dialog) {
+  function dismissOwnedDialog(dialog) {
     if (!dialog?.isConnected) return false;
     const cancel = [...dialog.querySelectorAll("button")]
       .find((item) => /^(Cancel|Close)$/i.test((item.innerText || item.getAttribute("aria-label") || "").trim()));
@@ -5267,53 +5721,16 @@
   }
 
   function scheduleAutoReconciliation(model) {
-    if (state.disposed || !readBoolean(AUTO_ENABLED_KEY) || state.autoReconciliationTimer !== null || state.autoReconciliationPending) return;
-    const managed = Object.values(readRecords(AUTO_MANAGED_KEY));
-    const hasStaleManaged = managed.some((record) => {
-      const inventory = directCompleteInventory(normalizeHostId(record?.hostId));
-      return inventory && !inventoryContainsProject(inventory, record);
-    });
-    if (!staleMirroredProjects(model).length && !hasStaleManaged) return;
-    state.autoReconciliationTimer = setTimeout(() => {
-      state.autoReconciliationTimer = null;
-      if (!state.disposed) void reconcileAutoRegisteredProjects();
-    }, 500);
-  }
-
-  async function autoRegisterProject(project) {
-    const identity = projectIdentity(project);
-    const navigate = nativeNavigationDispatcher();
-    if (!identity || !navigate || state.autoRegistrationPending) return;
-    state.autoRegistrationPending = identity;
-    let ownedDialog = null;
-    try {
-      await registerRemoteProjectAndOpen(project, navigate, (dialog) => { ownedDialog = dialog; });
-      setRecord(AUTO_MANAGED_KEY, project, true);
-      setRecord(AUTO_SUPPRESSED_KEY, project, false);
-      state.autoRegistrationFailures.delete(identity);
-      state.lastAction = { commandId: "auto-register-remote-project", found: true, hostId: project.hostId, invoked: true, project: project.name };
-    } catch (error) {
-      dismissAutoRegistrationDialog(ownedDialog);
-      state.autoRegistrationFailures.set(identity, Date.now() + 120000);
-      state.lastAction = { commandId: "auto-register-remote-project", error: error?.message || String(error), found: true, hostId: project.hostId, invoked: false, project: project.name };
-    } finally {
-      state.autoRegistrationPending = null;
-      schedule();
-    }
+    // Automatic project reconciliation was retired with auto-registration.
+    // Existing managed registrations remain until the user removes them.
+    void model;
   }
 
   function scheduleAutoRegistration(model) {
-    if (state.disposed || state.autoRegistrationTimer !== null) return;
-    const candidate = autoRegistrationCandidate(model);
-    if (!candidate || !nativeNavigationDispatcher()) return;
-    const identity = projectIdentity(candidate);
-    state.autoRegistrationTimer = setTimeout(() => {
-      state.autoRegistrationTimer = null;
-      if (state.disposed) return;
-      const current = autoRegistrationCandidate(collectModel());
-      if (current && projectIdentity(current) === identity) void autoRegisterProject(current);
-      else schedule();
-    }, 1500);
+    // Automatic registration was retired. Keep this legacy entry point as a
+    // passive no-op so an older injected preference cannot open a native
+    // project dialog during discovery, polling, reconnect, or refresh.
+    void model;
   }
 
   function allowAutoRegistration(project) {
@@ -5429,7 +5846,7 @@
       else await registerRemoteProjectAndOpen(project, navigationDispatcher, (dialog) => { ownedDialog = dialog; });
       state.lastAction = { commandId: "start-new-thread", found: true, hostId: project.hostId, invoked: true, mode: globalNewChat && !localCallback && !projectDispatcher ? "global-composer-project-selection" : project.hostId !== "local" && !project.projectId ? "registered-remote-project" : "open-composer", project: project.name };
     } catch (error) {
-      dismissAutoRegistrationDialog(ownedDialog);
+      dismissOwnedDialog(ownedDialog);
       state.lastAction = { commandId: "start-new-thread", error: error?.message || String(error), found: true, hostId: project.hostId, invoked: false, project: project.name };
     } finally {
       state.pendingNewThreads.delete(project.key);
@@ -5501,7 +5918,6 @@
 
   function projectContextMenu(project) {
     const commands = new Map(nativeProjectCommands(project).map((command) => [command.id, command]));
-    const suppressed = hasRecord(AUTO_SUPPRESSED_KEY, project);
     const menu = document.createElement("div");
     menu.id = CONTEXT_ID;
     menu.setAttribute("role", "menu");
@@ -5516,7 +5932,6 @@
       menu.appendChild(note);
     }
     const definitions = [
-      ...(suppressed ? [["allow-auto-registration", "↻", "Allow auto-registration"], null] : []),
       ["pin-project", "⌖", "Pin"],
       ["edit-project", "⌕", "Edit"],
       null,
@@ -5539,15 +5954,14 @@
       setFocusKey(item, "context", project.key, id);
       item.setAttribute("role", "menuitem");
       item.innerHTML = `<span aria-hidden="true">${icon}</span><span>${label}</span>`;
-      const custom = id === "allow-auto-registration";
       const command = commands.get(id);
       const commandLabel = typeof command?.label === "string" && command.label.trim() ? command.label : label;
       item.lastElementChild.textContent = commandLabel;
       item.setAttribute("aria-label", commandLabel);
       item.tabIndex = -1;
-      item.disabled = !custom && (!command || command.enabled === false || typeof command.onSelect !== "function");
+      item.disabled = !command || command.enabled === false || typeof command.onSelect !== "function";
       if (item.disabled) item.title = "This command is unavailable in the native sidebar";
-      bindActivation(item, () => custom ? allowAutoRegistration(project) : invokeNativeProjectCommand(project, id));
+      bindActivation(item, () => invokeNativeProjectCommand(project, id));
       menu.appendChild(item);
     }
     return menu;
@@ -5930,6 +6344,16 @@
     setFocusKey(settingsToggle, "settings");
     settingsToggle.addEventListener("click", () => { state.settingsOpen = !state.settingsOpen; render(); });
     modes.appendChild(settingsToggle);
+    const forceRefresh = button("crmp-auto-control crmp-force-refresh", state.deviceRefreshPending
+      ? state.deviceRefreshQueued ? "Refresh queued" : "Refreshing…" : "Force refresh");
+    forceRefresh.setAttribute("aria-label", "Force refresh device and chat discovery");
+    forceRefresh.title = state.deviceRefreshPending
+      ? "A refresh is already running; repeated clicks are coalesced"
+      : "Read fresh device membership and inventory now";
+    setFocusKey(forceRefresh, "refresh", "force");
+    forceRefresh.dataset.refreshControl = "force";
+    forceRefresh.addEventListener("click", () => { refreshDeviceHealth(); });
+    modes.appendChild(forceRefresh);
     fragment.appendChild(modes);
     const update = readUpdateStatus();
     announceUpdate(update);
@@ -5951,13 +6375,6 @@
       settings.appendChild(updateStatusPanel(update));
       const autoControls = document.createElement("div");
       autoControls.className = "crmp-auto-controls";
-      const autoEnabled = readBoolean(AUTO_ENABLED_KEY);
-      const autoToggle = button("crmp-auto-control", autoEnabled ? "Auto-register: on" : "Auto-register: off");
-      setFocusKey(autoToggle, "auto", "register");
-      autoToggle.setAttribute("aria-pressed", String(autoEnabled));
-      autoToggle.title = "Mirror active projects published by connected injected devices";
-      autoToggle.addEventListener("click", () => setAutoRegistration(!autoEnabled));
-      autoControls.appendChild(autoToggle);
       const managedCount = Object.keys(readRecords(AUTO_MANAGED_KEY)).length;
       const removeManaged = button("crmp-auto-control", `Remove auto projects (${managedCount})`);
       setFocusKey(removeManaged, "auto", "remove-projects");
@@ -6013,13 +6430,29 @@
     }
     fragment.appendChild(settings);
 
+    const staleHosts = model.hosts.filter((host) => host.id !== "local" && (() => {
+      const inventory = state.remoteProjectInventories.get(host.id);
+      return !inventory || Boolean(inventory.error) || !freshInventory(host.id);
+    })());
+    const syncStatus = document.createElement("div");
+    syncStatus.className = "crmp-sync-status";
+    syncStatus.dataset.refreshing = String(state.deviceRefreshPending);
+    const syncState = state.deviceRefreshPending ? "refreshing" : state.deviceRefreshLastError ? "error" : staleHosts.length ? "stale" : "ready";
+    syncStatus.dataset.state = syncState;
+    if (state.deviceRefreshPending) syncStatus.textContent = state.deviceRefreshQueued
+      ? "Refreshing device data… A follow-up pass is queued."
+      : "Refreshing device data and chat lists…";
+    else if (state.deviceRefreshLastError) syncStatus.textContent = "Refresh incomplete; cached device data may be stale. Check Device health for details.";
+    else if (staleHosts.length) syncStatus.textContent = `Last successful sync: ${timeLabel(state.deviceRefreshLastSuccessfulAt)}. Cached data from ${staleHosts.length} ${staleHosts.length === 1 ? "device is" : "devices are"} unavailable or out of date.`;
+    else if (state.deviceRefreshLastSuccessfulAt) syncStatus.textContent = `Last successful sync: ${timeLabel(state.deviceRefreshLastSuccessfulAt)}.`;
+    else syncStatus.textContent = "Device data has not completed an initial sync yet.";
+    fragment.appendChild(syncStatus);
+
     scheduleLocalProjectInventoryPublication();
     scheduleLocalPeerCacheInventory(model.hosts);
     scheduleLocalRegisteredProjectsRefresh();
     scheduleRemoteProjectInventory(model.remoteRuntimes, state.nativeConnectionRefreshPending);
     state.nativeConnectionRefreshPending = false;
-    scheduleAutoRegistration(model);
-    scheduleAutoReconciliation(model);
     scheduleAutoArchive();
     scheduleNativeInventoryHydration();
 
@@ -6212,7 +6645,7 @@
       autoArchivePending: state.autoArchivePending,
       autoManagedProjects: Object.keys(readRecords(AUTO_MANAGED_KEY)).length,
       autoRegistrationFailures: state.autoRegistrationFailures.size,
-      autoRegistrationEnabled: readBoolean(AUTO_ENABLED_KEY),
+      autoRegistrationEnabled: false,
       autoRegistrationPending: state.autoRegistrationPending,
       autoReconciliationPending: state.autoReconciliationPending,
       autoSuppressedProjects: Object.keys(readRecords(AUTO_SUPPRESSED_KEY)).length,
@@ -6308,10 +6741,13 @@
     document.addEventListener("pointerdown", dismissOverlays);
     document.addEventListener("keydown", dismissOnEscape);
     document.addEventListener(UPDATE_EVENT, handleUpdateStatus);
+    state.resumeRefreshHandler = refreshStaleDeviceDataOnResume;
+    document.addEventListener("visibilitychange", state.resumeRefreshHandler);
     void ensureLocalStateBridge();
     if (globalThis !== document && typeof globalThis.addEventListener === "function") {
       globalThis.addEventListener(UPDATE_EVENT, handleUpdateStatus);
       globalThis.addEventListener("storage", handleDeviceAliasStorage);
+      globalThis.addEventListener("focus", state.resumeRefreshHandler);
     }
     if (!state.mountObserver) {
       state.mountObserver = new MutationObserver((mutations) => {
@@ -6345,6 +6781,24 @@
 
   function uninstall() {
     state.disposed = true;
+    state.discoveryGeneration += 1;
+    state.deviceRefreshGeneration += 1;
+    state.deviceRefreshPending = false;
+    state.deviceRefreshQueued = false;
+    state.deviceRefreshQueueEligible = false;
+    state.deviceRefreshActiveGeneration = null;
+    state.deviceRefreshPromise = null;
+    state.inventoryHydrationPending = false;
+    state.inventoryHydrationPromise = null;
+    state.inventoryHydrationGeneration = null;
+    state.inventoryHydrationPhase = "idle";
+    state.nativeStateBridgePending = null;
+    state.nativeStateBridgeGeneration = null;
+    state.localRegisteredProjectsPending = false;
+    state.localRegisteredProjectsPendingGeneration = null;
+    state.localRegisteredProjectsPendingPromise = null;
+    state.localRegisteredProjectsQueuedGeneration = null;
+    state.localRegisteredProjectsQueuedPromise = null;
     state.autoArchiveGeneration += 1;
     state.localRuntimeGeneration += 1;
     for (const requestClient of state.localThreadListActiveClients) {
@@ -6356,10 +6810,13 @@
     document.removeEventListener("pointerdown", dismissOverlays);
     document.removeEventListener("keydown", dismissOnEscape);
     document.removeEventListener(UPDATE_EVENT, handleUpdateStatus);
+    if (state.resumeRefreshHandler) document.removeEventListener("visibilitychange", state.resumeRefreshHandler);
     if (globalThis !== document && typeof globalThis.removeEventListener === "function") {
       globalThis.removeEventListener(UPDATE_EVENT, handleUpdateStatus);
       globalThis.removeEventListener("storage", handleDeviceAliasStorage);
+      if (state.resumeRefreshHandler) globalThis.removeEventListener("focus", state.resumeRefreshHandler);
     }
+    state.resumeRefreshHandler = null;
     state.observer?.disconnect();
     state.observer = null;
     state.observerTarget = null;
@@ -6382,6 +6839,8 @@
     state.localInventoryPublisherTimer = null;
     if (state.inventoryHydrationTimer !== null) clearTimeout(state.inventoryHydrationTimer);
     state.inventoryHydrationTimer = null;
+    state.inventoryHydrationScheduled?.resolve(null);
+    state.inventoryHydrationScheduled = null;
     if (state.healthRefreshTimer !== null) clearTimeout(state.healthRefreshTimer);
     state.healthRefreshTimer = null;
     if (state.mountRetryTimer !== null) clearTimeout(state.mountRetryTimer);

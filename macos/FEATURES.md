@@ -1,7 +1,9 @@
 # Feature guide
 
-This guide describes the v1.5.49 Windows and macOS helpers. Both packages
-share the Device projects renderer and the feature behavior below; the
+This guide describes the Windows and macOS source, including the v1.5.50
+quiet-discovery and sidebar-refresh changes. Historical v1.5.49 packages and
+screenshots do not include those changes. Both packages share the Device
+projects renderer and the feature behavior below; the
 platform guides document their different launchers, setup assistants, proxy
 options, and shortcut/startup commands.
 
@@ -17,10 +19,12 @@ connection** preference.
 | --- | --- | --- |
 | Device filters | Show All, This device, or one other known device. | Display-name order; cached inventory does not prove online state. |
 | Device names | Remember verified native or inventory names across reloads and restarts. | Unknown peers display **Remote device**; internal environment IDs are never labels. |
-| Project rows | Show active projects, including empty projects, with native folder styling and project-hover new-chat actions when supported. | Archived, removed, stale, or unverified projects are excluded. |
+| Project rows | Show active projects, including empty projects, with native folder styling and project-hover new-chat actions when supported. | Last-known rows survive unavailable or incomplete refreshes with stale status; fresh authoritative membership determines removals. |
 | Task state | Show a spinner while working and a blue unread dot after completion until viewed. | State and membership are refreshed independently; collapsed folders aggregate child state. |
-| Auto-register | Mirror active remote project registrations on this client. | Only fresh complete inventory can drive registration changes. |
-| Remove auto projects | Remove registrations created by Auto-register and suppress immediate recreation. | Manual registrations, chats, folders, and source data are kept. **Allow auto-registration** reverses suppression. |
+| Quiet discovery | Discover remote projects and chats without opening registration dialogs or navigating away. | Applies even when an older installation enabled Auto-register; explicit project actions can still open native registration. |
+| Force refresh | Rediscover connections and request fresh chat membership from connected devices. | Preserves the current chat, draft, filters, expansion, focus, and scroll; repeated requests are coalesced. |
+| Sync status | Show refresh progress, last successful sync, and stale data inline. | A failed or incomplete read retains existing rows and does not renew inventory authority. |
+| Remove auto projects | Remove registrations created by older Auto-register versions. | Manual registrations, chats, folders, and source data are kept. |
 
 Keyboard focus and sidebar scroll position survive refreshes. Updates use a
 persistent polite status region, larger controls, reduced-motion support, and
@@ -70,8 +74,8 @@ when it was enabled.
 
 **Device health** shows each reported device name, native connection
 availability, connection-check time, inventory age/source, publisher protocol,
-and helper version when supplied by the peer. **Refresh devices** coalesces
-requests and is limited to once every ten seconds. Device filters expose their
+and helper version when supplied by the peer. **Refresh devices** uses the same
+refresh coordinator as **Force refresh**. Device filters expose their
 connection state to assistive technology. Empty projects distinguish loading,
 disconnected, stale/incomplete, and verified-empty states.
 
@@ -168,9 +172,11 @@ required, disconnected, no recent check, publisher unavailable,
 stale/incomplete inventory, cached fallback, outgoing-write retry, or healthy
 direct reads. Local findings cover bridge, inventory, and publisher readiness.
 
-**Refresh connection evidence** requests existing read-only discovery and
-inventory checks. Pending reads are reused and refresh is limited to once every
-ten seconds. If the app has not exposed a runtime, the panel says that a direct
+**Refresh connection evidence** uses the same discovery and inventory refresh
+as **Force refresh**. Refresh invalidates cached runtime discovery and bypasses
+inventory retry delays for a fresh pass. Repeated clicks share the active
+refresh; an older background read is followed by one fresh pass. If the app
+has not exposed a runtime, the panel says that a direct
 check could not start. Refresh does not change Remote settings, sign in,
 elevate, install, or restart anything. Follow the suggested native step and
 refresh again. Recent cached projects and status heartbeats never renew old
@@ -188,9 +194,12 @@ transport overhead, native chat, or model streaming.
 
 Participating devices publish active inventory through the authenticated Remote
 connection. Full inventory refreshes happen at startup, every 60 seconds, and
-after detected task membership changes. Working/unread updates use the faster
-activity cadence. A complete, fresh inventory is required before automatic
-project changes; stale or incomplete data pauses those changes.
+after detected task membership changes. Returning to the app refreshes stale
+membership, and **Force refresh** requests an immediate fresh pass. Background
+discovery never opens Add project, including when a connection cannot be
+discovered quietly. Working/unread updates use the faster
+activity cadence. Existing project registrations are kept until an explicit
+user action removes them; stale or incomplete data retains the last known rows.
 
 Peer-cache snapshots omit the recipient's echoed inventory and redundant
 schema-v1 defaults. A slow peer has at most one active write and one newest
@@ -222,6 +231,14 @@ create authorization or rewrite the protected store. The platform guides
 explain the compatibility path and the ordinary-app rollback path.
 
 ## Validation status
+
+For the v1.5.50 refresh changes, run
+`node windows/CodexRemoteMobileProject/tests/DiscoveryRefresh.SelfTest.js` and
+the browser fixture below. These use synthetic runtimes and do not operate a
+real account. After an approved deployment, two-Windows-client acceptance must
+separately confirm that a new chat appears on the other desktop through polling
+and Force refresh, without re-adding the connection, opening a registration
+dialog, or disturbing a draft on that desktop.
 
 Run `tools/Test-Source.ps1` with Node.js 22 or newer for runtime/renderer
 fixtures, journal interruption/recovery, updater adapters, Windows native

@@ -131,6 +131,6 @@ const signatureBefore = title.publicationSignature({}, [], [], [signatureThread]
 assert.notEqual(title.publicationSignature({}, [], [], [{ ...signatureThread, title: "After" }], 1), signatureBefore, "a title change must trigger publication");
 assert.notEqual(title.publicationSignature({}, [], [], [{ ...signatureThread, titleSource: "app-server-title" }], 1), signatureBefore, "a provenance change must trigger publication");
 assert.match(originalSource, /USER_VISIBLE_THREAD_SOURCE_KINDS = Object\.freeze\(\["cli", "vscode"\]\)/);
-assert.match(originalSource, /listAllRuntimeThreads\(runtime\.requestClient, false/);
+assert.match(originalSource, /listAllRuntimeThreads\(requestClient, false/);
 
 console.log("Title provenance self-test passed.");

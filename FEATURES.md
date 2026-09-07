@@ -1,6 +1,6 @@
 # Feature guide
 
-This guide describes the Windows and macOS source, including the v1.5.51
+This guide describes the Windows and macOS source, including the v1.5.52
 Git-update, quiet-discovery, and sidebar-refresh changes. Historical v1.5.49 packages and
 screenshots do not include those changes. Both packages share the Device
 projects renderer and the feature behavior below; the
@@ -242,7 +242,7 @@ explain the compatibility path and the ordinary-app rollback path.
 
 ## Validation status
 
-For the v1.5.51 refresh changes, run
+For the v1.5.52 refresh changes, run
 `node windows/CodexRemoteMobileProject/tests/DiscoveryRefresh.SelfTest.js` and
 the browser fixture below. These use synthetic runtimes and do not operate a
 real account. After an approved deployment, two-Windows-client acceptance must

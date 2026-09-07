@@ -14,6 +14,8 @@ update_session_source="$bundle_root/update-session.js"
 update_session_cdp_source="$bundle_root/update-session-cdp.js"
 update_session_platform_source="$bundle_root/UpdateSessionPlatform.sh"
 update_transaction_source="$bundle_root/update-transaction.js"
+git_release_source="$bundle_root/git-release.js"
+git_checkout_update_source="$bundle_root/git-checkout-update.js"
 cdp_source="$bundle_root/runtime/lib/cdp.js"
 label="com.local.codex-mobile-project-view"
 launch_agents="$HOME/Library/LaunchAgents"
@@ -208,8 +210,8 @@ start_update_session() {
   local node_bin="$1" identity="$2"
   local state_root="$HOME/Library/Application Support/ChatGPTRemoteEnabler/update-sessions"
   local source name fingerprint="" bundle_hash bundle session_directory config_path
-  local -a names=(update-session.js update-session-cdp.js UpdateSessionPlatform.sh cdp.js Update-ChatGPTRemote.sh update-transaction.js)
-  local -a sources=("$update_session_source" "$update_session_cdp_source" "$update_session_platform_source" "$cdp_source" "$updater" "$update_transaction_source")
+  local -a names=(update-session.js update-session-cdp.js UpdateSessionPlatform.sh cdp.js Update-ChatGPTRemote.sh update-transaction.js git-release.js git-checkout-update.js)
+  local -a sources=("$update_session_source" "$update_session_cdp_source" "$update_session_platform_source" "$cdp_source" "$updater" "$update_transaction_source" "$git_release_source" "$git_checkout_update_source")
   for source in "${sources[@]}"; do [[ -f "$source" && ! -L "$source" ]] || { print -u2 "Update-session dependency is missing: $source"; return 1; }; done
   local index
   for (( index=1; index<=${#sources[@]}; index++ )); do

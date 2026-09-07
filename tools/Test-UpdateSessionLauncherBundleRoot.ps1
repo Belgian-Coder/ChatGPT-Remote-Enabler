@@ -33,6 +33,8 @@ try {
         'cdp.js' = 'CodexRemoteSimple\runtime\lib\cdp.js'
         'Update-ChatGPTRemote.ps1' = 'Update-ChatGPTRemote.ps1'
         'update-transaction.js' = 'update-transaction.js'
+        'git-release.js' = 'git-release.js'
+        'git-checkout-update.js' = 'git-checkout-update.js'
     }
     foreach ($entry in $mobileSources.GetEnumerator()) {
         Write-FixtureFile -Path (Join-Path $candidateMobileRoot $entry.Key) -Value $entry.Value
@@ -93,6 +95,39 @@ $bundle = Copy-ImmutableUpdateSessionBundle -Node 'unused'
     if ([string]::Equals([string]$defaultResult.bundlePath, [string]$explicitResult.bundlePath, [StringComparison]::OrdinalIgnoreCase)) {
         throw 'Different dependency engines unexpectedly produced the same immutable bundle.'
     }
+    Write-FixtureFile -Path (Join-Path $candidateRoot 'git-release.js') -Value 'candidate:git-release.js:changed'
+    $helperChangedResult = & $fixtureLauncher -InstallRoot $installRoot -EntryPointRelative 'Enable-ChatGPTRemote.ps1' -BundleRoot $candidateRoot | ConvertFrom-Json
+    if ([string]::Equals([string]$explicitResult.bundlePath, [string]$helperChangedResult.bundlePath, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'A Git helper change did not change the immutable update-session bundle fingerprint.'
+    }
+    if ((Get-Content -LiteralPath (Join-Path $helperChangedResult.bundlePath 'git-release.js') -Raw) -cne 'candidate:git-release.js:changed') {
+        throw 'The Git helper fingerprint selected a snapshot without the changed helper.'
+    }
+
+    foreach ($relative in @('Update-ChatGPTRemote.ps1', 'update-transaction.js', 'git-release.js', 'git-checkout-update.js')) {
+        Copy-Item -LiteralPath (Join-Path $repositoryRoot "windows\$relative") -Destination (Join-Path $candidateRoot $relative) -Force
+    }
+    $actualResult = & $fixtureLauncher -InstallRoot $candidateRoot -EntryPointRelative 'Enable-ChatGPTRemote.ps1' -BundleRoot $candidateRoot | ConvertFrom-Json
+    $actualUpdater = Join-Path $actualResult.bundlePath 'Update-ChatGPTRemote.ps1'
+    $shell = if (Test-Path -LiteralPath (Join-Path $PSHOME 'pwsh.exe') -PathType Leaf) {
+        Join-Path $PSHOME 'pwsh.exe'
+    } elseif ($env:SystemRoot) {
+        Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    } else {
+        throw 'No PowerShell host is available for the detached Git helper resolution fixture.'
+    }
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $actualOutput = @(& $shell -NoProfile -NonInteractive -File $actualUpdater -Action Check -InstallRoot $candidateRoot -Transport Git -Repository invalid 2>&1)
+        $actualExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    $actualText = [string]::Join([Environment]::NewLine, @($actualOutput | ForEach-Object { [string]$_ }))
+    if ($actualExitCode -eq 0 -or $actualText -notmatch 'Repository must use a validated owner/name form') {
+        throw "The detached updater did not resolve and execute its real Git release helper: $actualText"
+    }
     $mixedRootRejected = $false
     try {
         & $fixtureLauncher -InstallRoot $installRoot -EntryPointRelative 'Enable-ChatGPTRemote.ps1' -BundleRoot $installRoot | Out-Null
@@ -107,6 +142,9 @@ $bundle = Copy-ImmutableUpdateSessionBundle -Node 'unused'
         ExplicitUsesCandidateDependencies = $true
         InstallRootRemainsTarget = $true
         LauncherOwnedControllerFiles = $true
+        GitUpdaterHelpersBundled = $true
+        GitHelperChangesFingerprint = $true
+        DetachedUpdaterResolvesRealGitHelper = $true
         DistinctImmutableBundles = $true
         MixedExplicitRootRejected = $true
     } | ConvertTo-Json -Compress

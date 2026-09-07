@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.5.52 — 2026-09-07
+
+- Include both Git update helpers in the immutable detached controller bundle on Windows and macOS. Their contents now participate in bundle identity and copy verification, so the updater can resolve Git dependencies after restart.
+- Discovered during predeployment inspection of v1.5.51. No managed installation was updated before correction.
+- Validation: full source suite passed, including actual Windows detached-bundle creation, helper-only fingerprint changes, and execution of the real Git helper through the detached updater. macOS bundle contracts, package build/privacy checks, and diff validation passed.
+
 ## v1.5.51 — 2026-09-07
 
 - Use stable Git tags and shallow fetch for update checks and preparation by default on both platforms. Generate and verify a deterministic local archive, manifest, and pinned commit without GitHub API or hosted ZIP downloads. Require Git, honor its proxy/certificate configuration, bound command time, and retain the hosted-release transport only as an explicit option.

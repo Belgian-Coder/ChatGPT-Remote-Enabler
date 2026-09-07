@@ -52,6 +52,14 @@ foreach ($contract in @(
 )) {
     if (-not $launcher.Contains($contract)) { throw "macOS launcher reliability contract is missing: $contract" }
 }
+foreach ($contract in @(
+    'git_release_source="$bundle_root/git-release.js"',
+    'git_checkout_update_source="$bundle_root/git-checkout-update.js"',
+    'update-transaction.js git-release.js git-checkout-update.js)',
+    '"$update_transaction_source" "$git_release_source" "$git_checkout_update_source")'
+)) {
+    if (-not $launcher.Contains($contract)) { throw "macOS detached updater helper is missing from its immutable bundle: $contract" }
+}
 if ($launcher.Contains('reported a terminal readiness error')) {
     throw 'macOS launcher still treats a transient renderer readiness error as terminal.'
 }
@@ -83,6 +91,7 @@ $global:LASTEXITCODE = 0
     ExactCdpTarget = $true
     NestedReadinessEnvelope = $true
     TransientReadinessRetried = $true
+    GitUpdaterHelpersBundled = $true
     ShortcutCandidateSwap = $true
     ShortcutExactTarget = $true
     RealZshSemanticTestPresent = $true

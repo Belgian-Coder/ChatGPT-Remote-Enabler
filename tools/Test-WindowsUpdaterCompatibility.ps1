@@ -86,7 +86,7 @@ try {
     $flatHash = (Get-FileHash -LiteralPath (Join-Path $serverRoot $archiveName) -Algorithm SHA256).Hash.ToLowerInvariant()
     [IO.File]::WriteAllText((Join-Path $serverRoot $sumsName), "$flatHash *$archiveName$([Environment]::NewLine)", [Text.UTF8Encoding]::new($false))
     $newUpdater = Join-Path $repositoryRoot 'windows\Update-ChatGPTRemote.ps1'
-    $flatResult = & $newUpdater -Action Update -LatestReleaseUrl "$baseUrl/release.json" -InstallRoot $flatFixture -AllowInsecureTransport | ConvertFrom-Json
+    $flatResult = & $newUpdater -Transport Release -Action Update -LatestReleaseUrl "$baseUrl/release.json" -InstallRoot $flatFixture -AllowInsecureTransport | ConvertFrom-Json
     if ($flatResult.updated -ne $true -or (Get-Content -LiteralPath (Join-Path $flatFixture 'VERSION') -Raw).Trim() -ne $version) {
         throw 'New updater did not accept the flat archive and star checksum format.'
     }
@@ -99,12 +99,13 @@ try {
     [IO.File]::WriteAllText((Join-Path $serverRoot $sumsName), "$realHash  $archiveName$([Environment]::NewLine)", [Text.UTF8Encoding]::new($false))
     $securityBlockDetected = $false
     try {
-        & $newUpdater -Action Update -LatestReleaseUrl "$baseUrl/release.json" -InstallRoot $blockedFixture -AllowInsecureTransport | Out-Null
+        & $newUpdater -Transport Release -Action Update -LatestReleaseUrl "$baseUrl/release.json" -InstallRoot $blockedFixture -AllowInsecureTransport | Out-Null
     } catch {
         $securityBlockDetected = $_.Exception.Message -match 'proxy or network security gateway'
     }
     if (-not $securityBlockDetected) { throw 'The updater did not identify an HTML security block page.' }
 
+    $global:LASTEXITCODE = 0 # Expected rejection probes must not leak their native exit code to Test-Source.
     [pscustomobject]@{
         PreviousUpdaterAcceptedRelease = $true
         PreviousLauncherAutoInstalledRelease = $true

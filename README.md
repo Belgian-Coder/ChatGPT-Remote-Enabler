@@ -10,10 +10,34 @@ device filters, native project grouping and ordering, empty remote projects,
 project-hover new-chat actions, and working/unread indicators. The original
 **Native sidebar** remains available, with its grouping preference preserved.
 
-v1.5.50 keeps background discovery free of registration
-dialogs and adds **Force refresh**, automatic stale-sidebar recovery, and inline
-sync status. Source and browser validation passed; live two-desktop verification remains pending;
-see the [feature guide](FEATURES.md) for source behavior and limits.
+v1.5.51 adds Git-based updates and a compact refresh icon beside Settings,
+with fixes for update recovery and task activation. Background discovery stays
+quiet. See the [feature guide](FEATURES.md) for behavior and validation limits.
+
+## Install when hosted ZIP downloads are blocked
+
+Clone the public source into a new user-owned folder with Git, then run the
+platform setup from that checkout. Git must already be available. This also
+bootstraps older installations whose updater still downloads release assets.
+Finish existing work before switching launchers; setup should target the new
+checkout, and Settings should show the newly loaded version after launch.
+
+Windows PowerShell:
+
+```powershell
+git clone https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler.git "$env:USERPROFILE\ChatGPTRemoteEnabler-Git"
+& "$env:USERPROFILE\ChatGPTRemoteEnabler-Git\windows\Setup-ChatGPTRemote.ps1"
+```
+
+macOS Terminal:
+
+```sh
+git clone https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler.git "$HOME/ChatGPTRemoteEnabler-Git"
+"$HOME/ChatGPTRemoteEnabler-Git/macos/Setup.command"
+```
+
+Use a new destination if that folder already exists; keep any local changes in
+an existing checkout. Future updates use the pinned release tag on clean `main`.
 
 ## What it looks like
 
@@ -29,16 +53,16 @@ app build is compatible.
 See the [complete feature guide](FEATURES.md) for defaults, limits, privacy,
 and recovery behavior.
 
-## Install v1.5.50 without administrator access
+## Install v1.5.51 without administrator access
 
 Prerequisites are a supported ChatGPT/Codex desktop app signed in with Remote
 available on the account, Node.js 22 or newer, and a writable per-user package
 folder. Organization policy, account access, MFA, or desktop-app policy can
 still block Remote independently of this helper.
 
-- **[Download Windows 11 x64](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/download/v1.5.50/ChatGPT-Remote-Enabler-Windows-x64-v1.5.50.zip)** and follow the [Windows installation guide](windows/README.md).
-- **[Download macOS Apple Silicon](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/download/v1.5.50/ChatGPT-Remote-Enabler-macOS-arm64-v1.5.50.zip)** and follow the [macOS installation guide](macos/README.md).
-- Use the [v1.5.50 release page](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.50) to inspect release notes and published checksums.
+- **[Download Windows 11 x64](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/download/v1.5.51/ChatGPT-Remote-Enabler-Windows-x64-v1.5.51.zip)** and follow the [Windows installation guide](windows/README.md).
+- **[Download macOS Apple Silicon](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/download/v1.5.51/ChatGPT-Remote-Enabler-macOS-arm64-v1.5.51.zip)** and follow the [macOS installation guide](macos/README.md).
+- Use the [v1.5.51 release page](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.51) to inspect release notes and published checksums.
 
 Both are per-user installs and do not require administrator access. Keep the
 complete package in a writable user-owned folder. Run the platform launcher
@@ -52,7 +76,7 @@ The helper does not create account authorization. Native Remote still decides
 which devices may connect.
 
 - **Authorize the outgoing/controller side.** In ChatGPT/Codex, open
-  **Settings → Connections → Control other devices** and complete the native
+  **Settings â†’ Connections â†’ Control other devices** and complete the native
   authorization flow for this computer. If authorization, sign-in, or account
   access is missing, project synchronization pauses and the helper explains the
   next native step. A remembered device name or cached project list is not
@@ -72,7 +96,7 @@ which devices may connect.
 Launch the helper on every participating device, and optionally configure its
 sign-in startup. Keep the app open and signed in on a publisher device when its
 projects need to be available. Direct reads, inventory freshness, and native
-connection state are shown separately in **Settings → Device health**; cached
+connection state are shown separately in **Settings â†’ Device health**; cached
 inventory alone never marks a device online.
 
 The connection panel is intentionally evidence-based. Its light and dark
@@ -129,8 +153,17 @@ relaunches with the saved direct/proxy and startup options. Unknown activity
 keeps it queued, **Cancel** remains available until shutdown starts, and a
 refused close is never force-killed.
 
-Interrupted replacement uses a durable journal and verified recovery. A failed
-update restores the previous verified installation. Protected or
+Updates use Git tag discovery and shallow fetch by default, including extracted
+installations. Git must be installed and able to reach the repository. No GitHub
+API or hosted ZIP download is used: the helper builds a deterministic local
+package, pins its commit and SHA-256, and verifies every file before apply.
+Corporate Git proxy and certificate settings remain in effect.
+
+Interrupted package replacement uses a durable journal and verified recovery. A
+failed package update restores the previous verified installation. Clean source
+checkouts on `main` instead fast-forward to the verified tag; dirty checkouts,
+other branches, and unexpected origins are refused. Recovery accepts only the
+recorded original or completed commit and never resets local work. Protected or
 administrator-owned folders show an unavailable action; the helper never
 self-elevates. Automatic checks can be disabled with the platform command in
 the installation guide, and explicit `Update`/`update` commands remain

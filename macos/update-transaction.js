@@ -1,7 +1,6 @@
 "use strict";
 
 const crypto = require("node:crypto");
-const childProcess = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 
@@ -134,28 +133,23 @@ function syncDirectoriesThrough(directory, root) {
 }
 
 function replaceFile(source, destination) {
-  if (process.platform === "win32" && fs.existsSync(destination)) {
-    const replacedBackup = `${destination}.replace-old-${process.pid}-${crypto.randomBytes(6).toString("hex")}`;
-    const host = process.env.CHATGPT_REMOTE_POWERSHELL_HOST || "powershell.exe";
-    const command = "[IO.File]::Replace($env:CHATGPT_REMOTE_REPLACE_SOURCE, $env:CHATGPT_REMOTE_REPLACE_DESTINATION, $env:CHATGPT_REMOTE_REPLACE_BACKUP, $true)";
-    const result = childProcess.spawnSync(host, ["-NoProfile", "-NonInteractive", "-Command", command], {
-      encoding: "utf8",
-      windowsHide: true,
-      env: {
-        ...process.env,
-        CHATGPT_REMOTE_REPLACE_SOURCE: source,
-        CHATGPT_REMOTE_REPLACE_DESTINATION: destination,
-        CHATGPT_REMOTE_REPLACE_BACKUP: replacedBackup,
-      },
-    });
-    if (result.error || result.status !== 0) {
-      throw new Error(`Atomic Windows file replacement failed: ${result.error?.message || result.stderr?.trim() || `exit ${result.status}`}`);
+  // Every caller creates source beside destination. Node's rename maps to the
+  // platform's atomic same-volume replacement operation, including replacing
+  // an existing file on Windows, so no delete/rename gap or helper process is
+  // needed here. Endpoint scanners can briefly deny the replace on Windows;
+  // retry that single atomic operation without ever removing destination.
+  const retryable = new Set(["EACCES", "EBUSY", "EPERM"]);
+  const deadline = Date.now() + 2_000;
+  let attempt = 0;
+  for (;;) {
+    try {
+      fs.renameSync(source, destination);
+      break;
+    } catch (error) {
+      if (process.platform !== "win32" || !retryable.has(error?.code) || Date.now() >= deadline) throw error;
+      attempt += 1;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.min(100, 5 * attempt));
     }
-    // File.Replace has already committed the new destination atomically. This
-    // only removes its now-unneeded copy of the old destination.
-    try { fs.unlinkSync(replacedBackup); } catch {}
-  } else {
-    fs.renameSync(source, destination);
   }
   syncDirectory(path.dirname(destination));
 }
@@ -570,12 +564,42 @@ function removeJournal(journalPath) {
   syncDirectory(path.dirname(journalPath));
 }
 
+function operationHasAppliedState(journal, operation) {
+  const destination = assertSafeDestination(journal.installRoot, operation.relative);
+  if (pathKey(destination) !== pathKey(operation.destination)) {
+    throw new Error(`Journal destination changed: ${operation.relative}`);
+  }
+  if (operation.kind === "remove") return !fs.existsSync(destination);
+  if (!fs.existsSync(destination)) return false;
+  const details = fs.lstatSync(destination);
+  return details.isFile() && !details.isSymbolicLink() && sha256File(destination) === operation.hash;
+}
+
+function validatedResumeIndex(journalPath, journal) {
+  let resumeIndex = journal.completedOperations;
+  for (let index = 0; index < journal.completedOperations; index += 1) {
+    if (!operationHasAppliedState(journal, journal.operations[index])) {
+      resumeIndex = index;
+      break;
+    }
+  }
+  if (resumeIndex !== journal.completedOperations) {
+    // The prepared payload and every rollback copy were already validated.
+    // Durably rewind before repairing the earliest mismatched operation so a
+    // second interruption can never skip an unverified destination.
+    journal.completedOperations = resumeIndex;
+    atomicWriteJson(journalPath, journal);
+  }
+  return resumeIndex;
+}
+
 function applyJournal(journalPath, journal) {
   validateJournalStructure(journalPath, journal);
   validateJournalPrepared(journal);
+  const resumeIndex = validatedResumeIndex(journalPath, journal);
   journal.status = "applying";
   atomicWriteJson(journalPath, journal);
-  for (let index = 0; index < journal.operations.length; index += 1) {
+  for (let index = resumeIndex; index < journal.operations.length; index += 1) {
     const operation = journal.operations[index];
     const destination = assertSafeDestination(journal.installRoot, operation.relative);
     if (pathKey(destination) !== pathKey(operation.destination)) throw new Error(`Journal destination changed: ${operation.relative}`);

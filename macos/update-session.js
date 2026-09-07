@@ -416,19 +416,19 @@ class UpdaterAdapter {
     if (this.config.platform === "win32") {
       command = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
       args = ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", this.config.updaterPath,
-        "-Action", action, "-InstallRoot", this.config.installRoot];
+        "-Action", action, "-InstallRoot", this.config.installRoot, "-LockTimeoutSeconds", "15"];
       if (process.env.CHATGPT_REMOTE_UPDATE_ALLOW_INSECURE === "1") args.push("-AllowInsecureTransport");
       if (release) args.push("-TargetVersion", release.version, "-ExpectedArchiveSha256", release.archiveSha256, "-PreparedDirectory", preparedDirectory);
     } else {
       command = "/bin/zsh";
       const macAction = { Check: "check", Prepare: "prepare", ApplyPrepared: "apply-prepared", Recover: "recover" }[action];
-      args = [this.config.updaterPath, macAction];
+      args = [this.config.updaterPath, macAction, "--lock-timeout-seconds", "15"];
       if (release) args.push("--target-version", release.version, "--expected-archive-sha256", release.archiveSha256, "--prepared-directory", preparedDirectory);
       env.CHATGPT_REMOTE_UPDATE_INSTALL_ROOT = this.config.installRoot;
     }
     const started = Date.now();
     try {
-      const timeoutMs = action === "Check" ? 45_000 : action === "Prepare" ? 240_000 : 180_000;
+      const timeoutMs = action === "Check" || action === "Prepare" ? 300_000 : 180_000;
       const result = await this.run(command, args, { env, timeoutMs });
       this.config.log?.("updater", { action, durationMs: Date.now() - started, ok: true });
       return parseLastJson(result.stdout);

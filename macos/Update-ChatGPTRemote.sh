@@ -27,6 +27,9 @@ install_root="${install_root:A}"
 repository="${CHATGPT_REMOTE_UPDATE_REPOSITORY:-Belgian-Coder/ChatGPT-Remote-Enabler}"
 api_base="${CHATGPT_REMOTE_UPDATE_API_BASE:-https://api.github.com}"
 latest_url="${CHATGPT_REMOTE_UPDATE_LATEST_URL:-}"
+transport="${CHATGPT_REMOTE_UPDATE_TRANSPORT:-git}"
+transport="${transport:l}"
+[[ "$transport" == git || "$transport" == release ]] || { print -u2 'Update transport must be git or release.'; exit 2; }
 check_interval_hours="${CHATGPT_REMOTE_UPDATE_INTERVAL_HOURS:-0}"
 platform_name="macOS-arm64"
 state_root="$HOME/Library/Application Support/ChatGPTRemoteEnabler/update"
@@ -40,6 +43,7 @@ launch_lock_dir="${state_root:h}/launch.lock"
 launch_lock_owner="$launch_lock_dir/owner"
 launch_lock_token="$$-$(date +%s)-$RANDOM-launch"
 transaction_journal="$state_root/transaction.json"
+git_transaction_journal="$state_root/git-transaction.json"
 transaction_helper="${script_path:h}/update-transaction.js"
 lock_acquired=0
 launch_lock_acquired=0
@@ -145,9 +149,11 @@ check_due() {
 }
 
 probe() {
-  local enabled=true
+  local enabled=true latest install_kind=release
   auto_disabled && enabled=false
-  print -r -- "{\"autoUpdateEnabled\":$enabled,\"checkIntervalHours\":$check_interval_hours,\"installRoot\":\"${install_root//\\/\\\\}\",\"latestReleaseUrl\":\"$(release_url)\",\"localVersion\":\"$(local_version)\",\"repository\":\"$repository\"}"
+  if [[ "$transport" == git ]]; then latest="https://github.com/$repository.git"; else latest="$(release_url)"; fi
+  source_checkout && install_kind=git-checkout
+  print -r -- "{\"autoUpdateEnabled\":$enabled,\"checkIntervalHours\":$check_interval_hours,\"installRoot\":\"${install_root//\\/\\\\}\",\"latestReleaseUrl\":\"$latest\",\"localVersion\":\"$(local_version)\",\"repository\":\"$repository\",\"installKind\":\"$install_kind\",\"transport\":\"$transport\"}"
 }
 
 record_check() {
@@ -315,18 +321,25 @@ prepare_release() {
   local destination="$(assert_safe_prepared_directory "$requested_destination")"
   local -a helper_args=(--prepared-root "$destination" --platform "$platform_name" --version "$requested_version" --archive-sha256 "$expected_hash")
   if [[ -d "$destination" ]]; then
-    invoke_transaction_helper validate-prepared "${helper_args[@]}"
+    complete_prepared_release "$destination" "$requested_version" "$expected_hash"
     return
   fi
   temporary_root="$(mktemp -d "${TMPDIR:-/tmp}/chatgpt-remote-prepare.XXXXXX")"
   local metadata="$temporary_root/release.json" values tag archive_name archive_url sums_name sums_url asset_digest published_hash archive_path
-  values="$(download_release_metadata "$(resolve_node)" "$metadata" "$requested_version")"
-  IFS=$'\t' read -r tag archive_name archive_url sums_name sums_url asset_digest <<< "$values"
-  published_hash="$(published_archive_hash "$archive_name" "$sums_name" "$sums_url" "$asset_digest")"
-  [[ "$published_hash" == "$expected_hash" ]] || { print -u2 "Pinned archive hash $expected_hash does not match published hash $published_hash."; return 1; }
-  assert_https_url "$archive_url"
-  archive_path="$temporary_root/$archive_name"
-  download_file "$archive_url" "$archive_path" 120
+  if [[ "$transport" == git ]]; then
+    values="$(resolve_git_release "$requested_version" "$expected_hash")" || return 1
+    archive_path="$temporary_root/git-release.zip"
+    local git_archive="$("$(resolve_node)" -e 'process.stdout.write(JSON.parse(process.argv[1]).archivePath)' "$values")"
+    /bin/cp -p -- "$git_archive" "$archive_path"
+  else
+    values="$(download_release_metadata "$(resolve_node)" "$metadata" "$requested_version")"
+    IFS=$'\t' read -r tag archive_name archive_url sums_name sums_url asset_digest <<< "$values"
+    published_hash="$(published_archive_hash "$archive_name" "$sums_name" "$sums_url" "$asset_digest")"
+    [[ "$published_hash" == "$expected_hash" ]] || { print -u2 "Pinned archive hash $expected_hash does not match published hash $published_hash."; return 1; }
+    assert_https_url "$archive_url"
+    archive_path="$temporary_root/$archive_name"
+    download_file "$archive_url" "$archive_path" 120
+  fi
   local actual="$(/usr/bin/shasum -a 256 "$archive_path" | /usr/bin/awk '{print $1}')"
   [[ "${actual:l}" == "$expected_hash" ]] || { print -u2 'Downloaded release archive failed its pinned SHA-256 verification.'; return 1; }
   local extract_root="$temporary_root/extract"
@@ -356,13 +369,18 @@ prepare_release() {
   fi
   [[ "$temporary_staging" == "$destination" ]] || rm -rf -- "$temporary_staging" 2>/dev/null || true
   temporary_staging=""
-  invoke_transaction_helper validate-prepared "${helper_args[@]}"
+  complete_prepared_release "$destination" "$requested_version" "$expected_hash"
 }
 
 apply_prepared_release() {
   local requested_version="$1" expected_hash="$2" requested_source="$3"
   local source safe_version backup_base backup_root
   source="$(assert_safe_prepared_directory "$requested_source")" || return 1
+  if source_checkout; then
+    [[ "$transport" == git ]] || { print -u2 'Source checkouts require the Git transport; no package files were copied over the checkout.'; return 1; }
+    invoke_git_checkout_update apply "$source" "$requested_version" "$expected_hash"
+    return
+  fi
   normalize_prepared_executable_modes "$source"
   safe_version="${requested_version//[^A-Za-z0-9._-]/_}"
   backup_base="$rollback_root/$(date +%Y%m%d-%H%M%S)-$safe_version"
@@ -376,6 +394,7 @@ apply_prepared_release() {
 
 recover_pending_transaction() {
   local output
+  if [[ -f "$git_transaction_journal" ]]; then invoke_git_checkout_update recover; return; fi
   if [[ ! -f "$transaction_journal" && "${install_root:t}" == macos && ( -d "${install_root:h}/.git" || -f "${install_root:h}/.git" ) ]]; then
     local git_bin="$(command -v git 2>/dev/null || true)" checkout_root=""
     [[ -n "$git_bin" ]] && checkout_root="$($git_bin -C "$install_root" rev-parse --show-toplevel 2>/dev/null || true)"
@@ -393,6 +412,7 @@ recover_pending_transaction() {
 }
 
 installed_integrity_valid() {
+  source_checkout && return 0
   local manifest="$install_root/RELEASE-MANIFEST.sha256" line hash relative file_path actual count=0
   [[ -f "$manifest" && ! -L "$manifest" ]] || return 1
   while IFS= read -r line || [[ -n "$line" ]]; do
@@ -417,6 +437,41 @@ version_is_newer() {
     }
     process.exit(1);
   ' "$latest" "$current"
+}
+
+resolve_git_release() {
+  local requested_tag="${1:-}" expected_hash="${2:-}" helper="${script_path:h}/git-release.js"
+  [[ -f "$helper" && ! -L "$helper" ]] || { print -u2 'The Git update transport is missing; reinstall the current helper package.'; return 1; }
+  local -a arguments=(resolve --repository "$repository" --platform "$platform_name" --cache-root "$state_root/git-cache")
+  [[ -z "$requested_tag" ]] || arguments+=(--tag "$requested_tag")
+  [[ -z "$expected_hash" ]] || arguments+=(--expected-sha256 "$expected_hash")
+  "$(resolve_node)" "$helper" "${arguments[@]}"
+}
+
+source_checkout() {
+  [[ "${install_root:t}" == macos ]] || return 1
+  if [[ -d "${install_root:h}/.git" || -f "${install_root:h}/.git" ]]; then return 0; fi
+  local git_bin="$(command -v git 2>/dev/null || true)" checkout_root=""
+  [[ -n "$git_bin" ]] || return 1
+  checkout_root="$($git_bin -C "$install_root" rev-parse --show-toplevel 2>/dev/null || true)"
+  [[ -n "$checkout_root" ]]
+}
+
+invoke_git_checkout_update() {
+  local operation="$1" prepared="${2:-}" version="${3:-}" hash="${4:-}"
+  local helper="${script_path:h}/git-checkout-update.js"
+  [[ -f "$helper" && ! -L "$helper" ]] || { print -u2 'The Git source checkout updater is missing.'; return 1; }
+  local -a arguments=("$operation" --repository "$repository" --platform "$platform_name" --install-root "$install_root" --journal-path "$git_transaction_journal")
+  [[ -z "$prepared" ]] || arguments+=(--prepared-root "$prepared" --version "$version" --archive-sha256 "$hash")
+  "$(resolve_node)" "$helper" "${arguments[@]}"
+}
+
+complete_prepared_release() {
+  local prepared="$1" version="$2" hash="$3" validated
+  validated="$(invoke_transaction_helper validate-prepared --prepared-root "$prepared" --platform "$platform_name" --version "$version" --archive-sha256 "$hash")" || return 1
+  if [[ "$transport" == git ]] && source_checkout; then invoke_git_checkout_update prepare "$prepared" "$version" "$hash"
+  else print -r -- "$validated"
+  fi
 }
 
 case "$action" in
@@ -447,7 +502,7 @@ fi
 acquire_lock
 typeset recovery_output='{"recovered":false,"integrityValid":true}'
 if (( read_only_action )); then
-  [[ ! -f "$transaction_journal" ]] || { print -u2 'UPDATE_RECOVERY_REQUIRED: a pending update transaction must be recovered before checking or preparing another release.'; exit 1; }
+  [[ ! -f "$transaction_journal" && ! -f "$git_transaction_journal" ]] || { print -u2 'UPDATE_RECOVERY_REQUIRED: a pending update transaction must be recovered before checking or preparing another release.'; exit 1; }
 else
   recovery_output="$(recover_pending_transaction)"
 fi
@@ -477,15 +532,23 @@ fi
 typeset node_bin="$(resolve_node)"
 temporary_root="$(mktemp -d "${TMPDIR:-/tmp}/chatgpt-remote-update.XXXXXX")"
 typeset metadata="$temporary_root/release.json" values tag archive_name archive_url sums_name sums_url asset_digest published_hash
-values="$(download_release_metadata "$node_bin" "$metadata")"
-IFS=$'\t' read -r tag archive_name archive_url sums_name sums_url asset_digest <<< "$values"
-published_hash="$(published_archive_hash "$archive_name" "$sums_name" "$sums_url" "$asset_digest")"
+typeset update_method=verified-release
+if [[ "$transport" == git ]]; then
+  values="$(resolve_git_release)"
+  tag="$("$node_bin" -e 'process.stdout.write(JSON.parse(process.argv[1]).tag)' "$values")"
+  published_hash="$("$node_bin" -e 'process.stdout.write(JSON.parse(process.argv[1]).archiveSha256)' "$values")"
+  update_method=verified-git
+else
+  values="$(download_release_metadata "$node_bin" "$metadata")"
+  IFS=$'\t' read -r tag archive_name archive_url sums_name sums_url asset_digest <<< "$values"
+  published_hash="$(published_archive_hash "$archive_name" "$sums_name" "$sums_url" "$asset_digest")"
+fi
 typeset current="$(local_version)" available=false
 if version_is_newer "$node_bin" "$tag" "$current"; then available=true; fi
 if [[ "$tag" == "$current" ]] && ! installed_integrity_valid; then available=true; fi
 if [[ "$action" == check || "$available" == false ]]; then
   record_check "$tag"
-  print -r -- "{\"available\":$available,\"latestVersion\":\"$tag\",\"localVersion\":\"$current\",\"archiveSha256\":\"$published_hash\",\"updated\":false,\"method\":\"verified-release\"}"
+  print -r -- "{\"available\":$available,\"latestVersion\":\"$tag\",\"localVersion\":\"$current\",\"archiveSha256\":\"$published_hash\",\"updated\":false,\"method\":\"$update_method\"}"
   exit 0
 fi
 rm -rf -- "$temporary_root"

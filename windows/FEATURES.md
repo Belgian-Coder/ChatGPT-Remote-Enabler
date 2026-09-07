@@ -1,7 +1,7 @@
 # Feature guide
 
-This guide describes the Windows and macOS source, including the v1.5.50
-quiet-discovery and sidebar-refresh changes. Historical v1.5.49 packages and
+This guide describes the Windows and macOS source, including the v1.5.51
+Git-update, quiet-discovery, and sidebar-refresh changes. Historical v1.5.49 packages and
 screenshots do not include those changes. Both packages share the Device
 projects renderer and the feature behavior below; the
 platform guides document their different launchers, setup assistants, proxy
@@ -127,19 +127,24 @@ are reported separately and do not block ordinary launch.
 The launcher checks at startup and every 30 minutes while the app remains open.
 The loaded helper version is visible in Settings, including when the updater
 sidecar is unavailable. An update is installed only after an explicit click.
-The helper downloads the selected release, verifies its published SHA-256 and
-internal manifest, waits for authoritative idle activity, requests a graceful
+The helper discovers stable Git tags and shallow-fetches the selected commit,
+builds a deterministic local package, and pins its SHA-256 and file manifest.
+Git is required; no hosted ZIP or GitHub API download is used by default. It
+waits for authoritative idle activity, requests a graceful
 close of the exact app instance, applies the files, and relaunches with saved
 direct/proxy and startup options. Unknown activity keeps it queued; **Cancel**
 is available until shutdown begins. A refused close is never force-killed.
 
-Interrupted replacement uses a durable journal and verified recovery. Failed
-updates restore the previous verified installation, and competing or unknown
-writers block recovery. Non-writable or administrator-owned folders show an
+Interrupted package replacement uses a durable journal and verified recovery.
+Failed package updates restore the previous verified installation, and competing
+or unknown writers block recovery. Clean `main` source checkouts fast-forward
+to the pinned tag; recovery validates the original or completed commit without
+resetting work. Dirty checkouts, other branches, and unexpected origins fail closed. Non-writable or administrator-owned folders show an
 unavailable action; the helper never self-elevates. Automatic checks can be
-disabled, and explicit `Update`/`update` commands remain available. Forks and
-mirrors can set `CHATGPT_REMOTE_UPDATE_REPOSITORY`,
-`CHATGPT_REMOTE_UPDATE_API_BASE`, or `CHATGPT_REMOTE_UPDATE_LATEST_URL`.
+disabled, and explicit `Update`/`update` commands remain available. GitHub forks can set `CHATGPT_REMOTE_UPDATE_REPOSITORY`. The explicit legacy
+`CHATGPT_REMOTE_UPDATE_TRANSPORT=release` option uses hosted release assets and
+accepts `CHATGPT_REMOTE_UPDATE_API_BASE` or `CHATGPT_REMOTE_UPDATE_LATEST_URL`;
+it is never an automatic fallback. Corporate Git proxy and CA settings are honored.
 
 ![Settings and update status in a synthetic v1.5.49 browser fixture](assets/screenshots/settings-v1.5.49.png)
 
@@ -192,6 +197,11 @@ transport overhead, native chat, or model streaming.
 
 ## Inventory and synchronization limits
 
+A green device indicator confirms connection reachability, not current project
+inventory. A failed inventory read can therefore show a green device alongside
+an incomplete-refresh warning. Cached rows remain available; if no rows have
+been cached, the sidebar cannot treat missing inventory as proof of no projects.
+
 Participating devices publish active inventory through the authenticated Remote
 connection. Full inventory refreshes happen at startup, every 60 seconds, and
 after detected task membership changes. Returning to the app refreshes stale
@@ -217,7 +227,7 @@ that transport fixture.
 ## Privacy, prerequisites, and compatibility
 
 The helper requires a supported signed-in desktop app with Remote available,
-Node.js 22 or newer, and a writable per-user package folder. The core helper
+Node.js 22 or newer, Git for updates, and a writable per-user package folder. The core helper
 adds no central catalogue, account entitlement, firewall exception, service,
 scheduled task, or LaunchAgent. Optional sign-in startup setup may create the
 platform's per-user startup integration. The helper uses the special-session
@@ -232,7 +242,7 @@ explain the compatibility path and the ordinary-app rollback path.
 
 ## Validation status
 
-For the v1.5.50 refresh changes, run
+For the v1.5.51 refresh changes, run
 `node windows/CodexRemoteMobileProject/tests/DiscoveryRefresh.SelfTest.js` and
 the browser fixture below. These use synthetic runtimes and do not operate a
 real account. After an approved deployment, two-Windows-client acceptance must

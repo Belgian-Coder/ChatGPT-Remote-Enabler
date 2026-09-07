@@ -10,7 +10,7 @@ const { chromium } = require("playwright");
 
 const sourcePath = path.join(__dirname, "..", "windows", "CodexRemoteMobileProject", "renderer-mobile-project-view.js");
 const source = fs.readFileSync(sourcePath, "utf8").replace(/\r\n/gu, "\n");
-const fixtureSource = source.replace("  return install();\n})();", "  globalThis.__crmpBrowserFixture = { state, install, render, collectModel, emptyInventoryMessage, refreshDeviceHealth, requestDeviceRefresh, diagnosticSnapshot, discoverHostNames, discoverRemoteRuntimes, hydrateNativeInventory, invalidateDiscoveryCaches, schedule, scheduleNativeInventoryHydration, scheduleRemoteProjectInventory, startNativeProjectThread, uninstall };\n})();");
+const fixtureSource = source.replace("  return install();\n})();", "  globalThis.__crmpBrowserFixture = { state, install, render, collectModel, emptyInventoryMessage, refreshDeviceHealth, requestDeviceRefresh, diagnosticSnapshot, discoverHostNames, discoverRemoteRuntimes, hydrateNativeInventory, invalidateDiscoveryCaches, openNativeTask, schedule, scheduleNativeInventoryHydration, scheduleRemoteProjectInventory, startNativeProjectThread, uninstall };\n})();");
 assert.notEqual(fixtureSource, source, "The fixture must expose the real renderer entrypoints.");
 
 async function main() {
@@ -77,6 +77,27 @@ async function main() {
     const panel = page.locator("#codex-remote-mobile-project-panel");
     const settingsButton = panel.getByRole("button", { name: "Settings", exact: true });
     const setSettingsOpen = async open => { if (await settingsButton.getAttribute("aria-expanded") !== String(open)) await settingsButton.click(); };
+    const refreshControl = panel.locator(".crmp-force-refresh");
+    assert.equal(await refreshControl.locator(".crmp-refresh-icon").count(), 1, "Force refresh must use one compact icon");
+    assert.equal(await refreshControl.textContent(), "", "Force refresh icon must remain compact and label itself accessibly");
+    const refreshGeometry = await page.evaluate(() => {
+      const settings = document.querySelector("#codex-remote-mobile-project-panel .crmp-mode[aria-controls]");
+      const refresh = document.querySelector("#codex-remote-mobile-project-panel .crmp-force-refresh");
+      const settingsRect = settings.getBoundingClientRect();
+      const refreshRect = refresh.getBoundingClientRect();
+      return { gap: refreshRect.left - settingsRect.right, inlineMargin: getComputedStyle(refresh).marginInlineStart };
+    });
+    assert.ok(refreshGeometry.gap >= -1 && refreshGeometry.gap <= 12, "Force refresh must sit immediately to the right of Settings");
+    assert.equal(refreshGeometry.inlineMargin, "0px", "Force refresh must not push itself to the far edge of the control row");
+    await page.evaluate(() => {
+      const state = __crmpBrowserFixture.state;
+      state.deviceRefreshPending = true;
+      state.deviceRefreshQueued = false;
+      __crmpBrowserFixture.render();
+    });
+    assert.equal(await refreshControl.getAttribute("aria-busy"), "true", "Force refresh must expose its pending state");
+    assert.equal(await refreshControl.locator(".crmp-refresh-icon").getAttribute("class").then(value => value.includes("crmp-status-spin")), true, "Force refresh must spin while a refresh is pending");
+    await page.evaluate(() => { __crmpBrowserFixture.state.deviceRefreshPending = false; __crmpBrowserFixture.render(); });
     // The replacement must leave the native global navigation and explicit
     // project New chat action usable. Background discovery with the legacy
     // preference enabled must never open the native Add project dialog.
@@ -153,6 +174,19 @@ async function main() {
       collapsed: JSON.stringify([...__crmpBrowserFixture.state.collapsed]) === JSON.stringify(__refreshPreservation.collapsed),
     }));
     assert.deepEqual(preservedRefresh, { draft: "Keep this unsent draft", selection: [5, 9], focus: "refresh-draft", scroll: true, route: true, collapsed: true }, "refresh must preserve the open route, composer, caret, focus, scroll and expanded state");
+    await page.evaluate(() => {
+      globalThis.__fixtureNavigationCalls = [];
+      __crmpBrowserFixture.state.navigationBridge = {
+        navigate: () => {},
+        navigateToLocalConversation: (conversationId, hostId) => { __fixtureNavigationCalls.push({ conversationId, hostId }); },
+      };
+      __crmpBrowserFixture.render();
+    });
+    const freshTask = panel.getByRole("button", { name: /Fresh browser response/u, exact: true });
+    await freshTask.waitFor();
+    await freshTask.click();
+    const fixtureHost = await page.evaluate(() => __fixtureHost);
+    assert.deepEqual(await page.evaluate(() => __fixtureNavigationCalls), [{ conversationId: "browser-refresh-thread", hostId: fixtureHost }], "A direct remote task must navigate to its conversation on the owning host");
     await page.evaluate(() => { document.getElementById("refresh-draft").remove(); document.querySelector("nav").removeAttribute("style"); __crmpBrowserFixture.state.collapsed.delete("refresh-collapsed-fixture"); });
     await page.evaluate(() => {
       __setFixtureRuntime(null);
@@ -673,6 +707,58 @@ async function main() {
     assert.equal(retainedTruncation.truncated, false, "a truncated attempt must not discard a prior complete snapshot");
     assert.equal(retainedTruncation.hydrationTruncated, true);
 
+    // A task delivered by the peer's publisher remains actionable even when
+    // this renderer has no direct runtime or authoritative thread-list entry.
+    const publisherNavigation = await retainedPage.evaluate(async () => {
+      const fixture = __crmpBrowserFixture;
+      const state = fixture.state;
+      const hostId = __retainedHost;
+      const conversationId = "publisher-only-thread";
+      state.threadInventories.delete(hostId);
+      state.verifiedThreadIds.delete(hostId);
+      state.remoteRuntimeCache.clear();
+      state.remoteRuntimeScannedAt = 0;
+      state.hostConnectivity.set(hostId, { available: true, checkedAt: Date.now() });
+      state.remoteProjectInventories.set(hostId, {
+        error: null,
+        fetchedAt: Date.now(),
+        generatedAt: Date.now(),
+        hostDisplayName: "Published device",
+        pending: false,
+        projects: [{ cwd: "/fixture/retained", name: "Retained project", rootPaths: ["/fixture/retained"] }],
+        projectsAuthoritative: true,
+        publisherVersion: 53,
+        retryAt: 0,
+        tasks: new Map(),
+        threads: [{ cwd: "/fixture/retained", id: conversationId, projectId: null, status: "idle", title: "Publisher only chat" }],
+        threadsAuthoritative: true,
+        threadScope: "user-visible",
+        threadScopeGeneratedAt: Date.now(),
+      });
+      globalThis.__publisherNavigationCalls = [];
+      globalThis.__publisherNavigationBridge = {
+        navigate: () => {},
+        navigateToLocalConversation: (id, targetHostId) => { __publisherNavigationCalls.push({ conversationId: id, hostId: targetHostId }); },
+      };
+      __retainedProject.__reactFiber$fixture.memoizedProps.navigationBridge = __publisherNavigationBridge;
+      state.navigationBridge = null;
+      state.hostDiscoveryCache = { availability: new Map(), names: new Map(), registeredProjects: new Map(), runtimes: new Map() };
+      state.hostDiscoveryDirty = false;
+      state.hostDiscoveryScannedAt = Date.now();
+      state.remoteRuntimeScannedAt = Date.now();
+      state.filter = "all";
+      state.hostDiscoveryDirty = true;
+      fixture.render();
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const task = [...document.querySelectorAll(".crmp-task")].find(item => item.textContent === "Publisher only chat");
+      if (!task) return { taskFound: false, calls: __publisherNavigationCalls, model: fixture.collectModel().tasks.map(item => ({ hostId: item.hostId, title: item.title })) };
+      task.click();
+      await new Promise(resolve => setTimeout(resolve, 0));
+      return { taskFound: true, calls: __publisherNavigationCalls };
+    });
+    const retainedHost = await retainedPage.evaluate(() => __retainedHost);
+    assert.deepEqual(publisherNavigation, { taskFound: true, calls: [{ conversationId: "publisher-only-thread", hostId: retainedHost }] }, "A publisher-only remote task must navigate to its conversation on the owning host");
+
     const focusThrottle = await retainedPage.evaluate(async () => {
       const fixture = __crmpBrowserFixture;
       const state = fixture.state;
@@ -818,7 +904,7 @@ async function main() {
 
     await lifecycleContext.close();
     assert.deepEqual(errors, [], "the real renderer must not raise browser errors");
-    console.log(JSON.stringify({ nativeConnectionLifecycle: true, nativeLabelsWithoutRows: true, fullDocumentReloadRetainsLabels: true, authorizationPauseVisible: true, settingsContainUpdatesAndHealth: true, missingUpdaterRecoveryBothViews: true, guidedConnectionTroubleshooting: true, transferDiagnosticsAllowlisted: true, featureControls: true, sharedAliasSaveReset: true, sharedAliasReload: true, sharedAliasTombstone: true, sharedAliasFilterOrdering: true, caretPreserved: true, healthRefreshCoalesced: true, diagnosticCopyAndNativeSave: true, diagnosticCancelAndError: true, directFailureRowsRetained: true, directTruncatedRowsRetained: true, scheduleFrameCoalesced: true, focusRefreshThrottled: true, focusListenerTeardown: true, uninstallTeardown: true, lateSuccessFailureIgnoredAfterReinstall: true, uxStates: 10, themes: 2, sidebarWidths: [280,320,400], scaling: [1,2], fixtureTextContrast: true, stableAnnouncements: true, focusRestored: true, realChromium: true, realModelAndRender: true, neutralName: true, metadataArrival: true, reinjection: true, updateEventBothTargets: true, keyboardQueue: true, nativeViewUpdate: true, cancel: true, unrelatedMutations: 200, extraRenders: after.renders - before.renders, extraHostScans: after.hostDiscoveryScans - before.hostDiscoveryScans }));
+    console.log(JSON.stringify({ nativeConnectionLifecycle: true, nativeLabelsWithoutRows: true, fullDocumentReloadRetainsLabels: true, authorizationPauseVisible: true, settingsContainUpdatesAndHealth: true, missingUpdaterRecoveryBothViews: true, guidedConnectionTroubleshooting: true, transferDiagnosticsAllowlisted: true, featureControls: true, compactRefreshControl: true, directTaskNavigation: true, publisherTaskNavigation: true, sharedAliasSaveReset: true, sharedAliasReload: true, sharedAliasTombstone: true, sharedAliasFilterOrdering: true, caretPreserved: true, healthRefreshCoalesced: true, diagnosticCopyAndNativeSave: true, diagnosticCancelAndError: true, directFailureRowsRetained: true, directTruncatedRowsRetained: true, scheduleFrameCoalesced: true, focusRefreshThrottled: true, focusListenerTeardown: true, uninstallTeardown: true, lateSuccessFailureIgnoredAfterReinstall: true, uxStates: 10, themes: 2, sidebarWidths: [280,320,400], scaling: [1,2], fixtureTextContrast: true, stableAnnouncements: true, focusRestored: true, realChromium: true, realModelAndRender: true, neutralName: true, metadataArrival: true, reinjection: true, updateEventBothTargets: true, keyboardQueue: true, nativeViewUpdate: true, cancel: true, unrelatedMutations: 200, extraRenders: after.renders - before.renders, extraHostScans: after.hostDiscoveryScans - before.hostDiscoveryScans }));
   } finally { await browser.close(); }
 }
 

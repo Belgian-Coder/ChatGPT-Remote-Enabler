@@ -512,7 +512,7 @@ server.listen(Number(process.env.CHATGPT_REMOTE_TEST_PORT), "127.0.0.1", () => {
     try {
         $adapterAppData = Join-Path $temporaryRoot 'adapter-appdata'
         $adapterEnvironment = @{ LOCALAPPDATA = $adapterAppData }
-        $commonUpdaterArguments = @('-NoProfile', '-File', $updater, '-InstallRoot', $install, '-LatestReleaseUrl', "$baseUrl/latest", '-AllowInsecureTransport', '-LockTimeoutSeconds', '3')
+        $commonUpdaterArguments = @('-NoProfile', '-File', $updater, '-InstallRoot', $install, '-Transport', 'Release', '-LatestReleaseUrl', "$baseUrl/latest", '-AllowInsecureTransport', '-LockTimeoutSeconds', '3')
         $checkChild = Invoke-PowerShellChild ($commonUpdaterArguments + @('-Action', 'Check')) $adapterEnvironment
         if ($checkChild.ExitCode -ne 0) { throw "Updater Check fixture failed: $($checkChild.StdErr)" }
         $checkResult = $checkChild.StdOut | ConvertFrom-Json

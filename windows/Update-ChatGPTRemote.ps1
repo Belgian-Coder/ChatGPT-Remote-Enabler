@@ -5,6 +5,8 @@ param(
     [string]$Repository = $(if ($env:CHATGPT_REMOTE_UPDATE_REPOSITORY) { $env:CHATGPT_REMOTE_UPDATE_REPOSITORY } else { 'Belgian-Coder/ChatGPT-Remote-Enabler' }),
     [string]$ApiBaseUrl = $(if ($env:CHATGPT_REMOTE_UPDATE_API_BASE) { $env:CHATGPT_REMOTE_UPDATE_API_BASE } else { 'https://api.github.com' }),
     [string]$LatestReleaseUrl = $env:CHATGPT_REMOTE_UPDATE_LATEST_URL,
+    [ValidateSet('Git', 'Release')]
+    [string]$Transport = $(if ($env:CHATGPT_REMOTE_UPDATE_TRANSPORT) { $env:CHATGPT_REMOTE_UPDATE_TRANSPORT } else { 'Git' }),
     [string]$InstallRoot,
     [ValidateRange(0, 720)]
     [int]$CheckIntervalHours = $(if ($env:CHATGPT_REMOTE_UPDATE_INTERVAL_HOURS) { [int]$env:CHATGPT_REMOTE_UPDATE_INTERVAL_HOURS } else { 0 }),
@@ -26,6 +28,7 @@ $lastCheckPath = Join-Path $stateRoot 'last-check.json'
 $rollbackRoot = Join-Path $stateRoot 'rollback'
 $lockPath = Join-Path $stateRoot 'update.lock'
 $journalPath = Join-Path $stateRoot 'transaction.json'
+$sourceJournalPath = Join-Path $stateRoot 'git-transaction.json'
 $transactionHelper = Join-Path $PSScriptRoot 'update-transaction.js'
 $InstallRoot = [IO.Path]::GetFullPath($InstallRoot)
 
@@ -101,6 +104,7 @@ function Write-LastCheck {
 
 function Get-LatestRelease {
     param([string]$RequestedTag)
+    if ($Transport -eq 'Git') { return Get-GitRelease -RequestedTag $RequestedTag }
     $url = Get-ReleaseUrl -Tag $RequestedTag
     $headers = @{ Accept = 'application/vnd.github+json'; 'User-Agent' = 'ChatGPT-Remote-Enabler-Updater' }
     $release = Invoke-RestMethod -Uri $url -Headers $headers -UseBasicParsing -TimeoutSec 20
@@ -186,6 +190,45 @@ function Get-PublishedArchiveHash {
     $checksumLine = Get-Content -LiteralPath $checksumsPath | Where-Object { $_ -match "^([0-9a-fA-F]{64})\s+(?:\*)?$escapedName$" } | Select-Object -First 1
     if (-not $checksumLine) { throw "Published checksum for $($Release.archiveName) is missing." }
     return ([regex]::Match($checksumLine, '^[0-9a-fA-F]{64}')).Value.ToLowerInvariant()
+}
+
+function Get-GitRelease {
+    param([string]$RequestedTag, [string]$ExpectedHash)
+    $helper = Join-Path $PSScriptRoot 'git-release.js'
+    if (-not (Test-Path -LiteralPath $helper -PathType Leaf)) { throw 'The Git update transport is missing; reinstall the current helper package.' }
+    $node = Resolve-UpdateNode
+    $arguments = @($helper, 'resolve', '--repository', $Repository, '--platform', $platformName, '--cache-root', (Join-Path $stateRoot 'git-cache'))
+    if ($RequestedTag) { $arguments += @('--tag', $RequestedTag) }
+    if ($ExpectedHash) { $arguments += @('--expected-sha256', $ExpectedHash.ToLowerInvariant()) }
+    $output = @(& $node @arguments 2>&1)
+    if ($LASTEXITCODE -ne 0) { throw "Git update discovery failed: $($output -join [Environment]::NewLine)" }
+    $release = ($output -join [Environment]::NewLine) | ConvertFrom-Json
+    if ($release.tag -notmatch '^v\d+\.\d+\.\d+$' -or $release.archiveSha256 -notmatch '^[a-f0-9]{64}$' -or
+        -not (Test-Path -LiteralPath $release.archivePath -PathType Leaf)) { throw 'Git update discovery returned an invalid release.' }
+    return $release
+}
+
+function Invoke-GitCheckoutUpdate {
+    param([string]$Operation, [string]$Source, [string]$RequestedVersion, [string]$ExpectedHash)
+    $checkout = Get-SourceCheckout
+    if (-not $checkout) { throw 'The Git source checkout identity changed; update was stopped.' }
+    $helper = Join-Path $PSScriptRoot 'git-checkout-update.js'
+    $arguments = @($helper, $Operation, '--repository', $Repository, '--platform', $platformName,
+        '--install-root', $InstallRoot, '--journal-path', $sourceJournalPath, '--git', $checkout.git)
+    if ($Source) { $arguments += @('--prepared-root', $Source, '--version', $RequestedVersion, '--archive-sha256', $ExpectedHash.ToLowerInvariant()) }
+    $node = Resolve-UpdateNode
+    $output = @(& $node @arguments 2>&1)
+    if ($LASTEXITCODE -ne 0) { throw "Git checkout update failed: $($output -join [Environment]::NewLine)" }
+    return (($output -join [Environment]::NewLine) | ConvertFrom-Json)
+}
+
+function Complete-PreparedRelease {
+    param([string]$Source, [string]$RequestedVersion, [string]$ExpectedHash)
+    $validated = Invoke-TransactionHelper -Operation 'validate-prepared' -Arguments @('--prepared-root', $Source, '--platform', $platformName, '--version', $RequestedVersion, '--archive-sha256', $ExpectedHash)
+    if ($Transport -eq 'Git' -and (Get-SourceCheckout)) {
+        return Invoke-GitCheckoutUpdate -Operation 'prepare' -Source $Source -RequestedVersion $RequestedVersion -ExpectedHash $ExpectedHash
+    }
+    return $validated
 }
 
 function Remove-UpdaterDirectoryTree {
@@ -288,18 +331,24 @@ function New-PreparedRelease {
     $ExpectedHash = $ExpectedHash.ToLowerInvariant()
     $helperArguments = @('--prepared-root', $Destination, '--platform', $platformName, '--version', $RequestedVersion, '--archive-sha256', $ExpectedHash)
     if (Test-Path -LiteralPath $Destination -PathType Container) {
-        return Invoke-TransactionHelper -Operation 'validate-prepared' -Arguments $helperArguments
+        return Complete-PreparedRelease -Source $Destination -RequestedVersion $RequestedVersion -ExpectedHash $ExpectedHash
     }
 
     $temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) ("chatgpt-remote-prepare-" + [guid]::NewGuid().ToString('N'))
     $staging = "$Destination.prepare-$PID-$([guid]::NewGuid().ToString('N'))"
     try {
         New-Item -ItemType Directory -Path $temporaryRoot -Force | Out-Null
-        $release = Get-LatestRelease -RequestedTag $RequestedVersion
-        $publishedHash = Get-PublishedArchiveHash -Release $release -TemporaryRoot $temporaryRoot
-        if ($publishedHash -ne $ExpectedHash) { throw "Pinned archive hash $ExpectedHash does not match the published hash $publishedHash." }
-        $archivePath = Join-Path $temporaryRoot $release.archiveName
-        Invoke-WebRequest -Uri $release.archiveUrl -OutFile $archivePath -UseBasicParsing -TimeoutSec 120
+        if ($Transport -eq 'Git') {
+            $release = Get-GitRelease -RequestedTag $RequestedVersion -ExpectedHash $ExpectedHash
+            $archivePath = Join-Path $temporaryRoot 'git-release.zip'
+            Copy-Item -LiteralPath $release.archivePath -Destination $archivePath
+        } else {
+            $release = Get-LatestRelease -RequestedTag $RequestedVersion
+            $publishedHash = Get-PublishedArchiveHash -Release $release -TemporaryRoot $temporaryRoot
+            if ($publishedHash -ne $ExpectedHash) { throw "Pinned archive hash $ExpectedHash does not match the published hash $publishedHash." }
+            $archivePath = Join-Path $temporaryRoot $release.archiveName
+            Invoke-WebRequest -Uri $release.archiveUrl -OutFile $archivePath -UseBasicParsing -TimeoutSec 120
+        }
         if (-not (Test-ZipHeader $archivePath)) {
             throw 'The release download is not a ZIP archive. A proxy or network security gateway may have replaced it with a block page.'
         }
@@ -327,7 +376,7 @@ function New-PreparedRelease {
         } catch [IO.IOException] {
             if (-not (Test-Path -LiteralPath $Destination -PathType Container)) { throw }
         }
-        return Invoke-TransactionHelper -Operation 'validate-prepared' -Arguments $helperArguments
+        return Complete-PreparedRelease -Source $Destination -RequestedVersion $RequestedVersion -ExpectedHash $ExpectedHash
     } catch {
         if ($_.Exception.Message -match 'UNSAFE_MIXED_INSTALL|UPDATE_BUSY') { throw }
         throw "UPDATE_PREPARE_FAILED: $($_.Exception.Message)"
@@ -342,6 +391,10 @@ function New-PreparedRelease {
 function Invoke-PreparedRelease {
     param([string]$RequestedVersion, [string]$ExpectedHash, [string]$Source)
     $Source = Assert-SafePreparedDirectory $Source
+    if (Get-SourceCheckout) {
+        if ($Transport -ne 'Git') { throw 'Source checkouts require the Git update transport; no package files were copied over the checkout.' }
+        return Invoke-GitCheckoutUpdate -Operation 'apply' -Source $Source -RequestedVersion $RequestedVersion -ExpectedHash $ExpectedHash
+    }
     $safeVersion = $RequestedVersion -replace '[^A-Za-z0-9._-]', '_'
     $backupRoot = Join-Path $rollbackRoot ((Get-Date -Format 'yyyyMMdd-HHmmss-fff') + '-' + $safeVersion)
     $arguments = @(
@@ -354,6 +407,7 @@ function Invoke-PreparedRelease {
 }
 
 function Invoke-PendingRecovery {
+    if (Test-Path -LiteralPath $sourceJournalPath -PathType Leaf) { return Invoke-GitCheckoutUpdate -Operation 'recover' }
     if (-not (Test-Path -LiteralPath $journalPath -PathType Leaf)) {
         $sourceCheckout = Get-SourceCheckout
         if ($sourceCheckout) {
@@ -376,6 +430,7 @@ function Invoke-PendingRecovery {
 
 function Get-ReleaseArchiveHash {
     param($Release)
+    if ($Transport -eq 'Git') { return $Release.archiveSha256 }
     $temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) ("chatgpt-remote-check-" + [guid]::NewGuid().ToString('N'))
     try {
         New-Item -ItemType Directory -Path $temporaryRoot -Force | Out-Null
@@ -464,6 +519,7 @@ function Get-ManifestEntries {
 }
 
 function Test-InstalledIntegrity {
+    if (Get-SourceCheckout) { return $true }
     try {
         [void](Get-ManifestEntries $InstallRoot)
         return $true
@@ -474,8 +530,6 @@ function Test-InstalledIntegrity {
 
 function Get-SourceCheckout {
     $candidateRoot = Split-Path -Parent $InstallRoot
-    if (-not (Test-Path -LiteralPath (Join-Path $candidateRoot '.git'))) { return $null }
-
     $gitCommand = Get-Command git.exe -ErrorAction SilentlyContinue
     $gitPath = @(
         $(if ($gitCommand) { $gitCommand.Source }),
@@ -483,7 +537,12 @@ function Get-SourceCheckout {
         (Join-Path $env:USERPROFILE '.cache\codex-runtimes\codex-primary-runtime\dependencies\native\git\cmd\git.exe'),
         'C:\Program Files\Git\cmd\git.exe'
     ) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) } | Select-Object -First 1
-    if (-not $gitPath) { return $null }
+    if (-not $gitPath) {
+        if (Test-Path -LiteralPath (Join-Path $candidateRoot '.git')) {
+            return [pscustomobject]@{ git = 'git.exe'; root = $candidateRoot }
+        }
+        return $null
+    }
     $previousErrorActionPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Continue'
@@ -492,21 +551,13 @@ function Get-SourceCheckout {
     } finally {
         $ErrorActionPreference = $previousErrorActionPreference
     }
-    if ($rootExitCode -ne 0 -or $rootOutput.Count -ne 1) { return $null }
-    $root = [IO.Path]::GetFullPath(([string]$rootOutput[0]).Trim())
-    $expectedInstallRoot = [IO.Path]::GetFullPath((Join-Path $root 'windows'))
-    if ($expectedInstallRoot -ne $InstallRoot) { return $null }
-    try {
-        $ErrorActionPreference = 'Continue'
-        $origin = @(& $gitPath -C $root remote get-url origin 2>$null)
-        $originExitCode = $LASTEXITCODE
-    } finally {
-        $ErrorActionPreference = $previousErrorActionPreference
+    if ($rootExitCode -ne 0 -or $rootOutput.Count -ne 1) {
+        if (Test-Path -LiteralPath (Join-Path $candidateRoot '.git')) {
+            return [pscustomobject]@{ git = $gitPath; root = $candidateRoot }
+        }
+        return $null
     }
-    if ($originExitCode -ne 0 -or $origin.Count -ne 1) { return $null }
-    $normalizedOrigin = ([string]$origin[0]).Trim().TrimEnd('/').ToLowerInvariant() -replace '\.git$', ''
-    $expectedRepository = $Repository.ToLowerInvariant()
-    if (-not ($normalizedOrigin.EndsWith("/$expectedRepository") -or $normalizedOrigin.EndsWith(":$expectedRepository"))) { return $null }
+    $root = [IO.Path]::GetFullPath(([string]$rootOutput[0]).Trim())
     return [pscustomobject]@{ git = $gitPath; root = $root }
 }
 
@@ -556,11 +607,12 @@ function Get-Probe {
         autoUpdateEnabled = -not (Test-AutoUpdateDisabled)
         checkIntervalHours = $CheckIntervalHours
         installRoot = $InstallRoot
-        latestReleaseUrl = Get-ReleaseUrl
+        latestReleaseUrl = if ($Transport -eq 'Git') { "https://github.com/$Repository.git" } else { Get-ReleaseUrl }
         localVersion = Get-LocalVersion
         repository = $Repository
         lastCheckPath = $lastCheckPath
         installKind = if ($sourceCheckout) { 'git-checkout' } else { 'release' }
+        transport = $Transport.ToLowerInvariant()
     }
 }
 
@@ -589,7 +641,7 @@ try {
     }
     $lockStream = Enter-UpdateLock
     if ($readOnlyAction) {
-        if (Test-Path -LiteralPath $journalPath -PathType Leaf) {
+        if ((Test-Path -LiteralPath $journalPath -PathType Leaf) -or (Test-Path -LiteralPath $sourceJournalPath -PathType Leaf)) {
             throw 'UPDATE_RECOVERY_REQUIRED: a pending update transaction must be recovered before checking or preparing another release.'
         }
         $recovery = [pscustomobject]@{ recovered = $false; integrityValid = $true }
@@ -643,7 +695,7 @@ try {
                 localVersion = $localVersion
                 archiveSha256 = $archiveHash
                 updated = $false
-                method = 'verified-release'
+                method = if ($Transport -eq 'Git') { 'verified-git' } else { 'verified-release' }
             } | ConvertTo-Json -Compress)
             return
         } catch {
@@ -653,7 +705,7 @@ try {
     }
 
     $sourceCheckout = Get-SourceCheckout
-    if ($sourceCheckout) {
+    if ($sourceCheckout -and $Transport -eq 'Release') {
         $remoteState = Get-SourceRemoteState -Checkout $sourceCheckout
         $localVersion = Get-LocalVersion
         if (-not $remoteState.available) {
@@ -673,7 +725,7 @@ try {
     if ($release.tag -eq $localVersion -and -not (Test-InstalledIntegrity)) { $available = $true }
     if (-not $available) {
         Write-LastCheck $release.tag
-        ([ordered]@{ available = $available; latestVersion = $release.tag; localVersion = $localVersion; archiveSha256 = $archiveHash; updated = $false; method = 'verified-release' } | ConvertTo-Json)
+        ([ordered]@{ available = $available; latestVersion = $release.tag; localVersion = $localVersion; archiveSha256 = $archiveHash; updated = $false; method = $(if ($Transport -eq 'Git') { 'verified-git' } else { 'verified-release' }) } | ConvertTo-Json)
         return
     }
     $result = Install-VerifiedRelease -Release $release -ArchiveHash $archiveHash

@@ -1,6 +1,6 @@
 # macOS Apple Silicon: install for your user without sudo
 
-Release v1.5.50 adds quiet discovery and Force refresh. Source and browser checks passed; installation and live two-desktop refresh acceptance remain pending.
+Release v1.5.51 adds Git-based updates, compact refresh, and recovery/task-activation fixes. Installation and live two-desktop acceptance remain separate checks.
 
 You need an Apple Silicon Mac (arm64), the ChatGPT/Codex desktop app installed and signed in with Remote available on your account, and Node.js 22 or newer. This helper does not install the app or unlock account features.
 
@@ -8,11 +8,11 @@ You need an Apple Silicon Mac (arm64), the ChatGPT/Codex desktop app installed a
 preceding installed build. v1.5.49 was then manually installed and its live
 renderer readiness was checked on the participating test devices. The next
 sign-in startup trigger and future desktop-app builds remain separate checks.
-v1.5.50 is a normal release.
+v1.5.51 is a normal release.
 
 ## 1. Download and extract
 
-1. Download **ChatGPT-Remote-Enabler-macOS-arm64-v1.5.50.zip** from [v1.5.50 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.50).
+1. Download **ChatGPT-Remote-Enabler-macOS-arm64-v1.5.51.zip** from [v1.5.51 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.51).
 2. Double-click the ZIP in Finder. Create **ChatGPTRemoteEnabler** in your home folder and move the extracted package contents into it.
 3. `MobileProjectView-macOS-arm64.sh` must be directly inside that folder. Keep the complete package together in this writable per-user location.
 
@@ -90,7 +90,7 @@ In Device Projects, **Auto-register: on/off** locally enables or pauses remote-p
 
 macOS already exposes native ChatGPT remote connections. This package adds the optional Device projects view.
 
-The v1.5.50 renderer preserves the original folder states, native-backed drag
+The v1.5.51 renderer preserves the original folder states, native-backed drag
 ordering, and the user's **By project**/**By connection** preference. It
 automatically paginates the authoritative active task list for the app-server's
 interactive CLI/VS Code sources used by the desktop UI. Internal exec and subagent runs remain available to
@@ -162,7 +162,7 @@ return a failing exit status on database errors. Permanent chat deletion
 requires a known managed archive path and an exclusive cross-window lock.
 
 The launcher checks asynchronously on every start and every 30 minutes while
-open. **Update available · vX.Y.Z** appears beside the view controls in both
+open. **Update available Â· vX.Y.Z** appears beside the view controls in both
 views. Click to download and verify that exact release, wait for active work
 to finish, quit ChatGPT normally, install, and relaunch with the saved options.
 Unknown activity keeps the request queued; **Cancel** remains available until
@@ -182,7 +182,9 @@ manual administration. Explicit command-line updates remain available:
 /bin/zsh ./Update-ChatGPTRemote.sh update
 ```
 
-Set `CHATGPT_REMOTE_UPDATE_REPOSITORY=owner/repo`, `CHATGPT_REMOTE_UPDATE_API_BASE`, or `CHATGPT_REMOTE_UPDATE_LATEST_URL` for a fork or GitHub mirror. `CHATGPT_REMOTE_AUTO_UPDATE=0` disables automatic checks for that launch. Failed downloads or verification keep the installed version.
+Updates now use Git by default, even for extracted installations. Install Git and ensure its HTTPS access to the repository works. The updater lists stable tags, shallow-fetches the pinned commit, and builds/verifies a local package without downloading GitHub ZIPs or calling the GitHub API. Corporate Git proxy and certificate settings are honored. A clean source checkout on `main` fast-forwards to that verified tag; dirty work, other branches, or unexpected origins are preserved and refused.
+
+Set `CHATGPT_REMOTE_UPDATE_REPOSITORY=owner/repo` for a GitHub fork. `CHATGPT_REMOTE_AUTO_UPDATE=0` disables automatic checks for that launch. The explicit legacy `CHATGPT_REMOTE_UPDATE_TRANSPORT=release` option enables hosted release assets and the `CHATGPT_REMOTE_UPDATE_API_BASE` / `CHATGPT_REMOTE_UPDATE_LATEST_URL` overrides. There is no automatic ZIP fallback. Older installed updaters need one manual Git-based upgrade before they can use this transport.
 
 Device names resolve automatically from verified metadata and are remembered
 per normalized host identity across restarts. Native placeholders cannot
@@ -237,4 +239,4 @@ Settings now provides per-device connection findings, next steps, explicit evide
 
 ## Version or update icon missing
 
-Fully quit the app when your work is safe and launch through Remote Enabler in the latest extracted folder. An older Dock launcher can still reference another folder. Open Settings to see the loaded helper version and update controls; a missing updater has recovery instructions. v1.5.50 is a normal release available to the existing updater.
+Fully quit the app when your work is safe and launch through Remote Enabler in the latest extracted folder. An older Dock launcher can still reference another folder. Open Settings to see the loaded helper version and update controls; a missing updater has recovery instructions. v1.5.51 is a normal release available to the existing updater.

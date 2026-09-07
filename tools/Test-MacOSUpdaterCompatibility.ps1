@@ -8,7 +8,7 @@ $updater = Get-Content -LiteralPath $updaterPath -Raw
 $nativeApplyTestPath = Join-Path $root 'tools\Test-MacOSUpdaterApply.zsh'
 $nativeApplyTest = Get-Content -LiteralPath $nativeApplyTestPath -Raw
 
-if ($updater -match '(?m)^\s*local\b[^\r\n]*\bpath\b') {
+if ($updater -match '(?m)^\s*local(?:\s+-[A-Za-z]+)?(?:\s+[A-Za-z_][A-Za-z0-9_]*(?:=[^\s]+)?)*\s+path(?:=|\s|$)') {
     throw "The macOS updater declares zsh's special path parameter locally and can clear PATH."
 }
 if (-not $updater.Contains('local manifest="$install_root/RELEASE-MANIFEST.sha256" line hash relative file_path actual count=0')) {
@@ -33,6 +33,16 @@ foreach ($contract in @(
     }
 }
 foreach ($contract in @(
+    'if [[ "$transport" == git ]]; then latest="https://github.com/$repository.git"; else latest="$(release_url)"; fi',
+    'source_checkout && install_kind=git-checkout',
+    '\"installKind\":\"$install_kind\",\"transport\":\"$transport\"',
+    'checkout_root="$($git_bin -C "$install_root" rev-parse --show-toplevel 2>/dev/null || true)"'
+)) {
+    if (-not $updater.Contains($contract)) {
+        throw "The macOS updater does not report or detect its active transport truthfully: $contract"
+    }
+}
+foreach ($contract in @(
     '/bin/zsh "$install_root/Update-ChatGPTRemote.sh" apply-prepared',
     'CHATGPT_REMOTE_UPDATE_INSTALL_ROOT="$install_root"',
     '"$node_bin" -e ''const result = JSON.parse(process.argv[1]);',
@@ -51,5 +61,7 @@ $global:LASTEXITCODE = 0
     AbsoluteIntegrityTools = $true
     SequentialApplyInitialization = $true
     PreparedExecutablesNormalized = $true
+    ProbeTransportTruthful = $true
+    StructuralSourceCheckoutDetection = $true
     NativeApplyRegressionPresent = $true
 } | ConvertTo-Json

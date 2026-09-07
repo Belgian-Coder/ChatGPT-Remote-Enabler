@@ -16,9 +16,13 @@ $javascript = @(
     'windows\CodexRemoteMobileProject\update-session.js',
     'windows\CodexRemoteMobileProject\update-session-cdp.js',
     'windows\update-transaction.js',
+    'windows\git-release.js',
+    'windows\git-checkout-update.js',
     'macos\update-session.js',
     'macos\update-session-cdp.js',
     'macos\update-transaction.js',
+    'macos\git-release.js',
+    'macos\git-checkout-update.js',
     'macos\renderer-mobile-project-view.js',
     'macos\inject.js'
     'windows\CodexRemoteMobileProject\maintenance.js'
@@ -210,6 +214,19 @@ if ($LASTEXITCODE -ne 0) { throw 'Build release privacy self-test failed.' }
 & (Join-Path $root 'tools\Test-BuildReleaseArchive.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Build release archive self-test failed.' }
 
+if ((Get-FileHash (Join-Path $root 'windows\git-release.js')).Hash -ne (Get-FileHash (Join-Path $root 'macos\git-release.js')).Hash) {
+    throw 'Git update transports are not byte-identical.'
+}
+& $node (Join-Path $root 'tools\GitRelease.SelfTest.js')
+if ($LASTEXITCODE -ne 0) { throw 'Git release transport self-test failed.' }
+if ((Get-FileHash (Join-Path $root 'windows\git-checkout-update.js')).Hash -ne (Get-FileHash (Join-Path $root 'macos\git-checkout-update.js')).Hash) {
+    throw 'Git source checkout updaters are not byte-identical.'
+}
+& $node (Join-Path $root 'tools\GitCheckoutUpdate.SelfTest.js')
+if ($LASTEXITCODE -ne 0) { throw 'Git source checkout updater self-test failed.' }
+& $node (Join-Path $root 'tools\UpdateTransactionResume.SelfTest.js')
+if ($LASTEXITCODE -ne 0) { throw 'Update transaction resume self-test failed.' }
+
 & $node (Join-Path $root 'windows\CodexRemoteSimple\tests\RendererOverrides.SelfTest.js')
 if ($LASTEXITCODE -ne 0) { throw 'Stable renderer self-test failed.' }
 
@@ -270,6 +287,9 @@ if ($LASTEXITCODE -ne 0) { throw 'Proxy configuration self-test failed.' }
 & (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'tools\Test-WindowsNodeProbe.ps1') -NodePath $node
 if ($LASTEXITCODE -ne 0) { throw 'Windows PowerShell Node capability probe self-test failed.' }
 
+& (Join-Path $root 'tools\Test-GitUpdater.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Git updater integration test failed.' }
+
 & (Join-Path $root 'tools\Test-WindowsUpdaterNonGit.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Windows packaged updater self-test failed.' }
 
@@ -319,6 +339,10 @@ if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
     BuildReleasePrivacySelfTest = $true
     BuildReleaseArchiveSelfTest = $true
     MaintenanceSelfTest = $true
+    GitUpdaterIntegrationSelfTest = $true
+    GitReleaseSelfTest = $true
+    GitCheckoutUpdateSelfTest = $true
+    UpdateTransactionResumeSelfTest = $true
     UpdateTransactionSelfTest = $true
     UpdateSessionSelfTest = $true
     UpdateSessionCdpSelfTest = $true

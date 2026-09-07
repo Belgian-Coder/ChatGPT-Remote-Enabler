@@ -157,7 +157,7 @@ try {
     if (-not $serverReady) { throw 'Loopback release fixture did not start.' }
 
     $quotedReleaseUrl = Quote-PowerShellLiteral "$baseUrl/release.json"
-    $autoCommand = "& $quotedUpdater -Action Auto -InstallRoot $quotedFixture -LatestReleaseUrl $quotedReleaseUrl -CheckIntervalHours 0 -AllowInsecureTransport 2>&1"
+    $autoCommand = "& $quotedUpdater -Action Auto -InstallRoot $quotedFixture -Transport Release -LatestReleaseUrl $quotedReleaseUrl -CheckIntervalHours 0 -AllowInsecureTransport 2>&1"
     $autoCapture = Invoke-WindowsPowerShellCapture $autoCommand
     if ($autoCapture.exitCode -ne 0) { throw "Packaged Auto failed: $($autoCapture.text)" }
     if ($autoCapture.text -match 'fatal: not a git repository|NativeCommandError') {
@@ -186,7 +186,7 @@ function Remove-Item {
     }
     Microsoft.PowerShell.Management\Remove-Item @PSBoundParameters
 }
-& __UPDATER__ -Action Check -InstallRoot __INSTALL__ -LatestReleaseUrl __RELEASE__ -AllowInsecureTransport 2>&1
+& __UPDATER__ -Action Check -InstallRoot __INSTALL__ -Transport Release -LatestReleaseUrl __RELEASE__ -AllowInsecureTransport 2>&1
 '@
     $guardedCheckCommand = $guardedCheckCommand.Replace('__UPDATER__', $quotedUpdater).Replace('__INSTALL__', $quotedFixture).Replace('__RELEASE__', $quotedReleaseUrl)
     $guardedCheckCapture = Invoke-WindowsPowerShellCapture $guardedCheckCommand
@@ -222,7 +222,7 @@ function Remove-Item {
     }
     Microsoft.PowerShell.Management\Remove-Item @PSBoundParameters
 }
-& __UPDATER__ -Action Prepare -InstallRoot __INSTALL__ -LatestReleaseUrl __RELEASE__ -AllowInsecureTransport -TargetVersion 'v9.8.7' -ExpectedArchiveSha256 '__HASH__' -PreparedDirectory __PREPARED__ 2>&1
+& __UPDATER__ -Action Prepare -InstallRoot __INSTALL__ -Transport Release -LatestReleaseUrl __RELEASE__ -AllowInsecureTransport -TargetVersion 'v9.8.7' -ExpectedArchiveSha256 '__HASH__' -PreparedDirectory __PREPARED__ 2>&1
 '@
     $guardedPrepareCommand = $guardedPrepareCommand.Replace('__UPDATER__', $quotedUpdater).Replace('__INSTALL__', $quotedFixture).Replace('__RELEASE__', $quotedPrepareReleaseUrl).Replace('__HASH__', $prepareArchiveHash).Replace('__PREPARED__', $quotedPreparedDirectory)
     $guardedPrepareCapture = Invoke-WindowsPowerShellCapture $guardedPrepareCommand
@@ -321,6 +321,36 @@ $wrongLeafPreserved = [IO.File]::Exists($refusalSentinel) -and [IO.File]::ReadAl
     $sourceProbe = $sourceCapture.text | ConvertFrom-Json
     if ($sourceProbe.installKind -ne 'git-checkout') { throw 'Genuine source checkout detection was weakened.' }
 
+    $unexpectedSourceRoot = Join-Path $temporaryRoot 'unexpected-origin-source'
+    $unexpectedInstallRoot = Join-Path $unexpectedSourceRoot 'windows'
+    New-Item -ItemType Directory -Path $unexpectedInstallRoot -Force | Out-Null
+    foreach ($relative in @('Update-ChatGPTRemote.ps1', 'update-transaction.js', 'git-checkout-update.js')) {
+        Copy-Item -LiteralPath (Join-Path $repositoryRoot "windows\$relative") -Destination (Join-Path $unexpectedInstallRoot $relative)
+    }
+    [IO.File]::WriteAllText((Join-Path $unexpectedInstallRoot 'VERSION'), "v9.8.6$([Environment]::NewLine)", [Text.UTF8Encoding]::new($false))
+    & git -C $unexpectedSourceRoot init --quiet --initial-branch=main
+    if ($LASTEXITCODE -ne 0) { throw 'Could not initialize the unexpected-origin source fixture.' }
+    & git -C $unexpectedSourceRoot config user.name Fixture
+    & git -C $unexpectedSourceRoot config user.email fixture@example.invalid
+    & git -C $unexpectedSourceRoot add .
+    & git -C $unexpectedSourceRoot commit --quiet -m 'Unexpected origin fixture'
+    & git -C $unexpectedSourceRoot remote add origin https://github.com/example/unexpected.git
+    if ($LASTEXITCODE -ne 0) { throw 'Could not commit the unexpected-origin source fixture.' }
+    $unexpectedUpdater = Quote-PowerShellLiteral (Join-Path $unexpectedInstallRoot 'Update-ChatGPTRemote.ps1')
+    $quotedUnexpectedInstall = Quote-PowerShellLiteral $unexpectedInstallRoot
+    $unexpectedApplyCommand = "& $unexpectedUpdater -Action ApplyPrepared -InstallRoot $quotedUnexpectedInstall -Transport Git -TargetVersion 'v9.8.7' -ExpectedArchiveSha256 '$prepareArchiveHash' -PreparedDirectory $quotedPreparedDirectory 2>&1"
+    $unexpectedApplyCapture = Invoke-WindowsPowerShellCapture $unexpectedApplyCommand
+    if ($unexpectedApplyCapture.exitCode -eq 0 -or $unexpectedApplyCapture.text -notmatch 'origin is not the configured update repository') {
+        throw "Unexpected-origin source checkout did not fail closed in the Git helper: $($unexpectedApplyCapture.text)"
+    }
+    if ((Get-Content -LiteralPath (Join-Path $unexpectedInstallRoot 'VERSION') -Raw).Trim() -ne 'v9.8.6') {
+        throw 'Package replacement overwrote an unexpected-origin source checkout.'
+    }
+    if (Test-Path -LiteralPath (Join-Path $fixtureLocalAppData 'ChatGPTRemoteEnabler\update\transaction.json') -PathType Leaf) {
+        throw 'Unexpected-origin source checkout reached the package transaction.'
+    }
+
+    $global:LASTEXITCODE = 0 # Expected rejection probes must not leak their native exit code to Test-Source.
     [pscustomobject]@{
         WindowsPowerShell51 = $true
         PackagedProbeQuiet = $true
@@ -335,6 +365,7 @@ $wrongLeafPreserved = [IO.File]::Exists($refusalSentinel) -and [IO.File]::ReadAl
         CleanupScopeRefusal = [bool]($helperSafety.WrongParentRefused -and $helperSafety.WrongParentPreserved -and $helperSafety.WrongLeafRefused -and $helperSafety.WrongLeafPreserved)
         FailedUpdateNotStamped = $true
         SourceInstallKind = $sourceProbe.installKind
+        UnexpectedOriginCheckoutPreserved = $true
     } | ConvertTo-Json
 } finally {
     $env:LOCALAPPDATA = $previousLocalAppData

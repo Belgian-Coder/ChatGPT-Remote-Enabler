@@ -1,12 +1,12 @@
 # Windows 11: install for your user without administrator access
 
-Release v1.5.50 adds quiet discovery and Force refresh. Source and browser checks passed; installation and live two-desktop refresh acceptance remain pending.
+Release v1.5.51 adds Git-based updates, compact refresh, and recovery/task-activation fixes. Installation and live two-desktop acceptance remain separate checks.
 
 You need Windows 11 x64, the ChatGPT/Codex desktop app installed and signed in with Remote available on your account, and Node.js 22 or newer. This helper does not install the desktop app or unlock account features.
 
 ## 1. Download and extract
 
-1. Download **ChatGPT-Remote-Enabler-Windows-x64-v1.5.50.zip** from [v1.5.50 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.50). Read the verification limitations.
+1. Download **ChatGPT-Remote-Enabler-Windows-x64-v1.5.51.zip** from [v1.5.51 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.51). Read the verification limitations.
 2. Right-click the ZIP in File Explorer, choose **Properties**, select **Unblock** if offered, and click **OK**. Then choose **Extract All**.
 3. Enter `%LOCALAPPDATA%\Programs` in File Explorer's address bar. Create a **ChatGPTRemoteEnabler** folder and copy the extracted package contents into it.
 4. **ChatGPT Remote Enabler.exe**, **README.md**, and **CodexRemoteMobileProject** must be directly inside that folder. Keep the whole package together.
@@ -139,7 +139,7 @@ the canonical `https://chatgpt.com` origin. The installed WindowsApps package
 is never modified. Direct networking remains fully supported.
 
 The launcher checks for an update asynchronously on every start and every
-30 minutes while open. **Update available · vX.Y.Z** appears beside the view
+30 minutes while open. **Update available Â· vX.Y.Z** appears beside the view
 controls in both views. Click to prepare that exact verified release and queue
 the restart until active work, including internal tasks, finishes. **Cancel**
 remains available until shutdown begins; unknown activity keeps the update
@@ -162,7 +162,9 @@ manual administration. Explicit command-line updates remain available:
 .\Update-ChatGPTRemote.ps1 -Action Update
 ```
 
-Set `CHATGPT_REMOTE_UPDATE_REPOSITORY=owner/repo`, `CHATGPT_REMOTE_UPDATE_API_BASE`, or `CHATGPT_REMOTE_UPDATE_LATEST_URL` for a fork or GitHub mirror. `CHATGPT_REMOTE_AUTO_UPDATE=0` disables automatic checks for that launch. Failed downloads, security block pages, dirty Git checkouts, and verification failures never replace installed files.
+Updates now use Git by default, even for extracted installations. Install Git and ensure its HTTPS access to the repository works. The updater lists stable tags, shallow-fetches the pinned commit, and builds/verifies a local package without downloading GitHub ZIPs or calling the GitHub API. Corporate Git proxy and certificate settings are honored. A clean source checkout on `main` fast-forwards to that verified tag; dirty work, other branches, or unexpected origins are preserved and refused.
+
+Set `CHATGPT_REMOTE_UPDATE_REPOSITORY=owner/repo` for a GitHub fork. `CHATGPT_REMOTE_AUTO_UPDATE=0` disables automatic checks for that launch. The explicit legacy `CHATGPT_REMOTE_UPDATE_TRANSPORT=release` option enables hosted release assets and the `CHATGPT_REMOTE_UPDATE_API_BASE` / `CHATGPT_REMOTE_UPDATE_LATEST_URL` overrides. There is no automatic ZIP fallback. Older installed updaters need one manual Git-based upgrade before they can use this transport.
 
 For a persistent local shortcut, keep the extracted folder in place and run:
 
@@ -312,7 +314,7 @@ Check the target of **ChatGPT Custom** in the Start menu (open its file location
 
 Fully quit the app when your work is safe, then use **ChatGPT Remote Enabler.exe** in the newly extracted folder, or the new **ChatGPT Remote Enabler** shortcut created by that folder's setup assistant. Open Settings to see the loaded helper version and update controls in either view. A missing update service shows recovery instructions there.
 
-v1.5.50 is a normal release and is discoverable by the existing automatic updater. The first Windows upgrade from v1.5.31 attaches the new update helper even through the legacy launcher.
+v1.5.51 is a normal release and is discoverable by the existing automatic updater. The first Windows upgrade from v1.5.31 attaches the new update helper even through the legacy launcher.
 
 
 ### Existing enrollment keys after a Codex update
@@ -333,6 +335,6 @@ Verification for v1.5.49 uses source checks, isolated protected-key fixtures,
 mocked package launches, headless browser fixtures, and an ordinary Windows
 close/apply/recover/relaunch update flow. Live v1.5.49 renderer readiness was
 checked on the participating test devices. Native Remote authorization still
-belongs to the app's **Settings → Connections → Control other devices** flow.
+belongs to the app's **Settings â†’ Connections â†’ Control other devices** flow.
 Do not launch a second copy of Codex against a running user session: Windows
 can forward that invocation to the existing window.

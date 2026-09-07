@@ -2869,8 +2869,8 @@
     style.id = STYLE_ID;
     style.textContent = `
       #${PANEL_ID} { display:flex; flex-direction:column; gap:8px; padding:2px 8px 8px; }
-      #${PANEL_ID} .crmp-modes { display:flex; flex-wrap:wrap; align-items:center; gap:4px; padding-bottom:2px; }
-      #${PANEL_ID} .crmp-mode { flex:0 0 auto; border:0; border-radius:5px; padding:3px 6px; color:var(--color-text-tertiary,#888); background:transparent; font-size:10px; white-space:nowrap; cursor:pointer; }
+      #${PANEL_ID} .crmp-modes { display:flex; flex-wrap:wrap; align-items:center; gap:2px; padding-bottom:2px; }
+      #${PANEL_ID} .crmp-mode { flex:0 0 auto; border:0; border-radius:5px; padding:2px 3px; color:var(--color-text-tertiary,#888); background:transparent; font-size:9px; white-space:nowrap; cursor:pointer; }
       #${PANEL_ID} .crmp-mode[aria-pressed="true"] { color:var(--color-text,#eee); background:var(--color-background-primary-hover,rgba(127,127,127,.15)); }
       #${PANEL_ID} .crmp-update-control, #${PANEL_ID} .crmp-update-status { flex:0 0 auto; max-width:100%; margin-inline-start:auto; border:0; border-radius:5px; padding:3px 6px; color:var(--color-text-tertiary,#888); background:transparent; font-size:10px; line-height:14px; white-space:nowrap; }
       #${PANEL_ID} .crmp-update-control { cursor:pointer; }
@@ -2886,7 +2886,8 @@
       #${PANEL_ID} .crmp-auto-control { border:1px solid var(--color-border-default,#555); border-radius:6px; padding:3px 7px; color:var(--color-text-tertiary,#888); background:transparent; font-size:10px; cursor:pointer; }
       #${PANEL_ID} .crmp-auto-control[aria-pressed="true"] { color:var(--color-text,#eee); background:var(--color-background-primary-hover,rgba(127,127,127,.15)); }
       #${PANEL_ID} .crmp-auto-control:disabled { cursor:not-allowed; opacity:.5; }
-      #${PANEL_ID} .crmp-force-refresh { margin-inline-start:auto; color:var(--color-text,#eee); }
+      #${PANEL_ID} .crmp-force-refresh { display:inline-flex; width:24px; min-width:24px; height:24px; align-items:center; justify-content:center; margin-inline-start:0; padding:3px; color:var(--color-text,#eee); }
+      #${PANEL_ID} .crmp-refresh-icon { display:block; width:16px; height:16px; }
       #${PANEL_ID} .crmp-sync-status { padding:0 8px 4px; color:var(--color-text-secondary,var(--color-text,#eee)); font-size:11px; line-height:1.35; }
       #${PANEL_ID} .crmp-sync-status[data-state="refreshing"] { color:var(--color-text,#eee); }
       #${PANEL_ID} .crmp-sync-status[data-state="stale"], #${PANEL_ID} .crmp-sync-status[data-state="error"] { color:var(--color-text-warning,var(--color-text-secondary,var(--color-text,#eee))); }
@@ -2991,6 +2992,24 @@
     element.className = className;
     element.textContent = text;
     return element;
+  }
+
+  function refreshIcon(spinning = false) {
+    const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    icon.classList.add("crmp-refresh-icon");
+    if (spinning) icon.classList.add("crmp-status-spin");
+    icon.setAttribute("viewBox", "0 0 24 24");
+    icon.setAttribute("aria-hidden", "true");
+    icon.setAttribute("focusable", "false");
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", "M20 7v5h-5M4 17v-5h5M6.1 7a7 7 0 0 1 11.6-1L20 9M4 15l2.3 3A7 7 0 0 0 17.9 17");
+    path.setAttribute("fill", "none");
+    path.setAttribute("stroke", "currentColor");
+    path.setAttribute("stroke-width", "1.8");
+    path.setAttribute("stroke-linecap", "round");
+    path.setAttribute("stroke-linejoin", "round");
+    icon.appendChild(path);
+    return icon;
   }
 
   function normalizeUpdateStatus(value) {
@@ -4889,8 +4908,20 @@
       return invokeNativeElement(nativeRow);
     }
     const conversationId = task.conversationId || rawConversationId(task.conversationKey);
-    const manager = state.threadManagers.get(task.hostId);
+    let manager = state.threadManagers.get(task.hostId);
     try {
+      // Publisher-only rows can appear while the app's navigation bridge is
+      // still settling into the React tree. The normal render path may have
+      // reused a fresh discovery cache, so retry the bridge scan at the point
+      // where the user activates a synthetic task.
+      if (!manager || typeof state.navigationBridge?.navigateToLocalConversation !== "function") {
+        state.hostDiscoveryDirty = true;
+        state.hostDiscoveryCache = null;
+        state.remoteRuntimeScannedAt = 0;
+        const discovery = discoverHostNames();
+        discoverRemoteRuntimes(discovery.runtimes);
+        manager = state.threadManagers.get(task.hostId);
+      }
       if (task.sourceThread && typeof manager?.upsertConversationFromThread === "function") manager.upsertConversationFromThread(task.sourceThread);
       manager?.activateThreadSummary?.(conversationId, { addToRecent: false });
       manager?.ensureRecentConversationId?.(conversationId);
@@ -6344,9 +6375,14 @@
     setFocusKey(settingsToggle, "settings");
     settingsToggle.addEventListener("click", () => { state.settingsOpen = !state.settingsOpen; render(); });
     modes.appendChild(settingsToggle);
-    const forceRefresh = button("crmp-auto-control crmp-force-refresh", state.deviceRefreshPending
-      ? state.deviceRefreshQueued ? "Refresh queued" : "Refreshing…" : "Force refresh");
-    forceRefresh.setAttribute("aria-label", "Force refresh device and chat discovery");
+    const forceRefresh = button("crmp-auto-control crmp-force-refresh", "");
+    forceRefresh.appendChild(refreshIcon(state.deviceRefreshPending));
+    forceRefresh.setAttribute("aria-label", state.deviceRefreshPending
+      ? state.deviceRefreshQueued ? "Refresh queued" : "Refreshing device and chat discovery"
+      : "Force refresh device and chat discovery");
+    forceRefresh.setAttribute("aria-busy", String(state.deviceRefreshPending));
+    forceRefresh.dataset.state = state.deviceRefreshPending
+      ? state.deviceRefreshQueued ? "queued" : "refreshing" : "ready";
     forceRefresh.title = state.deviceRefreshPending
       ? "A refresh is already running; repeated clicks are coalesced"
       : "Read fresh device membership and inventory now";

@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.5.51 — 2026-09-07
+
+- Use stable Git tags and shallow fetch for update checks and preparation by default on both platforms. Generate and verify a deterministic local archive, manifest, and pinned commit without GitHub API or hosted ZIP downloads. Require Git, honor its proxy/certificate configuration, bound command time, and retain the hosted-release transport only as an explicit option.
+- Fast-forward clean source checkouts on main to the pinned tag. Preserve dirty, diverged, non-main, and unexpected-origin checkouts; keep an external journal and recover only the original or completed commit without reset.
+- Replace repeated Windows PowerShell File.Replace subprocesses with bounded adjacent native renames. Verify and resume completed journal operations; rewind durably if the completed prefix no longer matches. The existing transaction fixture fell from about 160 seconds to 31 seconds on the test host. This proves a source performance defect, not the exact cause of the reported work-device timeout.
+- Allow bounded Git preparation before closing the app and shorten update-session lock waits. Preserve graceful close, idle checks, process containment, manifest verification, and relaunch readiness requirements.
+- Put the compact refresh icon immediately after Settings, with accessible busy/queued state. Retry runtime/manager discovery when activating a synthetic task before the navigation bridge was available.
+- Validation: Git transport and Windows default-Git Check/Prepare/ApplyPrepared/Recover fixtures passed, including hash mismatch rejection and unreachable HTTP endpoints. Source checkout and interrupted transaction tests passed, as did the update-session fixture.
+- Full `tools/Test-Source.ps1` passed in the isolated standalone checkout, including the new Git integration and source-preservation cases. Legacy Windows updater compatibility, archive layout/privacy, platform parity, and diff checks passed. Expected failing probes now clear their exit code after their assertions pass so the suite reports their actual outcome.
+- Browser verification passed in Chromium with synthetic runtimes: direct and publisher task activation, refresh placement/accessibility, retained cached rows and drafts, both themes, 280/320/400-pixel sidebars, and 1x/2x scaling. The rendered fixture was visually inspected.
+- Reproduced green connection indicators together with an incomplete-inventory warning: config and task-list reads succeeded while the published inventory read failed. These indicators represent different facts; cached rows remain. This does not identify the actual remote-device failure, and no warning suppression was added.
+- Native work-device installation, actual cross-device task opening, and native macOS execution of these changes remain unverified.
+
 ## v1.5.50 — 2026-09-07
 
 - Stop background project discovery from opening native Add project dialogs, including on clients that previously enabled automatic registration. Preserve discovered rows, existing registrations, and explicit project actions.

@@ -403,6 +403,8 @@ async function testActualWindowsCheck() {
     }
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const previousTransport = process.env.CHATGPT_REMOTE_UPDATE_TRANSPORT;
+  process.env.CHATGPT_REMOTE_UPDATE_TRANSPORT = 'release';
   const previousLatest = process.env.CHATGPT_REMOTE_UPDATE_LATEST_URL;
   const previousInsecure = process.env.CHATGPT_REMOTE_UPDATE_ALLOW_INSECURE;
   process.env.CHATGPT_REMOTE_UPDATE_LATEST_URL = `http://127.0.0.1:${server.address().port}/release.json`;
@@ -415,6 +417,8 @@ async function testActualWindowsCheck() {
     assert.equal(result.latestVersion, "v9.8.7");
     assert.equal(result.archiveSha256, archiveSha256);
   } finally {
+    if (previousTransport === undefined) delete process.env.CHATGPT_REMOTE_UPDATE_TRANSPORT;
+    else process.env.CHATGPT_REMOTE_UPDATE_TRANSPORT = previousTransport;
     if (previousLatest === undefined) delete process.env.CHATGPT_REMOTE_UPDATE_LATEST_URL;
     else process.env.CHATGPT_REMOTE_UPDATE_LATEST_URL = previousLatest;
     if (previousInsecure === undefined) delete process.env.CHATGPT_REMOTE_UPDATE_ALLOW_INSECURE;

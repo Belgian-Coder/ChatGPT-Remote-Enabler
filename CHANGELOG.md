@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.5.53 — 2026-09-07
+
+- Open inventory-only remote chats by registering and expanding their native remote project on demand, including projects beyond the native five-project collapsed limit. Confirm current task membership before synthetic navigation and retain a recently activated task until a newer authoritative inventory arrives.
+- Recover a remote message left permanently on **Steer** after an outcome-unknown `turn/steer` transport failure. Recovery is intentionally narrow: it runs when the user reopens the task and clears the stale marker only after both the local manager and a newly fetched authoritative remote inventory report that exact task idle. Unknown starts, mixed pending submissions, active tasks, and incomplete inventories fail closed to avoid duplicate work.
+- Add task-navigation regression coverage and include it in the complete source suite. Live Windows acceptance opened both previously unavailable remote tasks, recovered the stale Steer lock, and completed a new submission without restarting ChatGPT.
+
 ## v1.5.52 — 2026-09-07
 
 - Include both Git update helpers in the immutable detached controller bundle on Windows and macOS. Their contents now participate in bundle identity and copy verification, so the updater can resolve Git dependencies after restart.

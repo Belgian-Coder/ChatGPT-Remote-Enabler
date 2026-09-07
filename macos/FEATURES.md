@@ -1,7 +1,7 @@
 # Feature guide
 
-This guide describes the Windows and macOS source, including the v1.5.52
-Git-update, quiet-discovery, and sidebar-refresh changes. Historical v1.5.49 packages and
+This guide describes the Windows and macOS source, including the v1.5.53
+remote-task navigation and stale-Steer recovery changes. Historical v1.5.49 packages and
 screenshots do not include those changes. Both packages share the Device
 projects renderer and the feature behavior below; the
 platform guides document their different launchers, setup assistants, proxy
@@ -242,8 +242,8 @@ explain the compatibility path and the ordinary-app rollback path.
 
 ## Validation status
 
-For the v1.5.52 refresh changes, run
-`node windows/CodexRemoteMobileProject/tests/DiscoveryRefresh.SelfTest.js` and
+For the v1.5.53 remote-task changes, run
+`node windows/CodexRemoteMobileProject/tests/TaskNavigation.SelfTest.js` and
 the browser fixture below. These use synthetic runtimes and do not operate a
 real account. After an approved deployment, two-Windows-client acceptance must
 separately confirm that a new chat appears on the other desktop through polling

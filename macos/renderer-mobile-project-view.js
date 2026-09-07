@@ -48,6 +48,7 @@
   const REMOTE_INVENTORY_RETRY_MS = 15000;
   const REMOTE_INVENTORY_ACTIVE_TTL_MS = 5000;
   const REMOTE_INVENTORY_IDLE_TTL_MS = 30000;
+  const RECENT_TASK_ACTIVATION_RETENTION_MS = 120000;
   const REMOTE_TASK_STATUS_MAX_AGE_MS = 30000;
   const REQUEST_TIMEOUT_MS = 12000;
   const MAX_THREAD_LIST_PAGES = 200;
@@ -68,7 +69,7 @@
     "unknown",
   ]);
   const PUBLISHER_VERSION = 53;
-  const VERSION = 74;
+  const VERSION = 75;
   // Keep outstanding writes locked across renderer reinjection until the underlying RPC settles.
   const peerWriteLocks = globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ instanceof Map
     ? globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ : (globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ = new Map());
@@ -215,6 +216,8 @@
     panel: null,
     panelActionSignature: null,
     pendingNewThreads: new Set(),
+    pendingTaskOpens: new Set(),
+    recentTaskActivations: new Map(),
     peerCacheStates: new Map(),
     peerTransfers: new Map(),
     transferStats: new Map(),
@@ -2535,6 +2538,57 @@
       && authoritativeIds.get(task.hostId).has(task.conversationId));
   }
 
+  function currentRemoteTaskMembership(task) {
+    if (!task?.conversationId || task.hostId === "local") return true;
+    const now = Date.now();
+    const direct = state.threadInventories.get(task.hostId);
+    if (direct && !direct.error && direct.truncated !== true && Number.isFinite(direct.fetchedAt)
+      && now - direct.fetchedAt <= NATIVE_INVENTORY_REFRESH_MS) {
+      return (direct.threads ?? []).some((thread) => rawConversationId(thread?.id ?? thread?.conversationId ?? "") === task.conversationId);
+    }
+    const remote = freshInventory(task.hostId);
+    if (scopedThreadsAreFresh(remote)) {
+      return remote.threads.some((thread) => rawConversationId(thread?.id ?? "") === task.conversationId);
+    }
+    return null;
+  }
+
+  async function confirmRemoteTaskMembership(task) {
+    const current = currentRemoteTaskMembership(task);
+    if (current !== null) return current;
+    const refreshed = await requestDeviceRefresh();
+    return refreshed?.complete === true && currentRemoteTaskMembership(task) === true;
+  }
+
+  function rememberTaskActivation(task) {
+    if (!task?.conversationId || task.hostId === "local") return;
+    state.recentTaskActivations.set(`${task.hostId}::${task.conversationId}`, {
+      activatedAt: Date.now(),
+      task: { ...task, originalRow: null },
+    });
+  }
+
+  function retainRecentTaskActivations(taskMap) {
+    const now = Date.now();
+    for (const [key, record] of state.recentTaskActivations) {
+      const task = record.task;
+      const direct = state.threadInventories.get(task.hostId);
+      const remote = freshInventory(task.hostId);
+      const authoritativeAt = direct && !direct.error && direct.truncated !== true
+        ? direct.fetchedAt
+        : scopedThreadsAreFresh(remote) ? (remote.threadScopeGeneratedAt ?? remote.generatedAt) : null;
+      if (Number.isFinite(authoritativeAt) && authoritativeAt >= record.activatedAt) {
+        state.recentTaskActivations.delete(key);
+        continue;
+      }
+      if (now - record.activatedAt > RECENT_TASK_ACTIVATION_RETENTION_MS) {
+        state.recentTaskActivations.delete(key);
+        continue;
+      }
+      if (!taskMap.has(key)) taskMap.set(key, { ...task, inventoryFresh: false, inventoryStale: true });
+    }
+  }
+
   function collectModel() {
     purgeLocalRuntimeAliases();
     const rows = [...document.querySelectorAll(ROW_SELECTOR)].filter((row) => !row.closest(`#${PANEL_ID}`));
@@ -2641,6 +2695,7 @@
         }
       }
     }
+    retainRecentTaskActivations(taskMap);
     const tasks = [...taskMap.values()];
     const remoteInventoryProjects = inventoryProjects();
     const authoritativeProjectPaths = new Map();
@@ -4094,6 +4149,28 @@
     return controls;
   }
 
+  function revealNativeProjects() {
+    const items = [...document.querySelectorAll('[data-sidebar-project-kind][role="listitem"]')]
+      .filter((item) => !item.closest(`#${PANEL_ID}`));
+    const seen = new Set();
+    let invoked = false;
+    for (const item of items) {
+      let fiber = getFiber(item);
+      for (let level = 0; fiber && level < 40; level += 1, fiber = fiber.return) {
+        const props = fiber.memoizedProps;
+        if (props?.navigationListId !== "projects" || typeof props.onExpandedChange !== "function") continue;
+        if (seen.has(props.onExpandedChange)) break;
+        seen.add(props.onExpandedChange);
+        if (props.expanded !== true) {
+          props.onExpandedChange();
+          invoked = true;
+        }
+        break;
+      }
+    }
+    return invoked;
+  }
+
   function nativeConnectionGroupingActive() {
     return nativeThreadListExpansionControls()
       .some((control) => control.navigationListId?.startsWith("codex:connection:"));
@@ -4902,14 +4979,103 @@
     }
   }
 
-  async function openNativeTask(task) {
-    const nativeRow = nativeThreadRow(task) ?? task.originalRow;
-    if (nativeRow?.isConnected) {
-      return invokeNativeElement(nativeRow);
+  async function registerRemoteProjectForTask(project, task) {
+    if (!project || project.hostId === "local" || !project.cwd) return null;
+    const navigate = nativeNavigationDispatcher();
+    if ((!project.projectId && !navigate) || state.pendingTaskOpens.has(project.key)) return null;
+    state.pendingTaskOpens.add(project.key);
+    let ownedDialog = null;
+    try {
+      const registeredProjects = await refreshLocalRegisteredProjects();
+      if (!project.projectId && !registeredProjectMatches(registeredProjects, project)) {
+        await registerRemoteProjectAndOpen(project, navigate, (dialog) => { ownedDialog = dialog; });
+      }
+      void state.queryClient?.invalidateQueries?.();
+      state.hostDiscoveryDirty = true;
+      state.hostDiscoveryCache = null;
+      const registered = [...state.localRegisteredProjects.values()].find((candidate) => registeredProjectMatches(new Map([[candidate.projectId, candidate]]), project));
+      let nativeProject = null;
+      if (!nativeProjectItem({ ...project, projectId: registered?.projectId ?? project.projectId })) revealNativeProjects();
+      try {
+        nativeProject = await waitFor(() => nativeProjectItem({ ...project, projectId: registered?.projectId ?? project.projectId }) ?? nativeThreadRow(task), 10000);
+      } catch {
+        return null;
+      }
+      const row = nativeThreadRow(task);
+      if (row?.isConnected) return row;
+      const toggle = nativeProject?.querySelector?.('[data-app-action-sidebar-project-collapsed="true"]');
+      if (toggle) invokeNativeElement(toggle);
+      try {
+        return await waitFor(() => nativeThreadRow(task), 15000);
+      } catch {
+        return null;
+      }
+    } finally {
+      dismissOwnedDialog(ownedDialog);
+      state.pendingTaskOpens.delete(project.key);
     }
+  }
+
+  async function recoverUnconfirmedRemoteSteer(task, manager = state.threadManagers.get(task?.hostId)) {
+    if (!task?.conversationId || task.hostId === "local" || typeof manager?.getConversation !== "function"
+        || typeof manager?.updateConversationState !== "function") return 0;
+    const conversation = manager.getConversation(task.conversationId);
+    const pending = conversation?.unconfirmedTurnSubmissions;
+    if (!Array.isArray(pending) || pending.length === 0) return 0;
+    // ChatGPT deliberately blocks later submissions after an RPC outcome is
+    // unknown. Recover only the narrow remote-steer failure we can reconcile:
+    // every pending record must be an outcome-unknown steer, the local manager
+    // must be idle, and a new authoritative VM inventory must report the same
+    // task idle. Never clear a start/inject request, a mixed queue, or an active
+    // task because those cases could duplicate user work.
+    if (conversation.threadRuntimeStatus?.type !== "idle"
+        || pending.some((item) => item?.method !== "turn/steer" || item?.stage !== "outcome-unknown"
+          || typeof item?.requestId !== "string" || !item.requestId)) return 0;
+    const refreshStartedAt = Date.now();
+    const refreshed = await requestDeviceRefresh();
+    if (refreshed?.complete !== true) return 0;
+    const inventory = state.threadInventories.get(task.hostId);
+    if (!inventory || inventory.error || inventory.truncated === true
+        || !Number.isFinite(inventory.fetchedAt) || inventory.fetchedAt < refreshStartedAt) return 0;
+    const remoteThread = inventory.threads?.find((thread) => rawConversationId(thread?.id ?? thread?.conversationId ?? "") === task.conversationId);
+    const remoteStatus = typeof remoteThread?.status === "string" ? remoteThread.status : remoteThread?.status?.type;
+    if (!remoteThread || normalizeTaskStatus(remoteStatus) !== "idle") return 0;
+    const requestIds = new Set(pending.map((item) => item.requestId));
+    const current = manager.getConversation(task.conversationId);
+    if (current?.threadRuntimeStatus?.type !== "idle") return 0;
+    const currentPending = current?.unconfirmedTurnSubmissions;
+    if (!Array.isArray(currentPending) || currentPending.length !== requestIds.size
+        || currentPending.some((item) => !requestIds.has(item?.requestId) || item?.method !== "turn/steer"
+          || item?.stage !== "outcome-unknown")) return 0;
+    manager.updateConversationState(task.conversationId, (draft) => {
+      if (!Array.isArray(draft.unconfirmedTurnSubmissions)) return;
+      draft.unconfirmedTurnSubmissions = draft.unconfirmedTurnSubmissions.filter((item) => !requestIds.has(item?.requestId));
+      if (draft.unconfirmedTurnSubmissions.length === 0) delete draft.unconfirmedTurnSubmissions;
+    });
+    return requestIds.size;
+  }
+
+  async function openNativeTask(task, project = null) {
     const conversationId = task.conversationId || rawConversationId(task.conversationKey);
     let manager = state.threadManagers.get(task.hostId);
     try {
+      const recoveredSubmissions = await recoverUnconfirmedRemoteSteer({ ...task, conversationId }, manager);
+      const nativeRow = nativeThreadRow(task) ?? task.originalRow;
+      if (nativeRow?.isConnected) {
+        const invoked = invokeNativeElement(nativeRow);
+        state.lastAction = { commandId: "open-thread", conversationId, found: true, hostId: task.hostId, invoked,
+          mode: "native-row", recoveredSubmissions };
+        return invoked;
+      }
+      if (!(await confirmRemoteTaskMembership({ ...task, conversationId }))) {
+        throw new Error("Remote task navigation was blocked because fresh membership could not be confirmed");
+      }
+      const hydratedRow = await registerRemoteProjectForTask(project, task);
+      if (hydratedRow?.isConnected) {
+        const invoked = invokeNativeElement(hydratedRow);
+        state.lastAction = { commandId: "open-thread", conversationId, found: true, hostId: task.hostId, invoked, mode: "registered-remote-project" };
+        return invoked;
+      }
       // Publisher-only rows can appear while the app's navigation bridge is
       // still settling into the React tree. The normal render path may have
       // reused a fresh discovery cache, so retry the bridge scan at the point
@@ -6167,7 +6333,8 @@
           if (performance.now() - state.dragJustEndedAt >= 250) {
             const currentTask = currentTaskForAction(task);
             const acknowledge = currentTask.unread && currentTask.hostId !== "local";
-            const opened = await openNativeTask(currentTask);
+            rememberTaskActivation(currentTask);
+            const opened = await openNativeTask(currentTask, project);
             if (opened && acknowledge) acknowledgeRemoteUnread(currentTask);
             render();
           }
@@ -6891,7 +7058,7 @@
     document.getElementById(STYLE_ID)?.remove();
     state.active = false;
     const report = renderReport();
-    for (const collection of [state.autoRegistrationFailures, state.collapsed, state.hostConnectivity, state.localRegisteredProjects, state.localRuntimeHostIds, state.peerCacheStates, state.peerTransfers, state.transferStats, state.remoteHomeRequests, state.remoteCodexHomes, state.remoteProjectInventories, state.remoteRuntimeCache, state.threadInventories, state.threadManagers, state.verifiedThreadIds]) collection.clear();
+    for (const collection of [state.autoRegistrationFailures, state.collapsed, state.hostConnectivity, state.localRegisteredProjects, state.localRuntimeHostIds, state.peerCacheStates, state.peerTransfers, state.recentTaskActivations, state.transferStats, state.remoteHomeRequests, state.remoteCodexHomes, state.remoteProjectInventories, state.remoteRuntimeCache, state.threadInventories, state.threadManagers, state.verifiedThreadIds]) collection.clear();
     for (const controller of state.nativeStateBridgeControllers) controller.abort();
     state.nativeStateBridgeControllers.clear();
     state.healthRefreshOutcomes.clear();
@@ -6906,7 +7073,7 @@
   }
 
   loadVerifiedThreadIds();
-  const api = Object.freeze({ install, previewAutoArchive, previewAutoMaintenance: previewAutoArchive, probe, reconcileAutoRegisteredProjects, removeAllAutoRegistered, runAutoArchiveNow, runAutoMaintenanceNow: runAutoArchiveNow, setAutoArchive, setAutoMaintenance: setAutoArchive, setAutoRegistration, setFilter, setView, uninstall, updateActivity, version: VERSION });
+  const api = Object.freeze({ install, previewAutoArchive, previewAutoMaintenance: previewAutoArchive, probe, reconcileAutoRegisteredProjects, recoverUnconfirmedRemoteSteer, removeAllAutoRegistered, runAutoArchiveNow, runAutoMaintenanceNow: runAutoArchiveNow, setAutoArchive, setAutoMaintenance: setAutoArchive, setAutoRegistration, setFilter, setView, uninstall, updateActivity, version: VERSION });
   Object.defineProperty(globalThis, API_SLOT, { configurable: true, enumerable: false, value: api });
   return install();
 })();

@@ -1,6 +1,6 @@
 # macOS Apple Silicon: install for your user without sudo
 
-Release v1.5.52 adds Git-based updates, compact refresh, and recovery/task-activation fixes. Installation and live two-desktop acceptance remain separate checks.
+Release v1.5.53 opens inventory-only remote chats through their native projects and safely recovers stale remote Steer submissions after authoritative idle confirmation. Installation and live two-desktop acceptance remain separate checks.
 
 You need an Apple Silicon Mac (arm64), the ChatGPT/Codex desktop app installed and signed in with Remote available on your account, and Node.js 22 or newer. This helper does not install the app or unlock account features.
 
@@ -8,11 +8,11 @@ You need an Apple Silicon Mac (arm64), the ChatGPT/Codex desktop app installed a
 preceding installed build. v1.5.49 was then manually installed and its live
 renderer readiness was checked on the participating test devices. The next
 sign-in startup trigger and future desktop-app builds remain separate checks.
-v1.5.52 is a normal release.
+v1.5.53 is a normal release.
 
 ## 1. Download and extract
 
-1. Download **ChatGPT-Remote-Enabler-macOS-arm64-v1.5.52.zip** from [v1.5.52 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.52).
+1. Download **ChatGPT-Remote-Enabler-macOS-arm64-v1.5.53.zip** from [v1.5.53 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.53).
 2. Double-click the ZIP in Finder. Create **ChatGPTRemoteEnabler** in your home folder and move the extracted package contents into it.
 3. `MobileProjectView-macOS-arm64.sh` must be directly inside that folder. Keep the complete package together in this writable per-user location.
 
@@ -90,7 +90,7 @@ In Device Projects, **Auto-register: on/off** locally enables or pauses remote-p
 
 macOS already exposes native ChatGPT remote connections. This package adds the optional Device projects view.
 
-The v1.5.52 renderer preserves the original folder states, native-backed drag
+The v1.5.53 renderer preserves the original folder states, native-backed drag
 ordering, and the user's **By project**/**By connection** preference. It
 automatically paginates the authoritative active task list for the app-server's
 interactive CLI/VS Code sources used by the desktop UI. Internal exec and subagent runs remain available to
@@ -239,4 +239,4 @@ Settings now provides per-device connection findings, next steps, explicit evide
 
 ## Version or update icon missing
 
-Fully quit the app when your work is safe and launch through Remote Enabler in the latest extracted folder. An older Dock launcher can still reference another folder. Open Settings to see the loaded helper version and update controls; a missing updater has recovery instructions. v1.5.52 is a normal release available to the existing updater.
+Fully quit the app when your work is safe and launch through Remote Enabler in the latest extracted folder. An older Dock launcher can still reference another folder. Open Settings to see the loaded helper version and update controls; a missing updater has recovery instructions. v1.5.53 is a normal release available to the existing updater.

@@ -69,7 +69,7 @@
     "unknown",
   ]);
   const PUBLISHER_VERSION = 53;
-  const VERSION = 76;
+  const VERSION = 77;
   // Keep outstanding writes locked across renderer reinjection until the underlying RPC settles.
   const peerWriteLocks = globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ instanceof Map
     ? globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ : (globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ = new Map());
@@ -2373,6 +2373,11 @@
         const nextInterval = inventoryHasWork(tasks, threads) ? REMOTE_INVENTORY_ACTIVE_MS : REMOTE_INVENTORY_IDLE_MS;
         state.localInventoryPublisherTimer = setTimeout(() => {
           state.localInventoryPublisherTimer = null;
+          // A background Electron renderer can keep timers running while
+          // requestAnimationFrame is suspended. Publish the heartbeat here so
+          // remote clients do not reject an otherwise healthy inventory as
+          // stale merely because this window is hidden.
+          scheduleLocalProjectInventoryPublication();
           schedule();
         }, nextInterval);
       }
@@ -3768,8 +3773,8 @@
       devices: model.hosts.map((host, index) => {
         const inventory = state.remoteProjectInventories.get(host.id);
         return { label: `Device ${index + 1}`, local: host.id === "local", connection: connectionLabel(host),
-          inventoryAgeSeconds: ageSeconds(inventory?.generatedAt), inventoryPending: inventory?.pending === true,
-          inventoryError: Boolean(inventory?.error), inventoryFresh: host.id === "local" ? readiness().authoritativeInventoryReady : Boolean(freshInventory(host.id)),
+          inventoryAgeSeconds: ageSeconds(host.id === "local" ? state.localInventoryPublishedAt : inventory?.generatedAt), inventoryPending: inventory?.pending === true,
+          inventoryError: Boolean(inventory?.error), inventoryFresh: host.id === "local" ? readiness().publisherReady && readiness().authoritativeInventoryReady : Boolean(freshInventory(host.id)),
           helperVersion: host.id === "local" ? releaseVersion(config.helperVersion) : releaseVersion(inventory?.helperVersion),
           connectionFinding: connectionGuidance(host).code,
           transfer: state.transferStats.has(host.id) ? { ...state.transferStats.get(host.id) } : null,
@@ -6439,7 +6444,9 @@
       && localInventory.truncated !== true
       && Number.isFinite(localInventory.fetchedAt)
       && Array.isArray(localInventory.threads));
-    const publisherReady = state.localInventoryPublishedAt > 0 && !state.localInventoryPublisherError;
+    const publisherReady = state.localInventoryPublishedAt > 0
+      && Date.now() - state.localInventoryPublishedAt <= REMOTE_INVENTORY_MAX_AGE_MS
+      && !state.localInventoryPublisherError;
     const ready = mounted && localRuntimeReady && authoritativeInventoryReady && publisherReady;
     const error = ready ? null
       : !mounted ? "Mobile project view is not mounted"
@@ -7051,6 +7058,7 @@
       projects: model.projects.length,
       readiness: readiness(),
       localInventoryPublished: state.localInventoryPublishedAt > 0,
+      localInventoryPublishedAgeSeconds: ageSeconds(state.localInventoryPublishedAt),
       localInventoryProjects: state.localInventoryProjects.length,
       localInventoryPublisherError: state.localInventoryPublisherError,
       localInventoryPublisherPending: state.localInventoryPublisherPending,

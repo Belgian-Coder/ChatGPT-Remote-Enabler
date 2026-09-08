@@ -1,13 +1,14 @@
 # Feature guide
 
-This guide describes the Windows and macOS v1.5.54 source, including loaded
-search, compact Settings, guarded navigation, and stale-Steer recovery. Historical v1.5.49 packages and
+This guide describes the Windows and macOS v1.5.55 source, including reliable
+background inventory publication, loaded search, compact Settings, guarded navigation, and stale-Steer recovery. Historical v1.5.49 packages and
 screenshots do not include those changes. Both packages share the Device
 projects renderer and the feature behavior below; the
 platform guides document their different launchers, setup assistants, proxy
 options, and shortcut/startup commands.
 
-Renderer v76 adds the search and Settings improvements described below.
+Renderer v77 adds the background inventory reliability correction; renderer
+v76 added the search and Settings improvements described below.
 
 ![Search in a synthetic v1.5.54 Chromium fixture](assets/screenshots/search-unreleased.png)
 

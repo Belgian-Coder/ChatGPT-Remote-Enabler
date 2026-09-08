@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.5.55 — 2026-09-08
+
+- Keep the cross-device inventory heartbeat independent of renderer animation frames. Hidden/background Electron windows can suspend `requestAnimationFrame` while ordinary timers and app-server requests remain available; the publisher now writes directly from its 5/15-second timer so peer inventories and shared aliases do not expire after three minutes.
+- Treat a local publication older than the remote validity window as unready, and report its age in probes and diagnostic exports. This prevents a stale file from being described as a healthy local publisher.
+- Add a deterministic regression that holds every animation frame indefinitely and proves the publisher still advances its file heartbeat. The reliability fixture also proves stale publisher readiness fails closed. Ship renderer v77 in release v1.5.55.
+
 ## v1.5.54 — 2026-09-08
 
 - Add loaded-content search to Device projects. Search project names and chat titles within device filters, reveal matching chats, and restore the original project expansion when cleared. Keep queries in memory, support literal Unicode text and IME input, and disable reordering while results are filtered.

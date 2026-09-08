@@ -19,7 +19,7 @@ const testSource = originalSource
     scheduleNativeInventoryHydration();
     return { active: state.active, version: VERSION };
   };
-  return { assignLocalRuntime, hydrateNativeInventory, schedule, scheduleLocalProjectInventoryPublication, scheduleNativeInventoryHydration, state };
+  return { assignLocalRuntime, hydrateNativeInventory, readiness, schedule, scheduleLocalProjectInventoryPublication, scheduleNativeInventoryHydration, state };
 })();`);
 assert.notEqual(testSource, originalSource, "full renderer test adapter must replace the production entrypoint");
 
@@ -132,6 +132,7 @@ async function advanceTo(target) {
   let failThreadLists = false;
   let truncateThreadLists = false;
   let listCalls = 0;
+  let writeCalls = 0;
   let writtenPayload = null;
   const requestClient = {
     async sendRequest(method, params) {
@@ -146,6 +147,7 @@ async function advanceTo(target) {
       }
       if (method === "config/read") return { codexHome: "C:\\Fixture\\.codex" };
       if (method === "fs/writeFile") {
+        writeCalls += 1;
         writtenPayload = JSON.parse(Buffer.from(params.dataBase64, "base64").toString("utf8"));
         return {};
       }
@@ -206,6 +208,23 @@ async function advanceTo(target) {
   assert.ok(writtenPayload, "the full-source publisher must write a status envelope");
   assert.equal(writtenPayload.threadScopeGeneratedAt, new Date(successfulFetchedAt).toISOString(), "publication must report the last successful full-scan timestamp");
 
+  const firstPublishedAt = reliability.state.localInventoryPublishedAt;
+  const firstWriteCalls = writeCalls;
+  const publisherTimerId = reliability.state.localInventoryPublisherTimer;
+  const publisherTimer = timers.get(publisherTimerId);
+  assert.ok(publisherTimer, "a successful publication must schedule its next heartbeat");
+  timers.delete(publisherTimerId);
+  clock = publisherTimer.due;
+  publisherTimer.callback(...publisherTimer.args);
+  for (let turn = 0; turn < 20 && reliability.state.localInventoryPublisherPending; turn += 1) {
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  assert.equal(writeCalls, firstWriteCalls + 1, "the publisher heartbeat must write without waiting for an animation frame");
+  assert.ok(reliability.state.localInventoryPublishedAt > firstPublishedAt, "the background heartbeat must advance publication freshness");
+  assert.ok(animationFrames.size > 0, "the regression must leave the requested animation frame unflushed");
+  flushAnimationFrames();
+  await drainAsyncWork();
+
   failThreadLists = false;
   truncateThreadLists = true;
   clock += 1_000;
@@ -218,10 +237,15 @@ async function advanceTo(target) {
   assert.equal(retainedAfterTruncation.truncated, false, "the retained prior complete snapshot must remain publishable");
   assert.equal(retainedAfterTruncation.threads.length, 200);
 
+  clock = reliability.state.localInventoryPublishedAt + 180_001;
+  assert.equal(reliability.readiness().publisherReady, false, "publisher readiness must expire when no heartbeat reaches disk within the remote validity window");
+
   console.log(JSON.stringify({
     backgroundMutationBatches: 200,
     backgroundRenderDelta: 0,
     backgroundScanDelta: 0,
+    backgroundPublisherWithoutAnimationFrame: true,
+    stalePublisherReadinessRejected: true,
     fixedClockWindowMs: 120_000,
     fullInventoryPagesPerScan: 200,
     fullInventoryScans: 3,

@@ -1,6 +1,6 @@
 # Feature roadmap
 
-Implemented in unreleased renderer v76: search loaded project names and chat
+Implemented in v1.5.54 / renderer v76: search loaded project names and chat
 titles within device filters; temporary expansion of matching projects; concise
 sync status with a Device health shortcut; and cleanup controls in a disclosure.
 Search is local, debounced, and preserves saved expansion, input composition,

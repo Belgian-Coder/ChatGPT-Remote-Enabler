@@ -102,7 +102,9 @@ $platforms = @(
     [pscustomobject]@{ Name = 'macOS-arm64'; Source = 'macos' }
 )
 
-if (-not (Test-Path -LiteralPath (Join-Path $repositoryRoot '.git') -PathType Container)) {
+$gitWorkTree = @(& git -C $repositoryRoot rev-parse --show-toplevel 2>$null)
+if ($LASTEXITCODE -ne 0 -or $gitWorkTree.Count -ne 1 -or
+    [IO.Path]::GetFullPath($gitWorkTree[0]) -ne $repositoryRoot.TrimEnd([IO.Path]::DirectorySeparatorChar)) {
     throw 'Build-Release.ps1 must run from the ChatGPT-Remote-Enabler Git checkout.'
 }
 

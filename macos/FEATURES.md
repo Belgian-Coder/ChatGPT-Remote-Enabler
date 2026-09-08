@@ -1,16 +1,15 @@
 # Feature guide
 
-This guide describes the Windows and macOS source, including the v1.5.53
-remote-task navigation and stale-Steer recovery changes. Historical v1.5.49 packages and
+This guide describes the Windows and macOS v1.5.54 source, including loaded
+search, compact Settings, guarded navigation, and stale-Steer recovery. Historical v1.5.49 packages and
 screenshots do not include those changes. Both packages share the Device
 projects renderer and the feature behavior below; the
 platform guides document their different launchers, setup assistants, proxy
 options, and shortcut/startup commands.
 
-The unreleased renderer v76 adds the search and Settings improvements described
-below. They require the new source; installing published v1.5.53 does not add them.
+Renderer v76 adds the search and Settings improvements described below.
 
-![Unreleased search in a synthetic Chromium fixture](assets/screenshots/search-unreleased.png)
+![Search in a synthetic v1.5.54 Chromium fixture](assets/screenshots/search-unreleased.png)
 
 This preview uses synthetic data and is not a capture of the running ChatGPT app.
 
@@ -25,7 +24,7 @@ connection** preference.
 | Feature | Behavior | Default or limit |
 | --- | --- | --- |
 | Device filters | Show All, This device, or one other known device. | Display-name order; cached inventory does not prove online state. |
-| Find projects and chats (unreleased) | Search loaded project names and chat titles within the selected device filter. Matching projects include their loaded chats; matching chats reveal their project. | Case-insensitive literal words; no remote search or saved queries. Escape or Clear search restores normal expansion. Reordering is unavailable while searching. |
+| Find projects and chats | Search loaded project names and chat titles within the selected device filter. Matching projects include their loaded chats; matching chats reveal their project. | Case-insensitive literal words; no remote search or saved queries. Escape or Clear search restores normal expansion. Reordering is unavailable while searching. |
 | Device names | Remember verified native or inventory names across reloads and restarts. | Unknown peers display **Remote device**; internal environment IDs are never labels. |
 | Project rows | Show active projects, including empty projects, with native folder styling and project-hover new-chat actions when supported. | Last-known rows survive unavailable or incomplete refreshes with stale status; fresh authoritative membership determines removals. |
 | Task state | Show a spinner while working and a blue unread dot after completion until viewed. | State and membership are refreshed independently; collapsed folders aggregate child state. |
@@ -80,7 +79,7 @@ diagnostic, health, and connection controls. Moving a control into Settings
 does not change its stored preference; cleanup remains active in Native sidebar
 when it was enabled.
 
-In unreleased renderer v76, update status, Device health, and connection
+In renderer v76, update status, Device health, and connection
 troubleshooting come first. **Automatic cleanup** contains the cleanup switch,
 its consequences, and removal of older auto-created project registrations.
 Opening or closing this section never changes cleanup preferences. The loaded
@@ -263,7 +262,7 @@ explain the compatibility path and the ordinary-app rollback path.
 
 ## Validation status
 
-For the v1.5.53 remote-task changes, run
+For the v1.5.54 remote-task changes, run
 `node windows/CodexRemoteMobileProject/tests/TaskNavigation.SelfTest.js` and
 the browser fixture below. These use synthetic runtimes and do not operate a
 real account. After an approved deployment, two-Windows-client acceptance must

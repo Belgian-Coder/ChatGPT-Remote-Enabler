@@ -41,6 +41,7 @@ $bundleParent = Split-Path -Parent $bundleRoot
 $stableController = Join-Path $bundleParent 'CodexRemoteSimple\CodexRemoteSimple.ps1'
 $mobileController = Join-Path $bundleRoot 'MobileProjectView.ps1'
 $maintenanceHelper = Join-Path $bundleRoot 'maintenance.js'
+$publisherHeartbeatHelper = Join-Path $bundleRoot 'publisher-heartbeat.js'
 $updateController = Join-Path $bundleParent 'Update-ChatGPTRemote.ps1'
 $updateSessionLauncher = Join-Path $bundleRoot 'UpdateSessionLauncher.ps1'
 $proxyModule = Join-Path $bundleRoot 'ProxyConfiguration.psm1'
@@ -49,7 +50,7 @@ $logPath = Join-Path $logRoot 'startup.log'
 $rollbackRoot = Join-Path $bundleRoot 'rollback'
 
 function Assert-Controllers {
-    foreach ($path in @($stableController, $mobileController, $maintenanceHelper, $proxyModule, $updateSessionLauncher)) {
+    foreach ($path in @($stableController, $mobileController, $maintenanceHelper, $publisherHeartbeatHelper, $proxyModule, $updateSessionLauncher)) {
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
             throw "Required controller is missing: $path"
         }
@@ -362,6 +363,22 @@ switch ($Action) {
                 }
                 $mobileTimer.Stop()
                 Write-StartupLog "$(Get-Date -Format o) [$computerName] stage=mobile-readiness durationMs=$($mobileTimer.ElapsedMilliseconds) mounted=$($report.mounted) localRuntimeReady=$($report.localRuntimeReady) authoritativeInventoryReady=$($report.authoritativeInventoryReady) publisherReady=$($report.publisherReady) ready=$($report.ready)"
+
+                try {
+                    $stableStatePath = Join-Path $logRoot 'codexremote-simple-session.json'
+                    $stableState = Get-Content -LiteralPath $stableStatePath -Raw | ConvertFrom-Json -ErrorAction Stop
+                    $heartbeatPort = [int]$stableState.rendererPort
+                    $heartbeatParent = [int]$stableState.launchProcessId
+                    if ($heartbeatPort -lt 1 -or $heartbeatPort -gt 65535 -or $heartbeatParent -lt 1) {
+                        throw 'The stable session did not report a valid heartbeat target.'
+                    }
+                    $heartbeatLock = Join-Path $logRoot "publisher-heartbeat-$heartbeatPort.lock"
+                    $heartbeatArguments = '--no-warnings "{0}" --port {1} --parent-pid {2} --lock-path "{3}"' -f $publisherHeartbeatHelper, $heartbeatPort, $heartbeatParent, $heartbeatLock
+                    Start-Process -FilePath $node -ArgumentList $heartbeatArguments -WindowStyle Hidden | Out-Null
+                    Write-StartupLog "$(Get-Date -Format o) [$computerName] publisher heartbeat started for the exact renderer session"
+                } catch {
+                    Write-StartupLog "$(Get-Date -Format o) [$computerName] publisher heartbeat unavailable: $($_.Exception.Message)"
+                }
 
                 try {
                     $sessionTimer = [Diagnostics.Stopwatch]::StartNew()

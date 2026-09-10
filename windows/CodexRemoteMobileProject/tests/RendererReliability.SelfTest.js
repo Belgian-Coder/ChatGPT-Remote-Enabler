@@ -19,7 +19,7 @@ const testSource = originalSource
     scheduleNativeInventoryHydration();
     return { active: state.active, version: VERSION };
   };
-  return { assignLocalRuntime, hydrateNativeInventory, readiness, schedule, scheduleLocalProjectInventoryPublication, scheduleNativeInventoryHydration, state };
+  return { assignLocalRuntime, hydrateNativeInventory, publishInventoryHeartbeat, readiness, schedule, scheduleLocalProjectInventoryPublication, scheduleNativeInventoryHydration, state };
 })();`);
 assert.notEqual(testSource, originalSource, "full renderer test adapter must replace the production entrypoint");
 
@@ -225,6 +225,39 @@ async function advanceTo(target) {
   flushAnimationFrames();
   await drainAsyncWork();
 
+  const inventoryBeforeRefreshGap = reliability.state.threadInventories.get("local");
+  const writesBeforeRefreshGap = writeCalls;
+  const refreshGapTimerId = reliability.state.localInventoryPublisherTimer;
+  const refreshGapTimer = timers.get(refreshGapTimerId);
+  assert.ok(refreshGapTimer, "the publisher must remain armed before a transient inventory refresh gap");
+  timers.delete(refreshGapTimerId);
+  reliability.state.threadInventories.delete("local");
+  clock = refreshGapTimer.due;
+  refreshGapTimer.callback(...refreshGapTimer.args);
+  await drainAsyncWork();
+  assert.equal(writeCalls, writesBeforeRefreshGap, "the publisher must not write without an authoritative local inventory");
+  const retryTimerId = reliability.state.localInventoryPublisherTimer;
+  const retryTimer = timers.get(retryTimerId);
+  assert.ok(retryTimer, "a transient missing inventory must re-arm the publisher retry");
+  reliability.state.threadInventories.set("local", inventoryBeforeRefreshGap);
+  timers.delete(retryTimerId);
+  clock = retryTimer.due;
+  retryTimer.callback(...retryTimer.args);
+  for (let turn = 0; turn < 20 && reliability.state.localInventoryPublisherPending; turn += 1) {
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  assert.equal(writeCalls, writesBeforeRefreshGap + 1, "the re-armed publisher must recover after the local inventory returns");
+  flushAnimationFrames();
+  await drainAsyncWork();
+
+  const writesBeforeExternalWake = writeCalls;
+  const dormantTimerId = reliability.state.localInventoryPublisherTimer;
+  assert.ok(timers.has(dormantTimerId), "the external wake regression requires an armed renderer timer");
+  assert.equal(reliability.publishInventoryHeartbeat(), true);
+  await drainAsyncWork();
+  assert.equal(timers.has(dormantTimerId), false, "an external wake must discard the renderer timer that may be frozen");
+  assert.equal(writeCalls, writesBeforeExternalWake + 1, "an external wake must publish immediately instead of trusting the armed timer");
+
   failThreadLists = false;
   truncateThreadLists = true;
   clock += 1_000;
@@ -245,6 +278,8 @@ async function advanceTo(target) {
     backgroundRenderDelta: 0,
     backgroundScanDelta: 0,
     backgroundPublisherWithoutAnimationFrame: true,
+    externalHeartbeatBypassesFrozenTimer: true,
+    publisherRetryAfterInventoryRefreshGap: true,
     stalePublisherReadinessRejected: true,
     fixedClockWindowMs: 120_000,
     fullInventoryPagesPerScan: 200,

@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.5.56 — 2026-09-10
+
+- Keep project inventory fresh when the desktop app freezes both animation frames and renderer timers while hidden. A parent-bound, per-renderer helper now wakes the exact `app://-/index.html` target through its existing loopback debugger every 10 seconds; it exits with the app and uses a process lock to prevent duplicates.
+- Make an external wake discard any dormant renderer timer before publishing immediately. Retain the v1.5.55 direct timer path for foreground and normally backgrounded renderers, and re-arm publication after a transient inventory-refresh gap.
+- Start the publisher heartbeat independently of the update session on Windows and macOS. Add deterministic helper and renderer regressions, including proof that an armed-but-frozen timer is bypassed. Ship renderer v78 in release v1.5.56.
+- Live Windows validation held publication age to 3–5 seconds over a 22-second hidden-renderer interval while publishing 19 projects/tasks. Native macOS execution remains a separate acceptance check.
+
 ## v1.5.55 — 2026-09-08
 
 - Keep the cross-device inventory heartbeat independent of renderer animation frames. Hidden/background Electron windows can suspend `requestAnimationFrame` while ordinary timers and app-server requests remain available; the publisher now writes directly from its 5/15-second timer so peer inventories and shared aliases do not expire after three minutes.

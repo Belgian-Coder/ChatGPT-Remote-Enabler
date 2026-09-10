@@ -12,6 +12,7 @@ updater="$bundle_root/Update-ChatGPTRemote.sh"
 update_recovered=0
 update_session_source="$bundle_root/update-session.js"
 update_session_cdp_source="$bundle_root/update-session-cdp.js"
+publisher_heartbeat_source="$bundle_root/publisher-heartbeat.js"
 update_session_platform_source="$bundle_root/UpdateSessionPlatform.sh"
 update_transaction_source="$bundle_root/update-transaction.js"
 git_release_source="$bundle_root/git-release.js"
@@ -254,6 +255,15 @@ start_update_session() {
   print "Update session started for exact application process $pid_value."
 }
 
+start_publisher_heartbeat() {
+  local node_bin="$1" identity="$2"
+  local pid_value="${identity%%$'\t'*}"
+  local heartbeat_root="$HOME/Library/Application Support/ChatGPTRemoteEnabler/publisher-heartbeats"
+  mkdir -m 700 -p "$heartbeat_root"
+  [[ -f "$publisher_heartbeat_source" && ! -L "$publisher_heartbeat_source" ]] || { print -u2 "Publisher heartbeat helper is missing."; return 1; }
+  "$node_bin" --no-warnings "$publisher_heartbeat_source" --port "$port" --parent-pid "$pid_value" --lock-path "$heartbeat_root/renderer-$port.lock" </dev/null >>"$heartbeat_root/helper.log" 2>&1 &!
+}
+
 write_relaunch_handoff() {
   local handoff_path="${CODEX_REMOTE_RELAUNCH_HANDOFF_PATH:-}"
   [[ -n "$handoff_path" ]] || return 0
@@ -311,6 +321,7 @@ enable_view() {
   print "stage=mobile-readiness durationMs=$(( (EPOCHREALTIME - mobile_started) * 1000 )) proof=$summary"
   local identity
   identity="$(capture_app_identity)" || { print -u2 "Update status is unavailable because the exact application identity could not be captured."; return 0; }
+  start_publisher_heartbeat "$node_bin" "$identity" || print -u2 "Publisher heartbeat is unavailable for this session."
   start_update_session "$node_bin" "$identity" || print -u2 "Update status is unavailable for this session."
   write_relaunch_handoff
 }

@@ -1,12 +1,12 @@
 # Windows 11: install for your user without administrator access
 
-Release v1.5.55 keeps device inventory and shared aliases fresh while the app is backgrounded, reports stale local publication honestly, and retains the v1.5.54 search and navigation improvements. Installation and live multi-device acceptance remain separate checks.
+Release v1.5.56 keeps device inventory and shared aliases fresh even when hidden-renderer timers freeze, reports stale local publication honestly, and retains the v1.5.54 search and navigation improvements. Installation and live multi-device acceptance remain separate checks.
 
 You need Windows 11 x64, the ChatGPT/Codex desktop app installed and signed in with Remote available on your account, and Node.js 22 or newer. This helper does not install the desktop app or unlock account features.
 
 ## 1. Download and extract
 
-1. Download **ChatGPT-Remote-Enabler-Windows-x64-v1.5.55.zip** from [v1.5.55 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.55). Read the verification limitations.
+1. Download **ChatGPT-Remote-Enabler-Windows-x64-v1.5.56.zip** from [v1.5.56 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.56). Read the verification limitations.
 2. Right-click the ZIP in File Explorer, choose **Properties**, select **Unblock** if offered, and click **OK**. Then choose **Extract All**.
 3. Enter `%LOCALAPPDATA%\Programs` in File Explorer's address bar. Create a **ChatGPTRemoteEnabler** folder and copy the extracted package contents into it.
 4. **ChatGPT Remote Enabler.exe**, **README.md**, and **CodexRemoteMobileProject** must be directly inside that folder. Keep the whole package together.
@@ -314,7 +314,7 @@ Check the target of **ChatGPT Custom** in the Start menu (open its file location
 
 Fully quit the app when your work is safe, then use **ChatGPT Remote Enabler.exe** in the newly extracted folder, or the new **ChatGPT Remote Enabler** shortcut created by that folder's setup assistant. Open Settings to see the loaded helper version and update controls in either view. A missing update service shows recovery instructions there.
 
-v1.5.55 is a normal release and is discoverable by the existing automatic updater. The first Windows upgrade from v1.5.31 attaches the new update helper even through the legacy launcher.
+v1.5.56 is a normal release and is discoverable by the existing automatic updater. The first Windows upgrade from v1.5.31 attaches the new update helper even through the legacy launcher.
 
 
 ### Existing enrollment keys after a Codex update

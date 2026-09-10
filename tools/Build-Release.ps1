@@ -146,12 +146,13 @@ try {
 
         $requiredUpdateFiles = if ($platform.Source -eq 'windows') {
             @('Update-ChatGPTRemote.ps1', 'update-transaction.js', 'git-release.js', 'git-checkout-update.js', 'CodexRemoteMobileProject/update-session.js',
+              'CodexRemoteMobileProject/publisher-heartbeat.js',
               'CodexRemoteMobileProject/update-session-cdp.js', 'CodexRemoteMobileProject/UpdateSessionLauncher.ps1',
               'CodexRemoteMobileProject/UpdateSessionSurvivorLauncher.ps1', 'CodexRemoteMobileProject/UpdateSessionTaskHost.exe',
               'CodexRemoteMobileProject/UpdateSessionPlatform.ps1', 'CodexRemoteSimple/runtime/lib/cdp.js')
         } else {
             @('Update-ChatGPTRemote.sh', 'update-transaction.js', 'git-release.js', 'git-checkout-update.js', 'update-session.js', 'update-session-cdp.js',
-              'UpdateSessionPlatform.sh', 'runtime/lib/cdp.js')
+              'publisher-heartbeat.js', 'UpdateSessionPlatform.sh', 'runtime/lib/cdp.js')
         }
         foreach ($required in $requiredUpdateFiles) {
             if (-not (Test-Path -LiteralPath (Join-Path $stageRoot $required) -PathType Leaf)) {

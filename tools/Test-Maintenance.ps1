@@ -5,7 +5,9 @@ $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $node = (Get-Command node.exe -ErrorAction Stop).Source
 $helper = Join-Path $root 'windows\CodexRemoteMobileProject\maintenance.js'
-$nodeTemp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+$nodeTemp = (& $node -p 'require("node:os").tmpdir()').Trim()
+if ($LASTEXITCODE -ne 0 -or -not $nodeTemp) { throw 'Node temporary directory discovery failed.' }
+$nodeTemp = [IO.Path]::GetFullPath($nodeTemp).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
 $testRoot = Join-Path $nodeTemp ('chatgpt-remote-maintenance-test-' + [guid]::NewGuid().ToString('N'))
 $strictFailureRoot = Join-Path $nodeTemp ('chatgpt-remote-maintenance-test-' + [guid]::NewGuid().ToString('N'))
 $bestEffortFailureRoot = Join-Path $nodeTemp ('chatgpt-remote-maintenance-test-' + [guid]::NewGuid().ToString('N'))
@@ -39,7 +41,9 @@ db.close();
     $logsBefore = (Get-Item -LiteralPath (Join-Path $testRoot 'logs_2.sqlite')).Length
     $stateBefore = (Get-Item -LiteralPath (Join-Path $testRoot 'state_5.sqlite')).Length
     $report = & $node --no-warnings $helper --test-temp --codex-home $testRoot | ConvertFrom-Json
-    if ($LASTEXITCODE -ne 0 -or $report.status -ne 'completed') { throw 'Maintenance helper did not complete.' }
+    if ($LASTEXITCODE -ne 0 -or $report.status -ne 'completed') {
+        throw "Maintenance helper did not complete: $($report | ConvertTo-Json -Compress -Depth 8)"
+    }
     $readResult = @'
 const { DatabaseSync } = require("node:sqlite");
 const path = require("node:path");

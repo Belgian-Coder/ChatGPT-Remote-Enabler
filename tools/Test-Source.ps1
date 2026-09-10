@@ -122,6 +122,7 @@ if ((Get-FileHash -LiteralPath $windowsMaintenance -Algorithm SHA256).Hash -ne (
     throw 'Windows and macOS maintenance sources differ.'
 }
 foreach ($pair in @(
+    @('windows\CodexRemoteMobileProject\publisher-heartbeat.js', 'macos\publisher-heartbeat.js'),
     @('windows\CodexRemoteMobileProject\update-session.js', 'macos\update-session.js'),
     @('windows\CodexRemoteMobileProject\update-session-cdp.js', 'macos\update-session-cdp.js'),
     @('windows\update-transaction.js', 'macos\update-transaction.js'),
@@ -133,7 +134,7 @@ foreach ($pair in @(
 }
 $renderer = Get-Content -LiteralPath $windowsRenderer -Raw
 $requiredContracts = @(
-    'const VERSION = 77;',
+    'const VERSION = 78;',
     'hostDisplayName: config.localDisplayName || null',
     'codex-remote-mobile-verified-thread-ids-v2',
     'THREAD_VISIBILITY_CONTRACT_VERSION',
@@ -252,7 +253,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Thread visibility self-test failed.' }
 & $node (Join-Path $root 'windows\CodexRemoteMobileProject\tests\TaskStatus.SelfTest.js')
 if ($LASTEXITCODE -ne 0) { throw 'Task status self-test failed.' }
 
-foreach ($test in @('HostNames', 'SidebarLayout', 'SidebarStatus', 'SidebarBehavior', 'LoadedSearch', 'TaskNavigation', 'RendererReliability', 'FeatureState', 'PeerTransfer', 'NativeStateBridge', 'NativeConnectionLifecycle', 'DiscoveryRefresh')) {
+foreach ($test in @('HostNames', 'SidebarLayout', 'SidebarStatus', 'SidebarBehavior', 'LoadedSearch', 'TaskNavigation', 'RendererReliability', 'PublisherHeartbeat', 'FeatureState', 'PeerTransfer', 'NativeStateBridge', 'NativeConnectionLifecycle', 'DiscoveryRefresh')) {
     & $node (Join-Path $root "windows\CodexRemoteMobileProject\tests\$test.SelfTest.js")
     if ($LASTEXITCODE -ne 0) { throw "$test self-test failed." }
 }

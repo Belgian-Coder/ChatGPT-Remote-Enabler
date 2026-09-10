@@ -69,7 +69,7 @@
     "unknown",
   ]);
   const PUBLISHER_VERSION = 53;
-  const VERSION = 77;
+  const VERSION = 78;
   // Keep outstanding writes locked across renderer reinjection until the underlying RPC settles.
   const peerWriteLocks = globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ instanceof Map
     ? globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ : (globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ = new Map());
@@ -2279,7 +2279,22 @@
     };
   }
 
-  function scheduleLocalProjectInventoryPublication() {
+  function armLocalProjectInventoryPublication(tasks = [], threads = []) {
+    if (state.disposed || state.localInventoryPublisherTimer !== null) return;
+    const nextInterval = inventoryHasWork(tasks, threads) ? REMOTE_INVENTORY_ACTIVE_MS : REMOTE_INVENTORY_IDLE_MS;
+    state.localInventoryPublisherTimer = setTimeout(() => {
+      state.localInventoryPublisherTimer = null;
+      // A background Electron renderer can keep timers running while
+      // requestAnimationFrame is suspended. Publish the heartbeat here so
+      // remote clients do not reject an otherwise healthy inventory as
+      // stale merely because this window is hidden. Re-arming happens even
+      // when a concurrent inventory refresh temporarily removes a prerequisite.
+      scheduleLocalProjectInventoryPublication();
+      schedule();
+    }, nextInterval);
+  }
+
+  function scheduleLocalProjectInventoryPublication(force = false) {
     const runtime = state.localRuntime;
     const now = Date.now();
     const currentThreadInventory = state.threadInventories.get("local");
@@ -2289,7 +2304,10 @@
       || !currentThreadInventory
       || currentThreadInventory.truncated === true
       || !Array.isArray(currentThreadInventory.threads)
-      || !Number.isFinite(currentThreadInventory.fetchedAt)) return;
+      || !Number.isFinite(currentThreadInventory.fetchedAt)) {
+      if (!state.disposed && !state.localInventoryPublisherPending) armLocalProjectInventoryPublication();
+      return;
+    }
     const localThreadsById = new Map((currentThreadInventory.threads ?? []).flatMap((thread) => {
       const id = rawConversationId(thread?.id ?? thread?.conversationId ?? "");
       return id ? [[id, thread]] : [];
@@ -2327,7 +2345,7 @@
     const statusSignature = publicationSignature(peers, nativeProjectSnapshot.projects, tasks, threads, localThreadInventory?.fetchedAt ?? 0, deviceAliases);
     const publishInterval = inventoryHasWork(tasks, threads) ? REMOTE_INVENTORY_ACTIVE_MS : REMOTE_INVENTORY_IDLE_MS;
     const statusChanged = statusSignature !== state.localInventoryStatusSignature;
-    if (!statusChanged && now - state.localInventoryPublishedAt < publishInterval) return;
+    if (!force && !statusChanged && now - state.localInventoryPublishedAt < publishInterval) return;
     state.localInventoryPublisherPending = true;
     Promise.all([
       typeof runtime.fetchFromHost === "function"
@@ -2369,18 +2387,7 @@
     }).finally(() => {
       if (state.disposed) return;
       state.localInventoryPublisherPending = false;
-      if (state.localInventoryPublisherTimer === null) {
-        const nextInterval = inventoryHasWork(tasks, threads) ? REMOTE_INVENTORY_ACTIVE_MS : REMOTE_INVENTORY_IDLE_MS;
-        state.localInventoryPublisherTimer = setTimeout(() => {
-          state.localInventoryPublisherTimer = null;
-          // A background Electron renderer can keep timers running while
-          // requestAnimationFrame is suspended. Publish the heartbeat here so
-          // remote clients do not reject an otherwise healthy inventory as
-          // stale merely because this window is hidden.
-          scheduleLocalProjectInventoryPublication();
-          schedule();
-        }, nextInterval);
-      }
+      armLocalProjectInventoryPublication(tasks, threads);
       schedule();
     });
   }
@@ -5575,6 +5582,19 @@
     }
   }
 
+  function publishInventoryHeartbeat() {
+    if (state.disposed) return false;
+    // A hidden Electron renderer can freeze an already-armed timer indefinitely.
+    // The external publisher heartbeat is the authoritative wake-up in that
+    // state, so discard the dormant timer before publishing immediately.
+    if (state.localInventoryPublisherTimer !== null) {
+      clearTimeout(state.localInventoryPublisherTimer);
+      state.localInventoryPublisherTimer = null;
+    }
+    scheduleLocalProjectInventoryPublication(true);
+    return true;
+  }
+
   function eligibleAutoArchiveThreads(threads, pinnedThreadIds = new Set(), relatedThreads = threads) {
     const cutoff = Date.now() - AUTO_ARCHIVE_DAYS * 24 * 60 * 60 * 1000;
     const parentsWithActiveChildren = new Set(relatedThreads
@@ -7258,7 +7278,7 @@
   }
 
   loadVerifiedThreadIds();
-  const api = Object.freeze({ install, previewAutoArchive, previewAutoMaintenance: previewAutoArchive, probe, reconcileAutoRegisteredProjects, recoverUnconfirmedRemoteSteer, removeAllAutoRegistered, runAutoArchiveNow, runAutoMaintenanceNow: runAutoArchiveNow, setAutoArchive, setAutoMaintenance: setAutoArchive, setAutoRegistration, setFilter, setView, uninstall, updateActivity, version: VERSION });
+  const api = Object.freeze({ install, previewAutoArchive, previewAutoMaintenance: previewAutoArchive, probe, publishInventoryHeartbeat, reconcileAutoRegisteredProjects, recoverUnconfirmedRemoteSteer, removeAllAutoRegistered, runAutoArchiveNow, runAutoMaintenanceNow: runAutoArchiveNow, setAutoArchive, setAutoMaintenance: setAutoArchive, setAutoRegistration, setFilter, setView, uninstall, updateActivity, version: VERSION });
   Object.defineProperty(globalThis, API_SLOT, { configurable: true, enumerable: false, value: api });
   return install();
 })();

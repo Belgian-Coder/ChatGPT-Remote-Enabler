@@ -1,6 +1,6 @@
 # macOS Apple Silicon: install for your user without sudo
 
-Release v1.5.55 keeps device inventory and shared aliases fresh while the app is backgrounded, reports stale local publication honestly, and retains the v1.5.54 search and navigation improvements. Installation and live multi-device acceptance remain separate checks.
+Release v1.5.56 keeps device inventory and shared aliases fresh even when hidden-renderer timers freeze, reports stale local publication honestly, and retains the v1.5.54 search and navigation improvements. Installation and live multi-device acceptance remain separate checks.
 
 You need an Apple Silicon Mac (arm64), the ChatGPT/Codex desktop app installed and signed in with Remote available on your account, and Node.js 22 or newer. This helper does not install the app or unlock account features.
 
@@ -8,11 +8,11 @@ You need an Apple Silicon Mac (arm64), the ChatGPT/Codex desktop app installed a
 preceding installed build. v1.5.49 was then manually installed and its live
 renderer readiness was checked on the participating test devices. The next
 sign-in startup trigger and future desktop-app builds remain separate checks.
-v1.5.55 is a normal release.
+v1.5.56 is a normal release.
 
 ## 1. Download and extract
 
-1. Download **ChatGPT-Remote-Enabler-macOS-arm64-v1.5.55.zip** from [v1.5.55 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.55).
+1. Download **ChatGPT-Remote-Enabler-macOS-arm64-v1.5.56.zip** from [v1.5.56 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.56).
 2. Double-click the ZIP in Finder. Create **ChatGPTRemoteEnabler** in your home folder and move the extracted package contents into it.
 3. `MobileProjectView-macOS-arm64.sh` must be directly inside that folder. Keep the complete package together in this writable per-user location.
 
@@ -239,4 +239,4 @@ Settings now provides per-device connection findings, next steps, explicit evide
 
 ## Version or update icon missing
 
-Fully quit the app when your work is safe and launch through Remote Enabler in the latest extracted folder. An older Dock launcher can still reference another folder. Open Settings to see the loaded helper version and update controls; a missing updater has recovery instructions. v1.5.55 is a normal release available to the existing updater.
+Fully quit the app when your work is safe and launch through Remote Enabler in the latest extracted folder. An older Dock launcher can still reference another folder. Open Settings to see the loaded helper version and update controls; a missing updater has recovery instructions. v1.5.56 is a normal release available to the existing updater.

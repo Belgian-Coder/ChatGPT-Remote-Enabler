@@ -8,22 +8,26 @@ const path = require("path");
 const PATCH_SCHEMA = 4;
 const FUSE_SENTINEL = Buffer.from("dL7pKGdnNz796PbbjQWNKmHXBZaB9tsX", "ascii");
 const ENABLE_EMBEDDED_ASAR_INTEGRITY_VALIDATION = 4;
-const ORIGINAL_CONTROLLER = Buffer.from(
-  "Tle=class extends n.$t{constructor(e){let t=wC(e.desktopApiOptions),i=e.globalState,a=e.deviceKeyClient;super({envId:e.hostConfig.env_id,connectionGroup:e.appServerClient,connectionKey:t,websocketUrl:n.en(r.H(e.desktopApiOptions,`/codex/remote/control/client`)),getAuthHeaders:({headers:t}={})=>EC({appServerClient:e.appServerClient,desktopApiOptions:e.desktopApiOptions,headers:t}),enrollClient:({headers:n})=>DC({appServerClient:e.appServerClient,deviceKeyClient:a,desktopApiOptions:e.desktopApiOptions,enrollmentKey:t,globalState:i,headers:n,onEnrollmentAuthorizationRequired:e.onEnrollmentAuthorizationRequired,requestRemoteControlEnrollmentStepUpToken:e.requestRemoteControlEnrollmentStepUpToken}),authorizeDeviceKeyChallenge:e=>Yle({challenge:e,deviceKeyClient:a,enrollmentKey:t,globalState:i})})}}",
-  "utf8",
-);
-const PATCHED_CONTROLLER = Buffer.from(
-  "Tle=class extends n.$t{constructor(e){let t=e.desktopApiOptions,i=e.globalState,a=e.deviceKeyClient,o=e.appServerClient,s=wC(t);super({envId:e.hostConfig.env_id,connectionGroup:o,connectionKey:s,websocketUrl:process.env.CHATGPT_REMOTE_WS_URL??n.en(r.H(t,`/codex/remote/control/client`)),getAuthHeaders:({headers:e}={})=>EC({appServerClient:o,desktopApiOptions:t,headers:e}),enrollClient:({headers:n})=>DC({appServerClient:o,deviceKeyClient:a,desktopApiOptions:t,enrollmentKey:s,globalState:i,headers:n,onEnrollmentAuthorizationRequired:e.onEnrollmentAuthorizationRequired,requestRemoteControlEnrollmentStepUpToken:e.requestRemoteControlEnrollmentStepUpToken}),authorizeDeviceKeyChallenge:e=>Yle({challenge:e,deviceKeyClient:a,enrollmentKey:s,globalState:i})})}}",
-  "utf8",
-);
-const ORIGINAL_CHALLENGE_TARGET_VALIDATOR = Buffer.from(
-  "function vQ(e,t){let n=new URL(t),r=n.protocol===`wss:`?`https:`:n.protocol===`ws:`?`http:`:null;return r!=null&&e.targetOrigin===`${r}//${n.host}`&&e.targetPath===n.pathname}",
-  "utf8",
-);
-const PATCHED_CHALLENGE_TARGET_VALIDATOR = Buffer.from(
-  "function vQ(e,t){let n=new URL(process.env.CRWU||t),r=n.protocol===`wss:`?`https:`:`http:`;return e.targetOrigin===`${r}//${n.host}`&&e.targetPath===n.pathname}",
-  "utf8",
-);
+const CONTROLLER_PATCHES = [
+  [
+    "Tle=class extends n.$t{constructor(e){let t=wC(e.desktopApiOptions),i=e.globalState,a=e.deviceKeyClient;super({envId:e.hostConfig.env_id,connectionGroup:e.appServerClient,connectionKey:t,websocketUrl:n.en(r.H(e.desktopApiOptions,`/codex/remote/control/client`)),getAuthHeaders:({headers:t}={})=>EC({appServerClient:e.appServerClient,desktopApiOptions:e.desktopApiOptions,headers:t}),enrollClient:({headers:n})=>DC({appServerClient:e.appServerClient,deviceKeyClient:a,desktopApiOptions:e.desktopApiOptions,enrollmentKey:t,globalState:i,headers:n,onEnrollmentAuthorizationRequired:e.onEnrollmentAuthorizationRequired,requestRemoteControlEnrollmentStepUpToken:e.requestRemoteControlEnrollmentStepUpToken}),authorizeDeviceKeyChallenge:e=>Yle({challenge:e,deviceKeyClient:a,enrollmentKey:t,globalState:i})})}}",
+    "Tle=class extends n.$t{constructor(e){let t=e.desktopApiOptions,i=e.globalState,a=e.deviceKeyClient,o=e.appServerClient,s=wC(t);super({envId:e.hostConfig.env_id,connectionGroup:o,connectionKey:s,websocketUrl:process.env.CHATGPT_REMOTE_WS_URL??n.en(r.H(t,`/codex/remote/control/client`)),getAuthHeaders:({headers:e}={})=>EC({appServerClient:o,desktopApiOptions:t,headers:e}),enrollClient:({headers:n})=>DC({appServerClient:o,deviceKeyClient:a,desktopApiOptions:t,enrollmentKey:s,globalState:i,headers:n,onEnrollmentAuthorizationRequired:e.onEnrollmentAuthorizationRequired,requestRemoteControlEnrollmentStepUpToken:e.requestRemoteControlEnrollmentStepUpToken}),authorizeDeviceKeyChallenge:e=>Yle({challenge:e,deviceKeyClient:a,enrollmentKey:s,globalState:i})})}}",
+  ],
+  [
+    "ole=class extends n.$t{constructor(e){let t=dC(e.desktopApiOptions),i=e.globalState,a=e.deviceKeyClient;super({envId:e.hostConfig.env_id,connectionGroup:e.appServerClient,connectionKey:t,websocketUrl:n.en(r.X(e.desktopApiOptions,`/codex/remote/control/client`)),getAuthHeaders:({headers:t}={})=>pC({appServerClient:e.appServerClient,desktopApiOptions:e.desktopApiOptions,headers:t}),enrollClient:({headers:n})=>mC({appServerClient:e.appServerClient,deviceKeyClient:a,desktopApiOptions:e.desktopApiOptions,enrollmentKey:t,globalState:i,headers:n,onEnrollmentAuthorizationRequired:e.onEnrollmentAuthorizationRequired,requestRemoteControlEnrollmentStepUpToken:e.requestRemoteControlEnrollmentStepUpToken}),authorizeDeviceKeyChallenge:e=>Ale({challenge:e,deviceKeyClient:a,enrollmentKey:t,globalState:i})})}}",
+    "ole=class extends n.$t{constructor(e){let t=e.desktopApiOptions,i=e.globalState,a=e.deviceKeyClient,o=e.appServerClient,s=dC(t);super({envId:e.hostConfig.env_id,connectionGroup:o,connectionKey:s,websocketUrl:process.env.CHATGPT_REMOTE_WS_URL??n.en(r.X(t,`/codex/remote/control/client`)),getAuthHeaders:({headers:e}={})=>pC({appServerClient:o,desktopApiOptions:t,headers:e}),enrollClient:({headers:n})=>mC({appServerClient:o,deviceKeyClient:a,desktopApiOptions:t,enrollmentKey:s,globalState:i,headers:n,onEnrollmentAuthorizationRequired:e.onEnrollmentAuthorizationRequired,requestRemoteControlEnrollmentStepUpToken:e.requestRemoteControlEnrollmentStepUpToken}),authorizeDeviceKeyChallenge:e=>Ale({challenge:e,deviceKeyClient:a,enrollmentKey:s,globalState:i})})}}",
+  ],
+].map(([original, replacement]) => ({
+  original: Buffer.from(original, "utf8"),
+  replacement: Buffer.from(replacement, "utf8"),
+}));
+const CHALLENGE_TARGET_PATCHES = [
+  ["vQ", "function vQ(e,t){let n=new URL(t),r=n.protocol===`wss:`?`https:`:n.protocol===`ws:`?`http:`:null;return r!=null&&e.targetOrigin===`${r}//${n.host}`&&e.targetPath===n.pathname}"],
+  ["pQ", "function pQ(e,t){let n=new URL(t),r=n.protocol===`wss:`?`https:`:n.protocol===`ws:`?`http:`:null;return r!=null&&e.targetOrigin===`${r}//${n.host}`&&e.targetPath===n.pathname}"],
+].map(([name, original]) => ({
+  original: Buffer.from(original, "utf8"),
+  replacement: Buffer.from(`function ${name}(e,t){let n=new URL(process.env.CRWU||t),r=n.protocol===\`wss:\`?\`https:\`:\`http:\`;return e.targetOrigin===\`\${r}//\${n.host}\`&&e.targetPath===n.pathname}`, "utf8"),
+}));
 const DEVICE_KEY_MODULE_NAME = "remote-control-device-key.node";
 const DEVICE_KEY_MODULE = Buffer.from(`\`${DEVICE_KEY_MODULE_NAME}\``, "utf8");
 const MINIFIED_IDENTIFIER = "[$A-Z_a-z][$\\w]*";
@@ -83,8 +87,9 @@ function patchFuse(file) {
     fail("The private Electron runtime has an unsupported fuse layout.");
   }
   const fuseOffset = valuesOffset + ENABLE_EMBEDDED_ASAR_INTEGRITY_VALIDATION;
+  if (contents[fuseOffset] === 0x30) return;
   if (contents[fuseOffset] !== 0x31) {
-    fail("Embedded ASAR integrity validation is not enabled in the private Electron runtime.");
+    fail("The private Electron runtime has an unsupported ASAR-integrity fuse value.");
   }
   contents[fuseOffset] = 0x30;
   fs.writeFileSync(file, contents);
@@ -98,6 +103,13 @@ function patchInPlace(contents, original, replacement, label) {
   const offset = contents.indexOf(original);
   replacement.copy(contents, offset);
   contents.fill(0x20, offset + replacement.length, offset + original.length);
+}
+
+function patchAuditedVariantInPlace(contents, variants, label) {
+  const matches = variants.filter(({ original, replacement }) =>
+    occurrenceCount(contents, original) === 1 && occurrenceCount(contents, replacement) === 0);
+  if (matches.length !== 1) fail(`This ChatGPT build does not contain exactly one audited ${label} signature.`);
+  patchInPlace(contents, matches[0].original, matches[0].replacement, label);
 }
 
 function findAuditedDeviceKeyLoader(contents) {
@@ -151,13 +163,8 @@ function patchDeviceKeyLoader(contents) {
 function patchAsar(file, features) {
   const contents = fs.readFileSync(file);
   if (features.proxyEnabled) {
-    patchInPlace(contents, ORIGINAL_CONTROLLER, PATCHED_CONTROLLER, "Remote-control controller");
-    patchInPlace(
-      contents,
-      ORIGINAL_CHALLENGE_TARGET_VALIDATOR,
-      PATCHED_CHALLENGE_TARGET_VALIDATOR,
-      "Remote-control challenge target validator",
-    );
+    patchAuditedVariantInPlace(contents, CONTROLLER_PATCHES, "Remote-control controller");
+    patchAuditedVariantInPlace(contents, CHALLENGE_TARGET_PATCHES, "Remote-control challenge target validator");
   }
   if (features.legacyDeviceKeys) patchDeviceKeyLoader(contents);
   fs.writeFileSync(file, contents);

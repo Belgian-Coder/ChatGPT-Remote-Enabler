@@ -34,6 +34,8 @@ try {
 
     $originalController = 'Tle=class extends n.$t{constructor(e){let t=wC(e.desktopApiOptions),i=e.globalState,a=e.deviceKeyClient;super({envId:e.hostConfig.env_id,connectionGroup:e.appServerClient,connectionKey:t,websocketUrl:n.en(r.H(e.desktopApiOptions,`/codex/remote/control/client`)),getAuthHeaders:({headers:t}={})=>EC({appServerClient:e.appServerClient,desktopApiOptions:e.desktopApiOptions,headers:t}),enrollClient:({headers:n})=>DC({appServerClient:e.appServerClient,deviceKeyClient:a,desktopApiOptions:e.desktopApiOptions,enrollmentKey:t,globalState:i,headers:n,onEnrollmentAuthorizationRequired:e.onEnrollmentAuthorizationRequired,requestRemoteControlEnrollmentStepUpToken:e.requestRemoteControlEnrollmentStepUpToken}),authorizeDeviceKeyChallenge:e=>Yle({challenge:e,deviceKeyClient:a,enrollmentKey:t,globalState:i})})}}'
     $originalChallengeValidator = 'function vQ(e,t){let n=new URL(t),r=n.protocol===`wss:`?`https:`:n.protocol===`ws:`?`http:`:null;return r!=null&&e.targetOrigin===`${r}//${n.host}`&&e.targetPath===n.pathname}'
+    $nextController = 'ole=class extends n.$t{constructor(e){let t=dC(e.desktopApiOptions),i=e.globalState,a=e.deviceKeyClient;super({envId:e.hostConfig.env_id,connectionGroup:e.appServerClient,connectionKey:t,websocketUrl:n.en(r.X(e.desktopApiOptions,`/codex/remote/control/client`)),getAuthHeaders:({headers:t}={})=>pC({appServerClient:e.appServerClient,desktopApiOptions:e.desktopApiOptions,headers:t}),enrollClient:({headers:n})=>mC({appServerClient:e.appServerClient,deviceKeyClient:a,desktopApiOptions:e.desktopApiOptions,enrollmentKey:t,globalState:i,headers:n,onEnrollmentAuthorizationRequired:e.onEnrollmentAuthorizationRequired,requestRemoteControlEnrollmentStepUpToken:e.requestRemoteControlEnrollmentStepUpToken}),authorizeDeviceKeyChallenge:e=>Ale({challenge:e,deviceKeyClient:a,enrollmentKey:t,globalState:i})})}}'
+    $nextChallengeValidator = 'function pQ(e,t){let n=new URL(t),r=n.protocol===`wss:`?`https:`:n.protocol===`ws:`?`http:`:null;return r!=null&&e.targetOrigin===`${r}//${n.host}`&&e.targetPath===n.pathname}'
     $currentKeyLoader = 'return this.addon??=Xke((0,p.join)(this.resourcesPath,`native`,Zke)),this.addon'
     $currentKeyProvider = 'var Xke=(0,F.createRequire)(__filename),Zke=`remote-control-device-key.node`,Qke=`codex-device-key-sign-payload/v1`;$ke=class{resourcesPath;addon=null;constructor(e){this.resourcesPath=e}createDeviceKey(e){return this.getAddon().createDeviceKey(e??`hardware_only`)}deleteDeviceKey(e){return this.getAddon().deleteDeviceKey(e)}getDeviceKeyPublic(e){return this.getAddon().getDeviceKeyPublic(e)}async signDeviceKey(e,t){let n=eAe(t);return{...await this.getAddon().signDeviceKey(e,n),signedPayloadBase64:n.toString(`base64`)}}getAddon(){if(process.platform!==`darwin`&&process.platform!==`win32`)throw Error(`Remote control device keys are only available on macOS and Windows`);if(this.resourcesPath==null)throw Error(`Remote control device keys require resourcesPath`);return this.addon??=Xke((0,p.join)(this.resourcesPath,`native`,Zke)),this.addon}}'
     $legacyKeyLoader = 'return this.addon??=Yke((0,p.join)(this.resourcesPath,`native`,Xke)),this.addon'
@@ -100,6 +102,26 @@ try {
     $combinedAsar = Get-Content -LiteralPath ([string]$combinedResult.appAsarPath) -Raw
     if (-not $combinedAsar.Contains('Xke(this.resourcesPath+`/crk.cjs`)()') -or -not $combinedAsar.Contains('process.env.CHATGPT_REMOTE_WS_URL??')) { throw 'Proxy and existing-key compatibility were not composed.' }
 
+    $nextSource = Join-Path $temporaryRoot 'next-installed-app'
+    Copy-Item -LiteralPath $source -Destination $nextSource -Recurse
+    $nextChromePath = Join-Path $nextSource 'chrome.dll'
+    $nextChrome = [IO.File]::ReadAllBytes($nextChromePath)
+    $nextSentinelOffset = [Text.Encoding]::ASCII.GetString($nextChrome).IndexOf('dL7pKGdnNz796PbbjQWNKmHXBZaB9tsX', [StringComparison]::Ordinal)
+    $nextChrome[$nextSentinelOffset + $sentinel.Length + 2 + 4] = [byte][char]'0'
+    [IO.File]::WriteAllBytes($nextChromePath, $nextChrome)
+    $nextAsarPath = Join-Path $nextSource 'resources\app.asar'
+    $nextAsar = (Get-Content -LiteralPath $nextAsarPath -Raw).Replace($originalController, $nextController).Replace($originalChallengeValidator, $nextChallengeValidator)
+    [IO.File]::WriteAllText($nextAsarPath, $nextAsar, [Text.UTF8Encoding]::new($false))
+    $nextOutput = @(& $node $preparer '--source-app' $nextSource '--package-version' '1.2.3.7' '--proxy-enabled' 'true' '--legacy-device-keys' 'false' 2>&1)
+    if ($LASTEXITCODE -ne 0 -or $nextOutput.Count -ne 1) { throw "Next ChatGPT signature preparation failed: $($nextOutput -join ' ')" }
+    $nextResult = [string]$nextOutput[0] | ConvertFrom-Json
+    $nextPatchedAsar = Get-Content -LiteralPath ([string]$nextResult.appAsarPath) -Raw
+    if ($nextPatchedAsar.Contains($nextController) -or $nextPatchedAsar.Contains($nextChallengeValidator) -or
+        -not $nextPatchedAsar.Contains('process.env.CHATGPT_REMOTE_WS_URL??') -or
+        -not $nextPatchedAsar.Contains('function pQ(e,t){let n=new URL(process.env.CRWU||t)')) {
+        throw 'The next audited ChatGPT signatures were not patched.'
+    }
+
     $legacySource = Join-Path $temporaryRoot 'legacy-installed-app'
     Copy-Item -LiteralPath $source -Destination $legacySource -Recurse
     $legacyAsarPath = Join-Path $legacySource 'resources\app.asar'
@@ -148,6 +170,8 @@ try {
         ExistingKeyHelpersVerified = $true
         ModifiedHelperRebuilt = $true
         ProxyAndKeyCompatibilityComposed = $true
+        PreviousAndNextChatGPTSignaturesPatched = $true
+        EnabledAndDisabledAsarFusesSupported = $true
     } | ConvertTo-Json
 } finally {
     $env:LOCALAPPDATA = $previousLocalAppData

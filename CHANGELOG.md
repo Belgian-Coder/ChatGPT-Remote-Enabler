@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.5.57 — 2026-09-11
+
+- Support both the previous ChatGPT Windows proxy-runtime layout and the controller/challenge signatures shipped in direct ChatGPT build `26.903.8094.0`. Variant selection remains exact and fail-closed for unknown or ambiguous builds.
+- Accept both audited Electron ASAR-integrity fuse states: change enabled (`1`) to disabled (`0`) only in the private runtime, or preserve an official runtime that already ships disabled. Unexpected fuse layouts and values remain rejected.
+- Add deterministic coverage for both controller/challenge variants and both fuse states. Live Windows validation launched `26.903.8094.0` in scoped proxy mode, reached renderer v78 readiness, published a fresh local inventory, and discovered the connected Windows11-VM.
+
 ## v1.5.56 — 2026-09-10
 
 - Keep project inventory fresh when the desktop app freezes both animation frames and renderer timers while hidden. A parent-bound, per-renderer helper now wakes the exact `app://-/index.html` target through its existing loopback debugger every 10 seconds; it exits with the app and uses a process lock to prevent duplicates.

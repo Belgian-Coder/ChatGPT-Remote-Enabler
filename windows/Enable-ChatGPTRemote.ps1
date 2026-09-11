@@ -3,8 +3,12 @@ param(
     [switch]$SkipMobileProjects,
     [switch]$SkipUpdate,
     [switch]$SkipUpdateCheckOnce,
+    [switch]$SkipPrelaunchUpdateOnce,
     [switch]$UpdateResume,
     [string]$RelaunchHandoffPath,
+    [switch]$ContinuationAfterAcceptedHandshake,
+    [int]$ContinuationParentProcessId = 0,
+    [long]$ContinuationParentProcessStartTimeFileTimeUtc = 0,
     [int]$ParentProcessId = 0,
     [long]$ParentProcessStartTimeFileTimeUtc = 0,
     [string]$ReadyEventName,
@@ -37,7 +41,7 @@ $handshakeRequested = $ParentProcessId -gt 0 -or
     -not [string]::IsNullOrWhiteSpace($RejectedEventName)
 $readyEvent = $null
 $rejectedEvent = $null
-$handshakeReady = $false
+$handshakeReady = [bool]$ContinuationAfterAcceptedHandshake
 
 function Write-RemoteLauncherLog {
     param([AllowEmptyString()][string]$Message)
@@ -159,6 +163,167 @@ function Capture-ExactParent {
     }
 }
 
+function Get-LastJsonResult {
+    param([object[]]$Output)
+    for ($index = $Output.Count - 1; $index -ge 0; $index--) {
+        try {
+            return ([string]$Output[$index] | ConvertFrom-Json -ErrorAction Stop)
+        } catch {
+            # Human-readable updater progress may precede the final JSON proof.
+        }
+    }
+    throw 'The updater did not return JSON proof.'
+}
+
+function Invoke-UpdateRecovery {
+    param([string]$UpdaterPath, [string]$InstallRoot)
+
+    $previousLaunchGuard = [Environment]::GetEnvironmentVariable('CHATGPT_REMOTE_LAUNCH_GUARD_HELD', 'Process')
+    try {
+        [Environment]::SetEnvironmentVariable('CHATGPT_REMOTE_LAUNCH_GUARD_HELD', '1', 'Process')
+        $output = @(& $UpdaterPath -Action Recover -InstallRoot $InstallRoot -LaunchLockHeld 2>&1)
+        $exitCode = $LASTEXITCODE
+    } finally {
+        [Environment]::SetEnvironmentVariable('CHATGPT_REMOTE_LAUNCH_GUARD_HELD', $previousLaunchGuard, 'Process')
+    }
+    foreach ($line in $output) { Write-RemoteLauncherLog ([string]$line) }
+    if ($exitCode -ne 0) { throw 'Update recovery failed before launch.' }
+    $recovery = Get-LastJsonResult -Output $output
+    if ($recovery.integrityValid -isnot [bool] -or -not $recovery.integrityValid) {
+        throw 'Update recovery did not prove installed-file integrity before launch.'
+    }
+    return $recovery
+}
+
+function Invoke-PrelaunchUpdate {
+    param([string]$UpdaterPath, [string]$InstallRoot)
+
+    if (-not (Test-Path -LiteralPath $UpdaterPath -PathType Leaf)) {
+        Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] stage=prelaunch-update skipped reason=updater-missing"
+        return [pscustomobject]@{ attempted = $false; updated = $false; failed = $false }
+    }
+
+    $timer = [Diagnostics.Stopwatch]::StartNew()
+    $result = $null
+    $updateError = $null
+    $previousLaunchGuard = [Environment]::GetEnvironmentVariable('CHATGPT_REMOTE_LAUNCH_GUARD_HELD', 'Process')
+    try {
+        [Environment]::SetEnvironmentVariable('CHATGPT_REMOTE_LAUNCH_GUARD_HELD', '1', 'Process')
+        $output = @(& $UpdaterPath -Action Auto -Transport Git -InstallRoot $InstallRoot -LaunchLockHeld 2>&1)
+        $exitCode = $LASTEXITCODE
+    } catch {
+        $exitCode = 1
+        $output = @()
+        $updateError = $_.Exception.Message
+    } finally {
+        [Environment]::SetEnvironmentVariable('CHATGPT_REMOTE_LAUNCH_GUARD_HELD', $previousLaunchGuard, 'Process')
+    }
+    foreach ($line in $output) { Write-RemoteLauncherLog ([string]$line) }
+    if ($null -eq $updateError -and $exitCode -eq 0) {
+        try {
+            $result = Get-LastJsonResult -Output $output
+            if ($result.skipped -is [bool] -and $result.skipped) {
+                if ([string]$result.reason -notin @('auto-update-disabled', 'check-interval')) {
+                    throw "The prelaunch updater returned an unknown skip reason: $($result.reason)."
+                }
+                $result | Add-Member -NotePropertyName updated -NotePropertyValue $false
+            } elseif ($result.updated -isnot [bool]) {
+                throw 'The prelaunch updater returned incomplete update proof.'
+            }
+            if ($result.updated -and [string]$result.method -notin @('verified-git', 'git-fast-forward')) {
+                throw 'The prelaunch updater did not prove a Git-backed update.'
+            }
+        } catch {
+            $updateError = $_.Exception.Message
+        }
+    } elseif ($null -eq $updateError) {
+        $detail = ($output | ForEach-Object { [string]$_ }) -join ' '
+        $updateError = "The verified Git prelaunch update failed (exit $exitCode): $detail"
+    }
+    $timer.Stop()
+
+    if ($null -eq $updateError) {
+        if ($result.updated) {
+            # A successful replacement must be checked before the old in-memory
+            # launcher is allowed to hand off to the updated script.
+            [void](Invoke-UpdateRecovery -UpdaterPath $UpdaterPath -InstallRoot $InstallRoot)
+        }
+        Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] stage=prelaunch-update durationMs=$($timer.ElapsedMilliseconds) updated=$($result.updated) method=$($result.method)"
+        return $result
+    }
+
+    # Network/Git discovery failures remain best effort, but a transaction
+    # failure is safe to ignore only after recovery proves the install intact.
+    try {
+        [void](Invoke-UpdateRecovery -UpdaterPath $UpdaterPath -InstallRoot $InstallRoot)
+    } catch {
+        throw "Prelaunch update failed and recovery could not prove installed-file integrity: $updateError; $($_.Exception.Message)"
+    }
+    Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] stage=prelaunch-update durationMs=$($timer.ElapsedMilliseconds) updated=False bestEffortFailure=$updateError"
+    return [pscustomobject]@{ attempted = $true; updated = $false; failed = $true; error = $updateError }
+}
+
+function ConvertTo-ProcessArgument {
+    param([string]$Value)
+    if ($Value -notmatch '[\s"]') { return $Value }
+    $escaped = [regex]::Replace($Value, '(\\*)"', '$1$1\"')
+    $escaped = [regex]::Replace($escaped, '(\\+)$', '$1$1')
+    return '"' + $escaped + '"'
+}
+
+function Start-UpdatedEntryPoint {
+    param(
+        [string]$EntryPoint,
+        [string[]]$Arguments
+    )
+
+    $powerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    if (-not (Test-Path -LiteralPath $powerShell -PathType Leaf)) {
+        throw "Built-in Windows PowerShell was not found: $powerShell"
+    }
+    $current = [Diagnostics.Process]::GetCurrentProcess()
+    try {
+        $currentStartTimeFileTimeUtc = $current.StartTime.ToUniversalTime().ToFileTimeUtc()
+        $currentProcessId = $current.Id
+    } finally {
+        $current.Dispose()
+    }
+    $childArguments = @(
+        '-NoLogo', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass',
+        '-File', $EntryPoint, '-ContinuationParentProcessId', [string]$currentProcessId,
+        '-ContinuationParentProcessStartTimeFileTimeUtc', [string]$currentStartTimeFileTimeUtc
+    ) + $Arguments
+    $childArgumentString = ($childArguments | ForEach-Object { ConvertTo-ProcessArgument -Value ([string]$_) }) -join ' '
+    # The continuation child waits for this process to exit while this process
+    # still owns the launch mutex, removing the release-then-spawn race.
+    $child = Start-Process -FilePath $powerShell -ArgumentList $childArgumentString -WorkingDirectory (Split-Path -Parent $EntryPoint) -WindowStyle Hidden -PassThru
+    $child.Dispose()
+    Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] prelaunch update installed a new helper; reloading updated entry point"
+}
+
+function Wait-ForContinuationParent {
+    if ($ContinuationParentProcessId -le 0) { return }
+    if ($ContinuationParentProcessStartTimeFileTimeUtc -le 0) {
+        throw 'The updated entry point continuation is missing the parent process start time.'
+    }
+    $process = $null
+    try {
+        $process = [Diagnostics.Process]::GetProcessById($ContinuationParentProcessId)
+        $actual = $process.StartTime.ToUniversalTime().ToFileTimeUtc()
+        if ($actual -ne $ContinuationParentProcessStartTimeFileTimeUtc) {
+            throw "Continuation parent $ContinuationParentProcessId did not match the captured start time."
+        }
+        if (-not $process.WaitForExit(30000)) {
+            throw "Continuation parent $ContinuationParentProcessId did not exit before the updated launch timeout."
+        }
+        Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] updated entry point continuation parent exited; acquiring launch mutex"
+    } catch {
+        throw "The updated entry point continuation could not wait for its parent: $($_.Exception.Message)"
+    } finally {
+        if ($process) { $process.Dispose() }
+    }
+}
+
 $mutex = [Threading.Mutex]::new($false, $launcherMutexName)
 $acquired = $false
 $parentProcess = $null
@@ -168,8 +333,10 @@ try {
         $readyEvent = [Threading.EventWaitHandle]::OpenExisting($ReadyEventName)
         $rejectedEvent = [Threading.EventWaitHandle]::OpenExisting($RejectedEventName)
     }
+    Wait-ForContinuationParent
     try {
-        $acquired = $mutex.WaitOne(0)
+        $mutexWaitTimeout = if ($ContinuationParentProcessId -gt 0) { [TimeSpan]::FromSeconds(30) } else { [TimeSpan]::Zero }
+        $acquired = $mutex.WaitOne($mutexWaitTimeout)
     } catch [Threading.AbandonedMutexException] {
         $acquired = $true
         Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] recovered an abandoned launcher mutex"
@@ -189,24 +356,26 @@ try {
         }
         Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] launcher parent exited; continuing update and launch"
     }
-
     if (Test-Path -LiteralPath $updater -PathType Leaf) {
         $recoverTimer = [Diagnostics.Stopwatch]::StartNew()
-        $previousLaunchGuard = [Environment]::GetEnvironmentVariable('CHATGPT_REMOTE_LAUNCH_GUARD_HELD', 'Process')
-        try {
-            [Environment]::SetEnvironmentVariable('CHATGPT_REMOTE_LAUNCH_GUARD_HELD', '1', 'Process')
-            $recoverOutput = @(& $updater -Action Recover -InstallRoot $PSScriptRoot -LaunchLockHeld 2>&1)
-        } finally {
-            [Environment]::SetEnvironmentVariable('CHATGPT_REMOTE_LAUNCH_GUARD_HELD', $previousLaunchGuard, 'Process')
-        }
+        [void](Invoke-UpdateRecovery -UpdaterPath $updater -InstallRoot $PSScriptRoot)
         $recoverTimer.Stop()
-        foreach ($line in $recoverOutput) { Write-RemoteLauncherLog ([string]$line) }
-        if ($LASTEXITCODE -ne 0) { throw 'Update recovery failed before launch.' }
-        $recover = [string]$recoverOutput[-1] | ConvertFrom-Json -ErrorAction Stop
-        if ($recover.integrityValid -isnot [bool] -or -not $recover.integrityValid) {
-            throw 'Update recovery did not prove installed-file integrity before launch.'
-        }
         Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] stage=update-recovery durationMs=$($recoverTimer.ElapsedMilliseconds)"
+    }
+
+    if (-not $SkipUpdate -and -not $SkipUpdateCheckOnce -and -not $UpdateResume -and -not $SkipPrelaunchUpdateOnce) {
+        $prelaunchUpdate = Invoke-PrelaunchUpdate -UpdaterPath $updater -InstallRoot $PSScriptRoot
+        if ($prelaunchUpdate.updated) {
+            $reloadArguments = @('-SkipPrelaunchUpdateOnce')
+            if ($handshakeReady) { $reloadArguments += '-ContinuationAfterAcceptedHandshake' }
+            if ($SkipMobileProjects) { $reloadArguments += '-SkipMobileProjects' }
+            if ($SkipUpdate) { $reloadArguments += '-SkipUpdate' }
+            if ($SkipUpdateCheckOnce) { $reloadArguments += '-SkipUpdateCheckOnce' }
+            if ($UpdateResume) { $reloadArguments += '-UpdateResume' }
+            if ($RelaunchHandoffPath) { $reloadArguments += @('-RelaunchHandoffPath', $RelaunchHandoffPath) }
+            Start-UpdatedEntryPoint -EntryPoint $PSCommandPath -Arguments $reloadArguments
+            return
+        }
     }
 
     if ($UpdateResume -and @(Get-CimInstance Win32_Process -Filter "Name='ChatGPT.exe'" -ErrorAction SilentlyContinue).Count -gt 0) {

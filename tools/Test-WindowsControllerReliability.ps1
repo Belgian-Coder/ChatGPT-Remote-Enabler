@@ -171,19 +171,28 @@ if (-not $controllerSourceText.Contains('CliPath = $runtimeCliPath') -or
 }
 $rootWorkerSourceText = Get-Content -LiteralPath (Join-Path $root 'windows\Enable-ChatGPTRemote.ps1') -Raw
 foreach ($worker in @(
-    [pscustomobject]@{ Name = 'MobileProjectStartup'; Text = $startupSourceText; Updater = '& $updateController -Action Recover'; Injection = '& $stableController @stableArguments' },
-    [pscustomobject]@{ Name = 'Enable-ChatGPTRemote'; Text = $rootWorkerSourceText; Updater = '& $updater -Action Recover'; Injection = '& $stable -Action Enable' }
+    [pscustomobject]@{ Name = 'MobileProjectStartup'; Text = $startupSourceText; Injection = '& $stableController @stableArguments' },
+    [pscustomobject]@{ Name = 'Enable-ChatGPTRemote'; Text = $rootWorkerSourceText; Injection = '& $stable -Action Enable' }
 )) {
     $capture = $worker.Text.IndexOf('$parentProcess = Capture-ExactParent', [StringComparison]::Ordinal)
     $signal = $worker.Text.IndexOf('Signal-Handshake', $capture, [StringComparison]::Ordinal)
     $wait = $worker.Text.IndexOf('$parentProcess.WaitForExit(30000)', $capture, [StringComparison]::Ordinal)
-    $update = $worker.Text.IndexOf($worker.Updater, $wait, [StringComparison]::Ordinal)
-    $injection = $worker.Text.IndexOf($worker.Injection, $update, [StringComparison]::Ordinal)
-    if ($capture -lt 0 -or $signal -lt $capture -or $wait -lt $signal -or $update -lt $wait -or $injection -lt $update -or
+    $recovery = $worker.Text.IndexOf('Invoke-UpdateRecovery -UpdaterPath', $wait, [StringComparison]::Ordinal)
+    $prelaunch = $worker.Text.IndexOf('Invoke-PrelaunchUpdate -UpdaterPath', $recovery, [StringComparison]::Ordinal)
+    $injection = $worker.Text.IndexOf($worker.Injection, $prelaunch, [StringComparison]::Ordinal)
+    $reload = $worker.Text.IndexOf('Start-UpdatedEntryPoint -EntryPoint $PSCommandPath', $prelaunch, [StringComparison]::Ordinal)
+    if ($capture -lt 0 -or $signal -lt $capture -or $wait -lt $signal -or $recovery -lt $wait -or $prelaunch -lt $recovery -or
+        $injection -lt $prelaunch -or $reload -lt $prelaunch -or
         -not $worker.Text.Contains("Local\ChatGPTCustomInjectionLauncher") -or
         -not $worker.Text.Contains('if ($actual -ne $ParentProcessStartTimeFileTimeUtc)') -or
+        -not $worker.Text.Contains('Invoke-UpdateRecovery -UpdaterPath $UpdaterPath -InstallRoot $InstallRoot') -or
+        -not $worker.Text.Contains('-Action Auto -Transport Git') -or
+        -not $worker.Text.Contains('-SkipPrelaunchUpdateOnce') -or
+        -not $worker.Text.Contains('ContinuationParentProcessStartTimeFileTimeUtc') -or
+        -not $worker.Text.Contains('ContinuationAfterAcceptedHandshake') -or
+        -not $worker.Text.Contains('updated entry point continuation parent exited') -or
         $worker.Text.Contains('[Math]::Abs([double]$actual')) {
-        throw "$($worker.Name) does not capture, signal, wait, and update under the shared mutex in the required order."
+        throw "$($worker.Name) does not capture, signal, recover, prelaunch-update, and reload under the shared mutex in the required order."
     }
 }
 

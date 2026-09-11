@@ -62,6 +62,7 @@ $powershell = @(
     'tools\Test-Source.ps1',
     'tools\Test-WindowsUpdaterCompatibility.ps1'
     'tools\Test-WindowsUpdaterNonGit.ps1'
+    'tools\Test-WindowsMsixUpdater.ps1'
     'tools\Test-WindowsControllerReliability.ps1'
     'tools\Test-PackageProcessLauncher.ps1'
     'tools\Test-ProxyRuntimePreparer.ps1'
@@ -294,11 +295,17 @@ if ($LASTEXITCODE -ne 0) { throw 'Git updater integration test failed.' }
 & (Join-Path $root 'tools\Test-WindowsUpdaterNonGit.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Windows packaged updater self-test failed.' }
 
+& (Join-Path $root 'tools\Test-WindowsMsixUpdater.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Windows MSIX updater self-test failed.' }
+
 & (Join-Path $root 'tools\Test-LegacyUpdateBootstrap.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Legacy update bootstrap test failed.' }
 
 & (Join-Path $root 'tools\Test-WindowsControllerReliability.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Windows controller reliability self-test failed.' }
+
+& (Join-Path $root 'tools\Test-WindowsPrelaunchUpdate.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Windows prelaunch update self-test failed.' }
 
 & (Join-Path $root 'tools\Test-PackageProcessLauncher.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Package process launcher self-test failed.' }
@@ -330,7 +337,7 @@ if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
 [pscustomobject]@{
     JavaScriptFiles = $javascript.Count
     PowerShellFiles = $powershell.Count
-    RendererVersion = 77
+    RendererVersion = 78
     LegacyUpdateBootstrapSelfTest = $true
     SetupAssistantSelfTest = $true
     RendererParity = $true
@@ -365,6 +372,7 @@ if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
     WindowsPowerShellNodeProbeSelfTest = $true
     WindowsPackagedUpdaterSelfTest = $true
     WindowsControllerReliabilitySelfTest = $true
+    WindowsPrelaunchUpdateSelfTest = $true
     PackageProcessLauncherSelfTest = $true
     ProxyRuntimePreparerSelfTest = $true
     MacOSUpdaterCompatibilitySelfTest = $true

@@ -1,5 +1,29 @@
 # Changelog
 
+## v1.5.58 — 2026-09-11
+
+- Add an explicit Windows `Update-ChatGPTDesktop.ps1` Probe/Check/Update path
+  for the official Store-signed x64 package at
+  `persistent.oaistatic.com`. It uses HTTPS metadata checks, per-user temp
+  staging, manifest and Windows-native signature validation, exact identity and
+  version comparisons, current-user `Add-AppxPackage`, and cleanup. It refuses
+  downgrades, ambiguous `OpenAI.Codex`/legacy `OpenAI.ChatGPT-Desktop` states,
+  running `ChatGPT.exe`, elevation, provisioning and corporate AppX policy
+  bypasses. The base-app updater is manual only; no standalone MSI or
+  Store-independent EXE exists, and offline license/MDM requirements remain
+  environment-specific.
+- Add deterministic local MSIX fixture coverage for current and legacy package
+  discovery, no-package and ambiguous states, manifest identity/publisher/
+  architecture checks, signature rejection, process refusal, `-WhatIf`,
+  current-user install verification, and temp cleanup.
+- Run a verified Git automatic prelaunch update from both Windows startup entry
+  points, including unattended mobile-project startup, before compatibility
+  probing or injection. The existing automatic-update opt-out and check
+  interval remain honored. Successful replacement verifies recovery and hands
+  off to the updated script without replaying the consumed GUI-launcher
+  handshake; recoverable Git or network failures continue only after
+  installed-file integrity is proven.
+
 ## v1.5.57 — 2026-09-11
 
 - Support both the previous ChatGPT Windows proxy-runtime layout and the controller/challenge signatures shipped in direct ChatGPT build `26.903.8094.0`. Variant selection remains exact and fail-closed for unknown or ambiguous builds.

@@ -145,7 +145,7 @@ try {
         }
 
         $requiredUpdateFiles = if ($platform.Source -eq 'windows') {
-            @('Update-ChatGPTRemote.ps1', 'update-transaction.js', 'git-release.js', 'git-checkout-update.js', 'CodexRemoteMobileProject/update-session.js',
+            @('Update-ChatGPTRemote.ps1', 'Update-ChatGPTDesktop.ps1', 'update-transaction.js', 'git-release.js', 'git-checkout-update.js', 'CodexRemoteMobileProject/update-session.js',
               'CodexRemoteMobileProject/publisher-heartbeat.js',
               'CodexRemoteMobileProject/update-session-cdp.js', 'CodexRemoteMobileProject/UpdateSessionLauncher.ps1',
               'CodexRemoteMobileProject/UpdateSessionSurvivorLauncher.ps1', 'CodexRemoteMobileProject/UpdateSessionTaskHost.exe',

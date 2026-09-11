@@ -10,9 +10,10 @@ device filters, native project grouping and ordering, empty remote projects,
 project-hover new-chat actions, and working/unread indicators. The original
 **Native sidebar** remains available, with its grouping preference preserved.
 
-v1.5.57 adds audited proxy-runtime compatibility for current and previous ChatGPT Windows builds while keeping inventory and shared-alias publication fresh even when the app
-freezes hidden-renderer timers, reports stale local publication honestly, and retains the
-v1.5.54 search, compact Settings, and guarded task navigation. See the
+v1.5.58 updates the Windows helper before compatibility probing or injection,
+adds an explicit current-user updater for OpenAI's signed desktop MSIX, and
+retains the audited proxy-runtime and background-publication fixes from the
+preceding releases. See the
 [feature guide](FEATURES.md) for behavior and validation limits.
 
 ## Install when hosted ZIP downloads are blocked
@@ -40,6 +41,28 @@ git clone https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler.git "$HOME/Cha
 Use a new destination if that folder already exists; keep any local changes in
 an existing checkout. Future updates use the pinned release tag on clean `main`.
 
+The Git checkout method only installs Remote Enabler. It does not replace the
+ChatGPT/Codex desktop app or bypass Windows AppX policy. For Windows machines
+where Microsoft Store distribution is blocked, the repository includes an
+explicit updater for OpenAI's Store-signed stable x64 MSIX:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\windows\Update-ChatGPTDesktop.ps1 -Action Probe
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\windows\Update-ChatGPTDesktop.ps1 -Action Check
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\windows\Update-ChatGPTDesktop.ps1 -Action Update
+```
+
+The source is `persistent.oaistatic.com`; `Check` reads HTTPS metadata and
+`Update` downloads only after an explicit command. The updater validates the
+OpenAI package identity, publisher, x64 manifest and Windows signature, stages
+the file in per-user temp, refuses equal versions, downgrades, ambiguous mixed
+identities and running `ChatGPT.exe`, then uses current-user
+`Add-AppxPackage`. It does not self-elevate, provision all users, or bypass a
+corporate AppX/MSIX policy. Use `-WhatIf` for a verified install preview. The
+desktop app has no standalone MSI or Store-independent EXE installer; built-in
+updates may also require access to `persistent.oaistatic.com`, and offline
+license or MDM requirements remain an IT responsibility.
+
 ## What it looks like
 
 These images are from the v1.5.49 renderer in a synthetic browser fixture with
@@ -54,16 +77,16 @@ app build is compatible.
 See the [complete feature guide](FEATURES.md) for defaults, limits, privacy,
 and recovery behavior.
 
-## Install v1.5.57 without administrator access
+## Install v1.5.58 without administrator access
 
 Prerequisites are a supported ChatGPT/Codex desktop app signed in with Remote
 available on the account, Node.js 22 or newer, and a writable per-user package
 folder. Organization policy, account access, MFA, or desktop-app policy can
 still block Remote independently of this helper.
 
-- **[Download Windows 11 x64](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/download/v1.5.57/ChatGPT-Remote-Enabler-Windows-x64-v1.5.57.zip)** and follow the [Windows installation guide](windows/README.md).
-- **[Download macOS Apple Silicon](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/download/v1.5.57/ChatGPT-Remote-Enabler-macOS-arm64-v1.5.57.zip)** and follow the [macOS installation guide](macos/README.md).
-- Use the [v1.5.57 release page](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.57) to inspect release notes and published checksums.
+- **[Download Windows 11 x64](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/download/v1.5.58/ChatGPT-Remote-Enabler-Windows-x64-v1.5.58.zip)** and follow the [Windows installation guide](windows/README.md).
+- **[Download macOS Apple Silicon](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/download/v1.5.58/ChatGPT-Remote-Enabler-macOS-arm64-v1.5.58.zip)** and follow the [macOS installation guide](macos/README.md).
+- Use the [v1.5.58 release page](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.58) to inspect release notes and published checksums.
 
 Both are per-user installs and do not require administrator access. Keep the
 complete package in a writable user-owned folder. Run the platform launcher
@@ -170,6 +193,14 @@ self-elevates. Automatic checks can be disabled with the platform command in
 the installation guide, and explicit `Update`/`update` commands remain
 available. The [feature guide](FEATURES.md) documents update history and
 rollback details.
+
+On Windows, both the normal launcher and the mobile-project startup entry point
+perform a verified Git update check before compatibility probing or renderer
+injection and honor the automatic-update setting. This also covers unattended
+startup. If Git advances the installation,
+the entry point verifies recovery and hands off to the updated script before
+continuing; a recoverable network or Git failure remains best effort, while an
+installation whose integrity cannot be proven stops before injection.
 
 ![Loaded helper version and update control](assets/screenshots/version-v1.5.49.png)
 

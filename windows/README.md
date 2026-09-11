@@ -1,12 +1,16 @@
 # Windows 11: install for your user without administrator access
 
-Release v1.5.57 supports the previous and current audited ChatGPT Windows proxy-runtime layouts, keeps device inventory and shared aliases fresh when hidden-renderer timers freeze, and retains the v1.5.54 search and navigation improvements. Installation and live multi-device acceptance remain separate checks.
+Release v1.5.58 updates the helper before compatibility probing or injection,
+adds the explicit current-user desktop MSIX updater documented below, and
+retains the audited proxy-runtime and background-publication fixes from the
+preceding releases. Installation and live multi-device acceptance remain
+separate checks.
 
 You need Windows 11 x64, the ChatGPT/Codex desktop app installed and signed in with Remote available on your account, and Node.js 22 or newer. This helper does not install the desktop app or unlock account features.
 
 ## 1. Download and extract
 
-1. Download **ChatGPT-Remote-Enabler-Windows-x64-v1.5.57.zip** from [v1.5.57 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.57). Read the verification limitations.
+1. Download **ChatGPT-Remote-Enabler-Windows-x64-v1.5.58.zip** from [v1.5.58 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.58). Read the verification limitations.
 2. Right-click the ZIP in File Explorer, choose **Properties**, select **Unblock** if offered, and click **OK**. Then choose **Extract All**.
 3. Enter `%LOCALAPPDATA%\Programs` in File Explorer's address bar. Create a **ChatGPTRemoteEnabler** folder and copy the extracted package contents into it.
 4. **ChatGPT Remote Enabler.exe**, **README.md**, and **CodexRemoteMobileProject** must be directly inside that folder. Keep the whole package together.
@@ -61,6 +65,48 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Disable-ChatGPTRemote.
 ```
 
 Once stopped, you can delete the package folder. Your conversations and projects are not deleted. Keep portable Node if other applications use it.
+
+## 6. ChatGPT desktop installation when Microsoft Store distribution is blocked
+
+The Remote Enabler package and the ChatGPT/Codex desktop app are separate. The
+Git checkout and portable ZIP methods above install only Remote Enabler; they do
+not install the signed ChatGPT desktop package.
+
+OpenAI's stable Windows x64 package is a Store-signed MSIX at
+[`https://persistent.oaistatic.com/codex-app-prod/ChatGPT-x64.msix`](https://persistent.oaistatic.com/codex-app-prod/ChatGPT-x64.msix).
+If the Store UI or its distribution service is unavailable, the repository's
+manual updater can use that endpoint directly:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Update-ChatGPTDesktop.ps1 -Action Probe
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Update-ChatGPTDesktop.ps1 -Action Check
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Update-ChatGPTDesktop.ps1 -Action Update
+```
+
+`Check` performs an HTTPS metadata request and does not download the large
+package. `Update` is always explicit; it never runs from a launcher or silently
+updates the base app. Finish work and close `ChatGPT.exe` first. The updater
+refuses to stop or kill it, refuses equal versions and downgrades, checks the
+manifest for the expected OpenAI identity, publisher and x64 architecture,
+checks the package signature with Windows-native verification, and calls only
+the current-user `Add-AppxPackage` path. It never provisions a machine-wide
+package, requests elevation, or bypasses corporate policy. Use `-WhatIf` to
+download and verify a candidate without installing it.
+
+The updater recognizes both current-user package identities used by the Windows
+app (`OpenAI.Codex` and the legacy `OpenAI.ChatGPT-Desktop`). It refuses an
+ambiguous state where both identities are present and refuses to install a
+different identity side by side. A missing package is reported as a fresh
+current-user install case. The downloaded file is staged under the current
+user's `%LOCALAPPDATA%\Temp\ChatGPTRemoteEnabler\msix-updater` directory and
+removed after each attempt.
+
+The direct package still uses Windows AppX/MSIX deployment. If the corporate
+image blocks AppX, `Add-AppxPackage` will report the policy failure and the
+updater will stop without a bypass. IT approval, an allowed deployment policy,
+and any required offline license or MDM assignment are still needed. OpenAI's
+desktop app has no standalone MSI or Store-independent EXE installer; its
+built-in updater may also need HTTPS access to `persistent.oaistatic.com`.
 
 ## Troubleshooting
 
@@ -314,7 +360,7 @@ Check the target of **ChatGPT Custom** in the Start menu (open its file location
 
 Fully quit the app when your work is safe, then use **ChatGPT Remote Enabler.exe** in the newly extracted folder, or the new **ChatGPT Remote Enabler** shortcut created by that folder's setup assistant. Open Settings to see the loaded helper version and update controls in either view. A missing update service shows recovery instructions there.
 
-v1.5.57 is a normal release and is discoverable by the existing automatic updater. The first Windows upgrade from v1.5.31 attaches the new update helper even through the legacy launcher.
+v1.5.58 is a normal release and is discoverable by the existing automatic updater. The first Windows upgrade from v1.5.31 attaches the new update helper even through the legacy launcher.
 
 
 ### Existing enrollment keys after a Codex update

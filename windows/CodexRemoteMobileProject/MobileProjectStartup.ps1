@@ -338,7 +338,7 @@ function Invoke-DesktopAppPrelaunchUpdate {
     }
     try {
         $installedVersion = [version]([string]$result.Installed.Version)
-        $remoteVersion = [version]([string]$result.Remote.Version)
+        $remoteVersion = [version]([string]$result.Remote.VersionText)
     } catch {
         throw 'The signed ChatGPT desktop updater returned invalid package-version proof.'
     }
@@ -346,7 +346,7 @@ function Invoke-DesktopAppPrelaunchUpdate {
         'Installed' {
             if ($result.CanInstall -isnot [bool] -or -not $result.CanInstall -or $installedVersion -ne $remoteVersion -or
                 $null -eq $result.Manifest -or [string]$result.Manifest.Name -cne [string]$result.Installed.Name -or
-                [version]([string]$result.Manifest.Version) -ne $installedVersion) {
+                [version]([string]$result.Manifest.VersionText) -ne $installedVersion) {
                 throw 'The signed ChatGPT desktop updater returned inconsistent installation proof.'
             }
         }

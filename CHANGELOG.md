@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.5.65 — 2026-09-12
+
+- Validate the signed Windows desktop updater's explicit `VersionText` fields.
+  Windows PowerShell serializes `System.Version` values as JSON objects, so the
+  former string cast rejected valid downgrade-refusal proof and stopped the
+  stable shortcut before ChatGPT launched. Both Windows launch paths and their
+  Windows PowerShell 5.1 regression fixture now cover that exact proof shape.
+
 ## v1.5.64 — 2026-09-12
 
 - Keep the atomic macOS shortcut candidate's filename ending in `.app`, which

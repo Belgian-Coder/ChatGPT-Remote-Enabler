@@ -1050,6 +1050,9 @@
     if (signature === state.nativeConnectionSignature) return false;
     state.nativeConnectionSignature = signature;
     state.nativeConnectionSnapshot = snapshot;
+    for (const [hostId, transfer] of state.peerTransfers) {
+      if (nativeConnectionExplicitlyOffline(hostId)) pausePeerTransfer(hostId, transfer);
+    }
     const remembered = readRecords(HOST_NAMES_KEY);
     const nativeNames = readRecords(NATIVE_HOST_NAMES_KEY);
     let changedNames = false;
@@ -2110,8 +2113,17 @@
     return request;
   }
 
+  function pausePeerTransfer(hostId, transfer) {
+    if (!nativeConnectionExplicitlyOffline(hostId)) return false;
+    transfer.pausedOffline = true;
+    if (transfer.timer !== null) clearTimeout(transfer.timer);
+    transfer.timer = null;
+    return true;
+  }
+
   function wakePeerTransfer(hostId, transfer) {
-    if (state.disposed || transfer.timer !== null || !transfer.latest) return;
+    if (state.disposed || !transfer.latest) return;
+    if (pausePeerTransfer(hostId, transfer) || transfer.timer !== null) return;
     transfer.timer = setTimeout(() => {
       transfer.timer = null;
       void drainPeerTransfer(hostId, transfer);
@@ -2120,6 +2132,7 @@
 
   async function drainPeerTransfer(hostId, transfer) {
     if (state.disposed || transfer.pending || !transfer.latest) return;
+    if (pausePeerTransfer(hostId, transfer)) return;
     const outstanding = peerWriteLocks.get(hostId);
     if (outstanding) {
       if (transfer.waitingOn !== outstanding) {
@@ -2139,6 +2152,11 @@
     try {
       const home = await resolveRemoteHome(hostId, job.runtime);
       if (state.disposed) return;
+      if (nativeConnectionExplicitlyOffline(hostId)) {
+        if (!transfer.latest) transfer.latest = job;
+        pausePeerTransfer(hostId, transfer);
+        return;
+      }
       // Another renderer may have started a write while config/read was pending.
       if (peerWriteLocks.has(hostId)) { if (!transfer.latest) transfer.latest = job; return; }
       const raw = Promise.resolve().then(() => job.runtime.requestClient.sendRequest("fs/writeFile", {
@@ -2171,12 +2189,25 @@
     if (state.disposed || typeof runtime?.requestClient?.sendRequest !== "function") return;
     let transfer = state.peerTransfers.get(hostId);
     if (!transfer) {
-      transfer = { pending: false, latest: null, timer: null, retryAt: 0, failures: 0, lastSuccessAt: null, error: null };
+      transfer = { pending: false, latest: null, timer: null, retryAt: 0, failures: 0, lastSuccessAt: null, error: null, pausedOffline: false };
       state.peerTransfers.set(hostId, transfer);
     }
-    // A slow peer retains only the newest complete snapshot, never an unbounded queue.
+    // A slow or offline peer retains only the newest complete snapshot, never an unbounded queue.
     transfer.latest = { runtime, generatedAt: Date.parse(payload.generatedAt), dataBase64: encodeText(peerTransferText(payload, hostId)) };
+    if (pausePeerTransfer(hostId, transfer)) return;
     void drainPeerTransfer(hostId, transfer);
+  }
+
+  function resumePausedPeerTransfers(runtimes) {
+    for (const [hostId, transfer] of state.peerTransfers) {
+      if (pausePeerTransfer(hostId, transfer) || !transfer.pausedOffline) continue;
+      const runtime = runtimes.get(hostId);
+      if (typeof runtime?.requestClient?.sendRequest !== "function") continue;
+      transfer.pausedOffline = false;
+      transfer.retryAt = 0;
+      if (transfer.latest) transfer.latest = { ...transfer.latest, runtime };
+      void drainPeerTransfer(hostId, transfer);
+    }
   }
 
   function pushLocalInventoryToPeers(payload) {
@@ -2184,6 +2215,7 @@
     const runtimes = discoverRemoteRuntimes(discovery.runtimes);
     for (const [hostId, transfer] of state.peerTransfers) {
       if (!runtimes.has(hostId)) {
+        if (pausePeerTransfer(hostId, transfer)) continue;
         transfer.latest = null;
         if (transfer.timer !== null) clearTimeout(transfer.timer);
         transfer.timer = null;
@@ -2191,6 +2223,7 @@
       }
     }
     for (const [hostId, runtime] of runtimes) queuePeerTransfer(hostId, runtime, payload);
+    resumePausedPeerTransfers(runtimes);
   }
 
   function scheduleLocalPeerCacheInventory(hosts) {
@@ -6868,6 +6901,7 @@
       scheduleLocalPeerCacheInventory(model.hosts);
       scheduleLocalRegisteredProjectsRefresh();
       scheduleRemoteProjectInventory(model.remoteRuntimes, state.nativeConnectionRefreshPending);
+      resumePausedPeerTransfers(model.remoteRuntimes);
       state.nativeConnectionRefreshPending = false;
       scheduleAutoArchive();
       scheduleNativeInventoryHydration();

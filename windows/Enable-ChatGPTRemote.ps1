@@ -219,7 +219,7 @@ function Get-CompleteJsonResult {
 
 function Assert-DesktopAppNotRunning {
     param([scriptblock]$ProcessEnumerator)
-    $processes = if ($ProcessEnumerator) { @(& $ProcessEnumerator) } else { @(Get-Process -Name 'ChatGPT' -ErrorAction SilentlyContinue) }
+    $processes = @(if ($ProcessEnumerator) { & $ProcessEnumerator } else { Get-Process -Name 'ChatGPT' -ErrorAction SilentlyContinue })
     if ($processes.Count -gt 0) {
         throw 'ChatGPT.exe is running. Finish active work and close it, then retry. The launch updater will not stop or kill the app.'
     }
@@ -237,8 +237,14 @@ function Invoke-DesktopAppPrelaunchUpdate {
     if (-not (Test-Path -LiteralPath $powerShell -PathType Leaf)) {
         throw "Built-in Windows PowerShell was not found: $powerShell"
     }
-    $output = @(& $powerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $UpdaterPath -Action Update 2>&1)
-    $exitCode = $LASTEXITCODE
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $output = @(& $powerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $UpdaterPath -Action Update 2>&1)
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
     foreach ($line in $output) { Write-RemoteLauncherLog ([string]$line) }
     if ($exitCode -ne 0) {
         $detail = ($output | ForEach-Object { [string]$_ }) -join ' '

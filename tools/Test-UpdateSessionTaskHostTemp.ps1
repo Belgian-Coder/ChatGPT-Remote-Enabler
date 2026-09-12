@@ -317,7 +317,16 @@ fs.writeFileSync(config.coordinatorResult, JSON.stringify({ temp: process.env.TE
             $candidate = Get-Process -Id ([int]$identity.pid) -ErrorAction SilentlyContinue
             if ($candidate) {
                 try {
-                    if ([string]::Equals([IO.Path]::GetFullPath($candidate.MainModule.FileName), [IO.Path]::GetFullPath($node), [StringComparison]::OrdinalIgnoreCase)) {
+                    $candidatePath = $null
+                    if (-not $candidate.HasExited) {
+                        try { $candidatePath = [string]$candidate.MainModule.FileName }
+                        catch [InvalidOperationException] { if (-not $candidate.HasExited) { throw } }
+                    }
+                    if ($candidate.HasExited) {
+                        # The coordinator completed between identity capture and cleanup.
+                    } elseif ([string]::IsNullOrWhiteSpace($candidatePath)) {
+                        throw 'The coordinator executable path could not be verified; cleanup refused to terminate it.'
+                    } elseif ([string]::Equals([IO.Path]::GetFullPath($candidatePath), [IO.Path]::GetFullPath($node), [StringComparison]::OrdinalIgnoreCase)) {
                         if (-not $candidate.WaitForExit(5000)) {
                             Stop-Process -Id $candidate.Id -Force -ErrorAction Stop
                             if (-not $candidate.WaitForExit(5000)) { throw 'The fixture Node coordinator did not exit after forced cleanup.' }

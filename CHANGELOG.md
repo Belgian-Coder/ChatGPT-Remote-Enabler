@@ -1,7 +1,22 @@
 # Changelog
 
-## Unreleased
+## v1.5.62 — 2026-09-12
 
+- Bound per-user Windows updater history to the five newest rollback
+  generations and two newest legacy-recovery generations. Successful updates
+  and checks remove older direct children only after path, reparse, active
+  journal, and live-process safety checks; unsafe or referenced recovery data
+  remains retained with an explicit reason.
+- Parse JSON recovery journals when checking path references so escaped Windows
+  paths retain their rollback or legacy root until recovery no longer needs it.
+- Keep the signed desktop prelaunch guard fail-closed on Windows PowerShell 5.1
+  when exactly one ChatGPT process is running by preserving the enumerator
+  result as an array on both Windows launch paths.
+- Capture expected native helper failures without allowing Windows PowerShell
+  5.1 to replace their structured error details with `NativeCommandError`.
+- Pass transaction fixture arguments as an explicit array and remove its stray
+  temporary debug file so the Windows PowerShell gate exercises every helper
+  action with the intended argument boundaries.
 - Refuse durable shortcut, logon-task, and global legacy-root migration when a
   test or caller supplies a noncanonical stable root. Fixture-scoped installer
   checks can still exercise their explicit paths without touching the signed-in

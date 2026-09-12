@@ -9,9 +9,15 @@ cleanup() { rm -rf -- "$temporary"; }
 trap cleanup EXIT INT TERM
 
 fixture_home="$temporary/home"
-install_root="$temporary/install"
+install_root="$fixture_home/Library/Application Support/CodexRemoteFeatures/releases/ChatGPT-Remote-Enabler-macOS-arm64-v1.5.40"
+stable_root="$fixture_home/Library/Application Support/CodexRemoteFeatures/ChatGPT-Remote-Enabler-macOS-arm64"
 prepared_root="$temporary/prepared"
 mkdir -p "$fixture_home" "$install_root" "$prepared_root"
+state_rollback="$fixture_home/Library/Application Support/ChatGPTRemoteEnabler/update/rollback"
+shortcut_rollback="$fixture_home/Library/Application Support/CodexRemoteFeatures/launchers/rollback"
+mkdir -p "$state_rollback/old-one" "$state_rollback/old-two" "$install_root/rollback" "$shortcut_rollback"
+print -r -- old > "$install_root/rollback/old-launch-agent.plist"
+print -r -- old > "$shortcut_rollback/old-shortcut.applescript"
 
 cp -p -- "$updater" "$install_root/Update-ChatGPTRemote.sh"
 cp -p -- "$transaction_helper" "$install_root/update-transaction.js"
@@ -62,12 +68,15 @@ apply_result="$(HOME="$fixture_home" CHATGPT_REMOTE_UPDATE_INSTALL_ROOT="$instal
   /bin/zsh "$install_root/Update-ChatGPTRemote.sh" apply-prepared \
   --target-version v1.5.41 --expected-archive-sha256 "$archive_hash" --prepared-directory "$prepared_root")"
 rollback_path="$("$node_bin" -e 'const result = JSON.parse(process.argv[1]); if (!result.updated || result.version !== "v1.5.41" || !result.rollbackPath) process.exit(1); process.stdout.write(result.rollbackPath);' "$apply_result")"
-[[ "$(<"$install_root/VERSION")" == v1.5.41 ]]
-[[ "$(<"$install_root/payload.txt")" == new && "$(<"$install_root/added.txt")" == added ]]
-[[ ! -e "$install_root/removed.txt" ]]
-[[ -d "$rollback_path" && "$(<"$rollback_path/VERSION")" == v1.5.40 ]]
+[[ ! -e "$install_root" && "$(<"$stable_root/VERSION")" == v1.5.41 ]]
+[[ "$(<"$stable_root/payload.txt")" == new && "$(<"$stable_root/added.txt")" == added ]]
+[[ ! -e "$stable_root/removed.txt" ]]
+[[ -d "$rollback_path" ]] || { print -u2 "Returned rollback directory was removed: $rollback_path"; exit 1; }
+[[ "$(<"$rollback_path/VERSION")" == v1.5.40 ]] || { print -u2 "Returned rollback does not contain the previous version."; find "$rollback_path" -maxdepth 2 -print -exec /bin/cat {} \; 2>/dev/null; exit 1; }
+[[ "$(find "$state_rollback" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" == 1 ]]
+[[ ! -e "$install_root/rollback/old-launch-agent.plist" && ! -e "$shortcut_rollback/old-shortcut.applescript" ]]
 for name in MacOSShortcut.sh MobileProjectView-macOS-arm64.sh Setup.command Update-ChatGPTRemote.sh UpdateSessionPlatform.sh; do
-  [[ -x "$install_root/$name" ]]
+  [[ -x "$stable_root/$name" ]]
   [[ -x "$rollback_path/$name" ]]
 done
 [[ -f "$fixture_home/Library/Application Support/ChatGPTRemoteEnabler/update/last-check.json" ]]
@@ -76,12 +85,12 @@ done
 [[ ! -d "$fixture_home/Library/Application Support/ChatGPTRemoteEnabler/launch.lock" ]]
 
 typeset unsafe_output
-if unsafe_output="$(HOME="$fixture_home" CHATGPT_REMOTE_UPDATE_INSTALL_ROOT="$install_root" \
-  /bin/zsh "$install_root/Update-ChatGPTRemote.sh" apply-prepared \
-  --target-version v1.5.41 --expected-archive-sha256 "$archive_hash" --prepared-directory "$install_root" 2>&1)"; then
+if unsafe_output="$(HOME="$fixture_home" CHATGPT_REMOTE_UPDATE_INSTALL_ROOT="$stable_root" \
+  /bin/zsh "$stable_root/Update-ChatGPTRemote.sh" apply-prepared \
+  --target-version v1.5.41 --expected-archive-sha256 "$archive_hash" --prepared-directory "$stable_root" 2>&1)"; then
   print -u2 'The updater accepted an overlapping prepared and install root.'
   exit 1
 fi
 [[ "$unsafe_output" == *'Prepared directory must be separate from the install root.'* ]]
 
-print -r -- '{"MacOSUpdaterApplyPrepared":true,"JsonResult":true,"InstalledVersion":"v1.5.41","RollbackRetained":true,"UnsafeRootRejected":true}'
+print -r -- '{"MacOSUpdaterApplyPrepared":true,"JsonResult":true,"InstalledVersion":"v1.5.41","StableInstallRoot":true,"LegacyInstallRemoved":true,"RollbackRetained":true,"SingleRollbackPolicy":true,"AuxiliaryRollbackRemoved":true,"UnsafeRootRejected":true}'

@@ -33,7 +33,7 @@ $packagedSource = Join-Path $fixtureRoot 'packaged-source'
 $recoveryStableRoot = Join-Path $fixtureRoot 'canonical-recovery'
 $recoveryStateRoot = Join-Path $fixtureRoot 'updater-recovery-state'
 $legacyRoot = Join-Path (Join-Path $fixtureRoot 'releases') 'ChatGPT-Remote-Enabler-Windows-x64-v1.5.23'
-$newerLegacyRoot = Join-Path (Join-Path $fixtureRoot 'releases') 'ChatGPT-Remote-Enabler-Windows-x64-v1.5.63'
+$newerLegacyRoot = Join-Path (Join-Path $fixtureRoot 'releases') 'ChatGPT-Remote-Enabler-Windows-x64-v1.5.64'
 $reparseLegacyRoot = Join-Path (Join-Path $fixtureRoot 'releases') 'ChatGPT-Remote-Enabler-Windows-x64-v1.5.22'
 $processFailureLegacyRoot = Join-Path (Join-Path $fixtureRoot 'releases') 'ChatGPT-Remote-Enabler-Windows-x64-v1.5.21'
 $migrationFailureLegacyRoot = Join-Path (Join-Path $fixtureRoot 'releases') 'ChatGPT-Remote-Enabler-Windows-x64-v1.5.20'
@@ -48,7 +48,7 @@ try {
     Assert-Condition (Test-StableLegacyRoot -Path (Get-StableMachineInstallRoot)) 'The former machine-wide stable root is not recognized as a legacy migration source.'
     New-Item -ItemType Directory -Path $stableRoot,$packagedSource,$legacyRoot,$newerLegacyRoot,$processFailureLegacyRoot,$migrationFailureLegacyRoot,$sessionLegacyRoot,$desktopPath,$startMenuPath,$startupPath -Force | Out-Null
     Copy-StablePackageContents -SourceRoot (Join-Path $repositoryRoot 'windows') -DestinationRoot $stableRoot
-    Write-Version -Root $stableRoot -Version 'v1.5.62'
+    Write-Version -Root $stableRoot -Version 'v1.5.63'
     New-ReleaseManifest -Root $stableRoot
     Assert-Condition (Test-StablePackage -Root $stableRoot -RequireManifest) 'The canonical fixture failed manifest, VERSION, and ProductVersion validation.'
     $noncanonicalCleanup = @(Invoke-StableLegacyCleanup -StableRoot $stableRoot -UpdaterStateRoot $stateRoot -MigrateEntryPoints)
@@ -56,7 +56,7 @@ try {
     $noncanonicalTask = @(Invoke-StableTaskMigration -StableRoot $stableRoot)
     Assert-Condition ($noncanonicalTask.Count -eq 1 -and $noncanonicalTask[0].reason -eq 'noncanonical-stable-root') 'A noncanonical fixture root was allowed to migrate the durable logon task.'
     Copy-StablePackageContents -SourceRoot (Join-Path $repositoryRoot 'windows') -DestinationRoot $packagedSource
-    Write-Version -Root $packagedSource -Version 'v1.5.62'
+    Write-Version -Root $packagedSource -Version 'v1.5.63'
     New-ReleaseManifest -Root $packagedSource
     Assert-Condition (Test-StablePackage -Root $packagedSource -RequireManifest) 'The packaged update fixture failed validation.'
 
@@ -124,7 +124,7 @@ try { [IO.File]::WriteAllText($SignalPath, 'locked'); Start-Sleep -Seconds 60 } 
     [IO.File]::WriteAllText((Join-Path $legacyRoot 'CodexRemoteMobileProject\rollback\mobile.json'), '{"rollback":"mobile-durable"}', [Text.UTF8Encoding]::new($false))
 
     Copy-StablePackageContents -SourceRoot (Join-Path $repositoryRoot 'windows') -DestinationRoot $newerLegacyRoot
-    Write-Version -Root $newerLegacyRoot -Version 'v1.5.63'
+    Write-Version -Root $newerLegacyRoot -Version 'v1.5.64'
     New-ReleaseManifest -Root $newerLegacyRoot
     foreach ($root in @($processFailureLegacyRoot, $migrationFailureLegacyRoot, $sessionLegacyRoot, $reparseLegacyRoot)) {
         Copy-StablePackageContents -SourceRoot (Join-Path $repositoryRoot 'windows') -DestinationRoot $root
@@ -230,16 +230,16 @@ try { [IO.File]::WriteAllText($SignalPath, 'locked'); Start-Sleep -Seconds 60 } 
         [IO.Directory]::SetLastWriteTimeUtc($directory, [datetime]::SpecifyKind([datetime]"2026-09-12T12:01:0${index}", [DateTimeKind]::Utc))
     }
     [IO.File]::WriteAllText((Join-Path $retentionState 'transaction.json'), (([ordered]@{ backupRoot = $rollbackFixtures[0] } | ConvertTo-Json -Compress) + "`n"), [Text.UTF8Encoding]::new($false))
-    $retentionResult = @(Invoke-StableRollbackRetention -UpdaterStateRoot $retentionState -RollbackRetainCount 2 -LegacyRecoveryRetainCount 2 -ProcessEnumerator { @() })
-    Assert-Condition (@(Get-ChildItem -LiteralPath $retentionRollback -Directory).Count -eq 3) 'Rollback retention did not keep two newest generations plus the journal-referenced generation.'
+    $retentionResult = @(Invoke-StableRollbackRetention -UpdaterStateRoot $retentionState -ProcessEnumerator { @() })
+    Assert-Condition (@(Get-ChildItem -LiteralPath $retentionRollback -Directory).Count -eq 2) 'Rollback retention did not keep the newest generation plus the journal-referenced generation.'
     Assert-Condition ((Test-Path -LiteralPath $rollbackFixtures[0] -PathType Container) -and (@($retentionResult | Where-Object reason -eq 'retained-active-journal-reference')).Count -eq 1) 'Active-journal rollback material was not retained and reported.'
-    Assert-Condition (@(Get-ChildItem -LiteralPath $retentionLegacy -Directory).Count -eq 2) 'Legacy-recovery retention did not keep the configured newest generations.'
+    Assert-Condition (@(Get-ChildItem -LiteralPath $retentionLegacy -Directory).Count -eq 0) 'Legacy-recovery retention did not remove every unreferenced generation.'
     Remove-Item -LiteralPath (Join-Path $retentionState 'transaction.json') -Force
     $rollbackProcess = [pscustomobject]@{ ExecutablePath = 'C:\Program Files\nodejs\node.exe'; CommandLine = '"C:\Program Files\nodejs\node.exe" "' + (Join-Path $rollbackFixtures[0] 'worker.js') + '"' }
-    $retentionWithLiveProcess = @(Invoke-StableRollbackRetention -UpdaterStateRoot $retentionState -RollbackRetainCount 2 -LegacyRecoveryRetainCount 2 -ProcessEnumerator { @($rollbackProcess) })
-    Assert-Condition (@(Get-ChildItem -LiteralPath $retentionRollback -Directory).Count -eq 3 -and (@($retentionWithLiveProcess | Where-Object reason -eq 'retained-live-process-reference')).Count -eq 1) 'Live-process rollback material was not retained and reported.'
-    $retentionAfterJournal = @(Invoke-StableRollbackRetention -UpdaterStateRoot $retentionState -RollbackRetainCount 2 -LegacyRecoveryRetainCount 2 -ProcessEnumerator { @() })
-    Assert-Condition (@(Get-ChildItem -LiteralPath $retentionRollback -Directory).Count -eq 2 -and -not (Test-Path -LiteralPath $rollbackFixtures[0])) 'Rollback material was not pruned after its journal reference disappeared.'
+    $retentionWithLiveProcess = @(Invoke-StableRollbackRetention -UpdaterStateRoot $retentionState -ProcessEnumerator { @($rollbackProcess) })
+    Assert-Condition (@(Get-ChildItem -LiteralPath $retentionRollback -Directory).Count -eq 2 -and (@($retentionWithLiveProcess | Where-Object reason -eq 'retained-live-process-reference')).Count -eq 1) 'Live-process rollback material was not retained and reported.'
+    $retentionAfterJournal = @(Invoke-StableRollbackRetention -UpdaterStateRoot $retentionState -ProcessEnumerator { @() })
+    Assert-Condition (@(Get-ChildItem -LiteralPath $retentionRollback -Directory).Count -eq 1 -and -not (Test-Path -LiteralPath $rollbackFixtures[0])) 'Rollback material was not pruned to one generation after its journal reference disappeared.'
     Assert-Condition (@($retentionAfterJournal | Where-Object removed).Count -eq 1) 'Post-journal rollback pruning was not reported.'
 
     $migratedRoot = Join-Path $fixtureRoot 'stable-migrated'

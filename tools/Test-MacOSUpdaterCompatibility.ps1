@@ -46,8 +46,8 @@ foreach ($contract in @(
     '/bin/zsh "$install_root/Update-ChatGPTRemote.sh" apply-prepared',
     'CHATGPT_REMOTE_UPDATE_INSTALL_ROOT="$install_root"',
     '"$node_bin" -e ''const result = JSON.parse(process.argv[1]);',
-    '[[ "$(<"$install_root/VERSION")" == v1.5.41 ]]',
-    '[[ -x "$install_root/$name" ]]',
+    '[[ ! -e "$install_root" && "$(<"$stable_root/VERSION")" == v1.5.41 ]]',
+    '[[ -x "$stable_root/$name" ]]',
     '[[ -x "$rollback_path/$name" ]]'
 )) {
     if (-not $nativeApplyTest.Contains($contract)) {

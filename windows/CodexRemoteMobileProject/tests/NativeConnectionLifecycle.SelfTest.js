@@ -5,7 +5,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 const filename = path.join(__dirname, "..", "renderer-mobile-project-view.js");
 const original = fs.readFileSync(filename, "utf8").replace(/\r\n/gu, "\n");
-const source = original.replace("  return install();\n})();", "  globalThis.fixture = { state, collectModel, hostName, nativeConnectionStatus, startNativeConnectionObservation, refreshNativeConnectionSnapshot, publishedLocalProjectSnapshot, scheduleRemoteProjectInventory, connectionGuidance, diagnosticSnapshot, uninstall };\n})();");
+const source = original.replace("  return install();\n})();", "  globalThis.fixture = { state, collectModel, hostName, nativeConnectionStatus, startNativeConnectionObservation, refreshNativeConnectionSnapshot, publishedLocalProjectSnapshot, scheduleRemoteProjectInventory, hydrateNativeInventory, connectionGuidance, diagnosticSnapshot, uninstall };\n})();");
 assert.notEqual(source, original);
 assert.match(original, /state\.disposed = false;\s+startNativeConnectionObservation\(\);/u, "normal installation must start observation");
 
@@ -96,6 +96,48 @@ const flush = async () => { for (let i = 0; i < 40; i++) await Promise.resolve()
   assert.deepEqual([...model.projects.map(project => project.name)].sort(), ["Empty alpha", "Empty beta"]);
   assert.equal(model.tasks.length, 0);
   assert.equal(model.hosts.find(item => item.id === host).name, "Named workstation", "inventory hostnames must not replace a native device label");
+  assert.equal(model.hosts.find(item => item.id === host).available, true);
+
+  // An ordinary inventory failure must keep the discovered runtime cached. A
+  // known-offline peer otherwise turns every retry/render into another bounded
+  // full React graph scan.
+  const failingRequests = [];
+  const failingRuntime = { requestClient: { sendRequest: async (method) => {
+    failingRequests.push(method);
+    throw Error("Codex app-server is not available");
+  } } };
+  const scanMarker = Date.now();
+  first.f.state.remoteRuntimeCache.set(host, failingRuntime);
+  first.f.state.remoteRuntimeScannedAt = scanMarker;
+  await first.f.scheduleRemoteProjectInventory(new Map([[host, failingRuntime]]), true);
+  assert.ok(failingRequests.length >= 1);
+  assert.equal(first.f.state.remoteRuntimeCache.get(host), failingRuntime, "request failure must retain the runtime until discovery is explicitly invalidated");
+  assert.equal(first.f.state.remoteRuntimeScannedAt, scanMarker, "request failure must not force another full runtime scan");
+  assert.deepEqual([...first.f.collectModel().projects.map(project => project.name)].sort(), ["Empty alpha", "Empty beta"], "a read failure must retain cached project rows");
+  assert.equal(first.f.collectModel().hosts.find(item => item.id === host).available, true, "a recent helper failure must not override an explicit native-online event");
+
+  first.snapshots.set("remote_control_connections", [{ hostId: host, displayName: "Named workstation", online: false }]);
+  [...first.intervals.values()][0]();
+  const readsBeforeOfflineRefresh = reads.length;
+  await first.f.scheduleRemoteProjectInventory(new Map([[host, runtime]]), true);
+  assert.equal(reads.length, readsBeforeOfflineRefresh, "an explicitly offline peer must not receive an inventory request");
+  first.f.state.remoteRuntimeCache.set(host, runtime);
+  first.f.state.remoteRuntimeScannedAt = Date.now();
+  first.f.state.threadInventories.set(host, { hostId: host, error: "old offline error", threads: [], retryAt: 0 });
+  await first.f.hydrateNativeInventory(true, first.f.state.discoveryGeneration);
+  assert.equal(reads.length, readsBeforeOfflineRefresh, "native thread hydration must also skip an explicitly offline peer");
+  assert.equal(first.f.state.inventoryHydrationError, null, "an offline peer's retained error must not fail refresh aggregation");
+  const offlineModel = first.f.collectModel();
+  assert.equal(offlineModel.hosts.find(item => item.id === host).available, false, "native disconnect must win immediately over older helper evidence");
+  assert.equal(first.f.connectionGuidance(offlineModel.hosts.find(item => item.id === host)).code, "disconnected");
+  assert.deepEqual([...offlineModel.projects.map(project => project.name)].sort(), ["Empty alpha", "Empty beta"], "offline state must preserve last-known project rows");
+
+  first.snapshots.set("remote_control_connections", [{ hostId: host, displayName: "Named workstation", online: true }]);
+  [...first.intervals.values()][0]();
+  assert.equal(first.f.state.nativeConnectionRefreshPending, true, "reconnect must request a retry that bypasses the previous error gate");
+  await first.f.scheduleRemoteProjectInventory(new Map([[host, runtime]]), first.f.state.nativeConnectionRefreshPending);
+  assert.equal(reads.length, readsBeforeOfflineRefresh + 2, "reconnect must perform a fresh home and inventory read");
+  assert.equal(first.f.collectModel().hosts.find(item => item.id === host).available, true);
 
   first.snapshots.set("remote_control_connections", []);
   first.snapshots.set("remote_control_connections_state", nativeState(false));
@@ -130,5 +172,5 @@ const flush = async () => { for (let i = 0; i < 40; i++) await Promise.resolve()
   assert.equal(second.f.nativeConnectionStatus(), "unavailable");
   second.f.uninstall();
   assert.deepEqual([...first.requests, ...second.requests], [], "observation must never initiate authorization or native connection mutations");
-  console.log(JSON.stringify({ delayedNativeBridge: true, authorizationReported: true, catalogNamesWithoutRows: true, reconnectInvalidatesDiscovery: true, emptyProjectTransportAndModel: true, fullRendererRestartRetainsNames: true, renamedLabelsWinOverInventory: true, observerDisposed: true, noNativeMutations: true }));
+  console.log(JSON.stringify({ delayedNativeBridge: true, authorizationReported: true, catalogNamesWithoutRows: true, reconnectInvalidatesDiscovery: true, emptyProjectTransportAndModel: true, offlineRequestsSuppressed: true, offlineNativeHydrationSuppressed: true, cachedRowsRetainedOffline: true, runtimeCacheRetainedOnFailure: true, nativeAvailabilityWins: true, reconnectForcesInventory: true, fullRendererRestartRetainsNames: true, renamedLabelsWinOverInventory: true, observerDisposed: true, noNativeMutations: true }));
 })().catch(error => { console.error(error); process.exitCode = 1; });

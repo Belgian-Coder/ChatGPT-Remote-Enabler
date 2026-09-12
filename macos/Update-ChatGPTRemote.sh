@@ -562,4 +562,9 @@ if ! update_output="$(apply_prepared_release "$tag" "$published_hash" "$prepared
 fi
 record_check "$tag"
 [[ -f "$transaction_journal" ]] || rm -rf -- "$prepared_root"
-print -r -- "$update_output"
+"$node_bin" -e '
+  const value = JSON.parse(process.argv[1]);
+  if (!value.method) value.method = process.argv[2];
+  process.stdout.write(JSON.stringify(value));
+' "$update_output" "$update_method"
+print

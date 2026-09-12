@@ -13,6 +13,7 @@ foreach ($contract in @(
     'invoke_transaction_helper apply',
     'recover_pending_transaction',
     '.chatgpt-remote-release.zip',
+    'if (!value.method) value.method = process.argv[2]',
     'acquire_launch_guard',
     'UPDATE_RECOVERY_REQUIRED',
     'record_check "$tag"'
@@ -47,6 +48,12 @@ foreach ($contract in @(
     'target?.url === "app://-/index.html"',
     'const report = value?.report?.readiness ?? value?.report;',
     'Last readiness proof: $summary',
+    'prelaunch_update "$node_bin"',
+    'CHATGPT_REMOTE_UPDATE_TRANSPORT=git',
+    'CODEX_REMOTE_LAUNCH_GUARD_TOKEN=$launch_guard_token',
+    'CODEX_REMOTE_SKIP_PRELAUNCH_UPDATE_ONCE=1',
+    'Update recovery did not prove installed-file integrity before launch.',
+    'continue_with_updated_launcher',
     'New LaunchAgent failed to load; the previous definition was restored.',
     'cp -p -- "$previous_plist" "$plist"'
 )) {
@@ -62,6 +69,18 @@ foreach ($contract in @(
 }
 if ($launcher.Contains('reported a terminal readiness error')) {
     throw 'macOS launcher still treats a transient renderer readiness error as terminal.'
+}
+$recoverCallIndex = $launcher.LastIndexOf('  recover_update "$node_bin"')
+$prelaunchCallIndex = $launcher.LastIndexOf('  prelaunch_update "$node_bin"')
+$handoffCallIndex = $launcher.LastIndexOf('  continue_with_updated_launcher')
+$debugEndpointIndex = $launcher.LastIndexOf('  if ! debug_endpoint_ready "$node_bin"; then')
+if ($recoverCallIndex -lt 0 -or $prelaunchCallIndex -le $recoverCallIndex -or
+    $handoffCallIndex -le $prelaunchCallIndex -or $debugEndpointIndex -le $handoffCallIndex) {
+    throw 'macOS verified update/recovery is not ordered before renderer endpoint discovery.'
+}
+if (-not $zshSemanticTest.Contains('PrelaunchRecoveryFailClosed') -or
+    -not $zshSemanticTest.Contains('InheritedLaunchGuard')) {
+    throw 'The real-zsh prelaunch recovery and launch-guard handoff regressions are not wired.'
 }
 foreach ($contract in @(
     'candidate_source=',
@@ -92,6 +111,9 @@ $global:LASTEXITCODE = 0
     NestedReadinessEnvelope = $true
     TransientReadinessRetried = $true
     GitUpdaterHelpersBundled = $true
+    PrelaunchUpdateBeforeDiscovery = $true
+    PrelaunchIntegrityRecovery = $true
+    UpdatedEntryPointGuardHandoff = $true
     ShortcutCandidateSwap = $true
     ShortcutExactTarget = $true
     RealZshSemanticTestPresent = $true

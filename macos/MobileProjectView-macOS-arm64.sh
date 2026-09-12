@@ -9,7 +9,6 @@ bundle_root="${script_path:h}"
 injector="$bundle_root/inject.js"
 maintenance_helper="$bundle_root/maintenance.js"
 updater="$bundle_root/Update-ChatGPTRemote.sh"
-update_recovered=0
 update_session_source="$bundle_root/update-session.js"
 update_session_cdp_source="$bundle_root/update-session-cdp.js"
 publisher_heartbeat_source="$bundle_root/publisher-heartbeat.js"
@@ -32,9 +31,17 @@ startup_delay_seconds="${CODEX_STARTUP_DELAY_SECONDS:-60}"
 startup_required_path="${CODEX_STARTUP_REQUIRED_PATH:-}"
 mobile_ready_timeout_seconds="${CODEX_MOBILE_READY_TIMEOUT_SECONDS:-45}"
 skip_update_check_once="${CODEX_REMOTE_SKIP_UPDATE_CHECK_ONCE:-0}"
+skip_prelaunch_update_once="${CODEX_REMOTE_SKIP_PRELAUNCH_UPDATE_ONCE:-0}"
 launch_guard="$HOME/Library/Application Support/ChatGPTRemoteEnabler/launch.lock"
-launch_guard_token="$$-$EPOCHSECONDS-$RANDOM-launch"
+inherited_launch_guard_token="${CODEX_REMOTE_LAUNCH_GUARD_TOKEN:-}"
+if [[ "$inherited_launch_guard_token" == <->-<->-<->-launch && "${inherited_launch_guard_token%%-*}" == "$$" ]]; then
+  launch_guard_token="$inherited_launch_guard_token"
+else
+  inherited_launch_guard_token=""
+  launch_guard_token="$$-$EPOCHSECONDS-$RANDOM-launch"
+fi
 launch_guard_owned=0
+prelaunch_updated=0
 
 release_launch_guard() {
   (( launch_guard_owned )) || return 0
@@ -50,6 +57,13 @@ trap release_launch_guard EXIT INT TERM
 acquire_launch_guard() {
   local deadline=$(( EPOCHSECONDS + 120 )) owner owner_pid modified
   mkdir -p "${launch_guard:h}"
+  if [[ "${CHATGPT_REMOTE_LAUNCH_GUARD_HELD:-0}" == 1
+    && -n "$inherited_launch_guard_token"
+    && -f "$launch_guard/owner"
+    && "$(<"$launch_guard/owner")" == "$launch_guard_token" ]]; then
+    launch_guard_owned=1
+    return 0
+  fi
   while (( EPOCHSECONDS < deadline )); do
     if mkdir "$launch_guard" 2>/dev/null; then
       print -rn -- "$launch_guard_token" > "$launch_guard/owner"
@@ -140,16 +154,119 @@ app_is_running() {
   /usr/bin/pgrep -x "$app_name" >/dev/null 2>&1 || /usr/bin/pgrep -x ChatGPT >/dev/null 2>&1 || /usr/bin/pgrep -x Codex >/dev/null 2>&1
 }
 
+last_json_result() {
+  local node_bin="$1" output="$2"
+  print -r -- "$output" | "$node_bin" -e '
+    const fs = require("node:fs");
+    const lines = fs.readFileSync(0, "utf8").split(/\r?\n/u);
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      const line = lines[index].trim();
+      if (!line) continue;
+      try {
+        const value = JSON.parse(line);
+        if (value && typeof value === "object" && !Array.isArray(value)) {
+          process.stdout.write(JSON.stringify(value));
+          process.exit(0);
+        }
+      } catch {}
+    }
+    process.stderr.write("The updater did not return JSON proof.\n");
+    process.exit(1);
+  '
+}
+
 recover_update() {
-  (( update_recovered )) && return 0
-  update_recovered=1
+  local node_bin="$1"
   if [[ -f "$updater" ]]; then
-    local started=$EPOCHREALTIME output
+    local started=$EPOCHREALTIME output proof
     output="$(CHATGPT_REMOTE_LAUNCH_GUARD_HELD=1 CHATGPT_REMOTE_UPDATE_INSTALL_ROOT="$bundle_root" /bin/zsh "$updater" recover --launch-lock-held)" \
       || { print -u2 "Update recovery failed before launch."; return 1; }
     print -r -- "$output"
+    proof="$(last_json_result "$node_bin" "$output")" \
+      || { print -u2 "Update recovery did not return verifiable JSON proof."; return 1; }
+    "$node_bin" -e '
+      const value = JSON.parse(process.argv[1]);
+      if (value.integrityValid !== true) {
+        process.stderr.write("Update recovery did not prove installed-file integrity before launch.\n");
+        process.exit(1);
+      }
+    ' "$proof"
     print "stage=update-recovery durationMs=$(( (EPOCHREALTIME - started) * 1000 ))"
   fi
+}
+
+prelaunch_update() {
+  local node_bin="$1"
+  [[ "$skip_prelaunch_update_once" == 1 ]] && return 0
+  if [[ ! -f "$updater" || -L "$updater" ]]; then
+    print "stage=prelaunch-update skipped reason=updater-missing"
+    return 0
+  fi
+
+  local started=$EPOCHREALTIME output="" exit_code=0 proof="" validation="" update_error=""
+  set +e
+  output="$(CHATGPT_REMOTE_LAUNCH_GUARD_HELD=1 CHATGPT_REMOTE_UPDATE_INSTALL_ROOT="$bundle_root" \
+    CHATGPT_REMOTE_UPDATE_TRANSPORT=git /bin/zsh "$updater" auto --launch-lock-held 2>&1)"
+  exit_code=$?
+  set -e
+  [[ -z "$output" ]] || print -r -- "$output"
+
+  if (( exit_code == 0 )); then
+    if ! proof="$(last_json_result "$node_bin" "$output" 2>&1)"; then
+      update_error="$proof"
+    elif ! validation="$("$node_bin" -e '
+      try {
+        const value = JSON.parse(process.argv[1]);
+        if (value.skipped === true) {
+          if (!["auto-update-disabled", "check-interval"].includes(value.reason)) {
+            throw new Error("The prelaunch updater returned an unknown skip reason: " + value.reason);
+          }
+          process.stdout.write("skipped\t" + value.reason);
+        } else {
+          if (typeof value.updated !== "boolean") throw new Error("The prelaunch updater returned incomplete update proof.");
+          if (value.updated && !["verified-git", "git-fast-forward"].includes(value.method)) {
+            throw new Error("The prelaunch updater did not prove a Git-backed update.");
+          }
+          process.stdout.write((value.updated ? "updated" : "current") + "\t" + (value.method || ""));
+        }
+      } catch (error) {
+        process.stderr.write(error.message + "\n");
+        process.exit(1);
+      }
+    ' "$proof" 2>&1)"; then
+      update_error="$validation"
+    fi
+  else
+    update_error="The verified Git prelaunch update failed (exit $exit_code): $output"
+  fi
+
+  if [[ -n "$update_error" ]]; then
+    recover_update "$node_bin" \
+      || { print -u2 "Prelaunch update failed and recovery could not prove installed-file integrity: $update_error"; return 1; }
+    print "stage=prelaunch-update durationMs=$(( (EPOCHREALTIME - started) * 1000 )) updated=false bestEffortFailure=$update_error"
+    return 0
+  fi
+
+  local outcome="${validation%%$'\t'*}" method="${validation#*$'\t'}"
+  skip_update_check_once=1
+  if [[ "$outcome" == updated ]]; then
+    recover_update "$node_bin"
+    prelaunch_updated=1
+  fi
+  print "stage=prelaunch-update durationMs=$(( (EPOCHREALTIME - started) * 1000 )) updated=$([[ "$outcome" == updated ]] && print true || print false) method=$method outcome=$outcome"
+}
+
+continue_with_updated_launcher() {
+  (( prelaunch_updated )) || return 0
+  local -a environment=(
+    "CHATGPT_REMOTE_LAUNCH_GUARD_HELD=1"
+    "CODEX_REMOTE_LAUNCH_GUARD_TOKEN=$launch_guard_token"
+    "CODEX_REMOTE_SKIP_PRELAUNCH_UPDATE_ONCE=1"
+    "CODEX_REMOTE_SKIP_UPDATE_CHECK_ONCE=1"
+  )
+  if [[ "$action" == startup ]]; then environment+=("CODEX_REMOTE_SKIP_STARTUP_DELAY_ONCE=1"); fi
+  print "stage=prelaunch-update handoff=updated-entry-point action=$action"
+  exec /usr/bin/env "${environment[@]}" "$script_path" "$action"
 }
 
 run_injector() {
@@ -279,9 +396,11 @@ write_relaunch_handoff() {
 
 enable_view() {
   acquire_launch_guard
-  recover_update
   local node_bin
   node_bin="$(resolve_node)"
+  recover_update "$node_bin"
+  prelaunch_update "$node_bin"
+  continue_with_updated_launcher
   if ! debug_endpoint_ready "$node_bin"; then
     if app_is_running; then
       print -u2 "$app_name is already running without the required loopback renderer endpoint. Quit it normally and reopen it with the ChatGPT Custom shortcut; refusing to start a second instance."

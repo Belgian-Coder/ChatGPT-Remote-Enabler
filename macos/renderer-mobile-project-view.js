@@ -69,7 +69,7 @@
     "unknown",
   ]);
   const PUBLISHER_VERSION = 53;
-  const VERSION = 78;
+  const VERSION = 79;
   // Keep outstanding writes locked across renderer reinjection until the underlying RPC settles.
   const peerWriteLocks = globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ instanceof Map
     ? globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ : (globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ = new Map());
@@ -1002,7 +1002,7 @@
     try {
       const catalog = bridge.getSharedObjectSnapshotValue("remote_control_connections");
       const status = bridge.getSharedObjectSnapshotValue("remote_control_connections_state");
-      if (!Array.isArray(catalog) && (!status || typeof status !== "object")) return null;
+      if (!Array.isArray(catalog) || !status || typeof status !== "object" || Array.isArray(status)) return null;
       const boolean = value => typeof value === "boolean" ? value : null;
       const connections = [];
       for (const item of Array.isArray(catalog) ? catalog.slice(0, 1000) : []) {
@@ -1022,6 +1022,16 @@
     } catch { return null; }
   }
 
+  function nativeConnectionOnline(hostId) {
+    const connection = state.nativeConnectionSnapshot?.connections
+      ?.find((item) => item.hostId === normalizeHostId(hostId));
+    return typeof connection?.online === "boolean" ? connection.online : null;
+  }
+
+  function nativeConnectionExplicitlyOffline(hostId) {
+    return nativeConnectionOnline(hostId) === false;
+  }
+
   function nativeConnectionStatus() {
     const snapshot = state.nativeConnectionSnapshot;
     if (!snapshot) return "unknown";
@@ -1036,10 +1046,18 @@
   function refreshNativeConnectionSnapshot() {
     if (state.disposed) return false;
     const snapshot = readNativeConnectionSnapshot();
+    // A missing bridge/cache read is not evidence that a known device changed
+    // state. Preserve the last authoritative catalog until another valid
+    // snapshot arrives, so transient native-cache gaps cannot reopen offline
+    // network work or force expensive runtime rediscovery.
+    if (!snapshot) return false;
     const signature = JSON.stringify(snapshot);
     if (signature === state.nativeConnectionSignature) return false;
     state.nativeConnectionSignature = signature;
     state.nativeConnectionSnapshot = snapshot;
+    for (const [hostId, transfer] of state.peerTransfers) {
+      if (nativeConnectionExplicitlyOffline(hostId)) pausePeerTransfer(hostId, transfer);
+    }
     const remembered = readRecords(HOST_NAMES_KEY);
     const nativeNames = readRecords(NATIVE_HOST_NAMES_KEY);
     let changedNames = false;
@@ -1862,6 +1880,10 @@
       if (!isCurrentDiscoveryGeneration(operationGeneration)) break;
       if (hostId === "local" || state.localRuntimeHostIds.has(hostId)) continue;
       const current = state.remoteProjectInventories.get(hostId) ?? { projects: [], tasks: new Map(), threads: [] };
+      if (nativeConnectionExplicitlyOffline(hostId)) {
+        state.hostConnectivity.set(hostId, { available: false, checkedAt: now });
+        continue;
+      }
       const refreshTtl = current.tasks?.size ? REMOTE_INVENTORY_ACTIVE_TTL_MS : REMOTE_INVENTORY_IDLE_TTL_MS;
       if (current.pending) {
         if (force && current.pendingPromise) {
@@ -1996,8 +2018,6 @@
         }).catch((error) => {
           if (!currentRemoteInventoryOperation(hostId, runtime, token)) return { stale: true, hostId };
           transferStats(hostId).failures += 1;
-          state.remoteRuntimeCache.delete(hostId);
-          state.remoteRuntimeScannedAt = 0;
           if (connectionProven) state.hostConnectivity.set(hostId, { available: true, checkedAt: Date.now() });
           else state.hostConnectivity.set(hostId, { available: false, checkedAt: Date.now() });
           state.remoteCodexHomes.delete(hostId);
@@ -2098,8 +2118,17 @@
     return request;
   }
 
+  function pausePeerTransfer(hostId, transfer) {
+    if (!nativeConnectionExplicitlyOffline(hostId)) return false;
+    transfer.pausedOffline = true;
+    if (transfer.timer !== null) clearTimeout(transfer.timer);
+    transfer.timer = null;
+    return true;
+  }
+
   function wakePeerTransfer(hostId, transfer) {
-    if (state.disposed || transfer.timer !== null || !transfer.latest) return;
+    if (state.disposed || !transfer.latest) return;
+    if (pausePeerTransfer(hostId, transfer) || transfer.timer !== null) return;
     transfer.timer = setTimeout(() => {
       transfer.timer = null;
       void drainPeerTransfer(hostId, transfer);
@@ -2108,6 +2137,7 @@
 
   async function drainPeerTransfer(hostId, transfer) {
     if (state.disposed || transfer.pending || !transfer.latest) return;
+    if (pausePeerTransfer(hostId, transfer)) return;
     const outstanding = peerWriteLocks.get(hostId);
     if (outstanding) {
       if (transfer.waitingOn !== outstanding) {
@@ -2127,6 +2157,11 @@
     try {
       const home = await resolveRemoteHome(hostId, job.runtime);
       if (state.disposed) return;
+      if (nativeConnectionExplicitlyOffline(hostId)) {
+        if (!transfer.latest) transfer.latest = job;
+        pausePeerTransfer(hostId, transfer);
+        return;
+      }
       // Another renderer may have started a write while config/read was pending.
       if (peerWriteLocks.has(hostId)) { if (!transfer.latest) transfer.latest = job; return; }
       const raw = Promise.resolve().then(() => job.runtime.requestClient.sendRequest("fs/writeFile", {
@@ -2159,12 +2194,25 @@
     if (state.disposed || typeof runtime?.requestClient?.sendRequest !== "function") return;
     let transfer = state.peerTransfers.get(hostId);
     if (!transfer) {
-      transfer = { pending: false, latest: null, timer: null, retryAt: 0, failures: 0, lastSuccessAt: null, error: null };
+      transfer = { pending: false, latest: null, timer: null, retryAt: 0, failures: 0, lastSuccessAt: null, error: null, pausedOffline: false };
       state.peerTransfers.set(hostId, transfer);
     }
-    // A slow peer retains only the newest complete snapshot, never an unbounded queue.
+    // A slow or offline peer retains only the newest complete snapshot, never an unbounded queue.
     transfer.latest = { runtime, generatedAt: Date.parse(payload.generatedAt), dataBase64: encodeText(peerTransferText(payload, hostId)) };
+    if (pausePeerTransfer(hostId, transfer)) return;
     void drainPeerTransfer(hostId, transfer);
+  }
+
+  function resumePausedPeerTransfers(runtimes) {
+    for (const [hostId, transfer] of state.peerTransfers) {
+      if (pausePeerTransfer(hostId, transfer) || !transfer.pausedOffline) continue;
+      const runtime = runtimes.get(hostId);
+      if (typeof runtime?.requestClient?.sendRequest !== "function") continue;
+      transfer.pausedOffline = false;
+      transfer.retryAt = 0;
+      if (transfer.latest) transfer.latest = { ...transfer.latest, runtime };
+      void drainPeerTransfer(hostId, transfer);
+    }
   }
 
   function pushLocalInventoryToPeers(payload) {
@@ -2172,6 +2220,7 @@
     const runtimes = discoverRemoteRuntimes(discovery.runtimes);
     for (const [hostId, transfer] of state.peerTransfers) {
       if (!runtimes.has(hostId)) {
+        if (pausePeerTransfer(hostId, transfer)) continue;
         transfer.latest = null;
         if (transfer.timer !== null) clearTimeout(transfer.timer);
         transfer.timer = null;
@@ -2179,6 +2228,7 @@
       }
     }
     for (const [hostId, runtime] of runtimes) queuePeerTransfer(hostId, runtime, payload);
+    resumePausedPeerTransfers(runtimes);
   }
 
   function scheduleLocalPeerCacheInventory(hosts) {
@@ -2784,6 +2834,12 @@
         availability.set(hostId, connectivity.available);
       }
     }
+    // The native connection catalog is the final authority for live device
+    // availability. Direct helper evidence can be older than a native
+    // disconnect/reconnect event, while cached rows intentionally remain.
+    for (const connection of state.nativeConnectionSnapshot?.connections ?? []) {
+      if (typeof connection.online === "boolean") availability.set(connection.hostId, connection.online);
+    }
     for (const task of tasks) {
       for (const [id, name] of task.hostNames) {
         const normalizedId = normalizeHostId(id);
@@ -3303,6 +3359,7 @@
     };
     if (state.localRuntime?.requestClient && !recentlyListed("local")) return true;
     return model.hosts.some((host) => host.id !== "local" && (() => {
+      if (nativeConnectionExplicitlyOffline(host.id)) return false;
       if (recentlyListed(host.id)) return false;
       const inventory = freshInventory(host.id);
       const membershipAt = inventory?.threadScopeGeneratedAt ?? inventory?.generatedAt;
@@ -3327,10 +3384,11 @@
     if (!isCurrentDiscoveryGeneration(generation)) return { complete: false, error: "Refresh was superseded" };
     const runtimes = new Map(discoverRemoteRuntimes(discovery.runtimes));
     if (state.localRuntime?.requestClient) runtimes.set("local", state.localRuntime);
-    const remoteRuntimes = new Map([...runtimes].filter(([hostId]) => hostId !== "local" && !state.localRuntimeHostIds.has(hostId)));
+    const remoteRuntimes = new Map([...runtimes].filter(([hostId]) => hostId !== "local"
+      && !state.localRuntimeHostIds.has(hostId) && !nativeConnectionExplicitlyOffline(hostId)));
     state.healthRefreshOutcomes = new Map([...new Set([...discovery.names.keys(), ...discovery.availability.keys(), ...runtimes.keys()])]
       .filter((hostId) => hostId !== "local")
-      .map((hostId) => [hostId, runtimes.has(hostId) ? "requested" : "no-runtime"]));
+      .map((hostId) => [hostId, nativeConnectionExplicitlyOffline(hostId) ? "offline" : runtimes.has(hostId) ? "requested" : "no-runtime"]));
     // The invalidation itself marks hydration dirty. The forced pass consumes
     // that marker; mutations arriving after this point set it again and are
     // handled by the normal dirty follow-up path.
@@ -3354,7 +3412,8 @@
       const refreshedDiscovery = discoverHostNames();
       const refreshedRuntimes = new Map(discoverRemoteRuntimes(refreshedDiscovery.runtimes));
       if (state.localRuntime?.requestClient) refreshedRuntimes.set("local", state.localRuntime);
-      const refreshedRemoteRuntimes = new Map([...refreshedRuntimes].filter(([hostId]) => hostId !== "local" && !state.localRuntimeHostIds.has(hostId)));
+      const refreshedRemoteRuntimes = new Map([...refreshedRuntimes].filter(([hostId]) => hostId !== "local"
+        && !state.localRuntimeHostIds.has(hostId) && !nativeConnectionExplicitlyOffline(hostId)));
       const followups = [];
       if (hydrationWasPending) followups.push(scheduleNativeInventoryHydration(true, generation));
       // Remote inventory scheduling already queues one generation-safe read
@@ -3377,23 +3436,26 @@
       }
     }
     const startedAt = state.deviceRefreshLastStartedAt;
-    const hosts = [...new Set([
+    const knownHosts = [...new Set([
       ...runtimes.keys(),
       ...discovery.names.keys(),
       ...discovery.availability.keys(),
     ])].filter((hostId) => !state.localRuntimeHostIds.has(hostId));
+    const hosts = knownHosts.filter((hostId) => !nativeConnectionExplicitlyOffline(hostId));
     const freshMembership = (hostId) => {
       const inventory = state.threadInventories.get(hostId);
       return Boolean(inventory && !inventory.error && inventory.truncated !== true
         && Number.isFinite(inventory.fetchedAt) && inventory.fetchedAt >= startedAt);
     };
-    const complete = hosts.length > 0 && hosts.every(freshMembership);
+    const allKnownHostsOffline = knownHosts.length > 0 && hosts.length === 0
+      && knownHosts.every(nativeConnectionExplicitlyOffline);
+    const complete = allKnownHostsOffline || (hosts.length > 0 && hosts.every(freshMembership));
     const connectedHosts = new Set(hosts);
     const failures = [...state.threadInventories.values()]
       .filter((inventory) => connectedHosts.has(inventory.hostId) && inventory.error)
       .map((inventory) => `${inventory.hostId}: ${inventory.error}`);
     for (const [hostId, inventory] of state.remoteProjectInventories) {
-      if (inventory?.error && runtimes.has(hostId)) failures.push(`${hostId}: ${inventory.error}`);
+      if (inventory?.error && runtimes.has(hostId) && !nativeConnectionExplicitlyOffline(hostId)) failures.push(`${hostId}: ${inventory.error}`);
     }
     for (const hostId of hosts) {
       if (!runtimes.has(hostId)) failures.push(`${hostId}: direct runtime unavailable`);
@@ -4226,7 +4288,8 @@
       if (!isCurrentDiscoveryGeneration(operationGeneration)) return;
       const runtimes = new Map(discoverRemoteRuntimes(discovery.runtimes));
       if (state.localRuntime?.requestClient) runtimes.set("local", state.localRuntime);
-      const tasks = [...runtimes].filter(([hostId]) => !state.localRuntimeHostIds.has(hostId) && (force || runtimeThreadInventoryDue(hostId))).map(async ([hostId, runtime]) => {
+      const tasks = [...runtimes].filter(([hostId]) => !state.localRuntimeHostIds.has(hostId)
+        && !nativeConnectionExplicitlyOffline(hostId) && (force || runtimeThreadInventoryDue(hostId))).map(async ([hostId, runtime]) => {
         const requestClient = runtime?.requestClient;
         const localRuntimeGeneration = hostId === "local" ? state.localRuntimeGeneration : null;
         const runtimeIsCurrent = () => isCurrentDiscoveryGeneration(operationGeneration)
@@ -4286,7 +4349,9 @@
       const results = await Promise.all(tasks);
       completedInventories = results;
       if (!isCurrentDiscoveryGeneration(operationGeneration)) return;
-      const errors = [...state.threadInventories.values()].filter((result) => result.error).map((result) => `${result.hostId}: ${result.error}`);
+      const errors = [...state.threadInventories.values()]
+        .filter((result) => result.error && !nativeConnectionExplicitlyOffline(result.hostId))
+        .map((result) => `${result.hostId}: ${result.error}`);
       state.inventoryHydrationError = errors.length ? errors.join("; ").slice(0, 240) : null;
       state.inventoryHydrationTruncated = results.some((result) => result && (result.attemptTruncated === true || result.truncated === true || result.threads.length >= 9800));
     } catch (error) {
@@ -4302,7 +4367,7 @@
           const runtimes = new Map(discoverRemoteRuntimes(discovery.runtimes));
           if (state.localRuntime?.requestClient) runtimes.set("local", state.localRuntime);
           const membershipComplete = [...runtimes.keys()]
-            .filter((hostId) => !state.localRuntimeHostIds.has(hostId))
+            .filter((hostId) => !state.localRuntimeHostIds.has(hostId) && !nativeConnectionExplicitlyOffline(hostId))
             .every((hostId) => {
               const inventory = state.threadInventories.get(hostId);
               return inventory && !inventory.error && inventory.truncated !== true
@@ -6844,6 +6909,7 @@
       scheduleLocalPeerCacheInventory(model.hosts);
       scheduleLocalRegisteredProjectsRefresh();
       scheduleRemoteProjectInventory(model.remoteRuntimes, state.nativeConnectionRefreshPending);
+      resumePausedPeerTransfers(model.remoteRuntimes);
       state.nativeConnectionRefreshPending = false;
       scheduleAutoArchive();
       scheduleNativeInventoryHydration();

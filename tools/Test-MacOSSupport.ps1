@@ -7,12 +7,14 @@ $updater = Get-Content -LiteralPath (Join-Path $root 'macos\Update-ChatGPTRemote
 $launcher = Get-Content -LiteralPath (Join-Path $root 'macos\MobileProjectView-macOS-arm64.sh') -Raw
 $shortcut = Get-Content -LiteralPath (Join-Path $root 'macos\MacOSShortcut.sh') -Raw
 $zshSemanticTest = Get-Content -LiteralPath (Join-Path $root 'tools\Test-MacOSSupport.zsh') -Raw
+$updateSession = Get-Content -LiteralPath (Join-Path $root 'macos\update-session.js') -Raw
 
 foreach ($contract in @(
     'cd -- "$HOME"',
     'invoke_transaction_helper apply',
     'recover_pending_transaction',
     '.chatgpt-remote-release.zip',
+    'if (!value.method) value.method = process.argv[2]',
     'acquire_launch_guard',
     'UPDATE_RECOVERY_REQUIRED',
     'record_check "$tag"'
@@ -47,6 +49,20 @@ foreach ($contract in @(
     'target?.url === "app://-/index.html"',
     'const report = value?.report?.readiness ?? value?.report;',
     'Last readiness proof: $summary',
+    'prelaunch_update "$node_bin"',
+    'CHATGPT_REMOTE_UPDATE_TRANSPORT=git',
+    'CODEX_REMOTE_LAUNCH_GUARD_TOKEN=$launch_guard_token',
+    'CODEX_REMOTE_SKIP_PRELAUNCH_UPDATE_ONCE=1',
+    'CODEX_REMOTE_RECOVERY_CONTINUATION=1',
+    'Update recovery did not prove installed-file integrity before launch.',
+    'typeof value.recovered !== "boolean"',
+    '["complete-forward", "rollback", "unchanged"].includes(value.recoveryMode)',
+    'continue_with_updated_launcher',
+    'exec /usr/bin/env "${environment[@]}" /bin/zsh "$script_path" "$action"',
+    'if ! validation="$("$node_bin" -e',
+    'The updater final output record was not valid JSON proof.',
+    'The updater returned more than one JSON proof record.',
+    '(!value.updated && value.method !== "verified-git")',
     'New LaunchAgent failed to load; the previous definition was restored.',
     'cp -p -- "$previous_plist" "$plist"'
 )) {
@@ -62,6 +78,24 @@ foreach ($contract in @(
 }
 if ($launcher.Contains('reported a terminal readiness error')) {
     throw 'macOS launcher still treats a transient renderer readiness error as terminal.'
+}
+$recoverCallIndex = $launcher.LastIndexOf('  recover_update "$node_bin"')
+$prelaunchCallIndex = $launcher.LastIndexOf('  prelaunch_update "$node_bin"')
+$handoffCallIndex = $launcher.LastIndexOf('  continue_with_updated_launcher')
+$debugEndpointIndex = $launcher.LastIndexOf('  if ! debug_endpoint_ready "$node_bin"; then')
+if ($recoverCallIndex -lt 0 -or $prelaunchCallIndex -le $recoverCallIndex -or
+    $handoffCallIndex -le $prelaunchCallIndex -or $debugEndpointIndex -le $handoffCallIndex) {
+    throw 'macOS verified update/recovery is not ordered before renderer endpoint discovery.'
+}
+if (-not $zshSemanticTest.Contains('PrelaunchRecoveryFailClosed') -or
+    -not $zshSemanticTest.Contains('PrelaunchStrictFinalJsonProof') -or
+    -not $zshSemanticTest.Contains('PrelaunchCurrentMethodRequired') -or
+    -not $zshSemanticTest.Contains('InheritedLaunchGuard') -or
+    -not $zshSemanticTest.Contains('SourceCheckoutInterpreterHandoff')) {
+    throw 'The real-zsh prelaunch recovery and launch-guard handoff regressions are not wired.'
+}
+if (-not $updateSession.Contains('env.CODEX_REMOTE_SKIP_PRELAUNCH_UPDATE_ONCE = "1";')) {
+    throw 'The macOS detached update-session relaunch can repeat the prelaunch update.'
 }
 foreach ($contract in @(
     'candidate_source=',
@@ -92,6 +126,13 @@ $global:LASTEXITCODE = 0
     NestedReadinessEnvelope = $true
     TransientReadinessRetried = $true
     GitUpdaterHelpersBundled = $true
+    PrelaunchUpdateBeforeDiscovery = $true
+    PrelaunchIntegrityRecovery = $true
+    PrelaunchStrictFinalJsonProof = $true
+    PrelaunchCurrentMethodRequired = $true
+    UpdatedEntryPointGuardHandoff = $true
+    SourceCheckoutInterpreterHandoff = $true
+    DetachedRelaunchSkipsPrelaunchUpdate = $true
     ShortcutCandidateSwap = $true
     ShortcutExactTarget = $true
     RealZshSemanticTestPresent = $true

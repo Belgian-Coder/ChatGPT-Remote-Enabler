@@ -403,7 +403,11 @@ function Invoke-PreparedRelease {
         '--platform', $platformName, '--version', $RequestedVersion,
         '--archive-sha256', $ExpectedHash.ToLowerInvariant()
     )
-    return Invoke-TransactionHelper -Operation 'apply' -Arguments $arguments
+    $result = Invoke-TransactionHelper -Operation 'apply' -Arguments $arguments
+    if ($Transport -eq 'Git' -and [string]::IsNullOrWhiteSpace([string]$result.method)) {
+        $result | Add-Member -NotePropertyName method -NotePropertyValue 'verified-git'
+    }
+    return $result
 }
 
 function Invoke-PendingRecovery {

@@ -1,5 +1,50 @@
 # Changelog
 
+## v1.5.59 — 2026-09-12
+
+- Make both Windows shortcut/startup entry points fail closed through one
+  ordered launch gate: recover and verify Remote Enabler integrity, complete
+  the official signed x64 ChatGPT MSIX update without stopping a running app,
+  complete a required verified-Git Remote Enabler update, reload any replaced
+  coordinator, and only then probe compatibility or inject. Missing helpers,
+  network failures, opt-out/check-interval skips, malformed or duplicate JSON
+  proof, unsupported package identity, and repeated recovery all stop launch.
+  Rollback recovery remains compatible with the previous entry point.
+- Run the macOS verified Git automatic update under the existing launch guard
+  before debug-endpoint discovery, compatibility checks or renderer injection.
+  Validate the updater's final result, recover and verify installed integrity,
+  and hand an updated launch back to the replaced script without replaying the
+  prelaunch check or startup delay. The sole JSON proof must be the final
+  nonblank record, and current as well as updated results require an exact
+  verified-Git method; malformed, duplicate or non-Git proof fails closed. A
+  best-effort network failure may continue only after installed integrity is
+  proven. Recovery now validates its boolean, version and mode contract and
+  also hands off when complete-forward, rollback or unchanged recovery changed
+  the on-disk launcher before a current Git result.
+- Make the native connection snapshot's explicit online state authoritative for
+  device availability. Offline devices retain cached rows but no longer receive
+  remote inventory, outbound publisher transfers, or native thread requests and
+  are excluded from refresh completeness, error and resume-staleness decisions.
+  Transient missing native snapshots preserve the last authoritative state;
+  reconnection forces a fresh request and resumes only the newest publisher
+  snapshot. Require the native catalog and status cache to arrive as one
+  coherent snapshot so either one-sided gap preserves the prior offline state;
+  treat a refresh with only known offline peers as complete and non-actionable.
+- Preserve remote runtime cache and its retry timestamp after an ordinary
+  inventory read failure instead of discarding usable runtime evidence. Add
+  deterministic lifecycle coverage for offline suppression, cached-row
+  retention, native-status precedence, failure preservation and reconnect.
+- Ship renderer v79 on Windows and macOS. Source, browser/search, native macOS
+  prelaunch, archive-layout and privacy validation are release gates; package
+  publication remains distinct from installation and native runtime acceptance.
+- Retain current Windows native-renderer support when the official package
+  already has embedded-ASAR integrity disabled. Add an exact no-proxy,
+  existing-protected-key regression so older installed helpers that reject this
+  valid fuse state recover by updating to v1.5.59 before launch.
+- Return `method=verified-git` from packaged Git transactions and cover the
+  strict Windows recovery, desktop-package, current/newer-package, Git proof,
+  handoff, rollback-compatibility and failure contracts deterministically.
+
 ## v1.5.58 — 2026-09-11
 
 - Add an explicit Windows `Update-ChatGPTDesktop.ps1` Probe/Check/Update path

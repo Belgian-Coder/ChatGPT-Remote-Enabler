@@ -364,7 +364,8 @@ function Invoke-ChatGPTDesktopMsixUpdater {
             ExpectedArchitecture = $script:ExpectedArchitecture
             InstallScope = 'CurrentUser'
             Installer = 'Add-AppxPackage -Path (no -AllUsers, no provisioning, no force shutdown)'
-            AutomaticBaseAppUpdates = $false
+            AutomaticBaseAppUpdates = $true
+            AutomaticUpdateEntryPoints = @('ChatGPT Remote Enabler shortcut', 'Device Projects sign-in startup')
         }
     }
 

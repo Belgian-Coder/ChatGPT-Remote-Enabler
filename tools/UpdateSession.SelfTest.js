@@ -363,12 +363,46 @@ async function testExactRelaunchArguments() {
   const adapter = new session.PlatformAdapter(cfg, { spawn: fakeSpawn });
   await adapter.relaunch();
   assert.ok(invocation.args.includes("-UpdateResume"));
+  assert.ok(invocation.args.includes("-SkipDesktopAppUpdateOnce"), "update-session relaunch must not repeat the already completed desktop-app gate");
   assert.ok(invocation.args.includes("-SkipUpdateCheckOnce"));
   assert.equal(invocation.args.includes("-ReplaceRunningApp"), false, "update resume must never replace a process that appeared during update");
   assert.ok(invocation.args.includes("-UseProxy"), "saved protected-proxy mode must be reloaded by the updated launcher");
   assert.equal(invocation.args.some((value) => /https?:\/\//u.test(value)), false, "relaunch args must not persist proxy credentials or URLs");
   assert.equal(invocation.options.detached, false, "Windows PowerShell must execute in the coordinator process group so its script is not skipped");
   assert.equal(invocation.options.windowsHide, true, "Windows relaunch must remain hidden");
+}
+
+async function testExactMacRelaunchArguments() {
+  const cfg = config({
+    platform: "darwin",
+    updaterPath: path.join(bundleRoot, "Update-ChatGPTRemote.sh"),
+    platformHelperPath: path.join(bundleRoot, "UpdateSessionPlatform.sh"),
+    app: { pid: 4321, startToken: "Sat Sep  5 12:00:00 2026", executablePath: "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT", appPath: "/Applications/ChatGPT.app", bundleId: "com.example.ChatGPT" },
+    relaunch: { entryPointRelative: "MobileProjectView-macOS-arm64.sh", startupMode: true },
+  });
+  cfg.configPath = path.join(sessionDirectory, "session.json");
+  let invocation;
+  const fakeSpawn = (command, args, options) => {
+    invocation = { command, args, options };
+    const child = new events.EventEmitter();
+    child.pid = 1000;
+    child.exitCode = null;
+    child.unref = () => {};
+    setImmediate(() => {
+      fs.writeFileSync(path.join(sessionDirectory, "relaunch-handoff.json"), JSON.stringify({ ready: true, entryPointRelative: cfg.relaunch.entryPointRelative }));
+      child.emit("spawn");
+    });
+    return child;
+  };
+  const adapter = new session.PlatformAdapter(cfg, { spawn: fakeSpawn });
+  await adapter.relaunch();
+  assert.equal(invocation.command, "/bin/zsh");
+  assert.deepEqual(invocation.args, [path.join(cfg.installRoot, cfg.relaunch.entryPointRelative), "startup"]);
+  assert.equal(invocation.options.env.CODEX_REMOTE_SKIP_UPDATE_CHECK_ONCE, "1");
+  assert.equal(invocation.options.env.CODEX_REMOTE_SKIP_PRELAUNCH_UPDATE_ONCE, "1", "a detached relaunch must not run a second prelaunch update");
+  assert.equal(invocation.options.env.CODEX_REMOTE_SKIP_STARTUP_DELAY_ONCE, "1");
+  assert.equal(invocation.options.detached, true);
+  assert.equal(invocation.options.windowsHide, true);
 }
 
 async function testUpdaterMappingsAndPrettyJson() {
@@ -444,9 +478,10 @@ async function testActualWindowsCheck() {
     await testConcurrentStaleLockReclamation();
     await testTimedOutCommandTreeLeavesNoMutation();
     await testExactRelaunchArguments();
+    await testExactMacRelaunchArguments();
     await testUpdaterMappingsAndPrettyJson();
     await testActualWindowsCheck();
-    process.stdout.write(`${JSON.stringify({ ok: true, persistentHistory: true, controllerFlows: 8, monitorSingleflight: true, malformedLockFailClosed: true, concurrentLockReclaim: true, timeoutTreeContained: true, exactRelaunch: true, prettyJson: true, actualWindowsCheck: process.platform === "win32" && !process.argv.includes("--skip-actual-updater") })}\n`);
+    process.stdout.write(`${JSON.stringify({ ok: true, persistentHistory: true, controllerFlows: 8, monitorSingleflight: true, malformedLockFailClosed: true, concurrentLockReclaim: true, timeoutTreeContained: true, exactRelaunch: true, exactMacRelaunchSkipsPrelaunch: true, prettyJson: true, actualWindowsCheck: process.platform === "win32" && !process.argv.includes("--skip-actual-updater") })}\n`);
   } finally {
     fs.rmSync(tempRoot, { force: true, recursive: true });
   }

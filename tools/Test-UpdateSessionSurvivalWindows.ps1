@@ -233,14 +233,15 @@ param(
     [ValidateSet('Run')][string]$Action,
     [switch]$UseProxy,
     [switch]$UpdateResume,
+    [switch]$SkipDesktopAppUpdateOnce,
     [switch]$SkipUpdateCheckOnce,
     [string]$RelaunchHandoffPath
 )
 $ErrorActionPreference = 'Stop'
 if ($MyInvocation.MyCommand.Name -like 'Failure*') { exit 0 }
-if ($Action -cne 'Run' -or -not $UseProxy -or -not $UpdateResume -or -not $SkipUpdateCheckOnce) { exit 72 }
+if ($Action -cne 'Run' -or -not $UseProxy -or -not $UpdateResume -or -not $SkipDesktopAppUpdateOnce -or -not $SkipUpdateCheckOnce) { exit 72 }
 if ([IO.Path]::GetFullPath($RelaunchHandoffPath) -cne [IO.Path]::GetFullPath($env:TEST_RELAUNCH_HANDOFF_PATH)) { exit 73 }
-$evidence = [ordered]@{ action = $Action; useProxy = [bool]$UseProxy; updateResume = [bool]$UpdateResume; skipUpdateCheckOnce = [bool]$SkipUpdateCheckOnce; hidden = $true }
+$evidence = [ordered]@{ action = $Action; useProxy = [bool]$UseProxy; updateResume = [bool]$UpdateResume; skipDesktopAppUpdateOnce = [bool]$SkipDesktopAppUpdateOnce; skipUpdateCheckOnce = [bool]$SkipUpdateCheckOnce; hidden = $true }
 [IO.File]::WriteAllText($env:TEST_RELAUNCH_WORKLOAD_PATH, ($evidence | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
 $shell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $descendantArgument = '"' + $env:TEST_RELAUNCH_DESCENDANT_SCRIPT + '"'
@@ -380,7 +381,7 @@ try {
     Wait-File $survivedPath -FailurePath $initiatorErrorPath
     Wait-File $relaunchWorkloadPath -FailurePath $initiatorErrorPath
     $relaunchEvidence = Get-Content -LiteralPath $relaunchWorkloadPath -Raw | ConvertFrom-Json
-    if ($relaunchEvidence.action -cne 'Run' -or -not $relaunchEvidence.useProxy -or -not $relaunchEvidence.updateResume -or -not $relaunchEvidence.skipUpdateCheckOnce) {
+    if ($relaunchEvidence.action -cne 'Run' -or -not $relaunchEvidence.useProxy -or -not $relaunchEvidence.updateResume -or -not $relaunchEvidence.skipDesktopAppUpdateOnce -or -not $relaunchEvidence.skipUpdateCheckOnce) {
         throw 'The real Windows relaunch fixture did not receive the exact protected update-resume arguments.'
     }
     $relaunchEvidence = Get-Content -LiteralPath $relaunchResultPath -Raw | ConvertFrom-Json

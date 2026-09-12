@@ -5,7 +5,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 const filename = path.join(__dirname, "..", "renderer-mobile-project-view.js");
 const original = fs.readFileSync(filename, "utf8").replace(/\r\n/g, "\n");
-const source = original.replace("  return install();\n})();", "  globalThis.transportFixture = { state, compactInventoryText, peerTransferText, peerContentSignature, inventoryHasWork, parseInventoryPayload, serializePeerInventory, queuePeerTransfer, drainPeerTransfer, resolveRemoteHome, scheduleRemoteProjectInventory, connectionGuidance, peerWriteLocks };\n})();");
+const source = original.replace("  return install();\n})();", "  globalThis.transportFixture = { state, compactInventoryText, peerTransferText, peerContentSignature, inventoryHasWork, parseInventoryPayload, serializePeerInventory, queuePeerTransfer, drainPeerTransfer, pausePeerTransfer, resumePausedPeerTransfers, resolveRemoteHome, scheduleRemoteProjectInventory, connectionGuidance, peerWriteLocks };\n})();");
 assert.notEqual(original, source);
 let now = Date.now();
 let timerId = 0;
@@ -88,6 +88,107 @@ async function advance(ms) { now += ms; for (let i = 0; i < 30; i++) { const due
   const failed = t.state.peerTransfers.get(failHost); now += 181000; await t.drainPeerTransfer(failHost, failed); assert.equal(attempts, 3);
   t.state.disposed = true; t.queuePeerTransfer(failHost, failing, snapshot("disposed")); assert.equal(attempts, 3); t.state.disposed = false;
 
+  // Native offline state pauses outbound publication before config discovery,
+  // retains only the newest snapshot, and resumes it once with the current runtime.
+  const offlineHost = host + "offline";
+  const offlineWrites = []; let offlineConfigReads = 0;
+  const offlineRuntime = { requestClient: { sendRequest: async (method, params) => {
+    if (method === "config/read") { offlineConfigReads++; return { home: "/fixture/.codex" }; }
+    assert.equal(method, "fs/writeFile");
+    offlineWrites.push(JSON.parse(Buffer.from(params.dataBase64, "base64").toString("utf8")));
+    return {};
+  } } };
+  t.state.nativeConnectionSnapshot = { connections: [{ hostId: offlineHost, online: false }] };
+  t.queuePeerTransfer(offlineHost, offlineRuntime, snapshot("offline older"));
+  now += 1;
+  t.queuePeerTransfer(offlineHost, offlineRuntime, snapshot("offline newest"));
+  await flush();
+  const offlineTransfer = t.state.peerTransfers.get(offlineHost);
+  assert.equal(offlineConfigReads, 0);
+  assert.equal(offlineWrites.length, 0, "an explicitly offline peer must receive no outbound requests");
+  assert.equal(offlineTransfer.pausedOffline, true);
+  assert.equal(offlineTransfer.timer, null, "offline retry timers must be cancelled");
+  await t.drainPeerTransfer(offlineHost, offlineTransfer);
+  await advance(60000);
+  assert.equal(offlineWrites.length, 0, "manual drain and elapsed backoff must stay paused offline");
+  offlineTransfer.retryAt = now + 60000;
+  t.state.nativeConnectionSnapshot = { connections: [{ hostId: offlineHost, online: true }] };
+  t.resumePausedPeerTransfers(new Map([[offlineHost, offlineRuntime]]));
+  await flush();
+  assert.equal(offlineTransfer.pausedOffline, false);
+  assert.equal(offlineTransfer.retryAt, 0, "fresh native-online evidence must clear the old retry delay");
+  assert.equal(offlineConfigReads, 1);
+  assert.equal(offlineWrites.length, 1);
+  assert.equal(offlineWrites[0].threads[0].title, "offline newest");
+  t.resumePausedPeerTransfers(new Map([[offlineHost, offlineRuntime]]));
+  await flush();
+  assert.equal(offlineWrites.length, 1, "repeated render/resume must not duplicate the transfer");
+
+  // A disconnect while config/read is pending must prevent the following write
+  // and retain that job until a current runtime is available after reconnect.
+  const configRaceHost = host + "config-race";
+  let finishRaceConfig; const configRaceWrites = [];
+  const configRaceRuntime = { requestClient: { sendRequest: async (method, params) => {
+    if (method === "config/read") return await new Promise(resolve => { finishRaceConfig = resolve; });
+    assert.equal(method, "fs/writeFile");
+    configRaceWrites.push(JSON.parse(Buffer.from(params.dataBase64, "base64").toString("utf8")));
+    return {};
+  } } };
+  t.state.nativeConnectionSnapshot = { connections: [{ hostId: configRaceHost, online: true }] };
+  t.queuePeerTransfer(configRaceHost, configRaceRuntime, snapshot("config race"));
+  await flush();
+  const configRaceTransfer = t.state.peerTransfers.get(configRaceHost);
+  t.state.nativeConnectionSnapshot = { connections: [{ hostId: configRaceHost, online: false }] };
+  t.pausePeerTransfer(configRaceHost, configRaceTransfer);
+  finishRaceConfig({ home: "/fixture/.codex" });
+  await flush();
+  assert.equal(configRaceWrites.length, 0, "disconnect after config/read starts must prevent fs/writeFile");
+  assert.equal(configRaceTransfer.pausedOffline, true);
+  assert.ok(configRaceTransfer.latest, "the interrupted job must remain queued");
+  t.state.nativeConnectionSnapshot = { connections: [{ hostId: configRaceHost, online: true }] };
+  t.resumePausedPeerTransfers(new Map([[configRaceHost, configRaceRuntime]]));
+  await flush();
+  assert.equal(configRaceWrites.length, 1);
+  assert.equal(configRaceWrites[0].threads[0].title, "config race");
+
+  // A sent RPC remains serialized while offline. A newer queued snapshot waits
+  // for settlement and is the only snapshot sent after reconnect.
+  const writeRaceHost = host + "write-race";
+  const writeRaceWrites = []; let writeRaceFinish; let writeRaceActive = 0; let writeRaceMaxActive = 0;
+  const writeRaceRuntime = { requestClient: { sendRequest: async (method, params) => {
+    if (method === "config/read") return { home: "/fixture/.codex" };
+    assert.equal(method, "fs/writeFile");
+    writeRaceActive++; writeRaceMaxActive = Math.max(writeRaceMaxActive, writeRaceActive);
+    writeRaceWrites.push(JSON.parse(Buffer.from(params.dataBase64, "base64").toString("utf8")));
+    await new Promise(resolve => { writeRaceFinish = resolve; });
+    writeRaceActive--;
+    return {};
+  } } };
+  t.state.nativeConnectionSnapshot = { connections: [{ hostId: writeRaceHost, online: true }] };
+  t.queuePeerTransfer(writeRaceHost, writeRaceRuntime, snapshot("write in flight"));
+  await flush();
+  const firstWriteRaceFinish = writeRaceFinish;
+  const writeRaceTransfer = t.state.peerTransfers.get(writeRaceHost);
+  t.state.nativeConnectionSnapshot = { connections: [{ hostId: writeRaceHost, online: false }] };
+  t.pausePeerTransfer(writeRaceHost, writeRaceTransfer);
+  now += 1;
+  t.queuePeerTransfer(writeRaceHost, writeRaceRuntime, snapshot("write newest"));
+  await flush();
+  assert.equal(writeRaceWrites.length, 1);
+  firstWriteRaceFinish();
+  await flush();
+  await advance(60000);
+  assert.equal(writeRaceWrites.length, 1, "settlement while offline must not wake another write");
+  t.state.nativeConnectionSnapshot = { connections: [{ hostId: writeRaceHost, online: true }] };
+  t.resumePausedPeerTransfers(new Map([[writeRaceHost, writeRaceRuntime]]));
+  await flush();
+  assert.equal(writeRaceWrites.length, 2);
+  assert.equal(writeRaceWrites[1].threads[0].title, "write newest");
+  assert.equal(writeRaceMaxActive, 1);
+  writeRaceFinish();
+  await flush();
+  t.state.nativeConnectionSnapshot = null;
+
   const readHost = host + "read";
   let finishConfig, discoveryCalls = 0, readCalls = 0;
   const readRuntime = { requestClient: { sendRequest: async method => {
@@ -129,5 +230,5 @@ async function advance(ms) { now += ms; for (let i = 0; i < 30; i++) { const due
   const twoClient = { ...large, peers: { [host]: large } };
   const oldBytes = Buffer.byteLength(JSON.stringify(twoClient)); const newBytes = Buffer.byteLength(t.peerTransferText(twoClient, host));
   assert.ok(newBytes < oldBytes * .55);
-  console.log(JSON.stringify({ nullableSemanticsPreserved: true, recipientEchoRemoved: true, aliasRecipientContextMapped: true, aliasRecipientContextNotForwarded: true, aliasTombstoneSerialized: true, thirdPeerRetained: true, timestampEchoSuppressed: true, idleTaskDetection: true, latestSnapshotCoalesced: true, maxConcurrentWrites: maxActive, timeoutLockAcrossReinjection: true, exponentialRetry: true, expiredAndDisposedJobsSkipped: true, sharedPullPushDiscovery: true, failedReadPreservesAuthority: true, connectionFindings: 6, fixtureThreadsPerClient: 1000, previousPushJsonBytes: oldBytes, optimizedPushJsonBytes: newBytes, pushReductionPercent: Math.round(100 * (1 - newBytes / oldBytes)) }));
+  console.log(JSON.stringify({ nullableSemanticsPreserved: true, recipientEchoRemoved: true, aliasRecipientContextMapped: true, aliasRecipientContextNotForwarded: true, aliasTombstoneSerialized: true, thirdPeerRetained: true, timestampEchoSuppressed: true, idleTaskDetection: true, latestSnapshotCoalesced: true, offlineOutboundPaused: true, offlineNewestResumed: true, offlineConfigRaceGuarded: true, offlineWriteRaceSerialized: true, maxConcurrentWrites: maxActive, timeoutLockAcrossReinjection: true, exponentialRetry: true, expiredAndDisposedJobsSkipped: true, sharedPullPushDiscovery: true, failedReadPreservesAuthority: true, connectionFindings: 6, fixtureThreadsPerClient: 1000, previousPushJsonBytes: oldBytes, optimizedPushJsonBytes: newBytes, pushReductionPercent: Math.round(100 * (1 - newBytes / oldBytes)) }));
 })().catch(error => { console.error(error); process.exitCode = 1; });

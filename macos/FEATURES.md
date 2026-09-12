@@ -1,6 +1,6 @@
 # Feature guide
 
-This guide describes the Windows and macOS v1.5.60 source, including reliable
+This guide describes the Windows and macOS v1.5.61 source, including reliable
 background inventory publication, loaded search, compact Settings, guarded navigation, and stale-Steer recovery. Historical v1.5.49 packages and
 screenshots do not include those changes. Both packages share the Device
 projects renderer and the feature behavior below; the
@@ -17,13 +17,15 @@ or injection. A running app, missing helper, unavailable update source, or
 incomplete proof stops safely before launch.
 
 Windows uses one permanent unversioned install root at
-`C:\ProgramData\CodexRemoteFeatures\ChatGPT-Remote-Enabler-Windows-x64`.
+`%LOCALAPPDATA%\CodexRemoteFeatures\ChatGPT-Remote-Enabler-Windows-x64`.
 Every Desktop, Start-menu, Startup, and logon-task entry point, including
 legacy ChatGPT Custom aliases, is migrated there. Verified updates keep
 rollback state in per-user updater storage and run long-lived task hosts from
 hash-verified detached copies. Superseded version-named roots are removed only
 after manifest, shortcut, task, process, live-coordinator, and recovery checks;
 cleanup JSON identifies each removed or retained root.
+The former unversioned ProgramData root is an exact legacy source and is
+removed only after the same checks pass.
 
 ![Search in a synthetic v1.5.54 Chromium fixture](assets/screenshots/search-unreleased.png)
 

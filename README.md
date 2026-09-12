@@ -10,11 +10,11 @@ device filters, native project grouping and ordering, empty remote projects,
 project-hover new-chat actions, and working/unread indicators. The original
 **Native sidebar** remains available, with its grouping preference preserved.
 
-v1.5.60 adds the same verified prelaunch helper update on macOS, makes explicit
-native offline state authoritative for remote request suppression while
-retaining cached rows, and preserves runtime cache across ordinary inventory
-read failures. It retains the Windows prelaunch helper update and explicit
-current-user updater for OpenAI's signed desktop MSIX. See the
+v1.5.61 keeps the permanent Windows helper in the current user's unversioned
+LocalAppData root, migrates the former ProgramData root as legacy, and removes
+obsolete roots only after the existing safety checks pass. This prevents an
+administrator-owned ProgramData ACL from breaking limited-user automatic
+replacement. It retains the v1.5.60 renderer and prelaunch behavior. See the
 [feature guide](FEATURES.md) for behavior and validation limits.
 
 ## Install when hosted ZIP downloads are blocked
@@ -81,28 +81,27 @@ app build is compatible.
 See the [complete feature guide](FEATURES.md) for defaults, limits, privacy,
 and recovery behavior.
 
-## Install v1.5.60
+## Install v1.5.61
 
 Prerequisites are a supported ChatGPT/Codex desktop app signed in with Remote
 available on the account, Node.js 22 or newer, and a writable folder for the
 downloaded package. Organization policy, account access, MFA, or desktop-app
 policy can still block Remote independently of this helper.
 
-- **[Download Windows 11 x64](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/download/v1.5.60/ChatGPT-Remote-Enabler-Windows-x64-v1.5.60.zip)** and follow the [Windows installation guide](windows/README.md).
-- **[Download macOS Apple Silicon](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/download/v1.5.60/ChatGPT-Remote-Enabler-macOS-arm64-v1.5.60.zip)** and follow the [macOS installation guide](macos/README.md).
-- Use the [v1.5.60 release page](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.60) to inspect release notes and published checksums.
+- **[Download Windows 11 x64](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/download/v1.5.61/ChatGPT-Remote-Enabler-Windows-x64-v1.5.61.zip)** and follow the [Windows installation guide](windows/README.md).
+- **[Download macOS Apple Silicon](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/download/v1.5.61/ChatGPT-Remote-Enabler-macOS-arm64-v1.5.61.zip)** and follow the [macOS installation guide](macos/README.md).
+- Use the [v1.5.61 release page](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.61) to inspect release notes and published checksums.
 
 Both installers run in the current-user context and do not request elevation.
 macOS keeps the package in a user-owned folder. On Windows, keep the downloaded
 package in a writable user-owned staging folder; setup or first launch verifies
-and copies it to the permanent machine-local root below. If organizational ACLs
-make that root unwritable, installation stops before changing entry points.
+and copies it to the permanent per-user root below.
 Run the platform launcher after quitting the ordinary desktop app; it opens the
 app with Device projects and Native sidebar available. Optional shortcut and
 sign-in startup setup is documented separately in each platform guide.
 
 Windows keeps one permanent unversioned installation root at
-`C:\ProgramData\CodexRemoteFeatures\ChatGPT-Remote-Enabler-Windows-x64`.
+`%LOCALAPPDATA%\CodexRemoteFeatures\ChatGPT-Remote-Enabler-Windows-x64`.
 Desktop, Start-menu, Startup, and logon-task entry points all resolve to that
 root, including legacy **ChatGPT Custom** and **Remote Enabler** aliases. Each
 verified update checks the release manifest, VERSION, and ProductVersion before
@@ -110,7 +109,9 @@ replacing files. The transient update task host runs from a detached per-user
 copy, so it cannot lock the stable root. After a successful update, obsolete
 version-named roots are removed only when no shortcut, task, process, live
 coordinator configuration, or recovery journal still references them; updater
-JSON reports every removed and retained root.
+JSON reports every removed and retained root. The former unversioned
+ProgramData root is also treated as an exact legacy source and removed after
+those checks pass.
 
 ## Remote connection roles
 

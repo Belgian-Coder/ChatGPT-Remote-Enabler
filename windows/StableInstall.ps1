@@ -5,15 +5,22 @@
 # permanent and version-independent; update journals and rollback material
 # live in the per-user updater state instead.
 
+function Get-StableMachineInstallRoot {
+    $commonData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
+    if ([string]::IsNullOrWhiteSpace($commonData)) { $commonData = $env:ProgramData }
+    if ([string]::IsNullOrWhiteSpace($commonData)) { throw 'The common application-data directory is unavailable.' }
+    return [IO.Path]::GetFullPath((Join-Path $commonData 'CodexRemoteFeatures\ChatGPT-Remote-Enabler-Windows-x64')).TrimEnd('\')
+}
+
 function Get-StableInstallRoot {
     param([string]$Override)
     if (-not [string]::IsNullOrWhiteSpace($Override)) {
         return [IO.Path]::GetFullPath($Override).TrimEnd('\')
     }
-    $commonData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
-    if ([string]::IsNullOrWhiteSpace($commonData)) { $commonData = $env:ProgramData }
-    if ([string]::IsNullOrWhiteSpace($commonData)) { throw 'The common application-data directory is unavailable.' }
-    return [IO.Path]::GetFullPath((Join-Path $commonData 'CodexRemoteFeatures\ChatGPT-Remote-Enabler-Windows-x64')).TrimEnd('\')
+    $localData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+    if ([string]::IsNullOrWhiteSpace($localData)) { $localData = $env:LOCALAPPDATA }
+    if ([string]::IsNullOrWhiteSpace($localData)) { throw 'The current-user application-data directory is unavailable.' }
+    return [IO.Path]::GetFullPath((Join-Path $localData 'CodexRemoteFeatures\ChatGPT-Remote-Enabler-Windows-x64')).TrimEnd('\')
 }
 
 function Test-StablePathWithin {
@@ -279,10 +286,13 @@ function Get-StableLegacyRoots {
     $candidates = [Collections.Generic.List[string]]::new()
     $commonData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
     if ([string]::IsNullOrWhiteSpace($commonData)) { $commonData = $env:ProgramData }
-    $localPrograms = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) 'Programs'
+    $localData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+    if ([string]::IsNullOrWhiteSpace($localData)) { $localData = $env:LOCALAPPDATA }
+    $localPrograms = Join-Path $localData 'Programs'
     $parents = @(
         (Join-Path $commonData 'CodexRemoteFeatures\releases'),
         $commonData,
+        (Join-Path $localData 'CodexRemoteFeatures'),
         $localPrograms
     )
     foreach ($parent in $parents | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Container) }) {
@@ -294,12 +304,22 @@ function Get-StableLegacyRoots {
             }
         }
     }
+    $defaultStable = Get-StableInstallRoot
+    if ([string]::Equals($stable, $defaultStable, [StringComparison]::OrdinalIgnoreCase)) {
+        $machineStable = Get-StableMachineInstallRoot
+        if (-not [string]::Equals($machineStable, $stable, [StringComparison]::OrdinalIgnoreCase) -and
+            (Test-Path -LiteralPath $machineStable -PathType Container)) {
+            $candidates.Add($machineStable)
+        }
+    }
     return @($candidates | Select-Object -Unique)
 }
 
 function Test-StableLegacyRoot {
     param([Parameter(Mandatory)][string]$Path)
-    $leaf = [IO.Path]::GetFileName(([IO.Path]::GetFullPath($Path).TrimEnd('\')))
+    $resolved = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+    if ([string]::Equals($resolved, (Get-StableMachineInstallRoot), [StringComparison]::OrdinalIgnoreCase)) { return $true }
+    $leaf = [IO.Path]::GetFileName($resolved)
     return $leaf -match '^(?:ChatGPT-Remote-Enabler-Windows-x64|ChatGPTRemoteEnabler)(?:[-_]?v\d+\.\d+\.\d+)$'
 }
 
@@ -651,10 +671,14 @@ function Invoke-StableLegacyCleanup {
     if ($ApprovedLegacyParents.Count -eq 0) {
         $commonData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
         if ([string]::IsNullOrWhiteSpace($commonData)) { $commonData = $env:ProgramData }
+        $localData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+        if ([string]::IsNullOrWhiteSpace($localData)) { $localData = $env:LOCALAPPDATA }
         $ApprovedLegacyParents = @(
             (Join-Path $commonData 'CodexRemoteFeatures\releases'),
+            (Join-Path $commonData 'CodexRemoteFeatures'),
             $commonData,
-            (Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) 'Programs')
+            (Join-Path $localData 'CodexRemoteFeatures'),
+            (Join-Path $localData 'Programs')
         )
     }
     $approvedParents = @($ApprovedLegacyParents | Where-Object { $_ } | ForEach-Object { [IO.Path]::GetFullPath($_).TrimEnd('\') })

@@ -43,13 +43,16 @@ $desktopPath = Join-Path $fixtureRoot 'Desktop'
 $startMenuPath = Join-Path $fixtureRoot 'StartMenu'
 $startupPath = Join-Path $fixtureRoot 'Startup'
 try {
+    $expectedDefaultRoot = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) 'CodexRemoteFeatures\ChatGPT-Remote-Enabler-Windows-x64'
+    Assert-Condition ([string]::Equals((Get-StableInstallRoot), $expectedDefaultRoot, [StringComparison]::OrdinalIgnoreCase)) 'The canonical stable root is not current-user LocalAppData.'
+    Assert-Condition (Test-StableLegacyRoot -Path (Get-StableMachineInstallRoot)) 'The former machine-wide stable root is not recognized as a legacy migration source.'
     New-Item -ItemType Directory -Path $stableRoot,$packagedSource,$legacyRoot,$newerLegacyRoot,$processFailureLegacyRoot,$migrationFailureLegacyRoot,$sessionLegacyRoot,$desktopPath,$startMenuPath,$startupPath -Force | Out-Null
     Copy-StablePackageContents -SourceRoot (Join-Path $repositoryRoot 'windows') -DestinationRoot $stableRoot
-    Write-Version -Root $stableRoot -Version 'v1.5.60'
+    Write-Version -Root $stableRoot -Version 'v1.5.61'
     New-ReleaseManifest -Root $stableRoot
     Assert-Condition (Test-StablePackage -Root $stableRoot -RequireManifest) 'The canonical fixture failed manifest, VERSION, and ProductVersion validation.'
     Copy-StablePackageContents -SourceRoot (Join-Path $repositoryRoot 'windows') -DestinationRoot $packagedSource
-    Write-Version -Root $packagedSource -Version 'v1.5.60'
+    Write-Version -Root $packagedSource -Version 'v1.5.61'
     New-ReleaseManifest -Root $packagedSource
     Assert-Condition (Test-StablePackage -Root $packagedSource -RequireManifest) 'The packaged update fixture failed validation.'
 
@@ -117,7 +120,7 @@ try { [IO.File]::WriteAllText($SignalPath, 'locked'); Start-Sleep -Seconds 60 } 
     [IO.File]::WriteAllText((Join-Path $legacyRoot 'CodexRemoteMobileProject\rollback\mobile.json'), '{"rollback":"mobile-durable"}', [Text.UTF8Encoding]::new($false))
 
     Copy-StablePackageContents -SourceRoot (Join-Path $repositoryRoot 'windows') -DestinationRoot $newerLegacyRoot
-    Write-Version -Root $newerLegacyRoot -Version 'v1.5.61'
+    Write-Version -Root $newerLegacyRoot -Version 'v1.5.62'
     New-ReleaseManifest -Root $newerLegacyRoot
     foreach ($root in @($processFailureLegacyRoot, $migrationFailureLegacyRoot, $sessionLegacyRoot, $reparseLegacyRoot)) {
         Copy-StablePackageContents -SourceRoot (Join-Path $repositoryRoot 'windows') -DestinationRoot $root
@@ -221,6 +224,8 @@ try { [IO.File]::WriteAllText($SignalPath, 'locked'); Start-Sleep -Seconds 60 } 
     [pscustomobject][ordered]@{
         Ok = $true
         CanonicalStableRootValidated = $true
+        CurrentUserStableRoot = $true
+        MachineStableRootRecognizedAsLegacy = $true
         LockedDetachedHostDoesNotBlockStableUpdate = $true
         DetachedTaskHostLockRegression = $true
         LegacyAliasesMigrated = $true

@@ -1046,6 +1046,11 @@
   function refreshNativeConnectionSnapshot() {
     if (state.disposed) return false;
     const snapshot = readNativeConnectionSnapshot();
+    // A missing bridge/cache read is not evidence that a known device changed
+    // state. Preserve the last authoritative catalog until another valid
+    // snapshot arrives, so transient native-cache gaps cannot reopen offline
+    // network work or force expensive runtime rediscovery.
+    if (!snapshot) return false;
     const signature = JSON.stringify(snapshot);
     if (signature === state.nativeConnectionSignature) return false;
     state.nativeConnectionSignature = signature;

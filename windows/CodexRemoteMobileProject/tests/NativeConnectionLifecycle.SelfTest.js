@@ -132,6 +132,18 @@ const flush = async () => { for (let i = 0; i < 40; i++) await Promise.resolve()
   assert.equal(first.f.connectionGuidance(offlineModel.hosts.find(item => item.id === host)).code, "disconnected");
   assert.deepEqual([...offlineModel.projects.map(project => project.name)].sort(), ["Empty alpha", "Empty beta"], "offline state must preserve last-known project rows");
 
+  const offlineGeneration = first.f.state.discoveryGeneration;
+  const offlineRuntime = first.f.state.remoteRuntimeCache.get(host);
+  first.snapshots.delete("remote_control_connections");
+  first.snapshots.delete("remote_control_connections_state");
+  [...first.intervals.values()][0]();
+  assert.equal(first.f.state.discoveryGeneration, offlineGeneration, "a transient missing native snapshot must not invalidate discovery");
+  assert.equal(first.f.state.remoteRuntimeCache.get(host), offlineRuntime, "a transient missing native snapshot must retain the offline runtime cache");
+  assert.equal(first.f.collectModel().hosts.find(item => item.id === host).available, false, "a transient native-cache gap must preserve authoritative offline state");
+  await first.f.scheduleRemoteProjectInventory(new Map([[host, runtime]]), true);
+  assert.equal(reads.length, readsBeforeOfflineRefresh, "a transient native-cache gap must not reopen remote reads");
+
+  first.snapshots.set("remote_control_connections_state", nativeState(true));
   first.snapshots.set("remote_control_connections", [{ hostId: host, displayName: "Named workstation", online: true }]);
   [...first.intervals.values()][0]();
   assert.equal(first.f.state.nativeConnectionRefreshPending, true, "reconnect must request a retry that bypasses the previous error gate");
@@ -172,5 +184,5 @@ const flush = async () => { for (let i = 0; i < 40; i++) await Promise.resolve()
   assert.equal(second.f.nativeConnectionStatus(), "unavailable");
   second.f.uninstall();
   assert.deepEqual([...first.requests, ...second.requests], [], "observation must never initiate authorization or native connection mutations");
-  console.log(JSON.stringify({ delayedNativeBridge: true, authorizationReported: true, catalogNamesWithoutRows: true, reconnectInvalidatesDiscovery: true, emptyProjectTransportAndModel: true, offlineRequestsSuppressed: true, offlineNativeHydrationSuppressed: true, cachedRowsRetainedOffline: true, runtimeCacheRetainedOnFailure: true, nativeAvailabilityWins: true, reconnectForcesInventory: true, fullRendererRestartRetainsNames: true, renamedLabelsWinOverInventory: true, observerDisposed: true, noNativeMutations: true }));
+  console.log(JSON.stringify({ delayedNativeBridge: true, authorizationReported: true, catalogNamesWithoutRows: true, reconnectInvalidatesDiscovery: true, emptyProjectTransportAndModel: true, offlineRequestsSuppressed: true, offlineNativeHydrationSuppressed: true, transientNativeSnapshotPreserved: true, cachedRowsRetainedOffline: true, runtimeCacheRetainedOnFailure: true, nativeAvailabilityWins: true, reconnectForcesInventory: true, fullRendererRestartRetainsNames: true, renamedLabelsWinOverInventory: true, observerDisposed: true, noNativeMutations: true }));
 })().catch(error => { console.error(error); process.exitCode = 1; });

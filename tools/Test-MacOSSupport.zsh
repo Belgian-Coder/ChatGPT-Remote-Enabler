@@ -26,6 +26,11 @@ uses="$(grep -Fc 'escape_applescript_string "$launcher"' "$shortcut")"
 for script in "$root"/macos/*.sh; do /bin/zsh -n "$script"; done
 
 mkdir -p "$temporary/home"
+shortcut_install="$(HOME="$temporary/home" /bin/zsh "$shortcut" install)"
+[[ "$shortcut_install" == *"Shortcut is valid:"* ]]
+HOME="$temporary/home" /bin/zsh "$shortcut" probe >/dev/null
+[[ -f "$temporary/home/Library/Application Support/CodexRemoteFeatures/launchers/ChatGPT Remote Enabler.applescript" ]]
+[[ -d "$temporary/home/Applications/ChatGPT Remote Enabler.app" ]]
 relative_probe="$(cd "$root/macos" && HOME="$temporary/home" /bin/zsh ./Update-ChatGPTRemote.sh probe)"
 [[ "$relative_probe" == *"\"installRoot\":\"$root/macos\""* ]] || {
   print -u2 "Relative updater invocation resolved against HOME instead of its original working directory."
@@ -217,4 +222,4 @@ handoff_output="$(continue_with_updated_launcher)"
 [[ "$handoff_output" == *'"sourceCheckoutInterpreterHandoff":true'* && "$handoff_output" == *'"recoveryContinuation":true'* ]] \
   || { print -u2 "The updated source-checkout launcher was not handed off through zsh."; exit 1; }
 
-print -r -- '{"AppleScriptEscapeSemantic":true,"SharedEscapeHelper":true,"MacOSShellSyntax":true,"RelativeInvocation":true,"TransactionApply":true,"PrelaunchCurrentProof":true,"RecoveredCurrentHandoff":true,"RepeatedRecoveryRejected":true,"PrelaunchVerifiedUpdate":true,"PrelaunchMethodRejected":true,"PrelaunchStrictFinalJsonProof":true,"PrelaunchCurrentMethodRequired":true,"PrelaunchRecoveryFailClosed":true,"InheritedLaunchGuard":true,"SourceCheckoutInterpreterHandoff":true}'
+print -r -- '{"AppleScriptEscapeSemantic":true,"SharedEscapeHelper":true,"ShortcutAtomicInstall":true,"MacOSShellSyntax":true,"RelativeInvocation":true,"TransactionApply":true,"PrelaunchCurrentProof":true,"RecoveredCurrentHandoff":true,"RepeatedRecoveryRejected":true,"PrelaunchVerifiedUpdate":true,"PrelaunchMethodRejected":true,"PrelaunchStrictFinalJsonProof":true,"PrelaunchCurrentMethodRequired":true,"PrelaunchRecoveryFailClosed":true,"InheritedLaunchGuard":true,"SourceCheckoutInterpreterHandoff":true}'

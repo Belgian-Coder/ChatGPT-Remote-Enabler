@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.5.64 — 2026-09-12
+
+- Keep the atomic macOS shortcut candidate's filename ending in `.app`, which
+  makes `osacompile` create an application bundle that can be signed, probed,
+  and committed. The native macOS support test now performs a real temporary
+  shortcut install and probe so this packaging contract cannot regress.
+
 ## v1.5.63 — 2026-09-12
 
 - Correct updater retention to the owner-defined invariant: one immediate

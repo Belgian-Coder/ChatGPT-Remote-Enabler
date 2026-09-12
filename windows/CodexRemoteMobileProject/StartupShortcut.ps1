@@ -4,6 +4,7 @@ param(
     [string]$Action = 'Probe',
     [string]$StartupPath,
     [string]$StableRoot,
+    [string]$RollbackRoot,
     [switch]$UseProxy
 )
 
@@ -17,7 +18,10 @@ if (-not (Test-Path -LiteralPath $stableModule -PathType Leaf)) { throw "Stable 
 if ([string]::IsNullOrWhiteSpace($StableRoot)) { $StableRoot = Get-StableInstallRoot }
 $StableRoot = [IO.Path]::GetFullPath($StableRoot).TrimEnd('\')
 $launcherPath = Join-Path $StableRoot 'CodexRemoteMobileProject\ChatGPT Custom.exe'
-$rollbackRoot = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) 'ChatGPTRemoteEnabler\shortcut-rollback'
+if ([string]::IsNullOrWhiteSpace($RollbackRoot)) {
+    $RollbackRoot = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) 'ChatGPTRemoteEnabler\shortcut-rollback'
+}
+$rollbackRoot = [IO.Path]::GetFullPath($RollbackRoot).TrimEnd('\')
 if (-not $StartupPath) { $StartupPath = [Environment]::GetFolderPath('Startup') }
 $StartupPath = [IO.Path]::GetFullPath($StartupPath)
 $shortcutPath = Join-Path $StartupPath 'ChatGPT Remote Enabler Startup.lnk'
@@ -65,6 +69,22 @@ function Get-StartupSummary {
         $result.startupMode = $shortcut.Arguments -match '(?:^|\s)--startup(?:\s|$)'
     }
     return $result
+}
+
+function Complete-StartupBackups {
+    param([string[]]$Paths)
+    foreach ($path in @($Paths | Where-Object { $_ } | Select-Object -Unique)) {
+        $resolved = [IO.Path]::GetFullPath($path)
+        $parent = [IO.Path]::GetFullPath((Split-Path -Parent $resolved)).TrimEnd('\')
+        if (-not [string]::Equals($parent, $rollbackRoot, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Startup backup escaped its rollback root: $resolved"
+        }
+        if (Test-Path -LiteralPath $resolved -PathType Leaf) { Remove-Item -LiteralPath $resolved -Force -ErrorAction Stop }
+    }
+    if ((Test-Path -LiteralPath $rollbackRoot -PathType Container) -and
+        @(Get-ChildItem -LiteralPath $rollbackRoot -Force -ErrorAction Stop).Count -eq 0) {
+        Remove-Item -LiteralPath $rollbackRoot -Force -ErrorAction Stop
+    }
 }
 
 switch ($Action) {
@@ -124,7 +144,15 @@ switch ($Action) {
         }
 
         $result = Get-StartupSummary
-        $result.backupPaths = @($backups)
+        $expectedArguments = if ($UseProxy) { '--proxy --startup' } else { '--startup' }
+        if (-not $result.installed -or -not $result.launcherPresent -or
+            -not [string]::Equals([IO.Path]::GetFullPath([string]$result.targetPath), [IO.Path]::GetFullPath($launcherPath), [StringComparison]::OrdinalIgnoreCase) -or
+            [string]$result.arguments -cne $expectedArguments -or
+            -not [string]::Equals([IO.Path]::GetFullPath([string]$result.workingDirectory), [IO.Path]::GetFullPath($stableRootResolved), [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Startup shortcut installation did not pass its exact commit probe; rollback copies were retained.'
+        }
+        Complete-StartupBackups -Paths $backups
+        $result.backupPaths = @()
         $result.stableRoot = $stableRootResolved
         $result.legacyMigration = @(Invoke-StableLegacyCleanup -StableRoot $stableRootResolved -ShortcutPaths (@($shortcutPath) + @($legacyStartupPaths)) -TaskNames @('Codex Remote Mobile Features at Logon') -MigrateEntryPoints)
         $result | ConvertTo-Json -Depth 4
@@ -145,7 +173,11 @@ switch ($Action) {
             }
         }
         $result = Get-StartupSummary
-        $result.backupPaths = @($backups)
+        if ($result.installed -or $result.legacyDisabledPresent -or @($legacyStartupPaths | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }).Count -ne 0) {
+            throw 'Startup shortcut removal did not pass its commit probe; rollback copies were retained.'
+        }
+        Complete-StartupBackups -Paths $backups
+        $result.backupPaths = @()
         $result | ConvertTo-Json -Depth 4
     }
     'Probe' {

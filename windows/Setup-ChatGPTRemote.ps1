@@ -4,7 +4,8 @@ param(
     [string]$DesktopPath = [Environment]::GetFolderPath('Desktop'),
     [string]$StartMenuPath = [Environment]::GetFolderPath('Programs'),
     [string]$StartupPath = [Environment]::GetFolderPath('Startup'),
-    [string]$StableRoot
+    [string]$StableRoot,
+    [string]$RollbackRoot
 )
 
 $ErrorActionPreference = 'Stop'
@@ -131,11 +132,11 @@ $apply = Add-SetupButton 'Apply selected options' 20 462 250 {
                 break
             }
         }
-        if ($desktop.Checked) { & (Join-Path $stableRootResolved 'CodexRemoteMobileProject\DesktopShortcut.ps1') -Action Install -UseProxy:$desktopProxy -StableRoot $stableRootResolved -DesktopPath $DesktopPath -StartMenuPath $StartMenuPath | Out-Null }
+        if ($desktop.Checked) { & (Join-Path $stableRootResolved 'CodexRemoteMobileProject\DesktopShortcut.ps1') -Action Install -UseProxy:$desktopProxy -StableRoot $stableRootResolved -DesktopPath $DesktopPath -StartMenuPath $StartMenuPath -RollbackRoot $RollbackRoot | Out-Null }
         if ($startup.Checked) {
             $existingStartup = & (Join-Path $stableRootResolved 'CodexRemoteMobileProject\StartupShortcut.ps1') -Action Probe -StableRoot $stableRootResolved -StartupPath $StartupPath | ConvertFrom-Json
             $startupProxy = if ($existingStartup.installed) { [bool]$existingStartup.proxyMode } else { $desktopProxy }
-            & (Join-Path $stableRootResolved 'CodexRemoteMobileProject\StartupShortcut.ps1') -Action Install -UseProxy:$startupProxy -StableRoot $stableRootResolved -StartupPath $StartupPath | Out-Null
+            & (Join-Path $stableRootResolved 'CodexRemoteMobileProject\StartupShortcut.ps1') -Action Install -UseProxy:$startupProxy -StableRoot $stableRootResolved -StartupPath $StartupPath -RollbackRoot $RollbackRoot | Out-Null
         }
         $legacyCleanup = @(Invoke-StableLegacyCleanup -StableRoot $stableRootResolved -MigrateEntryPoints)
         $report.Text = "Selected options applied. Legacy aliases and existing logon entries now use the canonical stable installation at $stableRootResolved.`r`n`r`nFinish active tasks and quit the ordinary app, then open ChatGPT Remote Enabler. Live integration readiness is checked during launch."

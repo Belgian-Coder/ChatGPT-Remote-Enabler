@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.5.66 — 2026-09-12
+
+- Remove every package-created Windows shortcut, startup-task, and package-local
+  rollback after a successful update or current-version cleanup. The updater
+  retains only its one immediate package rollback.
+- Treat shortcut backups as transaction-local files: exact post-write probes
+  must pass before they are removed, while failures retain them for diagnosis.
+  Test callers now use an isolated rollback root and prove that successful
+  shortcut install and removal leave no auxiliary recovery files.
+
 ## v1.5.65 — 2026-09-12
 
 - Validate the signed Windows desktop updater's explicit `VersionText` fields.

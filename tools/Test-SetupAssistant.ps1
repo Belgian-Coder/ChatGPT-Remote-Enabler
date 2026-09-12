@@ -48,6 +48,7 @@ try {
     $fixtureMenu = Join-Path $fixture 'menu'
     $fixtureStartup = Join-Path $fixture 'startup'
     $fixtureStableRoot = Join-Path $fixture 'stable-root'
+    $fixtureRollbackRoot = Join-Path $fixture 'shortcut-rollback'
     New-Item -ItemType Directory -Path $fixtureDesktop,$fixtureMenu,$fixtureStartup | Out-Null
     $shell = New-Object -ComObject WScript.Shell
     $legacy = $shell.CreateShortcut((Join-Path $fixtureDesktop 'ChatGPT Custom.lnk'))
@@ -55,7 +56,8 @@ try {
     $legacy.Arguments = '--proxy'; $legacy.Save()
     $source = $source.Replace('$packageRoot = $PSScriptRoot', ('$packageRoot = ' + "'" + $fixturePackage.Replace("'","''") + "'"))
     # Exercise real form actions against an isolated package and shortcut directories.
-    & ([scriptblock]::Create($source)) -Action Show -DesktopPath $fixtureDesktop -StartMenuPath $fixtureMenu -StartupPath $fixtureStartup -StableRoot $fixtureStableRoot
+    & ([scriptblock]::Create($source)) -Action Show -DesktopPath $fixtureDesktop -StartMenuPath $fixtureMenu -StartupPath $fixtureStartup -StableRoot $fixtureStableRoot -RollbackRoot $fixtureRollbackRoot
+    if (Test-Path -LiteralPath $fixtureRollbackRoot) { throw 'Successful setup retained auxiliary shortcut rollback.' }
 } finally {
     $resolved = [IO.Path]::GetFullPath($fixture)
     $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'

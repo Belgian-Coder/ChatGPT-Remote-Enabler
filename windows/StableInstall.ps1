@@ -855,6 +855,45 @@ function Invoke-StableUpdaterArtifactCleanup {
     return @($results)
 }
 
+function Invoke-StableAuxiliaryRollbackCleanup {
+    param(
+        [Parameter(Mandatory)][string]$StableRoot,
+        [Parameter(Mandatory)][string]$UpdaterStateRoot,
+        [scriptblock]$ProcessEnumerator
+    )
+    $StableRoot = [IO.Path]::GetFullPath($StableRoot).TrimEnd('\')
+    $UpdaterStateRoot = [IO.Path]::GetFullPath($UpdaterStateRoot).TrimEnd('\')
+    $stateParent = [IO.Path]::GetFullPath((Split-Path -Parent $UpdaterStateRoot)).TrimEnd('\')
+    $results = [Collections.Generic.List[object]]::new()
+    foreach ($target in @(
+        [pscustomobject]@{ Category = 'stable-root-rollback'; Path = (Join-Path $StableRoot 'rollback'); StopAt = $StableRoot },
+        [pscustomobject]@{ Category = 'mobile-project-rollback'; Path = (Join-Path $StableRoot 'CodexRemoteMobileProject\rollback'); StopAt = $StableRoot },
+        [pscustomobject]@{ Category = 'shortcut-rollback'; Path = (Join-Path $stateParent 'shortcut-rollback'); StopAt = $stateParent },
+        [pscustomobject]@{ Category = 'startup-task-rollback'; Path = (Join-Path $stateParent 'rollback'); StopAt = $stateParent }
+    )) {
+        if (-not (Test-Path -LiteralPath $target.Path -PathType Container)) { continue }
+        $entry = [ordered]@{ category = $target.Category; path = $target.Path; removed = $false; reason = $null }
+        try {
+            $resolved = [IO.Path]::GetFullPath($target.Path).TrimEnd('\')
+            Assert-StableNoReparsePath -Path $resolved -StopAt $target.StopAt
+            Assert-StableNoReparseTree -Root $resolved
+            foreach ($journal in @((Join-Path $UpdaterStateRoot 'transaction.json'), (Join-Path $UpdaterStateRoot 'git-transaction.json'))) {
+                if (Test-StableTextReferencesRoot -Path $journal -Root $resolved) { throw 'auxiliary-rollback-referenced-by-recovery-journal' }
+            }
+            if (-not (Test-StableNoLiveRootReference -Root $resolved -ProcessEnumerator $ProcessEnumerator)) {
+                throw 'auxiliary-rollback-referenced-by-live-process'
+            }
+            Remove-Item -LiteralPath $resolved -Recurse -Force -ErrorAction Stop
+            $entry.removed = $true
+            $entry.reason = 'removed-after-success'
+        } catch {
+            if (-not $entry.reason) { $entry.reason = 'retained-' + $_.Exception.Message }
+        }
+        $results.Add([pscustomobject]$entry)
+    }
+    return @($results)
+}
+
 function Invoke-StableRollbackRetention {
     param(
         [Parameter(Mandatory)][string]$UpdaterStateRoot,

@@ -203,20 +203,31 @@ $fixtureMutexName = 'Local\ChatGPTCustomInjectionLauncher-Test-' + $fixtureId
 $processes = [Collections.Generic.List[Diagnostics.Process]]::new()
 try {
     New-Item -ItemType Directory -Path $temporaryRoot | Out-Null
+    $launchHostsRoot = Join-Path $env:LOCALAPPDATA 'ChatGPTRemoteEnabler\launch-hosts'
+    $launchStateRoot = Split-Path -Parent $launchHostsRoot
+    $preexistingLaunchHosts = @(Get-ChildItem -LiteralPath $launchHostsRoot -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName)
+    $preexistingCleanupScripts = @(Get-ChildItem -LiteralPath $launchStateRoot -File -Filter 'launch-host-cleanup-*.ps1' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName)
+    function Get-FixtureTaskHosts {
+        return @(Get-CimInstance Win32_Process -Filter "Name='UpdateSessionTaskHost.exe'" -ErrorAction SilentlyContinue | Where-Object {
+            if (-not [string]$_.ExecutablePath) { return $false }
+            $path = [IO.Path]::GetFullPath([string]$_.ExecutablePath)
+            $directory = Split-Path -Parent $path
+            return $path.StartsWith(([IO.Path]::GetFullPath($launchHostsRoot).TrimEnd('\') + '\'), [StringComparison]::OrdinalIgnoreCase) -and $directory -notin $preexistingLaunchHosts
+        })
+    }
     $compilerCandidates = @(
         (Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'),
         (Join-Path $env:SystemRoot 'Microsoft.NET\Framework\v4.0.30319\csc.exe')
     )
     $compiler = $compilerCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
     if (-not $compiler) { throw 'The .NET Framework C# compiler was not found.' }
-    $launcher = Join-Path $temporaryRoot 'ChatGPT Custom.exe'
-    $rootLauncher = Join-Path $temporaryRoot 'ChatGPT Remote Enabler.exe'
-    $taskHost = Join-Path $temporaryRoot 'UpdateSessionTaskHost.exe'
-    & $compiler /nologo /target:winexe "/out:$taskHost" $taskHostSource
-    if ($LASTEXITCODE -ne 0) { throw 'Temporary GUI task-host compilation failed.' }
     $rootTaskHostDirectory = Join-Path $temporaryRoot 'CodexRemoteMobileProject'
     New-Item -ItemType Directory -Path $rootTaskHostDirectory | Out-Null
-    Copy-Item -LiteralPath $taskHost -Destination (Join-Path $rootTaskHostDirectory 'UpdateSessionTaskHost.exe')
+    $launcher = Join-Path $rootTaskHostDirectory 'ChatGPT Custom.exe'
+    $rootLauncher = Join-Path $temporaryRoot 'ChatGPT Remote Enabler.exe'
+    $taskHost = Join-Path $rootTaskHostDirectory 'UpdateSessionTaskHost.exe'
+    & $compiler /nologo /target:winexe "/out:$taskHost" $taskHostSource
+    if ($LASTEXITCODE -ne 0) { throw 'Temporary GUI task-host compilation failed.' }
     & $compiler /nologo /target:winexe "/out:$launcher" $launcherSource
     if ($LASTEXITCODE -ne 0) { throw 'Temporary custom launcher compilation failed.' }
     & $compiler /nologo /target:winexe "/out:$rootLauncher" $rootLauncherSource
@@ -308,7 +319,7 @@ try {
     if (`$acquired) { [IO.File]::AppendAllText('$($finishedLog.Replace("'", "''"))', "`$kind$([Environment]::NewLine)") }
 }
 "@
-    [IO.File]::WriteAllText((Join-Path $temporaryRoot 'MobileProjectStartup.ps1'), $workerScript, [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText((Join-Path $rootTaskHostDirectory 'MobileProjectStartup.ps1'), $workerScript, [Text.UTF8Encoding]::new($false))
     [IO.File]::WriteAllText((Join-Path $temporaryRoot 'Enable-ChatGPTRemote.ps1'), $workerScript, [Text.UTF8Encoding]::new($false))
 
     $first = Start-Process -FilePath $launcher -ArgumentList '--proxy --startup' -PassThru
@@ -326,9 +337,7 @@ try {
     Wait-ForFixtureWorkerExit -Path $workerIdentityLog -Index 1 -ExpectedOutcome acquired
     $firstTaskHostDeadline = [DateTime]::UtcNow.AddSeconds(5)
     do {
-        $firstTaskHosts = @(Get-CimInstance Win32_Process -Filter "Name='UpdateSessionTaskHost.exe'" -ErrorAction SilentlyContinue | Where-Object {
-            [string]$_.ExecutablePath -and [IO.Path]::GetFullPath([string]$_.ExecutablePath).StartsWith($temporaryRoot, [StringComparison]::OrdinalIgnoreCase)
-        })
+        $firstTaskHosts = @(Get-FixtureTaskHosts)
         if ($firstTaskHosts.Count -eq 0) { break }
         Start-Sleep -Milliseconds 25
     } while ([DateTime]::UtcNow -lt $firstTaskHostDeadline)
@@ -387,13 +396,19 @@ try {
     if (@([IO.File]::ReadAllLines($afterParentLog)).Count -ne 5) { throw 'A worker continued before its exact launcher parent exited.' }
     $taskHostDeadline = [DateTime]::UtcNow.AddSeconds(5)
     do {
-        $remainingTaskHosts = @(Get-CimInstance Win32_Process -Filter "Name='UpdateSessionTaskHost.exe'" -ErrorAction SilentlyContinue | Where-Object {
-            [string]$_.ExecutablePath -and [IO.Path]::GetFullPath([string]$_.ExecutablePath).StartsWith($temporaryRoot, [StringComparison]::OrdinalIgnoreCase)
-        })
+        $remainingTaskHosts = @(Get-FixtureTaskHosts)
         if ($remainingTaskHosts.Count -eq 0) { break }
         Start-Sleep -Milliseconds 25
     } while ([DateTime]::UtcNow -lt $taskHostDeadline)
     if ($remainingTaskHosts.Count -ne 0) { throw 'A transient GUI launch-worker host did not exit after its worker completed.' }
+    $cleanupDeadline = [DateTime]::UtcNow.AddSeconds(10)
+    do {
+        $newHostDirectories = @(Get-ChildItem -LiteralPath $launchHostsRoot -Directory -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notin $preexistingLaunchHosts })
+        $newCleanupScripts = @(Get-ChildItem -LiteralPath $launchStateRoot -File -Filter 'launch-host-cleanup-*.ps1' -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notin $preexistingCleanupScripts })
+        if ($newHostDirectories.Count -eq 0 -and $newCleanupScripts.Count -eq 0) { break }
+        Start-Sleep -Milliseconds 50
+    } while ([DateTime]::UtcNow -lt $cleanupDeadline)
+    if ($newHostDirectories.Count -ne 0 -or $newCleanupScripts.Count -ne 0) { throw 'Detached launch-worker host files were not removed after process exit.' }
     $residualTasks = @(Get-ScheduledTask -ErrorAction Stop | Where-Object { $_.TaskName -like 'ChatGPTRemoteEnabler-LaunchWorker-*' })
     if ($residualTasks.Count -ne 0) { throw 'A transient launch-worker task remained registered.' }
     if (@([IO.File]::ReadAllLines($descendantReadyLog)).Count -ne 5) { throw 'A successful worker did not start exactly one descendant sentinel.' }
@@ -417,6 +432,7 @@ try {
         ConcurrentLauncherExitCode = $concurrent.ExitCode
         CrossEntryExitCode = $crossEntry.ExitCode
         GuiTaskHostsExited = $true
+        DetachedTaskHostFilesCleaned = $true
         WorkerDescendantsSurvivedTaskHostExit = $true
         NoTransientTaskResidual = $true
     } | ConvertTo-Json

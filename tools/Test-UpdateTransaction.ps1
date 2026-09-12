@@ -7,6 +7,7 @@ $node = (Get-Command node.exe -ErrorAction Stop).Source
 $pwsh = (Get-Process -Id $PID).Path
 $helper = Join-Path $root 'windows\update-transaction.js'
 $updater = Join-Path $root 'windows\Update-ChatGPTRemote.ps1'
+$stableInstall = Join-Path $root 'windows\StableInstall.ps1'
 $temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) ('chatgpt-remote-transaction-test-' + [guid]::NewGuid().ToString('N'))
 
 function Write-Utf8File {
@@ -57,6 +58,7 @@ function New-PreparedFixture {
     Write-Utf8File (Join-Path $Directory 'payload.txt') 'new payload'
     Write-Utf8File (Join-Path $Directory 'added.txt') 'added by update'
     Copy-Item -LiteralPath $updater -Destination (Join-Path $Directory 'Update-ChatGPTRemote.ps1')
+    Copy-Item -LiteralPath $stableInstall -Destination (Join-Path $Directory 'StableInstall.ps1')
     Copy-Item -LiteralPath $helper -Destination (Join-Path $Directory 'update-transaction.js')
     Write-Manifest $Directory
     $archive = Join-Path $Directory '.chatgpt-remote-release.zip'
@@ -69,9 +71,30 @@ function New-PreparedFixture {
 
 function Invoke-Helper {
     param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
-    $output = @(& $node $helper @Arguments 2>&1)
-    if ($LASTEXITCODE -ne 0) { throw "Transaction helper failed: $($output -join ' ')" }
-    return (($output -join "`n") | ConvertFrom-Json)
+    $start = [Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = $node
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    if ($null -ne $start.GetType().GetProperty('ArgumentList')) {
+        $start.ArgumentList.Add($helper)
+        foreach ($argument in @($Arguments)) { $start.ArgumentList.Add([string]$argument) }
+    } else {
+        $quote = { param([string]$Value) if ($Value -notmatch '[\s"]') { return $Value }; return '"' + $Value.Replace('"', '\"') + '"' }
+        $argumentParts = [Collections.Generic.List[string]]::new()
+        foreach ($value in @($helper) + @($Arguments)) { $argumentParts.Add((& $quote ([string]$value))) }
+        $start.Arguments = [string]::Join(' ', $argumentParts.ToArray())
+    }
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $start
+    [IO.File]::WriteAllText((Join-Path $env:TEMP 'chatgpt-remote-test-args.txt'), $start.Arguments)
+    [void]$process.Start()
+    $stdout = $process.StandardOutput.ReadToEnd()
+    $stderr = $process.StandardError.ReadToEnd()
+    $process.WaitForExit()
+    if ($process.ExitCode -ne 0) { throw "Transaction helper failed: $($stdout.Trim()) $($stderr.Trim())" }
+    return (($stdout.Trim()) | ConvertFrom-Json)
 }
 
 function Get-ApplyArguments {
@@ -460,6 +483,7 @@ fs.mkdirSync = function patchedMkdir(directory) {
     Write-Utf8File (Join-Path $releaseContent 'payload.txt') 'adapter payload'
     Write-Utf8File (Join-Path $releaseContent 'added.txt') 'adapter added file'
     Copy-Item -LiteralPath $updater -Destination (Join-Path $releaseContent 'Update-ChatGPTRemote.ps1')
+    Copy-Item -LiteralPath $stableInstall -Destination (Join-Path $releaseContent 'StableInstall.ps1')
     Copy-Item -LiteralPath $helper -Destination (Join-Path $releaseContent 'update-transaction.js')
     Write-Manifest $releaseContent
     $releaseArchiveName = 'ChatGPT-Remote-Enabler-Windows-x64-v2.0.0.zip'

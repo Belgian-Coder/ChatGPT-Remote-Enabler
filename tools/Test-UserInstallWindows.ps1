@@ -371,25 +371,30 @@ function Invoke-UserWorker {
         $mobileRoot = Join-Path $releaseRoot 'CodexRemoteMobileProject'
         $desktopScript = Join-Path $mobileRoot 'DesktopShortcut.ps1'
         $startupScript = Join-Path $mobileRoot 'StartupShortcut.ps1'
-        $launcherPath = [IO.Path]::GetFullPath((Join-Path $mobileRoot 'ChatGPT Custom.exe'))
+        $stableRoot = Join-Path $fixtureFull 'stable-root'
+        $launcherPath = [IO.Path]::GetFullPath((Join-Path $stableRoot 'CodexRemoteMobileProject\ChatGPT Custom.exe'))
 
         $legacyShortcut = Join-Path $desktopPath 'ChatGPT Custom.lnk'
-        [IO.File]::WriteAllText($legacyShortcut, 'legacy-fixture-preserve')
-        $desktopInstall = (& $desktopScript -Action Install -DesktopPath $desktopPath -StartMenuPath $startMenuPath -Confirm:$false | ConvertFrom-Json)
-        Assert-Condition ([IO.File]::ReadAllText($legacyShortcut) -eq 'legacy-fixture-preserve') 'Installing the new shortcut changed a legacy shortcut.'
+        $legacyShortcutObject = (New-Object -ComObject WScript.Shell).CreateShortcut($legacyShortcut)
+        $legacyShortcutObject.TargetPath = Join-Path $mobileRoot 'ChatGPT Custom.exe'
+        $legacyShortcutObject.Arguments = '--proxy'
+        $legacyShortcutObject.Save()
+        $desktopInstall = (& $desktopScript -Action Install -StableRoot $stableRoot -DesktopPath $desktopPath -StartMenuPath $startMenuPath -Confirm:$false | ConvertFrom-Json)
+        $migratedLegacy = (New-Object -ComObject WScript.Shell).CreateShortcut($legacyShortcut)
+        Assert-Condition ([string]::Equals([IO.Path]::GetFullPath([string]$migratedLegacy.TargetPath), $launcherPath, [StringComparison]::OrdinalIgnoreCase) -and $migratedLegacy.Arguments -match '--proxy') 'Installing the new shortcut did not migrate the legacy alias to the stable root while preserving proxy mode.'
         Assert-Condition ($desktopInstall.launcherPresent -and @($desktopInstall.shortcuts).Count -eq 2) 'Desktop/Start-menu install did not report the expected launcher and two shortcuts.'
         foreach ($shortcut in @($desktopInstall.shortcuts)) {
             Assert-Condition ($shortcut.installed) "$($shortcut.kind) shortcut was not installed."
             Assert-Condition ([string]::Equals([IO.Path]::GetFullPath([string]$shortcut.targetPath), $launcherPath, [StringComparison]::OrdinalIgnoreCase)) "$($shortcut.kind) shortcut target is incorrect."
             Assert-Condition ([string]::IsNullOrWhiteSpace([string]$shortcut.arguments)) "$($shortcut.kind) shortcut has unexpected arguments."
         }
-        $desktopProbe = (& $desktopScript -Action Probe -DesktopPath $desktopPath -StartMenuPath $startMenuPath | ConvertFrom-Json)
+        $desktopProbe = (& $desktopScript -Action Probe -StableRoot $stableRoot -DesktopPath $desktopPath -StartMenuPath $startMenuPath | ConvertFrom-Json)
         Assert-Condition ((@($desktopProbe.shortcuts | Where-Object installed)).Count -eq 2) 'Desktop/Start-menu probe did not find both shortcuts.'
 
-        $startupInstall = (& $startupScript -Action Install -StartupPath $startupPath -Confirm:$false | ConvertFrom-Json)
+        $startupInstall = (& $startupScript -Action Install -StableRoot $stableRoot -StartupPath $startupPath -Confirm:$false | ConvertFrom-Json)
         Assert-Condition ($startupInstall.installed -and $startupInstall.startupMode -and -not $startupInstall.proxyMode) 'Startup install did not create the expected non-proxy startup shortcut.'
         Assert-Condition ([string]::Equals([IO.Path]::GetFullPath([string]$startupInstall.targetPath), $launcherPath, [StringComparison]::OrdinalIgnoreCase)) 'Startup shortcut target is incorrect.'
-        $startupProbe = (& $startupScript -Action Probe -StartupPath $startupPath | ConvertFrom-Json)
+        $startupProbe = (& $startupScript -Action Probe -StableRoot $stableRoot -StartupPath $startupPath | ConvertFrom-Json)
         Assert-Condition ($startupProbe.installed -and $startupProbe.startupMode) 'Startup probe did not find the installed startup shortcut.'
 
         $package = @(Get-AppxPackage -Name 'OpenAI.Codex' -ErrorAction Stop)
@@ -429,9 +434,9 @@ function Invoke-UserWorker {
         $mainAfter = @(Get-PackageMainProcessIdentity -ExecutablePath $packageExecutable)
         Assert-Condition (($mainBefore -join "`n") -ceq ($mainAfter -join "`n")) 'The packaged ChatGPT main-process identity changed during the read-only readiness check.'
 
-        $startupRemove = (& $startupScript -Action Remove -StartupPath $startupPath -Confirm:$false | ConvertFrom-Json)
+        $startupRemove = (& $startupScript -Action Remove -StableRoot $stableRoot -StartupPath $startupPath -Confirm:$false | ConvertFrom-Json)
         Assert-Condition (-not $startupRemove.installed -and -not $startupRemove.legacyDisabledPresent) 'Startup shortcut removal was incomplete.'
-        $desktopRemove = (& $desktopScript -Action Remove -DesktopPath $desktopPath -StartMenuPath $startMenuPath -Confirm:$false | ConvertFrom-Json)
+        $desktopRemove = (& $desktopScript -Action Remove -StableRoot $stableRoot -DesktopPath $desktopPath -StartMenuPath $startMenuPath -Confirm:$false | ConvertFrom-Json)
         Assert-Condition ((@($desktopRemove.shortcuts | Where-Object installed)).Count -eq 0) 'Desktop/Start-menu shortcut removal was incomplete.'
         Assert-Condition ((@(Get-ChildItem -LiteralPath $desktopPath,$startMenuPath,$startupPath -File -Force)).Count -eq 0) 'Shortcut fixture files remain after removal.'
 

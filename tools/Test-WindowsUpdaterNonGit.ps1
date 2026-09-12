@@ -41,9 +41,10 @@ try {
     $fixtureLocalAppData = Join-Path $temporaryRoot 'local-app-data'
     New-Item -ItemType Directory -Path $fixtureRoot,$fixtureLocalAppData -Force | Out-Null
     Copy-Item -LiteralPath $updaterPath -Destination (Join-Path $fixtureRoot 'Update-ChatGPTRemote.ps1')
+    Copy-Item -LiteralPath (Join-Path $repositoryRoot 'windows\StableInstall.ps1') -Destination (Join-Path $fixtureRoot 'StableInstall.ps1')
     Copy-Item -LiteralPath (Join-Path $repositoryRoot 'windows\update-transaction.js') -Destination (Join-Path $fixtureRoot 'update-transaction.js')
     [IO.File]::WriteAllText((Join-Path $fixtureRoot 'VERSION'), "v9.8.7$([Environment]::NewLine)", [Text.UTF8Encoding]::new($false))
-    $manifestLines = foreach ($relative in @('Update-ChatGPTRemote.ps1', 'update-transaction.js', 'VERSION')) {
+    $manifestLines = foreach ($relative in @('Update-ChatGPTRemote.ps1', 'StableInstall.ps1', 'update-transaction.js', 'VERSION')) {
         $hash = (Get-FileHash -LiteralPath (Join-Path $fixtureRoot $relative) -Algorithm SHA256).Hash.ToLowerInvariant()
         "$hash *$relative"
     }
@@ -324,7 +325,7 @@ $wrongLeafPreserved = [IO.File]::Exists($refusalSentinel) -and [IO.File]::ReadAl
     $unexpectedSourceRoot = Join-Path $temporaryRoot 'unexpected-origin-source'
     $unexpectedInstallRoot = Join-Path $unexpectedSourceRoot 'windows'
     New-Item -ItemType Directory -Path $unexpectedInstallRoot -Force | Out-Null
-    foreach ($relative in @('Update-ChatGPTRemote.ps1', 'update-transaction.js', 'git-checkout-update.js')) {
+    foreach ($relative in @('Update-ChatGPTRemote.ps1', 'StableInstall.ps1', 'update-transaction.js', 'git-checkout-update.js')) {
         Copy-Item -LiteralPath (Join-Path $repositoryRoot "windows\$relative") -Destination (Join-Path $unexpectedInstallRoot $relative)
     }
     [IO.File]::WriteAllText((Join-Path $unexpectedInstallRoot 'VERSION'), "v9.8.6$([Environment]::NewLine)", [Text.UTF8Encoding]::new($false))
@@ -340,7 +341,7 @@ $wrongLeafPreserved = [IO.File]::Exists($refusalSentinel) -and [IO.File]::ReadAl
     $quotedUnexpectedInstall = Quote-PowerShellLiteral $unexpectedInstallRoot
     $unexpectedApplyCommand = "& $unexpectedUpdater -Action ApplyPrepared -InstallRoot $quotedUnexpectedInstall -Transport Git -TargetVersion 'v9.8.7' -ExpectedArchiveSha256 '$prepareArchiveHash' -PreparedDirectory $quotedPreparedDirectory 2>&1"
     $unexpectedApplyCapture = Invoke-WindowsPowerShellCapture $unexpectedApplyCommand
-    if ($unexpectedApplyCapture.exitCode -eq 0 -or $unexpectedApplyCapture.text -notmatch 'origin is not the configured update repository') {
+    if ($unexpectedApplyCapture.exitCode -eq 0 -or $unexpectedApplyCapture.text -notmatch '(?s)origin is not.*configured update repository') {
         throw "Unexpected-origin source checkout did not fail closed in the Git helper: $($unexpectedApplyCapture.text)"
     }
     if ((Get-Content -LiteralPath (Join-Path $unexpectedInstallRoot 'VERSION') -Raw).Trim() -ne 'v9.8.6') {

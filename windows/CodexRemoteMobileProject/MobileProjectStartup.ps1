@@ -42,8 +42,16 @@ Set-ProcessUserTemporaryDirectory
 $taskName = 'Codex Remote Mobile Features at Logon'
 $computerName = $env:COMPUTERNAME.ToUpperInvariant()
 
-$bundleRoot = [IO.Path]::GetFullPath($PSScriptRoot)
-$bundleParent = Split-Path -Parent $bundleRoot
+$sourceBundleRoot = [IO.Path]::GetFullPath($PSScriptRoot)
+$sourcePackageRoot = Split-Path -Parent $sourceBundleRoot
+$stableModule = Join-Path $sourcePackageRoot 'StableInstall.ps1'
+if (-not (Test-Path -LiteralPath $stableModule -PathType Leaf)) { throw "Stable installation resolver is missing: $stableModule" }
+. $stableModule
+$bundleParent = Get-StableInstallRoot
+if (-not [string]::Equals($sourcePackageRoot, $bundleParent, [StringComparison]::OrdinalIgnoreCase) -and -not (Test-StablePackage -Root $bundleParent)) {
+    $bundleParent = Ensure-StableInstallRoot -SourceRoot $sourcePackageRoot -StableRoot $bundleParent
+}
+$bundleRoot = Join-Path $bundleParent 'CodexRemoteMobileProject'
 $stableController = Join-Path $bundleParent 'CodexRemoteSimple\CodexRemoteSimple.ps1'
 $mobileController = Join-Path $bundleRoot 'MobileProjectView.ps1'
 $maintenanceHelper = Join-Path $bundleRoot 'maintenance.js'
@@ -54,7 +62,7 @@ $updateSessionLauncher = Join-Path $bundleRoot 'UpdateSessionLauncher.ps1'
 $proxyModule = Join-Path $bundleRoot 'ProxyConfiguration.psm1'
 $logRoot = Join-Path $env:LOCALAPPDATA 'CodexRemoteFeatures'
 $logPath = Join-Path $logRoot 'startup.log'
-$rollbackRoot = Join-Path $bundleRoot 'rollback'
+$rollbackRoot = Join-Path $env:LOCALAPPDATA 'ChatGPTRemoteEnabler\rollback'
 
 function Assert-Controllers {
     foreach ($path in @($stableController, $mobileController, $maintenanceHelper, $publisherHeartbeatHelper, $proxyModule, $updateSessionLauncher)) {
@@ -746,7 +754,8 @@ switch ($Action) {
         if (-not (Test-Path -LiteralPath $powerShell -PathType Leaf)) {
             throw "Built-in Windows PowerShell was not found: $powerShell"
         }
-        $arguments = "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Action Run"
+        $startupEntryPoint = Join-Path $bundleRoot 'MobileProjectStartup.ps1'
+        $arguments = "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$startupEntryPoint`" -Action Run"
         if ($UseProxy) { $arguments += ' -UseProxy' }
         $taskAction = New-ScheduledTaskAction -Execute $powerShell -Argument $arguments -WorkingDirectory $bundleRoot
         $trigger = New-ScheduledTaskTrigger -AtLogOn -User $TargetUser

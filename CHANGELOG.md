@@ -1,5 +1,29 @@
 # Changelog
 
+## v1.5.60 — 2026-09-12
+
+- Make the Windows installation root permanent and version-independent at
+  `C:\ProgramData\CodexRemoteFeatures\ChatGPT-Remote-Enabler-Windows-x64`.
+  Desktop, Start-menu, Startup, and logon-task entry points now converge on
+  that root, including every ChatGPT Custom and legacy Remote Enabler alias,
+  while preserving proxy and startup arguments.
+- Keep verified update journals and rollback material under per-user updater
+  state. Long-lived `UpdateSessionTaskHost.exe` workers run from hash-verified
+  detached per-session copies outside the stable root, so a running worker
+  cannot block stable-root replacement and no ChatGPT process is terminated.
+- Validate VERSION, release-manifest hashes, and launcher ProductVersion before
+  migration or update. After successful recovery or update, remove superseded
+  version-named roots only when shortcuts, tasks, live processes, live
+  coordinator configurations, journals, and recovery material no longer
+  reference them. Externalize
+  both root and mobile rollback trees before cleanup, and return removed or
+  retained roots and updater artifacts with explicit reasons.
+- Add deterministic Windows regression coverage for detached-host locking,
+  manifest-gated replacement, legacy alias migration, proxy/startup argument
+  preservation, interrupted recovery, rollback retention, reparse and
+  process-inventory failure, newer-root retention, and no ChatGPT lifecycle
+  calls.
+
 ## v1.5.59 — 2026-09-12
 
 - Make both Windows shortcut/startup entry points fail closed through one

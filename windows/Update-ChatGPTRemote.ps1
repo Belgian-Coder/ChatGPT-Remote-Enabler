@@ -20,6 +20,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$installRootWasExplicit = -not [string]::IsNullOrWhiteSpace($InstallRoot)
 if ([string]::IsNullOrWhiteSpace($InstallRoot)) { $InstallRoot = $PSScriptRoot }
 $platformName = 'Windows-x64'
 $stateRoot = Join-Path $env:LOCALAPPDATA 'ChatGPTRemoteEnabler\update'
@@ -29,8 +30,24 @@ $rollbackRoot = Join-Path $stateRoot 'rollback'
 $lockPath = Join-Path $stateRoot 'update.lock'
 $journalPath = Join-Path $stateRoot 'transaction.json'
 $sourceJournalPath = Join-Path $stateRoot 'git-transaction.json'
-$transactionHelper = Join-Path $PSScriptRoot 'update-transaction.js'
 $InstallRoot = [IO.Path]::GetFullPath($InstallRoot)
+$stableModule = Join-Path $PSScriptRoot 'StableInstall.ps1'
+if (-not (Test-Path -LiteralPath $stableModule -PathType Leaf)) { throw "Stable installation resolver is missing: $stableModule" }
+. $stableModule
+$stableRoot = Get-StableInstallRoot
+$legacyInstallRoot = $null
+if (-not [string]::Equals($InstallRoot, $stableRoot, [StringComparison]::OrdinalIgnoreCase) -and (Test-StableLegacyRoot -Path $InstallRoot)) {
+    if (Test-StablePackage -Root $stableRoot) {
+        $InstallRoot = $stableRoot
+    } elseif ($Action -notin @('Check', 'Prepare', 'Probe', 'EnableAutoUpdate', 'DisableAutoUpdate')) {
+        # Recover a journal that still names the old root before copying it to
+        # the canonical location. This keeps an interrupted old transaction
+        # resumable even when its old files are locked by the launch session.
+        $legacyInstallRoot = $InstallRoot
+    }
+}
+$helperRoot = if (Test-Path -LiteralPath (Join-Path $InstallRoot 'update-transaction.js') -PathType Leaf) { $InstallRoot } else { $PSScriptRoot }
+$transactionHelper = Join-Path $helperRoot 'update-transaction.js'
 
 function Assert-SafeHttpsUrl {
     param([string]$Url)
@@ -194,7 +211,7 @@ function Get-PublishedArchiveHash {
 
 function Get-GitRelease {
     param([string]$RequestedTag, [string]$ExpectedHash)
-    $helper = Join-Path $PSScriptRoot 'git-release.js'
+    $helper = Join-Path $helperRoot 'git-release.js'
     if (-not (Test-Path -LiteralPath $helper -PathType Leaf)) { throw 'The Git update transport is missing; reinstall the current helper package.' }
     $node = Resolve-UpdateNode
     $arguments = @($helper, 'resolve', '--repository', $Repository, '--platform', $platformName, '--cache-root', (Join-Path $stateRoot 'git-cache'))
@@ -212,7 +229,7 @@ function Invoke-GitCheckoutUpdate {
     param([string]$Operation, [string]$Source, [string]$RequestedVersion, [string]$ExpectedHash)
     $checkout = Get-SourceCheckout
     if (-not $checkout) { throw 'The Git source checkout identity changed; update was stopped.' }
-    $helper = Join-Path $PSScriptRoot 'git-checkout-update.js'
+    $helper = Join-Path $helperRoot 'git-checkout-update.js'
     $arguments = @($helper, $Operation, '--repository', $Repository, '--platform', $platformName,
         '--install-root', $InstallRoot, '--journal-path', $sourceJournalPath, '--git', $checkout.git)
     if ($Source) { $arguments += @('--prepared-root', $Source, '--version', $RequestedVersion, '--archive-sha256', $ExpectedHash.ToLowerInvariant()) }
@@ -404,6 +421,11 @@ function Invoke-PreparedRelease {
         '--archive-sha256', $ExpectedHash.ToLowerInvariant()
     )
     $result = Invoke-TransactionHelper -Operation 'apply' -Arguments $arguments
+    if (-not (Get-SourceCheckout)) {
+        $cleanup = Invoke-PostUpdateCleanup
+        $result | Add-Member -NotePropertyName cleanup -NotePropertyValue $cleanup
+        $result | Add-Member -NotePropertyName legacyCleanup -NotePropertyValue $cleanup.legacy
+    }
     if ($Transport -eq 'Git' -and [string]::IsNullOrWhiteSpace([string]$result.method)) {
         $result | Add-Member -NotePropertyName method -NotePropertyValue 'verified-git'
     }
@@ -429,6 +451,14 @@ function Invoke-PendingRecovery {
     } catch {
         if ($_.Exception.Message -match 'UNSAFE_MIXED_INSTALL|UPDATE_BUSY') { throw }
         throw "UNSAFE_MIXED_INSTALL: installed integrity or transaction recovery failed: $($_.Exception.Message)"
+    }
+}
+
+function Invoke-PostUpdateCleanup {
+    if (Get-SourceCheckout) { return [pscustomobject]@{ legacy = @(); artifacts = @() } }
+    return [pscustomobject]@{
+        legacy = @(Invoke-StableLegacyCleanup -StableRoot $InstallRoot -UpdaterStateRoot $stateRoot -MigrateEntryPoints)
+        artifacts = @(Invoke-StableUpdaterArtifactCleanup -UpdaterStateRoot $stateRoot -CandidatePaths @($PreparedDirectory))
     }
 }
 
@@ -653,7 +683,16 @@ try {
         $recovery = Invoke-PendingRecovery
     }
 
+    if ($legacyInstallRoot) {
+        $InstallRoot = Ensure-StableInstallRoot -SourceRoot $legacyInstallRoot -StableRoot $stableRoot -UpdaterStateRoot $stateRoot -LockTimeoutSeconds $LockTimeoutSeconds -UpdateLockHeld -LaunchGuardHeld
+        $helperRoot = $InstallRoot
+        $transactionHelper = Join-Path $helperRoot 'update-transaction.js'
+        $legacyInstallRoot = $null
+    }
+
     if ($Action -eq 'Recover') {
+        $recoveryCleanup = Invoke-PostUpdateCleanup
+        $recovery | Add-Member -NotePropertyName legacyCleanup -NotePropertyValue $recoveryCleanup
         $recovery | ConvertTo-Json -Depth 4 -Compress
         return
     }
@@ -714,7 +753,7 @@ try {
         $localVersion = Get-LocalVersion
         if (-not $remoteState.available) {
             Write-LastCheck $remoteState.version
-            ([ordered]@{ available = $remoteState.available; latestVersion = $remoteState.version; localVersion = $localVersion; updated = $false; method = 'git-fast-forward' } | ConvertTo-Json)
+            ([ordered]@{ available = $remoteState.available; latestVersion = $remoteState.version; localVersion = $localVersion; updated = $false; method = 'git-fast-forward'; cleanup = Invoke-PostUpdateCleanup } | ConvertTo-Json)
             return
         }
         $result = Install-SourceCheckout -Checkout $sourceCheckout -RemoteState $remoteState
@@ -729,7 +768,7 @@ try {
     if ($release.tag -eq $localVersion -and -not (Test-InstalledIntegrity)) { $available = $true }
     if (-not $available) {
         Write-LastCheck $release.tag
-        ([ordered]@{ available = $available; latestVersion = $release.tag; localVersion = $localVersion; archiveSha256 = $archiveHash; updated = $false; method = $(if ($Transport -eq 'Git') { 'verified-git' } else { 'verified-release' }) } | ConvertTo-Json)
+        ([ordered]@{ available = $available; latestVersion = $release.tag; localVersion = $localVersion; archiveSha256 = $archiveHash; updated = $false; method = $(if ($Transport -eq 'Git') { 'verified-git' } else { 'verified-release' }); cleanup = Invoke-PostUpdateCleanup } | ConvertTo-Json)
         return
     }
     $result = Install-VerifiedRelease -Release $release -ArchiveHash $archiveHash

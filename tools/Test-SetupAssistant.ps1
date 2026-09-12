@@ -33,6 +33,8 @@ $shell = New-Object -ComObject WScript.Shell
 if ($shell.CreateShortcut($expectedShortcut).Arguments -notmatch '--proxy') { throw 'Setup lost the existing proxy preference.' }
 if ($shell.CreateShortcut($expectedStartup).Arguments -notmatch '--proxy') { throw 'Startup did not inherit the proxy preference.' }
 if (-not (Test-Path -LiteralPath (Join-Path $DesktopPath 'ChatGPT Custom.lnk'))) { throw 'Setup removed a legacy shortcut.' }
+$migratedLegacy = $shell.CreateShortcut((Join-Path $DesktopPath 'ChatGPT Custom.lnk'))
+if ($migratedLegacy.TargetPath -notlike '*stable-root*\CodexRemoteMobileProject\ChatGPT Custom.exe') { throw 'Setup did not migrate the legacy shortcut to the stable root.' }
 $form.Dispose()
 '@
 if (-not $source.Contains('[void]$form.ShowDialog()')) { throw 'Setup entry point changed; update the form construction test.' }
@@ -45,6 +47,7 @@ try {
     $fixtureDesktop = Join-Path $fixture 'desktop'
     $fixtureMenu = Join-Path $fixture 'menu'
     $fixtureStartup = Join-Path $fixture 'startup'
+    $fixtureStableRoot = Join-Path $fixture 'stable-root'
     New-Item -ItemType Directory -Path $fixtureDesktop,$fixtureMenu,$fixtureStartup | Out-Null
     $shell = New-Object -ComObject WScript.Shell
     $legacy = $shell.CreateShortcut((Join-Path $fixtureDesktop 'ChatGPT Custom.lnk'))
@@ -52,7 +55,7 @@ try {
     $legacy.Arguments = '--proxy'; $legacy.Save()
     $source = $source.Replace('$packageRoot = $PSScriptRoot', ('$packageRoot = ' + "'" + $fixturePackage.Replace("'","''") + "'"))
     # Exercise real form actions against an isolated package and shortcut directories.
-    & ([scriptblock]::Create($source)) -Action Show -DesktopPath $fixtureDesktop -StartMenuPath $fixtureMenu -StartupPath $fixtureStartup
+    & ([scriptblock]::Create($source)) -Action Show -DesktopPath $fixtureDesktop -StartMenuPath $fixtureMenu -StartupPath $fixtureStartup -StableRoot $fixtureStableRoot
 } finally {
     $resolved = [IO.Path]::GetFullPath($fixture)
     $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'

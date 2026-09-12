@@ -4,9 +4,11 @@ param()
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $updaterSource = Join-Path $repositoryRoot 'windows\Update-ChatGPTRemote.ps1'
+$stableInstallSource = Join-Path $repositoryRoot 'windows\StableInstall.ps1'
 $transactionSource = Join-Path $repositoryRoot 'windows\update-transaction.js'
 $canonicalHelper = Join-Path $repositoryRoot 'windows\git-release.js'
 if (-not (Test-Path -LiteralPath $updaterSource -PathType Leaf) -or
+    -not (Test-Path -LiteralPath $stableInstallSource -PathType Leaf) -or
     -not (Test-Path -LiteralPath $transactionSource -PathType Leaf) -or
     -not (Test-Path -LiteralPath $canonicalHelper -PathType Leaf)) {
     throw 'Git updater integration fixture sources are missing.'
@@ -61,6 +63,7 @@ try {
     $fixturePlatformRoot = Join-Path $fixtureRepo 'windows'
     New-Item -ItemType Directory -Path $fixturePlatformRoot -Force | Out-Null
     Copy-Item -LiteralPath $updaterSource -Destination (Join-Path $fixturePlatformRoot 'Update-ChatGPTRemote.ps1')
+    Copy-Item -LiteralPath $stableInstallSource -Destination (Join-Path $fixturePlatformRoot 'StableInstall.ps1')
     Copy-Item -LiteralPath $transactionSource -Destination (Join-Path $fixturePlatformRoot 'update-transaction.js')
     Write-Utf8NoBom (Join-Path $fixturePlatformRoot 'VERSION') "v2.0.0`n"
     Write-Utf8NoBom (Join-Path $fixturePlatformRoot 'payload.txt') "Git transport fixture payload`n"
@@ -69,6 +72,7 @@ try {
     Invoke-GitFixtureSimple $fixtureRepo @('tag', '-a', 'v2.0.0', '-m', 'v2.0.0') | Out-Null
 
     Copy-Item -LiteralPath $updaterSource -Destination (Join-Path $fixtureRoot 'Update-ChatGPTRemote.ps1')
+    Copy-Item -LiteralPath $stableInstallSource -Destination (Join-Path $fixtureRoot 'StableInstall.ps1')
     Copy-Item -LiteralPath $transactionSource -Destination (Join-Path $fixtureRoot 'update-transaction.js')
     $canonicalLiteral = $canonicalHelper.Replace('\', '\\').Replace('"', '\"')
     $wrapper = @'
@@ -96,8 +100,9 @@ process.stdout.write(`${JSON.stringify(helper.resolveRelease(parse(process.argv.
 '@.Replace('__CANONICAL_HELPER__', $canonicalLiteral)
     Write-Utf8NoBom (Join-Path $fixtureRoot 'git-release.js') $wrapper
 
-    $installFiles = @('Update-ChatGPTRemote.ps1', 'update-transaction.js', 'VERSION')
+    $installFiles = @('Update-ChatGPTRemote.ps1', 'StableInstall.ps1', 'update-transaction.js', 'VERSION')
     Copy-Item -LiteralPath (Join-Path $fixturePlatformRoot 'Update-ChatGPTRemote.ps1') -Destination (Join-Path $fixtureRoot 'Update-ChatGPTRemote.ps1') -Force
+    Copy-Item -LiteralPath (Join-Path $fixturePlatformRoot 'StableInstall.ps1') -Destination (Join-Path $fixtureRoot 'StableInstall.ps1') -Force
     Copy-Item -LiteralPath (Join-Path $fixturePlatformRoot 'update-transaction.js') -Destination (Join-Path $fixtureRoot 'update-transaction.js') -Force
     Write-Utf8NoBom (Join-Path $fixtureRoot 'VERSION') "v1.0.0`n"
     $manifestLines = foreach ($relative in $installFiles) {

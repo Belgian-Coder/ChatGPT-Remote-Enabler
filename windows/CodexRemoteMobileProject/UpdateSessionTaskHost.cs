@@ -105,19 +105,26 @@ internal static class UpdateSessionTaskHost
 
     private static int RunWorker(string[] args)
     {
-        if (args.Length != 5 || !string.Equals(args[0], "--worker", StringComparison.Ordinal)) return 20;
+        if (args.Length != 8 || !string.Equals(args[0], "--worker", StringComparison.Ordinal)) return 20;
         string powershell = FullPath(args[1]);
         string script = FullPath(args[2]);
-        string hostRoot = Path.GetDirectoryName(typeof(UpdateSessionTaskHost).Assembly.Location);
-        bool allowed = (string.Equals(Path.GetFileName(script), "MobileProjectStartup.ps1", StringComparison.Ordinal) && IsDirectChild(hostRoot, script)) ||
-            (string.Equals(Path.GetFileName(script), "Enable-ChatGPTRemote.ps1", StringComparison.Ordinal) &&
-             IsDirectChild(Path.GetDirectoryName(hostRoot), script));
+        string packageRoot = FullPath(args[7]);
+        string expectedMobile = Path.GetFullPath(Path.Combine(packageRoot, @"CodexRemoteMobileProject\MobileProjectStartup.ps1"));
+        string expectedRoot = Path.GetFullPath(Path.Combine(packageRoot, "Enable-ChatGPTRemote.ps1"));
+        bool allowed = string.Equals(script, expectedMobile, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(script, expectedRoot, StringComparison.OrdinalIgnoreCase);
         string expectedPowerShell = FullPath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), @"WindowsPowerShell\v1.0\powershell.exe"));
         long expiresAtUnixMs;
         long nowUnixMs = (long)(DateTime.UtcNow - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalMilliseconds;
         if (!long.TryParse(args[4], out expiresAtUnixMs) || expiresAtUnixMs < nowUnixMs || expiresAtUnixMs > nowUnixMs + 30000) return 21;
         if (!allowed || !string.Equals(powershell, expectedPowerShell, StringComparison.OrdinalIgnoreCase) ||
-            !System.Text.RegularExpressions.Regex.IsMatch(args[3], "^[A-Za-z0-9+/]+={0,2}$")) return 21;
+            !System.Text.RegularExpressions.Regex.IsMatch(args[3], "^[A-Za-z0-9+/]+={0,2}$") ||
+            !System.Text.RegularExpressions.Regex.IsMatch(args[5], "^[a-fA-F0-9]{64}$") ||
+            !System.Text.RegularExpressions.Regex.IsMatch(args[6], "^[a-fA-F0-9]{64}$")) return 21;
+        AssertNoReparseThrough(script, packageRoot);
+        AssertNoReparseThrough(packageRoot, Path.GetPathRoot(packageRoot));
+        if (!string.Equals(Sha256File(script), args[5], StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(Sha256File(typeof(UpdateSessionTaskHost).Assembly.Location), args[6], StringComparison.OrdinalIgnoreCase)) return 21;
         string arguments = Encoding.UTF8.GetString(Convert.FromBase64String(args[3]));
         if (arguments.IndexOf('\0') >= 0 || arguments.IndexOf('\r') >= 0 || arguments.IndexOf('\n') >= 0) return 22;
         string quotedScript = "\"" + System.Text.RegularExpressions.Regex.Escape(script) + "\"";

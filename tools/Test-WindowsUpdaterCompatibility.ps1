@@ -49,7 +49,7 @@ try {
     if (-not $ready) { throw 'Loopback release fixture did not start.' }
 
     $previousUpdater = Join-Path $PreviousInstallRoot 'Update-ChatGPTRemote.ps1'
-    $result = & $previousUpdater -Action Update -LatestReleaseUrl "$baseUrl/release.json" -InstallRoot $fixtureRoot -AllowInsecureTransport | ConvertFrom-Json
+    $result = & $previousUpdater -Transport Release -Action Update -LatestReleaseUrl "$baseUrl/release.json" -InstallRoot $fixtureRoot -AllowInsecureTransport | ConvertFrom-Json
     if ($result.updated -ne $true -or $result.version -ne $version) { throw 'Previous updater did not accept the new rooted release contract.' }
     if ((Get-Content -LiteralPath (Join-Path $fixtureRoot 'VERSION') -Raw).Trim() -ne $version) { throw 'Updater fixture did not reach the expected version.' }
     $probe = & (Join-Path $fixtureRoot 'Update-ChatGPTRemote.ps1') -Action Probe -LatestReleaseUrl "$baseUrl/release.json" -InstallRoot $fixtureRoot -AllowInsecureTransport | ConvertFrom-Json
@@ -65,7 +65,7 @@ try {
     try {
         $env:LOCALAPPDATA = Join-Path $temporaryRoot 'auto-state'
         $env:CHATGPT_REMOTE_AUTO_UPDATE = '1'
-        $autoResult = & $previousUpdater -Action Auto -CheckIntervalHours 0 -LatestReleaseUrl "$baseUrl/release.json" -InstallRoot $autoFixture -AllowInsecureTransport | ConvertFrom-Json
+        $autoResult = & $previousUpdater -Transport Release -Action Auto -CheckIntervalHours 0 -LatestReleaseUrl "$baseUrl/release.json" -InstallRoot $autoFixture -AllowInsecureTransport | ConvertFrom-Json
         if ($autoResult.updated -ne $true -or (Get-Content -LiteralPath (Join-Path $autoFixture 'VERSION') -Raw).Trim() -ne $version) {
             throw 'The previous launcher Auto action did not install the normal release.'
         }

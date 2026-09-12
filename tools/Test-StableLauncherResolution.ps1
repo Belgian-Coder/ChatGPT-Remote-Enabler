@@ -48,7 +48,7 @@ try {
     Assert-Condition (Test-StableLegacyRoot -Path (Get-StableMachineInstallRoot)) 'The former machine-wide stable root is not recognized as a legacy migration source.'
     New-Item -ItemType Directory -Path $stableRoot,$packagedSource,$legacyRoot,$newerLegacyRoot,$processFailureLegacyRoot,$migrationFailureLegacyRoot,$sessionLegacyRoot,$desktopPath,$startMenuPath,$startupPath -Force | Out-Null
     Copy-StablePackageContents -SourceRoot (Join-Path $repositoryRoot 'windows') -DestinationRoot $stableRoot
-    Write-Version -Root $stableRoot -Version 'v1.5.65'
+    Write-Version -Root $stableRoot -Version 'v1.5.66'
     New-ReleaseManifest -Root $stableRoot
     Assert-Condition (Test-StablePackage -Root $stableRoot -RequireManifest) 'The canonical fixture failed manifest, VERSION, and ProductVersion validation.'
     $noncanonicalCleanup = @(Invoke-StableLegacyCleanup -StableRoot $stableRoot -UpdaterStateRoot $stateRoot -MigrateEntryPoints)
@@ -56,7 +56,7 @@ try {
     $noncanonicalTask = @(Invoke-StableTaskMigration -StableRoot $stableRoot)
     Assert-Condition ($noncanonicalTask.Count -eq 1 -and $noncanonicalTask[0].reason -eq 'noncanonical-stable-root') 'A noncanonical fixture root was allowed to migrate the durable logon task.'
     Copy-StablePackageContents -SourceRoot (Join-Path $repositoryRoot 'windows') -DestinationRoot $packagedSource
-    Write-Version -Root $packagedSource -Version 'v1.5.65'
+    Write-Version -Root $packagedSource -Version 'v1.5.66'
     New-ReleaseManifest -Root $packagedSource
     Assert-Condition (Test-StablePackage -Root $packagedSource -RequireManifest) 'The packaged update fixture failed validation.'
 
@@ -124,7 +124,7 @@ try { [IO.File]::WriteAllText($SignalPath, 'locked'); Start-Sleep -Seconds 60 } 
     [IO.File]::WriteAllText((Join-Path $legacyRoot 'CodexRemoteMobileProject\rollback\mobile.json'), '{"rollback":"mobile-durable"}', [Text.UTF8Encoding]::new($false))
 
     Copy-StablePackageContents -SourceRoot (Join-Path $repositoryRoot 'windows') -DestinationRoot $newerLegacyRoot
-    Write-Version -Root $newerLegacyRoot -Version 'v1.5.66'
+    Write-Version -Root $newerLegacyRoot -Version 'v1.5.67'
     New-ReleaseManifest -Root $newerLegacyRoot
     foreach ($root in @($processFailureLegacyRoot, $migrationFailureLegacyRoot, $sessionLegacyRoot, $reparseLegacyRoot)) {
         Copy-StablePackageContents -SourceRoot (Join-Path $repositoryRoot 'windows') -DestinationRoot $root
@@ -211,6 +211,19 @@ try { [IO.File]::WriteAllText($SignalPath, 'locked'); Start-Sleep -Seconds 60 } 
     $artifactResults = @(Invoke-StableUpdaterArtifactCleanup -UpdaterStateRoot $stateRoot)
     Assert-Condition (((@($artifactResults | Where-Object removed)).Count -eq 2) -and -not (Test-Path -LiteralPath $preparedArtifact) -and -not (Test-Path -LiteralPath $stagingArtifact)) 'Superseded updater artifacts were not cleaned and reported.'
 
+    $auxiliaryPaths = @(
+        (Join-Path $stableRoot 'rollback'),
+        (Join-Path $stableRoot 'CodexRemoteMobileProject\rollback'),
+        (Join-Path (Split-Path -Parent $stateRoot) 'shortcut-rollback'),
+        (Join-Path (Split-Path -Parent $stateRoot) 'rollback')
+    )
+    foreach ($path in $auxiliaryPaths) {
+        New-Item -ItemType Directory -Path $path -Force | Out-Null
+        [IO.File]::WriteAllText((Join-Path $path 'obsolete.txt'), 'obsolete auxiliary rollback', [Text.UTF8Encoding]::new($false))
+    }
+    $auxiliaryResults = @(Invoke-StableAuxiliaryRollbackCleanup -StableRoot $stableRoot -UpdaterStateRoot $stateRoot -ProcessEnumerator { @() })
+    Assert-Condition ($auxiliaryResults.Count -eq 4 -and @($auxiliaryResults | Where-Object removed).Count -eq 4 -and @($auxiliaryPaths | Where-Object { Test-Path -LiteralPath $_ }).Count -eq 0) 'Successful cleanup did not remove every auxiliary rollback category.'
+
     $retentionState = Join-Path $fixtureRoot 'retention-state'
     $retentionRollback = Join-Path $retentionState 'rollback'
     $retentionLegacy = Join-Path $retentionState 'legacy-recovery'
@@ -272,6 +285,7 @@ try { [IO.File]::WriteAllText($SignalPath, 'locked'); Start-Sleep -Seconds 60 } 
         HistoricalSessionDoesNotBlockCleanup = $true
         UnreferencedLegacyRootCleaned = $true
         RollbackMaterialExternalized = $true
+        AuxiliaryRollbackRemoved = $true
         InterruptedLegacyRecovery = $true
         LockedInRootFailureRecovers = $true
         NoPointerOrJunction = $true

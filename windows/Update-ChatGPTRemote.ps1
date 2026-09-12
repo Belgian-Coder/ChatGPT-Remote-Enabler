@@ -472,10 +472,11 @@ function Invoke-PendingRecovery {
 }
 
 function Invoke-PostUpdateCleanup {
-    if (Get-SourceCheckout) { return [pscustomobject]@{ legacy = @(); artifacts = @(); rollbacks = @() } }
+    if (Get-SourceCheckout) { return [pscustomobject]@{ legacy = @(); artifacts = @(); auxiliaryRollbacks = @(); rollbacks = @() } }
     return [pscustomobject]@{
         legacy = @(Invoke-StableLegacyCleanup -StableRoot $InstallRoot -UpdaterStateRoot $stateRoot -MigrateEntryPoints)
         artifacts = @(Invoke-StableUpdaterArtifactCleanup -UpdaterStateRoot $stateRoot -CandidatePaths @($PreparedDirectory))
+        auxiliaryRollbacks = @(Invoke-StableAuxiliaryRollbackCleanup -StableRoot $InstallRoot -UpdaterStateRoot $stateRoot)
         rollbacks = @(Invoke-StableRollbackRetention -UpdaterStateRoot $stateRoot)
     }
 }

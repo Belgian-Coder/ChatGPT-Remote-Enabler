@@ -5,6 +5,7 @@ param(
     [string]$DesktopPath,
     [string]$StartMenuPath,
     [string]$StableRoot,
+    [string]$RollbackRoot,
     [switch]$UseProxy
 )
 
@@ -20,7 +21,10 @@ if ([string]::IsNullOrWhiteSpace($StableRoot)) { $StableRoot = Get-StableInstall
 $StableRoot = [IO.Path]::GetFullPath($StableRoot).TrimEnd('\')
 $launcherPath = Join-Path $StableRoot 'CodexRemoteMobileProject\ChatGPT Custom.exe'
 $rootLauncherPath = Join-Path $StableRoot 'ChatGPT Remote Enabler.exe'
-$rollbackRoot = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) 'ChatGPTRemoteEnabler\shortcut-rollback'
+if ([string]::IsNullOrWhiteSpace($RollbackRoot)) {
+    $RollbackRoot = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) 'ChatGPTRemoteEnabler\shortcut-rollback'
+}
+$rollbackRoot = [IO.Path]::GetFullPath($RollbackRoot).TrimEnd('\')
 if (-not $DesktopPath) { $DesktopPath = [Environment]::GetFolderPath('Desktop') }
 if (-not $StartMenuPath) { $StartMenuPath = [Environment]::GetFolderPath('Programs') }
 $DesktopPath = [IO.Path]::GetFullPath($DesktopPath)
@@ -81,6 +85,22 @@ function Get-ShortcutSummary {
     }
 }
 
+function Complete-ShortcutBackups {
+    param([string[]]$Paths)
+    foreach ($path in @($Paths | Where-Object { $_ } | Select-Object -Unique)) {
+        $resolved = [IO.Path]::GetFullPath($path)
+        $parent = [IO.Path]::GetFullPath((Split-Path -Parent $resolved)).TrimEnd('\')
+        if (-not [string]::Equals($parent, $rollbackRoot, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Shortcut backup escaped its rollback root: $resolved"
+        }
+        if (Test-Path -LiteralPath $resolved -PathType Leaf) { Remove-Item -LiteralPath $resolved -Force -ErrorAction Stop }
+    }
+    if ((Test-Path -LiteralPath $rollbackRoot -PathType Container) -and
+        @(Get-ChildItem -LiteralPath $rollbackRoot -Force -ErrorAction Stop).Count -eq 0) {
+        Remove-Item -LiteralPath $rollbackRoot -Force -ErrorAction Stop
+    }
+}
+
 switch ($Action) {
     'Install' {
         $backups = @()
@@ -131,7 +151,19 @@ switch ($Action) {
             }
         }
         $result = Get-ShortcutSummary
-        $result.backupPaths = @($backups)
+        if (-not $result.launcherPresent -or @($result.shortcuts | Where-Object { -not $_.installed }).Count -ne 0) {
+            throw 'Shortcut installation did not pass its commit probe; rollback copies were retained.'
+        }
+        foreach ($shortcut in @($result.shortcuts)) {
+            $expected = @($shortcutTargets | Where-Object kind -eq $shortcut.kind)[0]
+            if (-not [string]::Equals([IO.Path]::GetFullPath([string]$shortcut.targetPath), [IO.Path]::GetFullPath($launcherPath), [StringComparison]::OrdinalIgnoreCase) -or
+                [string]$shortcut.arguments -cne [string]$expected.arguments -or
+                -not [string]::Equals([IO.Path]::GetFullPath([string]$shortcut.workingDirectory), [IO.Path]::GetFullPath($stableRootResolved), [StringComparison]::OrdinalIgnoreCase)) {
+                throw "The $($shortcut.kind) shortcut failed its exact commit probe; rollback copies were retained."
+            }
+        }
+        Complete-ShortcutBackups -Paths $backups
+        $result.backupPaths = @()
         $result.stableRoot = $stableRootResolved
         $result.legacyMigration = @(Invoke-StableLegacyCleanup -StableRoot $stableRootResolved -ShortcutPaths (@($shortcutTargets.path) + @($legacyShortcutTargets.path)) -TaskNames @('Codex Remote Mobile Features at Logon') -MigrateEntryPoints)
         $result | ConvertTo-Json -Depth 4
@@ -147,7 +179,11 @@ switch ($Action) {
             }
         }
         $result = Get-ShortcutSummary
-        $result.backupPaths = @($backups)
+        if (@($result.shortcuts | Where-Object installed).Count -ne 0 -or @($result.legacyShortcuts | Where-Object installed).Count -ne 0) {
+            throw 'Shortcut removal did not pass its commit probe; rollback copies were retained.'
+        }
+        Complete-ShortcutBackups -Paths $backups
+        $result.backupPaths = @()
         $result | ConvertTo-Json -Depth 4
     }
     'Probe' {

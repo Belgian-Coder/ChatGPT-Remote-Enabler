@@ -16,8 +16,15 @@ if (-not (Test-Path -LiteralPath $updaterSource -PathType Leaf) -or
 
 function Invoke-GitFixtureSimple {
     param([string]$WorkingDirectory, [string[]]$Arguments)
-    $result = & git -C $WorkingDirectory @Arguments 2>&1
-    if ($LASTEXITCODE -ne 0) { throw "Git fixture command failed: git -C $WorkingDirectory $($Arguments -join ' ')`n$($result -join [Environment]::NewLine)" }
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $result = & git -C $WorkingDirectory @Arguments 2>&1
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    if ($exitCode -ne 0) { throw "Git fixture command failed: git -C $WorkingDirectory $($Arguments -join ' ')`n$($result -join [Environment]::NewLine)" }
     return [string]::Join([Environment]::NewLine, @($result | ForEach-Object { [string]$_ })).Trim()
 }
 
@@ -33,8 +40,14 @@ function Quote-PowerShellLiteral {
 
 function Invoke-Updater {
     param([string]$Shell, [string]$Updater, [string[]]$Arguments)
-    $output = @(& $Shell -NoProfile -NonInteractive -File $Updater @Arguments 2>&1)
-    $exitCode = $LASTEXITCODE
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $output = @(& $Shell -NoProfile -NonInteractive -File $Updater @Arguments 2>&1)
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
     $text = [string]::Join([Environment]::NewLine, @($output | ForEach-Object { [string]$_ }))
     $json = $null
     if ($exitCode -eq 0) {

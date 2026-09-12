@@ -180,11 +180,14 @@ function Invoke-TransactionHelper {
     }
     $node = Resolve-UpdateNode
     $previousPowerShellHost = $env:CHATGPT_REMOTE_POWERSHELL_HOST
+    $previousErrorActionPreference = $ErrorActionPreference
     try {
         $env:CHATGPT_REMOTE_POWERSHELL_HOST = (Get-Process -Id $PID).Path
+        $ErrorActionPreference = 'Continue'
         $output = @(& $node $transactionHelper $Operation @Arguments 2>&1)
         $exitCode = $LASTEXITCODE
     } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
         if ($null -eq $previousPowerShellHost) { Remove-Item Env:\CHATGPT_REMOTE_POWERSHELL_HOST -ErrorAction SilentlyContinue }
         else { $env:CHATGPT_REMOTE_POWERSHELL_HOST = $previousPowerShellHost }
     }
@@ -217,8 +220,15 @@ function Get-GitRelease {
     $arguments = @($helper, 'resolve', '--repository', $Repository, '--platform', $platformName, '--cache-root', (Join-Path $stateRoot 'git-cache'))
     if ($RequestedTag) { $arguments += @('--tag', $RequestedTag) }
     if ($ExpectedHash) { $arguments += @('--expected-sha256', $ExpectedHash.ToLowerInvariant()) }
-    $output = @(& $node @arguments 2>&1)
-    if ($LASTEXITCODE -ne 0) { throw "Git update discovery failed: $($output -join [Environment]::NewLine)" }
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $output = @(& $node @arguments 2>&1)
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    if ($exitCode -ne 0) { throw "Git update discovery failed: $($output -join [Environment]::NewLine)" }
     $release = ($output -join [Environment]::NewLine) | ConvertFrom-Json
     if ($release.tag -notmatch '^v\d+\.\d+\.\d+$' -or $release.archiveSha256 -notmatch '^[a-f0-9]{64}$' -or
         -not (Test-Path -LiteralPath $release.archivePath -PathType Leaf)) { throw 'Git update discovery returned an invalid release.' }
@@ -234,8 +244,15 @@ function Invoke-GitCheckoutUpdate {
         '--install-root', $InstallRoot, '--journal-path', $sourceJournalPath, '--git', $checkout.git)
     if ($Source) { $arguments += @('--prepared-root', $Source, '--version', $RequestedVersion, '--archive-sha256', $ExpectedHash.ToLowerInvariant()) }
     $node = Resolve-UpdateNode
-    $output = @(& $node @arguments 2>&1)
-    if ($LASTEXITCODE -ne 0) { throw "Git checkout update failed: $($output -join [Environment]::NewLine)" }
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $output = @(& $node @arguments 2>&1)
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    if ($exitCode -ne 0) { throw "Git checkout update failed: $($output -join [Environment]::NewLine)" }
     return (($output -join [Environment]::NewLine) | ConvertFrom-Json)
 }
 
@@ -455,10 +472,11 @@ function Invoke-PendingRecovery {
 }
 
 function Invoke-PostUpdateCleanup {
-    if (Get-SourceCheckout) { return [pscustomobject]@{ legacy = @(); artifacts = @() } }
+    if (Get-SourceCheckout) { return [pscustomobject]@{ legacy = @(); artifacts = @(); rollbacks = @() } }
     return [pscustomobject]@{
         legacy = @(Invoke-StableLegacyCleanup -StableRoot $InstallRoot -UpdaterStateRoot $stateRoot -MigrateEntryPoints)
         artifacts = @(Invoke-StableUpdaterArtifactCleanup -UpdaterStateRoot $stateRoot -CandidatePaths @($PreparedDirectory))
+        rollbacks = @(Invoke-StableRollbackRetention -UpdaterStateRoot $stateRoot)
     }
 }
 

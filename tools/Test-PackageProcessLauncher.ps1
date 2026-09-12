@@ -89,8 +89,15 @@ internal static class EnvironmentProbe
         throw 'The child process did not receive the scoped proxy and WebSocket bridge environment.'
     }
 
-    & $launcher $probe 'http://user:password@proxy.example.invalid:8080' $node $bridge 'https://chatgpt.com' $node $output 2>$null | Out-Null
-    if ($LASTEXITCODE -eq 0) { throw 'A credential-bearing proxy URL was accepted.' }
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        & $launcher $probe 'http://user:password@proxy.example.invalid:8080' $node $bridge 'https://chatgpt.com' $node $output 2>$null | Out-Null
+        $credentialProxyExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    if ($credentialProxyExitCode -eq 0) { throw 'A credential-bearing proxy URL was accepted.' }
     $global:LASTEXITCODE = 0
 
     [pscustomobject]@{

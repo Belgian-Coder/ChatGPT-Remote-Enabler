@@ -328,7 +328,11 @@ function Test-StableTextReferencesRoot {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
     try {
         $text = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
-        return $text.IndexOf($Root, [StringComparison]::OrdinalIgnoreCase) -ge 0
+        if ($text.IndexOf($Root, [StringComparison]::OrdinalIgnoreCase) -ge 0) { return $true }
+        try {
+            $state = $text | ConvertFrom-Json -ErrorAction Stop
+            return Test-StableValueReferencesRoot -Value $state -Root $Root
+        } catch { return $false }
     } catch { return $true }
 }
 
@@ -847,6 +851,73 @@ function Invoke-StableUpdaterArtifactCleanup {
             if (-not $entry.reason) { $entry.reason = 'retained-' + $_.Exception.Message }
         }
         $results.Add([pscustomobject]$entry)
+    }
+    return @($results)
+}
+
+function Invoke-StableRollbackRetention {
+    param(
+        [Parameter(Mandatory)][string]$UpdaterStateRoot,
+        [ValidateRange(1, 50)][int]$RollbackRetainCount = 5,
+        [ValidateRange(1, 50)][int]$LegacyRecoveryRetainCount = 2,
+        [scriptblock]$ProcessEnumerator
+    )
+    $UpdaterStateRoot = [IO.Path]::GetFullPath($UpdaterStateRoot).TrimEnd('\\')
+    $results = [Collections.Generic.List[object]]::new()
+    foreach ($policy in @(
+        [pscustomobject]@{ Name = 'rollback'; RetainCount = $RollbackRetainCount },
+        [pscustomobject]@{ Name = 'legacy-recovery'; RetainCount = $LegacyRecoveryRetainCount }
+    )) {
+        $parent = Join-Path $UpdaterStateRoot $policy.Name
+        if (-not (Test-Path -LiteralPath $parent -PathType Container)) { continue }
+        try {
+            Assert-StableNoReparsePath -Path $parent -StopAt $UpdaterStateRoot
+            $directories = @(Get-ChildItem -LiteralPath $parent -Directory -Force -ErrorAction Stop |
+                Sort-Object @{ Expression = { $_.LastWriteTimeUtc }; Descending = $true }, @{ Expression = { $_.Name }; Descending = $true })
+        } catch {
+            $results.Add([pscustomobject][ordered]@{ category = $policy.Name; path = $parent; removed = $false; reason = 'retained-inventory-or-parent-safety-failure' })
+            continue
+        }
+        $safeRank = 0
+        foreach ($directory in $directories) {
+            $entry = [ordered]@{ category = $policy.Name; path = $directory.FullName; removed = $false; reason = $null }
+            try {
+                $resolved = [IO.Path]::GetFullPath($directory.FullName).TrimEnd('\\')
+                $resolvedParent = [IO.Path]::GetFullPath((Split-Path -Parent $resolved)).TrimEnd('\\')
+                $leaf = [IO.Path]::GetFileName($resolved)
+                if (-not [string]::Equals($resolvedParent, $parent, [StringComparison]::OrdinalIgnoreCase) -or $leaf -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
+                    throw 'retention-path-not-owned'
+                }
+                Assert-StableNoReparsePath -Path $resolved -StopAt $UpdaterStateRoot
+                Assert-StableNoReparseTree -Root $resolved
+                $safeRank++
+                if ($safeRank -le $policy.RetainCount) {
+                    $entry.reason = 'retained-by-policy'
+                    $results.Add([pscustomobject]$entry)
+                    continue
+                }
+                $journalReferenced = $false
+                foreach ($journal in @((Join-Path $UpdaterStateRoot 'transaction.json'), (Join-Path $UpdaterStateRoot 'git-transaction.json'))) {
+                    if (Test-StableTextReferencesRoot -Path $journal -Root $resolved) { $journalReferenced = $true; break }
+                }
+                if ($journalReferenced) {
+                    $entry.reason = 'retained-active-journal-reference'
+                    $results.Add([pscustomobject]$entry)
+                    continue
+                }
+                if (-not (Test-StableNoLiveRootReference -Root $resolved -ProcessEnumerator $ProcessEnumerator)) {
+                    $entry.reason = 'retained-live-process-reference'
+                    $results.Add([pscustomobject]$entry)
+                    continue
+                }
+                Remove-Item -LiteralPath $resolved -Recurse -Force -ErrorAction Stop
+                $entry.removed = $true
+                $entry.reason = 'removed-by-retention-policy'
+            } catch {
+                if (-not $entry.reason) { $entry.reason = 'retained-' + $_.Exception.Message }
+            }
+            $results.Add([pscustomobject]$entry)
+        }
     }
     return @($results)
 }

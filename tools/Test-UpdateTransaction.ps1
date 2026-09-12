@@ -64,37 +64,58 @@ function New-PreparedFixture {
     $archive = Join-Path $Directory '.chatgpt-remote-release.zip'
     [IO.File]::WriteAllBytes($archive, [Text.Encoding]::UTF8.GetBytes('fixture release archive bytes'))
     $archiveHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
-    $result = Invoke-Helper @('seal-prepared', '--prepared-root', $Directory, '--platform', 'Windows-x64', '--version', 'v2.0.0', '--archive-sha256', $archiveHash)
+    $result = Invoke-Helper -Arguments @('seal-prepared', '--prepared-root', $Directory, '--platform', 'Windows-x64', '--version', 'v2.0.0', '--archive-sha256', $archiveHash)
     if ($result.prepared -ne $true) { throw 'Prepared fixture was not sealed.' }
     return $archiveHash
 }
 
-function Invoke-Helper {
-    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
+function Set-ProcessArguments {
+    param(
+        [Parameter(Mandatory)][Diagnostics.ProcessStartInfo]$StartInfo,
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Arguments
+    )
+
+    if ($null -ne $StartInfo.GetType().GetProperty('ArgumentList')) {
+        foreach ($argument in @($Arguments)) { $StartInfo.ArgumentList.Add([string]$argument) }
+        return
+    }
+
+    $quote = { param([string]$Value) if ($Value -notmatch '[\s"]') { return $Value }; return '"' + $Value.Replace('"', '\"') + '"' }
+    $argumentParts = [Collections.Generic.List[string]]::new()
+    foreach ($value in @($Arguments)) { $argumentParts.Add((& $quote ([string]$value))) }
+    $StartInfo.Arguments = [string]::Join(' ', $argumentParts.ToArray())
+}
+
+function Stop-TestProcess {
+    param([Parameter(Mandatory)][Diagnostics.Process]$Process)
+    try { $Process.Kill($true) } catch [Management.Automation.MethodException] { $Process.Kill() }
+}
+
+function Invoke-HelperProcess {
+    param([Parameter(Mandatory)][string[]]$Arguments)
     $start = [Diagnostics.ProcessStartInfo]::new()
     $start.FileName = $node
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
     $start.RedirectStandardOutput = $true
     $start.RedirectStandardError = $true
-    if ($null -ne $start.GetType().GetProperty('ArgumentList')) {
-        $start.ArgumentList.Add($helper)
-        foreach ($argument in @($Arguments)) { $start.ArgumentList.Add([string]$argument) }
-    } else {
-        $quote = { param([string]$Value) if ($Value -notmatch '[\s"]') { return $Value }; return '"' + $Value.Replace('"', '\"') + '"' }
-        $argumentParts = [Collections.Generic.List[string]]::new()
-        foreach ($value in @($helper) + @($Arguments)) { $argumentParts.Add((& $quote ([string]$value))) }
-        $start.Arguments = [string]::Join(' ', $argumentParts.ToArray())
-    }
+    Set-ProcessArguments -StartInfo $start -Arguments (@($helper) + @($Arguments))
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $start
-    [IO.File]::WriteAllText((Join-Path $env:TEMP 'chatgpt-remote-test-args.txt'), $start.Arguments)
     [void]$process.Start()
     $stdout = $process.StandardOutput.ReadToEnd()
     $stderr = $process.StandardError.ReadToEnd()
     $process.WaitForExit()
-    if ($process.ExitCode -ne 0) { throw "Transaction helper failed: $($stdout.Trim()) $($stderr.Trim())" }
-    return (($stdout.Trim()) | ConvertFrom-Json)
+    $result = [pscustomobject]@{ ExitCode = $process.ExitCode; StandardOutput = $stdout; StandardError = $stderr }
+    $process.Dispose()
+    return $result
+}
+
+function Invoke-Helper {
+    param([Parameter(Mandatory)][string[]]$Arguments)
+    $result = Invoke-HelperProcess -Arguments $Arguments
+    if ($result.ExitCode -ne 0) { throw "Transaction helper failed: $($result.StandardOutput.Trim()) $($result.StandardError.Trim())" }
+    return (($result.StandardOutput.Trim()) | ConvertFrom-Json)
 }
 
 function Get-ApplyArguments {
@@ -117,8 +138,7 @@ function Start-PausedApply {
     $start.Environment['NODE_OPTIONS'] = "--require=$Hook"
     $start.Environment['CHATGPT_REMOTE_TEST_JOURNAL'] = $Journal
     $start.Environment['CHATGPT_REMOTE_TEST_PAUSE_COUNT'] = [string]$TargetCount
-    $start.ArgumentList.Add($helper)
-    foreach ($argument in $Arguments) { $start.ArgumentList.Add($argument) }
+    Set-ProcessArguments -StartInfo $start -Arguments (@($helper) + @($Arguments))
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $start
     [void]$process.Start()
@@ -128,7 +148,7 @@ function Start-PausedApply {
             try {
                 $journalState = Read-JsonSnapshotShared -Path $Journal
                 if ([int]$journalState.completedOperations -eq $TargetCount) {
-                    $process.Kill($true)
+                    Stop-TestProcess -Process $process
                     $process.WaitForExit()
                     return $journalState
                 }
@@ -139,7 +159,7 @@ function Start-PausedApply {
         }
         Start-Sleep -Milliseconds 10
     } while ([DateTime]::UtcNow -lt $deadline)
-    try { $process.Kill($true) } catch {}
+    try { Stop-TestProcess -Process $process } catch {}
     throw "Timed out waiting for durable completedOperations=$TargetCount."
 }
 
@@ -154,7 +174,7 @@ function Invoke-PowerShellChild {
     $start.Environment['PATH'] = $env:PATH
     $start.Environment['USERPROFILE'] = $env:USERPROFILE
     foreach ($entry in $Environment.GetEnumerator()) { $start.Environment[$entry.Key] = [string]$entry.Value }
-    foreach ($argument in $Arguments) { $start.ArgumentList.Add($argument) }
+    Set-ProcessArguments -StartInfo $start -Arguments $Arguments
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $start
     [void]$process.Start()
@@ -175,7 +195,7 @@ function Start-CapturedProcess {
     $start.Environment['PATH'] = $env:PATH
     $start.Environment['USERPROFILE'] = $env:USERPROFILE
     foreach ($entry in $Environment.GetEnumerator()) { $start.Environment[$entry.Key] = [string]$entry.Value }
-    foreach ($argument in $Arguments) { $start.ArgumentList.Add($argument) }
+    Set-ProcessArguments -StartInfo $start -Arguments $Arguments
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $start
     [void]$process.Start()
@@ -195,7 +215,7 @@ function Start-ReleaseServer {
     $start.Environment['CHATGPT_REMOTE_TEST_CHECKSUMS'] = $Checksums
     $start.Environment['CHATGPT_REMOTE_TEST_READY'] = $ReadyFile
     $start.Environment['CHATGPT_REMOTE_TEST_PORT'] = [string]$Port
-    $start.ArgumentList.Add($ServerScript)
+    Set-ProcessArguments -StartInfo $start -Arguments @($ServerScript)
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $start
     [void]$process.Start()
@@ -205,7 +225,7 @@ function Start-ReleaseServer {
         Start-Sleep -Milliseconds 20
     }
     if (-not (Test-Path -LiteralPath $ReadyFile -PathType Leaf)) {
-        try { $process.Kill($true) } catch {}
+        try { Stop-TestProcess -Process $process } catch {}
         throw 'Release fixture server did not become ready.'
     }
     return $process
@@ -311,19 +331,19 @@ try {
     $archivePath = Join-Path $prepared '.chatgpt-remote-release.zip'
     $archiveBytes = [IO.File]::ReadAllBytes($archivePath)
     [IO.File]::WriteAllBytes($archivePath, [Text.Encoding]::UTF8.GetBytes('tampered archive'))
-    $tamperOutput = @(& $node $helper validate-prepared --prepared-root $prepared --platform Windows-x64 --version v2.0.0 --archive-sha256 $archiveHash 2>&1)
-    if ($LASTEXITCODE -eq 0 -or ($tamperOutput -join ' ') -notmatch 'Retained prepared archive changed') {
+    $tamperResult = Invoke-HelperProcess -Arguments @('validate-prepared', '--prepared-root', $prepared, '--platform', 'Windows-x64', '--version', 'v2.0.0', '--archive-sha256', $archiveHash)
+    if ($tamperResult.ExitCode -eq 0 -or ($tamperResult.StandardOutput + ' ' + $tamperResult.StandardError) -notmatch 'Retained prepared archive changed') {
         throw 'Prepared archive tampering was not rejected.'
     }
     [IO.File]::WriteAllBytes($archivePath, $archiveBytes)
 
     # Normal apply replaces tracked files, removes obsolete tracked files, and preserves integrity.
     New-InstalledFixture $install
-    $normal = Invoke-Helper @(Get-ApplyArguments $install $prepared $journal (Join-Path $state 'rollback-normal') $archiveHash)
+    $normal = Invoke-Helper -Arguments @(Get-ApplyArguments $install $prepared $journal (Join-Path $state 'rollback-normal') $archiveHash)
     if ($normal.updated -ne $true -or $normal.version -ne 'v2.0.0' -or (Test-Path -LiteralPath (Join-Path $install 'removed.txt'))) {
         throw 'Normal transactional apply produced the wrong installed state.'
     }
-    $integrity = Invoke-Helper @('integrity', '--install-root', $install)
+    $integrity = Invoke-Helper -Arguments @('integrity', '--install-root', $install)
     if ($integrity.integrityValid -ne $true -or $integrity.version -ne 'v2.0.0') { throw 'Installed integrity validation failed.' }
 
     # Preload instrumentation blocks immediately after the first journal count is durably renamed.
@@ -375,7 +395,7 @@ fs.mkdirSync = function patchedMkdir(directory) {
             throw "Hard kill observed count $($crashState.completedOperations) instead of $targetCount."
         }
         if ($null -eq $operationCount) { $operationCount = @($crashState.operations).Count }
-        $recovered = Invoke-Helper @('recover', '--journal-path', $journal, '--install-root', $install)
+        $recovered = Invoke-Helper -Arguments @('recover', '--journal-path', $journal, '--install-root', $install)
         if ($recovered.recovered -ne $true -or $recovered.recoveryMode -ne 'complete-forward' -or $recovered.integrityValid -ne $true) {
             throw "Hard-killed apply did not complete forward from completedOperations=$targetCount."
         }
@@ -438,8 +458,8 @@ fs.mkdirSync = function patchedMkdir(directory) {
         Start-Sleep -Milliseconds 10
     }
     if (-not (Test-Path -LiteralPath $reclaimReady -PathType Leaf)) { throw 'First stale-lock reclaimer did not acquire its serialized guard.' }
-    $secondReclaimerOutput = @(& $node $helper recover --journal-path $orphanJournal --install-root $install 2>&1)
-    if ($LASTEXITCODE -eq 0 -or ($secondReclaimerOutput -join ' ') -notmatch 'UPDATE_BUSY.*reclaimed') {
+    $secondReclaimerResult = Invoke-HelperProcess -Arguments @('recover', '--journal-path', $orphanJournal, '--install-root', $install)
+    if ($secondReclaimerResult.ExitCode -eq 0 -or ($secondReclaimerResult.StandardOutput + ' ' + $secondReclaimerResult.StandardError) -notmatch 'UPDATE_BUSY.*reclaimed') {
         throw 'A concurrent stale-lock reclaimer was not rejected.'
     }
     $firstReclaimer.WaitForExit()
@@ -455,7 +475,7 @@ fs.mkdirSync = function patchedMkdir(directory) {
     Remove-Item -LiteralPath $journal -Force -ErrorAction SilentlyContinue
     [void](Start-PausedApply (Get-ApplyArguments $install $prepared $journal (Join-Path $state 'rollback-damaged') $archiveHash) $journal $hook $operationCount)
     Remove-Item -LiteralPath $prepared -Recurse -Force
-    $rolledBack = Invoke-Helper @('recover', '--journal-path', $journal, '--install-root', $install)
+    $rolledBack = Invoke-Helper -Arguments @('recover', '--journal-path', $journal, '--install-root', $install)
     if ($rolledBack.recoveryMode -ne 'rollback' -or $rolledBack.version -ne 'v1.0.0' -or -not (Test-Path -LiteralPath (Join-Path $install 'removed.txt'))) {
         throw 'Recovery did not roll back after prepared content was removed.'
     }
@@ -470,8 +490,8 @@ fs.mkdirSync = function patchedMkdir(directory) {
     $journalObject = Get-Content -LiteralPath $journal -Raw | ConvertFrom-Json
     $journalObject.operations[0].destination = $sentinel
     Write-Utf8File $journal (($journalObject | ConvertTo-Json -Depth 8) + "`n")
-    $unsafeOutput = @(& $node $helper recover --journal-path $journal --install-root $install 2>&1)
-    if ($LASTEXITCODE -eq 0 -or ($unsafeOutput -join ' ') -notmatch 'UNSAFE_MIXED_INSTALL' -or (Get-Content -LiteralPath $sentinel -Raw) -ne 'outside remains unchanged') {
+    $unsafeResult = Invoke-HelperProcess -Arguments @('recover', '--journal-path', $journal, '--install-root', $install)
+    if ($unsafeResult.ExitCode -eq 0 -or ($unsafeResult.StandardOutput + ' ' + $unsafeResult.StandardError) -notmatch 'UNSAFE_MIXED_INSTALL' -or (Get-Content -LiteralPath $sentinel -Raw) -ne 'outside remains unchanged') {
         throw 'Ambiguous journal confinement did not fail closed.'
     }
     New-InstalledFixture $install
@@ -499,7 +519,7 @@ fs.mkdirSync = function patchedMkdir(directory) {
     $listener.Stop()
     $metadataFile = Join-Path $temporaryRoot 'release.json'
     $baseUrl = "http://127.0.0.1:$serverPort"
-    [ordered]@{
+    $releaseMetadata = [ordered]@{
         tag_name = 'v2.0.0'
         draft = $false
         prerelease = $false
@@ -507,7 +527,8 @@ fs.mkdirSync = function patchedMkdir(directory) {
             [ordered]@{ name = $releaseArchiveName; browser_download_url = "$baseUrl/archive"; digest = "sha256:$releaseHash" },
             [ordered]@{ name = $checksumsName; browser_download_url = "$baseUrl/checksums" }
         )
-    } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $metadataFile -Encoding UTF8
+    } | ConvertTo-Json -Depth 6
+    Write-Utf8File $metadataFile ($releaseMetadata + "`n")
     $serverScript = Join-Path $temporaryRoot 'release-server.js'
     Write-Utf8File $serverScript @'
 const fs = require("node:fs");
@@ -556,7 +577,7 @@ server.listen(Number(process.env.CHATGPT_REMOTE_TEST_PORT), "127.0.0.1", () => {
             throw 'Updater ApplyPrepared did not install the exact prepared archive.'
         }
     } finally {
-        if (-not $server.HasExited) { $server.Kill($true); $server.WaitForExit() }
+        if (-not $server.HasExited) { Stop-TestProcess -Process $server; $server.WaitForExit() }
         $server.Dispose()
     }
 

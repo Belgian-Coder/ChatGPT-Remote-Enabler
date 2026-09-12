@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.5.63 — 2026-09-12
+
+- Correct updater retention to the owner-defined invariant: one immediate
+  rollback generation and zero legacy-recovery generations. Active journal or
+  live-process references still fail closed until the next successful cleanup.
+- Give macOS the same unversioned per-user installation model as Windows.
+  Recognized version-named installs migrate to the fixed Application Support
+  root; existing LaunchAgent and app-shortcut targets are rebuilt against that
+  root before obsolete install folders are removed.
+- Remove package-created macOS LaunchAgent and shortcut rollback copies after a
+  successful migration or update. Native fixtures cover stable-root migration,
+  one updater rollback, zero auxiliary rollback copies, and removal of the
+  version-named source root.
+
 ## v1.5.62 — 2026-09-12
 
 - Bound per-user Windows updater history to the five newest rollback

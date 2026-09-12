@@ -1,6 +1,6 @@
 # Feature guide
 
-This guide describes the Windows and macOS v1.5.62 source, including reliable
+This guide describes the Windows and macOS v1.5.63 source, including reliable
 background inventory publication, loaded search, compact Settings, guarded navigation, and stale-Steer recovery. Historical v1.5.49 packages and
 screenshots do not include those changes. Both packages share the Device
 projects renderer and the feature behavior below; the
@@ -26,6 +26,14 @@ after manifest, shortcut, task, process, live-coordinator, and recovery checks;
 cleanup JSON identifies each removed or retained root.
 The former unversioned ProgramData root is an exact legacy source and is
 removed only after the same checks pass.
+
+macOS uses the permanent unversioned per-user root
+`~/Library/Application Support/CodexRemoteFeatures/ChatGPT-Remote-Enabler-macOS-arm64`.
+An update from a recognized version-named release root copies the verified
+installed manifest to that root, applies the new release there, rewires the
+LaunchAgent and app shortcut, and removes the version-named roots. Successful
+updates retain one immediate updater rollback and zero auxiliary or legacy
+rollback copies, subject to active recovery-journal safety checks.
 
 ![Search in a synthetic v1.5.54 Chromium fixture](assets/screenshots/search-unreleased.png)
 

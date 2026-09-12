@@ -10,14 +10,15 @@ device filters, native project grouping and ordering, empty remote projects,
 project-hover new-chat actions, and working/unread indicators. The original
 **Native sidebar** remains available, with its grouping preference preserved.
 
-v1.5.62 keeps the permanent Windows helper in the current user's unversioned
-LocalAppData root, migrates the former ProgramData root as legacy, and removes
-obsolete roots only after the existing safety checks pass. This prevents an
-administrator-owned ProgramData ACL from breaking limited-user automatic
-replacement. Windows updater state retains the five newest rollback generations
-and two newest legacy-recovery generations, preserving anything still referenced
-by a recovery journal or live process. It retains the v1.5.60 renderer and
-prelaunch behavior. See the
+v1.5.63 keeps each platform's permanent helper in one unversioned per-user
+root. Windows migrates the former ProgramData root; macOS migrates recognized
+version-named release roots and rewires its LaunchAgent and app shortcut to the
+stable root. Every successful update retains only the immediate prior updater
+generation and removes package-created legacy, launcher, and shortcut recovery
+copies once recovery journals no longer reference them. This
+prevents administrator-owned Windows ACLs and stale version-dependent entry
+points from breaking replacement. It retains the v1.5.60 renderer and prelaunch
+behavior. See the
 [feature guide](FEATURES.md) for behavior and validation limits.
 
 ## Install when hosted ZIP downloads are blocked
@@ -84,19 +85,19 @@ app build is compatible.
 See the [complete feature guide](FEATURES.md) for defaults, limits, privacy,
 and recovery behavior.
 
-## Install v1.5.62
+## Install v1.5.63
 
 Prerequisites are a supported ChatGPT/Codex desktop app signed in with Remote
 available on the account, Node.js 22 or newer, and a writable folder for the
 downloaded package. Organization policy, account access, MFA, or desktop-app
 policy can still block Remote independently of this helper.
 
-- **[Download Windows 11 x64](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/download/v1.5.62/ChatGPT-Remote-Enabler-Windows-x64-v1.5.62.zip)** and follow the [Windows installation guide](windows/README.md).
-- **[Download macOS Apple Silicon](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/download/v1.5.62/ChatGPT-Remote-Enabler-macOS-arm64-v1.5.62.zip)** and follow the [macOS installation guide](macos/README.md).
-- Use the [v1.5.62 release page](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.62) to inspect release notes and published checksums.
+- **[Download Windows 11 x64](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/download/v1.5.63/ChatGPT-Remote-Enabler-Windows-x64-v1.5.63.zip)** and follow the [Windows installation guide](windows/README.md).
+- **[Download macOS Apple Silicon](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/download/v1.5.63/ChatGPT-Remote-Enabler-macOS-arm64-v1.5.63.zip)** and follow the [macOS installation guide](macos/README.md).
+- Use the [v1.5.63 release page](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.63) to inspect release notes and published checksums.
 
 Both installers run in the current-user context and do not request elevation.
-macOS keeps the package in a user-owned folder. On Windows, keep the downloaded
+macOS keeps the package in its fixed per-user Application Support root. On Windows, keep the downloaded
 package in a writable user-owned staging folder; setup or first launch verifies
 and copies it to the permanent per-user root below.
 Run the platform launcher after quitting the ordinary desktop app; it opens the
@@ -115,6 +116,12 @@ coordinator configuration, or recovery journal still references them; updater
 JSON reports every removed and retained root. The former unversioned
 ProgramData root is also treated as an exact legacy source and removed after
 those checks pass.
+
+macOS keeps one permanent unversioned installation root at
+`~/Library/Application Support/CodexRemoteFeatures/ChatGPT-Remote-Enabler-macOS-arm64`.
+Existing version-named package roots are migrated during a successful update.
+The LaunchAgent and Applications shortcut are rebuilt against the stable root
+before the old roots are removed.
 
 ## Remote connection roles
 

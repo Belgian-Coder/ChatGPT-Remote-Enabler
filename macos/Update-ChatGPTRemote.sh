@@ -33,6 +33,8 @@ transport="${transport:l}"
 check_interval_hours="${CHATGPT_REMOTE_UPDATE_INTERVAL_HOURS:-0}"
 platform_name="macOS-arm64"
 state_root="$HOME/Library/Application Support/ChatGPTRemoteEnabler/update"
+canonical_install_root="$HOME/Library/Application Support/CodexRemoteFeatures/ChatGPT-Remote-Enabler-macOS-arm64"
+legacy_release_root="$HOME/Library/Application Support/CodexRemoteFeatures/releases"
 disabled_marker="$state_root/auto-update-disabled"
 last_check="$state_root/last-check.json"
 rollback_root="$state_root/rollback"
@@ -49,6 +51,61 @@ lock_acquired=0
 launch_lock_acquired=0
 temporary_root=""
 temporary_staging=""
+stable_migration_pending=0
+
+prune_package_history_root() {
+  local root="$1" retain_count="$2" kind="$3"
+  [[ -d "$root" ]] || return 0
+  if [[ -L "$root" ]]; then
+    print -u2 "Rollback cleanup retained unsafe linked $kind root: $root"
+    return 0
+  fi
+  local -a entries
+  if [[ "$kind" == update-rollback ]]; then entries=("$root"/*(/Nom))
+  else entries=("$root"/*(Nom)); fi
+  local rank=0 entry leaf parent
+  for entry in "${entries[@]}"; do
+    entry="${entry:A}"
+    parent="${entry:h}"
+    leaf="${entry:t}"
+    if [[ "$parent" != "${root:A}" || -z "$leaf" || "$leaf" == .* || -L "$entry" ]]; then
+      print -u2 "Rollback cleanup retained unsafe $kind entry: $entry"
+      continue
+    fi
+    (( rank += 1 ))
+    if (( rank <= retain_count )); then continue; fi
+    if { [[ -f "$transaction_journal" ]] && /usr/bin/grep -F -- "$entry" "$transaction_journal" >/dev/null 2>&1; } ||
+       { [[ -f "$git_transaction_journal" ]] && /usr/bin/grep -F -- "$entry" "$git_transaction_journal" >/dev/null 2>&1; }; then
+      print -u2 "Rollback cleanup retained journal-referenced $kind entry: $entry"
+      continue
+    fi
+    rm -rf -- "$entry" || print -u2 "Rollback cleanup could not remove $kind entry: $entry"
+  done
+}
+
+cleanup_rollback_history() {
+  prune_package_history_root "$rollback_root" 1 update-rollback
+  prune_package_history_root "$install_root/rollback" 0 launcher-rollback
+  prune_package_history_root "$HOME/Library/Application Support/CodexRemoteFeatures/launchers/rollback" 0 shortcut-rollback
+}
+
+cleanup_legacy_install_roots() {
+  [[ -d "$legacy_release_root" && ! -L "$legacy_release_root" ]] || return 0
+  local candidate process_commands
+  process_commands="$(/bin/ps -axo pid=,command= 2>/dev/null | /usr/bin/awk -v own="$$" '$1 != own { $1=""; sub(/^ /, ""); print }' || true)"
+  for candidate in "$legacy_release_root"/ChatGPT-Remote-Enabler-macOS-arm64-v*(/N); do
+    candidate="${candidate:A}"
+    if [[ "${candidate:h}" != "${legacy_release_root:A}" || -L "$candidate" ]]; then
+      print -u2 "Legacy install cleanup retained unsafe entry: $candidate"
+      continue
+    fi
+    if [[ "$process_commands" == *"$candidate"* ]]; then
+      print -u2 "Legacy install cleanup retained process-referenced entry: $candidate"
+      continue
+    fi
+    rm -rf -- "$candidate" || print -u2 "Legacy install cleanup could not remove: $candidate"
+  done
+}
 
 cleanup() {
   local current_owner="" current_launch_owner=""
@@ -427,6 +484,59 @@ installed_integrity_valid() {
   (( count > 0 ))
 }
 
+ensure_stable_install_root() {
+  [[ "$install_root" != "$canonical_install_root" ]] || return 0
+  if [[ "${install_root:h}" != "${legacy_release_root:A}" || "${install_root:t}" != ChatGPT-Remote-Enabler-macOS-arm64-v* ]]; then
+    return 0
+  fi
+  installed_integrity_valid || { print -u2 "Legacy installation failed integrity validation and was not migrated: $install_root"; return 1; }
+  if [[ -e "$canonical_install_root" ]]; then
+    print -u2 "Stable install root already exists and was not replaced: $canonical_install_root"
+    return 1
+  fi
+  local candidate="$canonical_install_root.migrate-$$-$RANDOM" manifest="$install_root/RELEASE-MANIFEST.sha256"
+  local line relative source destination
+  mkdir -p "${canonical_install_root:h}" "$candidate"
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    relative="${line#* \*}"
+    [[ -n "$relative" && "$relative" != /* && "$relative" != *'../'* && "$relative" != '../'* && "$relative" != *'/..' ]] \
+      || { rm -rf -- "$candidate"; print -u2 "Legacy manifest contains an unsafe path."; return 1; }
+    source="$install_root/$relative"
+    destination="$candidate/$relative"
+    mkdir -p "${destination:h}"
+    /bin/cp -p -- "$source" "$destination"
+  done < "$manifest"
+  /bin/cp -p -- "$manifest" "$candidate/RELEASE-MANIFEST.sha256"
+  if ! invoke_transaction_helper integrity --install-root "$candidate" >/dev/null; then
+    rm -rf -- "$candidate"
+    print -u2 "Stable install candidate failed integrity validation."
+    return 1
+  fi
+  mv -- "$candidate" "$canonical_install_root"
+  install_root="$canonical_install_root"
+  stable_migration_pending=1
+}
+
+finalize_stable_install_root() {
+  if (( stable_migration_pending )); then
+    local launcher="$install_root/MobileProjectView-macOS-arm64.sh"
+    local shortcut="$install_root/MacOSShortcut.sh"
+    local plist="$HOME/Library/LaunchAgents/com.local.codex-mobile-project-view.plist"
+    if [[ -f "$plist" ]]; then
+      local delay required
+      delay="$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:CODEX_STARTUP_DELAY_SECONDS' "$plist" 2>/dev/null || print 60)"
+      required="$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:CODEX_STARTUP_REQUIRED_PATH' "$plist" 2>/dev/null || true)"
+      CODEX_STARTUP_DELAY_SECONDS="$delay" CODEX_STARTUP_REQUIRED_PATH="$required" /bin/zsh "$launcher" install-startup >/dev/null
+    fi
+    if [[ -d "$HOME/Applications/ChatGPT Remote Enabler.app" || -f "$HOME/Library/Application Support/CodexRemoteFeatures/launchers/ChatGPT Remote Enabler.applescript" ]]; then
+      /bin/zsh "$shortcut" install >/dev/null
+    fi
+  fi
+  cleanup_rollback_history
+  cleanup_legacy_install_roots
+}
+
 version_is_newer() {
   local node_bin="$1" latest="$2" current="$3"
   "$node_bin" -e '
@@ -506,7 +616,9 @@ if (( read_only_action )); then
 else
   recovery_output="$(recover_pending_transaction)"
 fi
+if (( ! read_only_action )); then ensure_stable_install_root; fi
 if [[ "$action" == recover ]]; then
+  finalize_stable_install_root
   print -r -- "$recovery_output"
   exit 0
 fi
@@ -526,6 +638,7 @@ if [[ "$action" == prepare || "$action" == apply-prepared || "$action" == applyp
     exit 1
   fi
   record_check "$target_version"
+  finalize_stable_install_root
   print -r -- "$apply_output"
   exit 0
 fi
@@ -548,6 +661,7 @@ if version_is_newer "$node_bin" "$tag" "$current"; then available=true; fi
 if [[ "$tag" == "$current" ]] && ! installed_integrity_valid; then available=true; fi
 if [[ "$action" == check || "$available" == false ]]; then
   record_check "$tag"
+  [[ "$action" == check ]] || finalize_stable_install_root
   print -r -- "{\"available\":$available,\"latestVersion\":\"$tag\",\"localVersion\":\"$current\",\"archiveSha256\":\"$published_hash\",\"updated\":false,\"method\":\"$update_method\"}"
   exit 0
 fi
@@ -562,6 +676,7 @@ if ! update_output="$(apply_prepared_release "$tag" "$published_hash" "$prepared
 fi
 record_check "$tag"
 [[ -f "$transaction_journal" ]] || rm -rf -- "$prepared_root"
+finalize_stable_install_root
 "$node_bin" -e '
   const value = JSON.parse(process.argv[1]);
   if (!value.method) value.method = process.argv[2];

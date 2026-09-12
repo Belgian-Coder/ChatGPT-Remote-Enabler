@@ -858,8 +858,8 @@ function Invoke-StableUpdaterArtifactCleanup {
 function Invoke-StableRollbackRetention {
     param(
         [Parameter(Mandatory)][string]$UpdaterStateRoot,
-        [ValidateRange(1, 50)][int]$RollbackRetainCount = 5,
-        [ValidateRange(1, 50)][int]$LegacyRecoveryRetainCount = 2,
+        [ValidateRange(0, 50)][int]$RollbackRetainCount = 1,
+        [ValidateRange(0, 50)][int]$LegacyRecoveryRetainCount = 0,
         [scriptblock]$ProcessEnumerator
     )
     $UpdaterStateRoot = [IO.Path]::GetFullPath($UpdaterStateRoot).TrimEnd('\\')

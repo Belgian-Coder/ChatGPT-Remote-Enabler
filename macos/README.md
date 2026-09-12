@@ -1,6 +1,10 @@
 # macOS Apple Silicon: install for your user without sudo
 
-Release v1.5.62 retains the verified Git helper update under the macOS launch guard
+Release v1.5.63 moves recognized version-named installations to the fixed
+per-user root `~/Library/Application Support/CodexRemoteFeatures/ChatGPT-Remote-Enabler-macOS-arm64`
+and rewires the LaunchAgent and app shortcut to that root. Each successful
+update keeps only the immediately previous updater generation and removes
+package-created launcher, shortcut, and legacy-install copies. It retains the verified Git helper update under the macOS launch guard
 before compatibility probing or injection, verifies recovery and installed
 integrity, and safely hands updated launches to the replaced script without
 repeating the prelaunch check or startup delay. It also ships renderer v79 with
@@ -14,14 +18,14 @@ You need an Apple Silicon Mac (arm64), the ChatGPT/Codex desktop app installed a
 preceding installed build. v1.5.49 was then manually installed and its live
 renderer readiness was checked on the participating test devices. The next
 sign-in startup trigger and future desktop-app builds remain separate checks.
-v1.5.62 is a normal release. Installing it still requires a normal graceful
+v1.5.63 is a normal release. Installing it still requires a normal graceful
 quit of the desktop app and is not implied by release publication.
 
 ## 1. Download and extract
 
-1. Download **ChatGPT-Remote-Enabler-macOS-arm64-v1.5.62.zip** from [v1.5.62 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.62).
-2. Double-click the ZIP in Finder. Create **ChatGPTRemoteEnabler** in your home folder and move the extracted package contents into it.
-3. `MobileProjectView-macOS-arm64.sh` must be directly inside that folder. Keep the complete package together in this writable per-user location.
+1. Download **ChatGPT-Remote-Enabler-macOS-arm64-v1.5.63.zip** from [v1.5.63 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.63).
+2. Double-click the ZIP in Finder. In Finder choose **Go > Go to Folder** and enter `~/Library/Application Support/CodexRemoteFeatures`. Create **ChatGPT-Remote-Enabler-macOS-arm64** there and move the extracted package contents into it.
+3. `MobileProjectView-macOS-arm64.sh` must be directly inside that fixed folder. Keep the complete package together there; future updates replace it in place.
 
 ## 2. Node.js, if needed
 
@@ -36,7 +40,7 @@ The helper detects this portable location automatically, including at sign-in. N
 Finish active tasks and quit the ordinary ChatGPT/Codex app. Open **Terminal** from **Applications > Utilities** and paste:
 
 ```zsh
-cd "$HOME/ChatGPTRemoteEnabler"
+cd "$HOME/Library/Application Support/CodexRemoteFeatures/ChatGPT-Remote-Enabler-macOS-arm64"
 /bin/zsh ./MobileProjectView-macOS-arm64.sh enable
 ```
 
@@ -200,8 +204,8 @@ instead of an internal environment ID.
 
 ## Automatic injected startup
 
-For an update-safe login launcher and Dock shortcut, keep the extracted
-package in a permanent local folder, then run from that folder:
+For an update-safe login launcher and Dock shortcut, run from the fixed
+unversioned installation folder:
 
 ```zsh
 CODEX_STARTUP_DELAY_SECONDS=60 ./MobileProjectView-macOS-arm64.sh install-startup
@@ -246,4 +250,4 @@ Settings now provides per-device connection findings, next steps, explicit evide
 
 ## Version or update icon missing
 
-Fully quit the app when your work is safe and launch through Remote Enabler in the latest extracted folder. An older Dock launcher can still reference another folder. Open Settings to see the loaded helper version and update controls; a missing updater has recovery instructions. v1.5.62 is a normal release available to the existing updater.
+Fully quit the app when your work is safe and launch through Remote Enabler. The updater migrates recognized historical version folders and rewires existing startup and app entry points to the fixed root. Open Settings to see the loaded helper version and update controls; a missing updater has recovery instructions. v1.5.63 is a normal release available to the existing updater.

@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.5.61 — 2026-09-12
+
+- Move the permanent Windows installation to the current user's unversioned
+  `%LOCALAPPDATA%\CodexRemoteFeatures\ChatGPT-Remote-Enabler-Windows-x64`
+  root. This keeps automatic replacement under the same limited user that owns
+  the shortcuts and updater state, so an administrator-created ProgramData ACL
+  cannot allow new files while denying replacement of existing payload files.
+- Recognize the v1.5.60 ProgramData stable root as an exact legacy source.
+  Migrate its verified package, Desktop, Start-menu, Startup, and logon-task
+  entry points to the per-user root, then apply the existing manifest,
+  live-process, coordinator, journal, rollback, and reparse checks before
+  removing it. Version-named legacy roots remain covered by the same cleanup.
+- Add regression coverage for the per-user default and exact machine-root
+  legacy classification. Windows and macOS package versions remain synchronized;
+  the install-root correction changes Windows only.
+
 ## v1.5.60 — 2026-09-12
 
 - Make the Windows installation root permanent and version-independent at

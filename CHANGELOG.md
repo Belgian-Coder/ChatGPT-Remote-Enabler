@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Refuse durable shortcut, logon-task, and global legacy-root migration when a
+  test or caller supplies a noncanonical stable root. Fixture-scoped installer
+  checks can still exercise their explicit paths without touching the signed-in
+  user's real entry points or scanning real install directories.
+
 ## v1.5.61 — 2026-09-12
 
 - Move the permanent Windows installation to the current user's unversioned

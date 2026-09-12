@@ -51,6 +51,10 @@ try {
     Write-Version -Root $stableRoot -Version 'v1.5.61'
     New-ReleaseManifest -Root $stableRoot
     Assert-Condition (Test-StablePackage -Root $stableRoot -RequireManifest) 'The canonical fixture failed manifest, VERSION, and ProductVersion validation.'
+    $noncanonicalCleanup = @(Invoke-StableLegacyCleanup -StableRoot $stableRoot -UpdaterStateRoot $stateRoot -MigrateEntryPoints)
+    Assert-Condition ($noncanonicalCleanup.Count -eq 1 -and $noncanonicalCleanup[0].reason -eq 'noncanonical-stable-root') 'A noncanonical fixture root was allowed to scan or migrate live entry points.'
+    $noncanonicalTask = @(Invoke-StableTaskMigration -StableRoot $stableRoot)
+    Assert-Condition ($noncanonicalTask.Count -eq 1 -and $noncanonicalTask[0].reason -eq 'noncanonical-stable-root') 'A noncanonical fixture root was allowed to migrate the durable logon task.'
     Copy-StablePackageContents -SourceRoot (Join-Path $repositoryRoot 'windows') -DestinationRoot $packagedSource
     Write-Version -Root $packagedSource -Version 'v1.5.61'
     New-ReleaseManifest -Root $packagedSource
@@ -226,6 +230,7 @@ try { [IO.File]::WriteAllText($SignalPath, 'locked'); Start-Sleep -Seconds 60 } 
         CanonicalStableRootValidated = $true
         CurrentUserStableRoot = $true
         MachineStableRootRecognizedAsLegacy = $true
+        NoncanonicalEntryPointMigrationRejected = $true
         LockedDetachedHostDoesNotBlockStableUpdate = $true
         DetachedTaskHostLockRegression = $true
         LegacyAliasesMigrated = $true

@@ -591,6 +591,11 @@ function Invoke-StableTaskMigration {
     $beforeLogonType = 0
     $beforeUserId = $null
     $taskName = 'Codex Remote Mobile Features at Logon'
+    $StableRoot = [IO.Path]::GetFullPath($StableRoot).TrimEnd('\')
+    $canonicalStableRoot = Get-StableInstallRoot
+    if (-not [string]::Equals($StableRoot, $canonicalStableRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        return @([pscustomobject][ordered]@{ taskName = $taskName; migrated = $false; reason = 'noncanonical-stable-root' })
+    }
     try {
         $tasks = @(Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue)
         if ($tasks.Count -eq 0) { return @() }
@@ -659,7 +664,12 @@ function Invoke-StableLegacyCleanup {
     if (-not (Test-StablePackage -Root $StableRoot -RequireManifest)) {
         return @([pscustomobject][ordered]@{ cleaned = $false; reason = 'stable-root-validation-failed' })
     }
-    if ($MigrateEntryPoints) {
+    $canonicalStableRoot = Get-StableInstallRoot
+    $isCanonicalStableRoot = [string]::Equals($StableRoot, $canonicalStableRoot, [StringComparison]::OrdinalIgnoreCase)
+    if (-not $isCanonicalStableRoot -and $LegacyRoots.Count -eq 0) {
+        return @([pscustomobject][ordered]@{ cleaned = $false; reason = 'noncanonical-stable-root' })
+    }
+    if ($MigrateEntryPoints -and $isCanonicalStableRoot) {
         [void](Invoke-StableShortcutMigration -StableRoot $StableRoot)
         [void](Invoke-StableTaskMigration -StableRoot $StableRoot)
         $known = Get-StableKnownEntryPoints -ShortcutPaths $ShortcutPaths -TaskNames $TaskNames

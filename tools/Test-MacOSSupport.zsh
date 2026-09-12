@@ -1,9 +1,11 @@
 #!/bin/zsh
 set -euo pipefail
+zmodload zsh/datetime
 
 root="${0:A:h:h}"
 shortcut="$root/macos/MacOSShortcut.sh"
 temporary="$(mktemp -d "${TMPDIR:-/tmp}/chatgpt-remote-macos-support.XXXXXX")"
+temporary="${temporary:A}"
 cleanup() { rm -rf -- "$temporary"; }
 trap cleanup EXIT INT TERM
 
@@ -31,6 +33,8 @@ relative_probe="$(cd "$root/macos" && HOME="$temporary/home" /bin/zsh ./Update-C
 }
 
 node_bin="$(command -v node)"
+"$node_bin" -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 22 && typeof WebSocket === "function" ? 0 : 1)' \
+  || { print -u2 "Test-MacOSSupport.zsh requires Node.js 22 or newer with built-in WebSocket support."; exit 1; }
 transaction_helper="$root/macos/update-transaction.js"
 install_root="$temporary/install"
 prepared_root="$temporary/prepared"
@@ -70,7 +74,7 @@ apply_result="$("$node_bin" "$transaction_helper" apply --install-root "$install
 
 launcher="$root/macos/MobileProjectView-macOS-arm64.sh"
 prelaunch_fixture="$temporary/prelaunch-functions.zsh"
-for function_name in release_launch_guard acquire_launch_guard last_json_result recover_update prelaunch_update; do
+for function_name in release_launch_guard acquire_launch_guard last_json_result recover_update prelaunch_update continue_with_updated_launcher; do
   sed -n "/^${function_name}() {$/,/^}$/p" "$launcher" >> "$prelaunch_fixture"
 done
 source "$prelaunch_fixture"
@@ -157,4 +161,23 @@ CHATGPT_REMOTE_LAUNCH_GUARD_HELD=1 acquire_launch_guard
 release_launch_guard
 [[ ! -e "$launch_guard" ]] || { print -u2 "Inherited launch guard was not released by its owner."; exit 1; }
 
-print -r -- '{"AppleScriptEscapeSemantic":true,"SharedEscapeHelper":true,"MacOSShellSyntax":true,"RelativeInvocation":true,"TransactionApply":true,"PrelaunchCurrentProof":true,"PrelaunchVerifiedUpdate":true,"PrelaunchMethodRejected":true,"PrelaunchRecoveryFailClosed":true,"InheritedLaunchGuard":true}'
+handoff_launcher="$temporary/source-checkout-handoff.zsh"
+cat > "$handoff_launcher" <<'HANDOFF_LAUNCHER'
+#!/bin/zsh
+set -euo pipefail
+[[ "${1:-}" == enable ]]
+[[ "${CHATGPT_REMOTE_LAUNCH_GUARD_HELD:-0}" == 1 ]]
+[[ "${CODEX_REMOTE_SKIP_PRELAUNCH_UPDATE_ONCE:-0}" == 1 ]]
+[[ "${CODEX_REMOTE_SKIP_UPDATE_CHECK_ONCE:-0}" == 1 ]]
+print -r -- '{"sourceCheckoutInterpreterHandoff":true}'
+HANDOFF_LAUNCHER
+chmod 644 "$handoff_launcher"
+script_path="$handoff_launcher"
+action=enable
+launch_guard_token="$-$EPOCHSECONDS-456-launch"
+prelaunch_updated=1
+handoff_output="$(continue_with_updated_launcher)"
+[[ "$handoff_output" == *'"sourceCheckoutInterpreterHandoff":true'* ]] \
+  || { print -u2 "The updated source-checkout launcher was not handed off through zsh."; exit 1; }
+
+print -r -- '{"AppleScriptEscapeSemantic":true,"SharedEscapeHelper":true,"MacOSShellSyntax":true,"RelativeInvocation":true,"TransactionApply":true,"PrelaunchCurrentProof":true,"PrelaunchVerifiedUpdate":true,"PrelaunchMethodRejected":true,"PrelaunchRecoveryFailClosed":true,"InheritedLaunchGuard":true,"SourceCheckoutInterpreterHandoff":true}'

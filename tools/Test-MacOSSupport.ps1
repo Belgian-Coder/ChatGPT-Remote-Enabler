@@ -7,6 +7,7 @@ $updater = Get-Content -LiteralPath (Join-Path $root 'macos\Update-ChatGPTRemote
 $launcher = Get-Content -LiteralPath (Join-Path $root 'macos\MobileProjectView-macOS-arm64.sh') -Raw
 $shortcut = Get-Content -LiteralPath (Join-Path $root 'macos\MacOSShortcut.sh') -Raw
 $zshSemanticTest = Get-Content -LiteralPath (Join-Path $root 'tools\Test-MacOSSupport.zsh') -Raw
+$updateSession = Get-Content -LiteralPath (Join-Path $root 'macos\update-session.js') -Raw
 
 foreach ($contract in @(
     'cd -- "$HOME"',
@@ -54,6 +55,8 @@ foreach ($contract in @(
     'CODEX_REMOTE_SKIP_PRELAUNCH_UPDATE_ONCE=1',
     'Update recovery did not prove installed-file integrity before launch.',
     'continue_with_updated_launcher',
+    'exec /usr/bin/env "${environment[@]}" /bin/zsh "$script_path" "$action"',
+    'if ! "$node_bin" -e',
     'New LaunchAgent failed to load; the previous definition was restored.',
     'cp -p -- "$previous_plist" "$plist"'
 )) {
@@ -79,8 +82,12 @@ if ($recoverCallIndex -lt 0 -or $prelaunchCallIndex -le $recoverCallIndex -or
     throw 'macOS verified update/recovery is not ordered before renderer endpoint discovery.'
 }
 if (-not $zshSemanticTest.Contains('PrelaunchRecoveryFailClosed') -or
-    -not $zshSemanticTest.Contains('InheritedLaunchGuard')) {
+    -not $zshSemanticTest.Contains('InheritedLaunchGuard') -or
+    -not $zshSemanticTest.Contains('SourceCheckoutInterpreterHandoff')) {
     throw 'The real-zsh prelaunch recovery and launch-guard handoff regressions are not wired.'
+}
+if (-not $updateSession.Contains('env.CODEX_REMOTE_SKIP_PRELAUNCH_UPDATE_ONCE = "1";')) {
+    throw 'The macOS detached update-session relaunch can repeat the prelaunch update.'
 }
 foreach ($contract in @(
     'candidate_source=',
@@ -114,6 +121,8 @@ $global:LASTEXITCODE = 0
     PrelaunchUpdateBeforeDiscovery = $true
     PrelaunchIntegrityRecovery = $true
     UpdatedEntryPointGuardHandoff = $true
+    SourceCheckoutInterpreterHandoff = $true
+    DetachedRelaunchSkipsPrelaunchUpdate = $true
     ShortcutCandidateSwap = $true
     ShortcutExactTarget = $true
     RealZshSemanticTestPresent = $true

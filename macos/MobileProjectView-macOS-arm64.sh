@@ -184,13 +184,16 @@ recover_update() {
     print -r -- "$output"
     proof="$(last_json_result "$node_bin" "$output")" \
       || { print -u2 "Update recovery did not return verifiable JSON proof."; return 1; }
-    "$node_bin" -e '
+    if ! "$node_bin" -e '
       const value = JSON.parse(process.argv[1]);
       if (value.integrityValid !== true) {
         process.stderr.write("Update recovery did not prove installed-file integrity before launch.\n");
         process.exit(1);
       }
-    ' "$proof"
+    ' "$proof"; then
+      print -u2 "Update recovery returned invalid installed-file integrity proof."
+      return 1
+    fi
     print "stage=update-recovery durationMs=$(( (EPOCHREALTIME - started) * 1000 ))"
   fi
 }
@@ -266,7 +269,7 @@ continue_with_updated_launcher() {
   )
   if [[ "$action" == startup ]]; then environment+=("CODEX_REMOTE_SKIP_STARTUP_DELAY_ONCE=1"); fi
   print "stage=prelaunch-update handoff=updated-entry-point action=$action"
-  exec /usr/bin/env "${environment[@]}" "$script_path" "$action"
+  exec /usr/bin/env "${environment[@]}" /bin/zsh "$script_path" "$action"
 }
 
 run_injector() {

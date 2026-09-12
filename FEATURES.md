@@ -1,14 +1,20 @@
 # Feature guide
 
-This guide describes the Windows and macOS v1.5.58 source, including reliable
+This guide describes the Windows and macOS v1.5.59 source, including reliable
 background inventory publication, loaded search, compact Settings, guarded navigation, and stale-Steer recovery. Historical v1.5.49 packages and
 screenshots do not include those changes. Both packages share the Device
 projects renderer and the feature behavior below; the
 platform guides document their different launchers, setup assistants, proxy
 options, and shortcut/startup commands.
 
-Renderer v78 adds a parent-bound heartbeat for fully frozen hidden renderers; renderer v77 adds the background inventory reliability correction; renderer
+Renderer v79 makes native offline state authoritative while retaining cached rows and runtime evidence; renderer v78 adds a parent-bound heartbeat for fully frozen hidden renderers; renderer v77 adds the background inventory reliability correction; renderer
 v76 added the search and Settings improvements described below.
+
+On Windows, each shortcut or sign-in launch verifies Remote Enabler recovery,
+completes the official signed desktop MSIX update, completes the required
+verified-Git Remote Enabler update, and only then starts compatibility probing
+or injection. A running app, missing helper, unavailable update source, or
+incomplete proof stops safely before launch.
 
 ![Search in a synthetic v1.5.54 Chromium fixture](assets/screenshots/search-unreleased.png)
 

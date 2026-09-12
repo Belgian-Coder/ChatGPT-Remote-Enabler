@@ -1,16 +1,18 @@
 # Windows 11: install for your user without administrator access
 
-Release v1.5.58 updates the helper before compatibility probing or injection,
-adds the explicit current-user desktop MSIX updater documented below, and
-retains the audited proxy-runtime and background-publication fixes from the
-preceding releases. Installation and live multi-device acceptance remain
-separate checks.
+Release v1.5.59 makes explicit native offline state authoritative for remote
+request suppression while retaining cached rows, preserves usable runtime cache
+after ordinary inventory failures, and ships renderer v79. Its shortcut and
+sign-in entry points now recover and verify Remote Enabler integrity, complete
+the signed current-user desktop MSIX update, complete the required verified-Git
+Remote Enabler update, and only then launch. Installation and live multi-device
+acceptance remain separate checks.
 
-You need Windows 11 x64, the ChatGPT/Codex desktop app installed and signed in with Remote available on your account, and Node.js 22 or newer. This helper does not install the desktop app or unlock account features.
+You need Windows 11 x64, the ChatGPT/Codex desktop app signed in with Remote available on your account, and Node.js 22 or newer. The special launcher can install or update the supported current-user desktop package from OpenAI's signed stable x64 MSIX while the app is closed; it does not unlock account features or bypass AppX policy.
 
 ## 1. Download and extract
 
-1. Download **ChatGPT-Remote-Enabler-Windows-x64-v1.5.58.zip** from [v1.5.58 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.58). Read the verification limitations.
+1. Download **ChatGPT-Remote-Enabler-Windows-x64-v1.5.59.zip** from [v1.5.59 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.59). Read the verification limitations.
 2. Right-click the ZIP in File Explorer, choose **Properties**, select **Unblock** if offered, and click **OK**. Then choose **Extract All**.
 3. Enter `%LOCALAPPDATA%\Programs` in File Explorer's address bar. Create a **ChatGPTRemoteEnabler** folder and copy the extracted package contents into it.
 4. **ChatGPT Remote Enabler.exe**, **README.md**, and **CodexRemoteMobileProject** must be directly inside that folder. Keep the whole package together.
@@ -31,8 +33,9 @@ This portable location is detected automatically, including at sign-in. No PATH,
 
 1. Finish active tasks and quit the ordinary ChatGPT/Codex app.
 2. Double-click **ChatGPT Remote Enabler.exe** in your package folder.
-3. Wait for the app to open with **Device projects** and **Native sidebar** in its sidebar.
-4. Set up the helper on each participating device, then connect devices through the app's normal Remote controls.
+3. Keep the network available while the launcher verifies recovery, completes the signed desktop-package update, and completes the verified-Git Remote Enabler update. Any failure stops before the app opens; the launcher never stops or kills a running app.
+4. Wait for the app to open with **Device projects** and **Native sidebar** in its sidebar.
+5. Set up the helper on each participating device, then connect devices through the app's normal Remote controls.
 
 Unknown peers initially appear as **Remote device** until a verified name is available. The Windows launchers are unsigned: review their origin and release checksums if Windows blocks them. Organization policies may require IT approval independently of this helper. The normal workflow should not request UAC elevation.
 
@@ -75,7 +78,7 @@ not install the signed ChatGPT desktop package.
 OpenAI's stable Windows x64 package is a Store-signed MSIX at
 [`https://persistent.oaistatic.com/codex-app-prod/ChatGPT-x64.msix`](https://persistent.oaistatic.com/codex-app-prod/ChatGPT-x64.msix).
 If the Store UI or its distribution service is unavailable, the repository's
-manual updater can use that endpoint directly:
+updater can use that endpoint directly:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Update-ChatGPTDesktop.ps1 -Action Probe
@@ -84,8 +87,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Update-ChatGPTDesktop.
 ```
 
 `Check` performs an HTTPS metadata request and does not download the large
-package. `Update` is always explicit; it never runs from a launcher or silently
-updates the base app. Finish work and close `ChatGPT.exe` first. The updater
+package. A direct `Update` invocation is explicit. The Remote Enabler shortcut
+and sign-in startup also invoke `Update` as their first package-changing gate,
+before the required Remote Enabler Git update and before launch. Finish work
+and close `ChatGPT.exe` first. The updater
 refuses to stop or kill it, refuses equal versions and downgrades, checks the
 manifest for the expected OpenAI identity, publisher and x64 architecture,
 checks the package signature with Windows-native verification, and calls only
@@ -210,7 +215,7 @@ manual administration. Explicit command-line updates remain available:
 
 Updates now use Git by default, even for extracted installations. Install Git and ensure its HTTPS access to the repository works. The updater lists stable tags, shallow-fetches the pinned commit, and builds/verifies a local package without downloading GitHub ZIPs or calling the GitHub API. Corporate Git proxy and certificate settings are honored. A clean source checkout on `main` fast-forwards to that verified tag; dirty work, other branches, or unexpected origins are preserved and refused.
 
-Set `CHATGPT_REMOTE_UPDATE_REPOSITORY=owner/repo` for a GitHub fork. `CHATGPT_REMOTE_AUTO_UPDATE=0` disables automatic checks for that launch. The explicit legacy `CHATGPT_REMOTE_UPDATE_TRANSPORT=release` option enables hosted release assets and the `CHATGPT_REMOTE_UPDATE_API_BASE` / `CHATGPT_REMOTE_UPDATE_LATEST_URL` overrides. There is no automatic ZIP fallback. Older installed updaters need one manual Git-based upgrade before they can use this transport.
+Set `CHATGPT_REMOTE_UPDATE_REPOSITORY=owner/repo` for a GitHub fork. `CHATGPT_REMOTE_AUTO_UPDATE=0` disables background automatic checks, but it does not bypass the shortcut's required prelaunch Git update gate. The explicit legacy `CHATGPT_REMOTE_UPDATE_TRANSPORT=release` option enables hosted release assets for direct updater commands; the shortcut still requests Git and has no ZIP fallback. Older installed updaters need one manual Git-based upgrade before they can use this transport.
 
 For a persistent local shortcut, keep the extracted folder in place and run:
 
@@ -220,7 +225,9 @@ For a persistent local shortcut, keep the extracted folder in place and run:
 
 This creates one **ChatGPT Remote Enabler** shortcut on the Desktop and one in the
 Start menu. It always runs the sibling stable and Device Projects bundles, so
-future clicks load the injected view rather than the normal app. Use
+future clicks recover and verify Remote Enabler, update the signed desktop
+package, perform the required verified-Git helper update, and only then load
+the injected view. Use
 `-UseProxy` only when this device needs proxy mode; it configures those same
 shortcuts with `--proxy`. The installer never creates a separate proxy
 shortcut and recoverably removes obsolete proxy entries. First import the
@@ -360,7 +367,7 @@ Check the target of **ChatGPT Custom** in the Start menu (open its file location
 
 Fully quit the app when your work is safe, then use **ChatGPT Remote Enabler.exe** in the newly extracted folder, or the new **ChatGPT Remote Enabler** shortcut created by that folder's setup assistant. Open Settings to see the loaded helper version and update controls in either view. A missing update service shows recovery instructions there.
 
-v1.5.58 is a normal release and is discoverable by the existing automatic updater. The first Windows upgrade from v1.5.31 attaches the new update helper even through the legacy launcher.
+v1.5.59 is a normal release and is discoverable by the existing automatic updater. The first Windows upgrade from v1.5.31 attaches the new update helper even through the legacy launcher.
 
 
 ### Existing enrollment keys after a Codex update

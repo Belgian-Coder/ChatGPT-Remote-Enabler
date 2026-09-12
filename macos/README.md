@@ -1,9 +1,12 @@
 # macOS Apple Silicon: install for your user without sudo
 
-Release v1.5.58 carries the shared release baseline; the Windows package adds
-prelaunch helper updates and an explicit desktop MSIX updater while macOS
-behavior remains unchanged. Installation and live multi-device acceptance
-remain separate checks.
+Release v1.5.59 runs a verified Git helper update under the macOS launch guard
+before compatibility probing or injection, verifies recovery and installed
+integrity, and safely hands updated launches to the replaced script without
+repeating the prelaunch check or startup delay. It also ships renderer v79 with
+explicit offline request suppression, cached-row retention and runtime-cache
+preservation. Installation and live multi-device acceptance remain separate
+checks.
 
 You need an Apple Silicon Mac (arm64), the ChatGPT/Codex desktop app installed and signed in with Remote available on your account, and Node.js 22 or newer. This helper does not install the app or unlock account features.
 
@@ -11,11 +14,12 @@ You need an Apple Silicon Mac (arm64), the ChatGPT/Codex desktop app installed a
 preceding installed build. v1.5.49 was then manually installed and its live
 renderer readiness was checked on the participating test devices. The next
 sign-in startup trigger and future desktop-app builds remain separate checks.
-v1.5.58 is a normal release.
+v1.5.59 is a normal release. Installing it still requires a normal graceful
+quit of the desktop app and is not implied by release publication.
 
 ## 1. Download and extract
 
-1. Download **ChatGPT-Remote-Enabler-macOS-arm64-v1.5.58.zip** from [v1.5.58 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.58).
+1. Download **ChatGPT-Remote-Enabler-macOS-arm64-v1.5.59.zip** from [v1.5.59 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.59).
 2. Double-click the ZIP in Finder. Create **ChatGPTRemoteEnabler** in your home folder and move the extracted package contents into it.
 3. `MobileProjectView-macOS-arm64.sh` must be directly inside that folder. Keep the complete package together in this writable per-user location.
 
@@ -242,4 +246,4 @@ Settings now provides per-device connection findings, next steps, explicit evide
 
 ## Version or update icon missing
 
-Fully quit the app when your work is safe and launch through Remote Enabler in the latest extracted folder. An older Dock launcher can still reference another folder. Open Settings to see the loaded helper version and update controls; a missing updater has recovery instructions. v1.5.58 is a normal release available to the existing updater.
+Fully quit the app when your work is safe and launch through Remote Enabler in the latest extracted folder. An older Dock launcher can still reference another folder. Open Settings to see the loaded helper version and update controls; a missing updater has recovery instructions. v1.5.59 is a normal release available to the existing updater.

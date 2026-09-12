@@ -142,7 +142,7 @@ process.stdout.write(`${JSON.stringify(helper.resolveRelease(parse(process.argv.
     $prepare = Invoke-Updater $shell (Join-Path $fixtureRoot 'Update-ChatGPTRemote.ps1') (@('-Action', 'Prepare', '-TargetVersion', 'v2.0.0', '-ExpectedArchiveSha256', $expectedHash, '-PreparedDirectory', $preparedRoot) + $common)
     if ($prepare.ExitCode -ne 0 -or -not $prepare.Json -or $prepare.Json.prepared -ne $true -or $prepare.Json.archiveSha256 -ne $expectedHash) { throw "Git updater Prepare failed: $($prepare.Text)" }
     $apply = Invoke-Updater $shell (Join-Path $fixtureRoot 'Update-ChatGPTRemote.ps1') (@('-Action', 'ApplyPrepared', '-TargetVersion', 'v2.0.0', '-ExpectedArchiveSha256', $expectedHash, '-PreparedDirectory', $preparedRoot) + $common)
-    if ($apply.ExitCode -ne 0 -or -not $apply.Json -or $apply.Json.updated -ne $true -or $apply.Json.archiveSha256 -ne $expectedHash) { throw "Git updater ApplyPrepared failed: $($apply.Text)" }
+    if ($apply.ExitCode -ne 0 -or -not $apply.Json -or $apply.Json.updated -ne $true -or $apply.Json.method -cne 'verified-git' -or $apply.Json.archiveSha256 -ne $expectedHash) { throw "Git updater ApplyPrepared failed without verified Git method proof: $($apply.Text)" }
     if ((Get-Content -LiteralPath (Join-Path $fixtureRoot 'VERSION') -Raw).Trim() -cne 'v2.0.0' -or -not (Test-Path -LiteralPath (Join-Path $fixtureRoot 'payload.txt') -PathType Leaf)) { throw 'Git updater did not install the prepared Git archive.' }
 
     $recover = Invoke-Updater $shell (Join-Path $fixtureRoot 'Update-ChatGPTRemote.ps1') (@('-Action', 'Recover') + $common)

@@ -2,8 +2,10 @@
 param(
     [switch]$SkipMobileProjects,
     [switch]$SkipUpdate,
+    [switch]$SkipDesktopAppUpdateOnce,
     [switch]$SkipUpdateCheckOnce,
     [switch]$SkipPrelaunchUpdateOnce,
+    [switch]$RecoveryContinuation,
     [switch]$UpdateResume,
     [string]$RelaunchHandoffPath,
     [switch]$ContinuationAfterAcceptedHandshake,
@@ -31,6 +33,7 @@ function Set-ProcessUserTemporaryDirectory {
 Set-ProcessUserTemporaryDirectory
 $stable = Join-Path $PSScriptRoot 'CodexRemoteSimple\CodexRemoteSimple.ps1'
 $mobile = Join-Path $PSScriptRoot 'CodexRemoteMobileProject\MobileProjectView.ps1'
+$desktopAppUpdater = Join-Path $PSScriptRoot 'Update-ChatGPTDesktop.ps1'
 $updater = Join-Path $PSScriptRoot 'Update-ChatGPTRemote.ps1'
 $updateSessionLauncher = Join-Path $PSScriptRoot 'CodexRemoteMobileProject\UpdateSessionLauncher.ps1'
 $logRoot = Join-Path $env:LOCALAPPDATA 'CodexRemoteFeatures'
@@ -42,6 +45,14 @@ $handshakeRequested = $ParentProcessId -gt 0 -or
 $readyEvent = $null
 $rejectedEvent = $null
 $handshakeReady = [bool]$ContinuationAfterAcceptedHandshake
+$exactContinuationRequested = $ContinuationParentProcessId -gt 0 -and $ContinuationParentProcessStartTimeFileTimeUtc -gt 0
+if (($SkipDesktopAppUpdateOnce -or $SkipUpdateCheckOnce -or $SkipPrelaunchUpdateOnce) -and
+    -not $UpdateResume -and -not $exactContinuationRequested) {
+    throw 'Internal update-skip switches require an exact validated continuation or update-session resume.'
+}
+if ($RecoveryContinuation -and -not $exactContinuationRequested) {
+    throw 'RecoveryContinuation requires an exact validated continuation.'
+}
 
 function Write-RemoteLauncherLog {
     param([AllowEmptyString()][string]$Message)
@@ -165,22 +176,114 @@ function Capture-ExactParent {
 
 function Get-LastJsonResult {
     param([object[]]$Output)
-    for ($index = $Output.Count - 1; $index -ge 0; $index--) {
+    $records = @($Output | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($records.Count -eq 0) { throw 'The updater did not return JSON proof.' }
+    try {
+        $result = $records[-1] | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        throw 'The updater final output record was not valid JSON proof.'
+    }
+    for ($index = 0; $index -lt $records.Count - 1; $index++) {
         try {
-            return ([string]$Output[$index] | ConvertFrom-Json -ErrorAction Stop)
+            [void]($records[$index] | ConvertFrom-Json -ErrorAction Stop)
+            throw 'The updater returned more than one JSON proof record.'
         } catch {
-            # Human-readable updater progress may precede the final JSON proof.
+            if ($_.Exception.Message -eq 'The updater returned more than one JSON proof record.') { throw }
         }
     }
-    throw 'The updater did not return JSON proof.'
+    return $result
+}
+
+function Get-CompleteJsonResult {
+    param([object[]]$Output)
+    $text = (($Output | ForEach-Object { [string]$_ }) -join [Environment]::NewLine).Trim()
+    if ([string]::IsNullOrWhiteSpace($text)) { throw 'The updater did not return JSON proof.' }
+    try {
+        $value = $text | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        throw 'The updater did not return one complete JSON proof document.'
+    }
+    if ($null -eq $value -or $value -is [array]) { throw 'The updater returned invalid JSON proof.' }
+    return $value
+}
+
+function Assert-DesktopAppNotRunning {
+    param([scriptblock]$ProcessEnumerator)
+    $processes = if ($ProcessEnumerator) { @(& $ProcessEnumerator) } else { @(Get-Process -Name 'ChatGPT' -ErrorAction SilentlyContinue) }
+    if ($processes.Count -gt 0) {
+        throw 'ChatGPT.exe is running. Finish active work and close it, then retry. The launch updater will not stop or kill the app.'
+    }
+}
+
+function Invoke-DesktopAppPrelaunchUpdate {
+    param([string]$UpdaterPath, [scriptblock]$ProcessEnumerator)
+
+    if (-not (Test-Path -LiteralPath $UpdaterPath -PathType Leaf)) {
+        throw "The signed ChatGPT desktop updater is missing: $UpdaterPath"
+    }
+    Assert-DesktopAppNotRunning -ProcessEnumerator $ProcessEnumerator
+    $timer = [Diagnostics.Stopwatch]::StartNew()
+    $powerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    if (-not (Test-Path -LiteralPath $powerShell -PathType Leaf)) {
+        throw "Built-in Windows PowerShell was not found: $powerShell"
+    }
+    $output = @(& $powerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $UpdaterPath -Action Update 2>&1)
+    $exitCode = $LASTEXITCODE
+    foreach ($line in $output) { Write-RemoteLauncherLog ([string]$line) }
+    if ($exitCode -ne 0) {
+        $detail = ($output | ForEach-Object { [string]$_ }) -join ' '
+        throw "The signed ChatGPT desktop update failed before launch (exit $exitCode): $detail"
+    }
+    $result = Get-CompleteJsonResult -Output $output
+    if ([string]$result.Action -cne 'Update' -or [string]$result.InstalledState -cne 'Installed' -or
+        $null -eq $result.Installed -or [string]$result.Installed.Name -cnotin @('OpenAI.Codex', 'OpenAI.ChatGPT-Desktop') -or
+        [string]$result.Remote.Name -cne [string]$result.Installed.Name -or
+        [string]$result.Installed.Publisher -cne 'CN=50BDFD77-8903-4850-9FFE-6E8522F64D5B' -or
+        [string]$result.Installed.Architecture -ine 'X64') {
+        throw 'The signed ChatGPT desktop updater did not prove one supported installed package.'
+    }
+    try {
+        $installedVersion = [version]([string]$result.Installed.Version)
+        $remoteVersion = [version]([string]$result.Remote.Version)
+    } catch {
+        throw 'The signed ChatGPT desktop updater returned invalid package-version proof.'
+    }
+    switch ([string]$result.Decision) {
+        'Installed' {
+            if ($result.CanInstall -isnot [bool] -or -not $result.CanInstall -or $installedVersion -ne $remoteVersion -or
+                $null -eq $result.Manifest -or [string]$result.Manifest.Name -cne [string]$result.Installed.Name -or
+                [version]([string]$result.Manifest.Version) -ne $installedVersion) {
+                throw 'The signed ChatGPT desktop updater returned inconsistent installation proof.'
+            }
+        }
+        'EqualVersion' {
+            if ($result.CanInstall -isnot [bool] -or $result.CanInstall -or $installedVersion -ne $remoteVersion) {
+                throw 'The signed ChatGPT desktop updater returned inconsistent current-version proof.'
+            }
+        }
+        'DowngradeRefused' {
+            if ($result.CanInstall -isnot [bool] -or $result.CanInstall -or $installedVersion -le $remoteVersion) {
+                throw 'The signed ChatGPT desktop updater returned inconsistent downgrade-refusal proof.'
+            }
+        }
+        default { throw "The signed ChatGPT desktop updater returned a non-launchable decision: $($result.Decision)" }
+    }
+    Assert-DesktopAppNotRunning -ProcessEnumerator $ProcessEnumerator
+    $timer.Stop()
+    Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] stage=desktop-app-update durationMs=$($timer.ElapsedMilliseconds) decision=$($result.Decision) installedVersion=$installedVersion remoteVersion=$remoteVersion"
+    return $result
 }
 
 function Invoke-UpdateRecovery {
     param([string]$UpdaterPath, [string]$InstallRoot)
 
+    if (-not (Test-Path -LiteralPath $UpdaterPath -PathType Leaf)) {
+        throw "The Remote Enabler updater is missing: $UpdaterPath"
+    }
     $previousLaunchGuard = [Environment]::GetEnvironmentVariable('CHATGPT_REMOTE_LAUNCH_GUARD_HELD', 'Process')
     try {
         [Environment]::SetEnvironmentVariable('CHATGPT_REMOTE_LAUNCH_GUARD_HELD', '1', 'Process')
+        $LASTEXITCODE = 0
         $output = @(& $UpdaterPath -Action Recover -InstallRoot $InstallRoot -LaunchLockHeld 2>&1)
         $exitCode = $LASTEXITCODE
     } finally {
@@ -189,8 +292,12 @@ function Invoke-UpdateRecovery {
     foreach ($line in $output) { Write-RemoteLauncherLog ([string]$line) }
     if ($exitCode -ne 0) { throw 'Update recovery failed before launch.' }
     $recovery = Get-LastJsonResult -Output $output
-    if ($recovery.integrityValid -isnot [bool] -or -not $recovery.integrityValid) {
+    if ($recovery.recovered -isnot [bool] -or $recovery.integrityValid -isnot [bool] -or -not $recovery.integrityValid -or
+        [string]$recovery.version -notmatch '^v\d+\.\d+\.\d+$') {
         throw 'Update recovery did not prove installed-file integrity before launch.'
+    }
+    if ($recovery.recovered -and [string]$recovery.recoveryMode -notin @('complete-forward', 'rollback', 'unchanged')) {
+        throw 'Update recovery returned an unsupported recovery mode.'
     }
     return $recovery
 }
@@ -199,8 +306,7 @@ function Invoke-PrelaunchUpdate {
     param([string]$UpdaterPath, [string]$InstallRoot)
 
     if (-not (Test-Path -LiteralPath $UpdaterPath -PathType Leaf)) {
-        Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] stage=prelaunch-update skipped reason=updater-missing"
-        return [pscustomobject]@{ attempted = $false; updated = $false; failed = $false }
+        throw "The Remote Enabler updater is missing: $UpdaterPath"
     }
 
     $timer = [Diagnostics.Stopwatch]::StartNew()
@@ -209,7 +315,8 @@ function Invoke-PrelaunchUpdate {
     $previousLaunchGuard = [Environment]::GetEnvironmentVariable('CHATGPT_REMOTE_LAUNCH_GUARD_HELD', 'Process')
     try {
         [Environment]::SetEnvironmentVariable('CHATGPT_REMOTE_LAUNCH_GUARD_HELD', '1', 'Process')
-        $output = @(& $UpdaterPath -Action Auto -Transport Git -InstallRoot $InstallRoot -LaunchLockHeld 2>&1)
+        $LASTEXITCODE = 0
+        $output = @(& $UpdaterPath -Action Update -Transport Git -InstallRoot $InstallRoot -LaunchLockHeld 2>&1)
         $exitCode = $LASTEXITCODE
     } catch {
         $exitCode = 1
@@ -222,16 +329,23 @@ function Invoke-PrelaunchUpdate {
     if ($null -eq $updateError -and $exitCode -eq 0) {
         try {
             $result = Get-LastJsonResult -Output $output
-            if ($result.skipped -is [bool] -and $result.skipped) {
-                if ([string]$result.reason -notin @('auto-update-disabled', 'check-interval')) {
-                    throw "The prelaunch updater returned an unknown skip reason: $($result.reason)."
-                }
-                $result | Add-Member -NotePropertyName updated -NotePropertyValue $false
-            } elseif ($result.updated -isnot [bool]) {
+            if ($result.updated -isnot [bool]) {
                 throw 'The prelaunch updater returned incomplete update proof.'
             }
-            if ($result.updated -and [string]$result.method -notin @('verified-git', 'git-fast-forward')) {
+            if (($result.updated -and [string]$result.method -notin @('verified-git', 'git-fast-forward')) -or
+                (-not $result.updated -and [string]$result.method -cne 'verified-git')) {
                 throw 'The prelaunch updater did not prove a Git-backed update.'
+            }
+            if ([string]$result.archiveSha256 -notmatch '^[a-f0-9]{64}$') {
+                throw 'The prelaunch updater did not return an exact archive hash.'
+            }
+            if ($result.updated) {
+                if ([string]$result.version -notmatch '^v\d+\.\d+\.\d+$') {
+                    throw 'The prelaunch updater did not return an exact installed version.'
+                }
+            } elseif ([string]$result.latestVersion -notmatch '^v\d+\.\d+\.\d+$' -or
+                [string]$result.localVersion -notmatch '^v\d+\.\d+\.\d+$') {
+                throw 'The prelaunch updater did not return exact current-version proof.'
             }
         } catch {
             $updateError = $_.Exception.Message
@@ -252,15 +366,12 @@ function Invoke-PrelaunchUpdate {
         return $result
     }
 
-    # Network/Git discovery failures remain best effort, but a transaction
-    # failure is safe to ignore only after recovery proves the install intact.
     try {
         [void](Invoke-UpdateRecovery -UpdaterPath $UpdaterPath -InstallRoot $InstallRoot)
     } catch {
         throw "Prelaunch update failed and recovery could not prove installed-file integrity: $updateError; $($_.Exception.Message)"
     }
-    Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] stage=prelaunch-update durationMs=$($timer.ElapsedMilliseconds) updated=False bestEffortFailure=$updateError"
-    return [pscustomobject]@{ attempted = $true; updated = $false; failed = $true; error = $updateError }
+    throw "The required verified Git prelaunch update failed before launch: $updateError"
 }
 
 function ConvertTo-ProcessArgument {
@@ -356,17 +467,42 @@ try {
         }
         Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] launcher parent exited; continuing update and launch"
     }
-    if (Test-Path -LiteralPath $updater -PathType Leaf) {
-        $recoverTimer = [Diagnostics.Stopwatch]::StartNew()
-        [void](Invoke-UpdateRecovery -UpdaterPath $updater -InstallRoot $PSScriptRoot)
-        $recoverTimer.Stop()
-        Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] stage=update-recovery durationMs=$($recoverTimer.ElapsedMilliseconds)"
+    $recoverTimer = [Diagnostics.Stopwatch]::StartNew()
+    $recovery = Invoke-UpdateRecovery -UpdaterPath $updater -InstallRoot $PSScriptRoot
+    $recoverTimer.Stop()
+    Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] stage=update-recovery durationMs=$($recoverTimer.ElapsedMilliseconds) recovered=$($recovery.recovered) mode=$($recovery.recoveryMode)"
+    if ($recovery.recovered -and [string]$recovery.recoveryMode -cne 'rollback') {
+        if ($RecoveryContinuation) {
+            throw 'Update recovery changed installed files again after an exact recovery continuation; launch aborted to prevent a reload loop.'
+        }
+        $recoveryArguments = @('-RecoveryContinuation')
+        if ($handshakeReady) { $recoveryArguments += '-ContinuationAfterAcceptedHandshake' }
+        if ($SkipMobileProjects) { $recoveryArguments += '-SkipMobileProjects' }
+        if ($SkipUpdate) { $recoveryArguments += '-SkipUpdate' }
+        if ($UpdateResume) { $recoveryArguments += @('-UpdateResume', '-SkipDesktopAppUpdateOnce', '-SkipUpdateCheckOnce') }
+        if ($RelaunchHandoffPath) { $recoveryArguments += @('-RelaunchHandoffPath', $RelaunchHandoffPath) }
+        Start-UpdatedEntryPoint -EntryPoint $PSCommandPath -Arguments $recoveryArguments
+        return
+    }
+    if ($recovery.recovered) {
+        Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] rollback recovery restored an older compatible entry point; current coordinator will complete the ordered update gates"
     }
 
-    if (-not $SkipUpdate -and -not $SkipUpdateCheckOnce -and -not $UpdateResume -and -not $SkipPrelaunchUpdateOnce) {
+    $desktopUpdateExecuted = $false
+    if (-not $SkipDesktopAppUpdateOnce -and -not $UpdateResume) {
+        [void](Invoke-DesktopAppPrelaunchUpdate -UpdaterPath $desktopAppUpdater)
+        $desktopUpdateExecuted = $true
+    }
+
+    $skipRemotePrelaunch = [bool]$SkipPrelaunchUpdateOnce
+    if ($desktopUpdateExecuted -and $ContinuationAfterAcceptedHandshake -and $SkipPrelaunchUpdateOnce -and -not $SkipDesktopAppUpdateOnce) {
+        $skipRemotePrelaunch = $false
+        Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] legacy helper handoff detected; verifying Remote Enabler again after the desktop-app update"
+    }
+    if (-not $SkipUpdate -and -not $SkipUpdateCheckOnce -and -not $UpdateResume -and -not $skipRemotePrelaunch) {
         $prelaunchUpdate = Invoke-PrelaunchUpdate -UpdaterPath $updater -InstallRoot $PSScriptRoot
         if ($prelaunchUpdate.updated) {
-            $reloadArguments = @('-SkipPrelaunchUpdateOnce')
+            $reloadArguments = @('-SkipDesktopAppUpdateOnce', '-SkipPrelaunchUpdateOnce')
             if ($handshakeReady) { $reloadArguments += '-ContinuationAfterAcceptedHandshake' }
             if ($SkipMobileProjects) { $reloadArguments += '-SkipMobileProjects' }
             if ($SkipUpdate) { $reloadArguments += '-SkipUpdate' }

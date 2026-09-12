@@ -42,6 +42,7 @@ else
 fi
 launch_guard_owned=0
 prelaunch_updated=0
+recovery_changed=0
 
 release_launch_guard() {
   (( launch_guard_owned )) || return 0
@@ -158,43 +159,63 @@ last_json_result() {
   local node_bin="$1" output="$2"
   print -r -- "$output" | "$node_bin" -e '
     const fs = require("node:fs");
-    const lines = fs.readFileSync(0, "utf8").split(/\r?\n/u);
-    for (let index = lines.length - 1; index >= 0; index -= 1) {
-      const line = lines[index].trim();
-      if (!line) continue;
+    const records = fs.readFileSync(0, "utf8").split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
+    if (records.length === 0) {
+      process.stderr.write("The updater did not return JSON proof.\n");
+      process.exit(1);
+    }
+    let value;
+    try {
+      value = JSON.parse(records.at(-1));
+    } catch {
+      process.stderr.write("The updater final output record was not valid JSON proof.\n");
+      process.exit(1);
+    }
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      process.stderr.write("The updater final output record was not valid JSON proof.\n");
+      process.exit(1);
+    }
+    for (let index = 0; index < records.length - 1; index += 1) {
       try {
-        const value = JSON.parse(line);
-        if (value && typeof value === "object" && !Array.isArray(value)) {
-          process.stdout.write(JSON.stringify(value));
-          process.exit(0);
+        const earlier = JSON.parse(records[index]);
+        if (earlier && typeof earlier === "object" && !Array.isArray(earlier)) {
+          process.stderr.write("The updater returned more than one JSON proof record.\n");
+          process.exit(1);
         }
       } catch {}
     }
-    process.stderr.write("The updater did not return JSON proof.\n");
-    process.exit(1);
+    process.stdout.write(JSON.stringify(value));
   '
 }
 
 recover_update() {
   local node_bin="$1"
   if [[ -f "$updater" ]]; then
-    local started=$EPOCHREALTIME output proof
+    local started=$EPOCHREALTIME output proof validation
     output="$(CHATGPT_REMOTE_LAUNCH_GUARD_HELD=1 CHATGPT_REMOTE_UPDATE_INSTALL_ROOT="$bundle_root" /bin/zsh "$updater" recover --launch-lock-held)" \
       || { print -u2 "Update recovery failed before launch."; return 1; }
     print -r -- "$output"
     proof="$(last_json_result "$node_bin" "$output")" \
       || { print -u2 "Update recovery did not return verifiable JSON proof."; return 1; }
-    if ! "$node_bin" -e '
+    if ! validation="$("$node_bin" -e '
       const value = JSON.parse(process.argv[1]);
-      if (value.integrityValid !== true) {
+      if (value.integrityValid !== true || typeof value.recovered !== "boolean" || !/^v\d+\.\d+\.\d+$/u.test(value.version || "") ||
+          (value.recovered && !["complete-forward", "rollback", "unchanged"].includes(value.recoveryMode))) {
         process.stderr.write("Update recovery did not prove installed-file integrity before launch.\n");
         process.exit(1);
       }
-    ' "$proof"; then
+      process.stdout.write(value.recovered ? value.recoveryMode : "current");
+    ' "$proof")"; then
       print -u2 "Update recovery returned invalid installed-file integrity proof."
       return 1
     fi
-    print "stage=update-recovery durationMs=$(( (EPOCHREALTIME - started) * 1000 ))"
+    if [[ "$validation" != current ]]; then
+      [[ "${CODEX_REMOTE_RECOVERY_CONTINUATION:-0}" != 1 ]] \
+        || { print -u2 "Update recovery changed installed files again after a recovery continuation."; return 1; }
+      recovery_changed=1
+      prelaunch_updated=1
+    fi
+    print "stage=update-recovery durationMs=$(( (EPOCHREALTIME - started) * 1000 )) recovered=$([[ "$validation" == current ]] && print false || print true) mode=$validation"
   fi
 }
 
@@ -227,7 +248,8 @@ prelaunch_update() {
           process.stdout.write("skipped\t" + value.reason);
         } else {
           if (typeof value.updated !== "boolean") throw new Error("The prelaunch updater returned incomplete update proof.");
-          if (value.updated && !["verified-git", "git-fast-forward"].includes(value.method)) {
+          if ((value.updated && !["verified-git", "git-fast-forward"].includes(value.method)) ||
+              (!value.updated && value.method !== "verified-git")) {
             throw new Error("The prelaunch updater did not prove a Git-backed update.");
           }
           process.stdout.write((value.updated ? "updated" : "current") + "\t" + (value.method || ""));
@@ -267,6 +289,7 @@ continue_with_updated_launcher() {
     "CODEX_REMOTE_SKIP_PRELAUNCH_UPDATE_ONCE=1"
     "CODEX_REMOTE_SKIP_UPDATE_CHECK_ONCE=1"
   )
+  (( recovery_changed )) && environment+=("CODEX_REMOTE_RECOVERY_CONTINUATION=1")
   if [[ "$action" == startup ]]; then environment+=("CODEX_REMOTE_SKIP_STARTUP_DELAY_ONCE=1"); fi
   print "stage=prelaunch-update handoff=updated-entry-point action=$action"
   exec /usr/bin/env "${environment[@]}" /bin/zsh "$script_path" "$action"

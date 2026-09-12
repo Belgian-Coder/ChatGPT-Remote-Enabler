@@ -122,6 +122,24 @@ try {
         throw 'The next audited ChatGPT signatures were not patched.'
     }
 
+    # Current native-renderer builds may already ship with embedded-ASAR
+    # integrity disabled. Existing protected enrollments still require the
+    # direct, no-proxy compatibility runtime; that exact combination must not
+    # regress to the pre-v1.5.57 fuse rejection.
+    $nextKeyOutput = @(& $node $preparer '--source-app' $nextSource '--package-version' '1.2.3.8' '--proxy-enabled' 'false' '--legacy-device-keys' 'true' 2>&1)
+    if ($LASTEXITCODE -ne 0 -or $nextKeyOutput.Count -ne 1) { throw "Disabled-fuse existing-key runtime preparation failed: $($nextKeyOutput -join ' ')" }
+    $nextKeyResult = [string]$nextKeyOutput[0] | ConvertFrom-Json
+    $nextKeyAsar = Get-Content -LiteralPath ([string]$nextKeyResult.appAsarPath) -Raw
+    if (-not $nextKeyAsar.Contains($nextController) -or -not $nextKeyAsar.Contains($nextChallengeValidator) -or
+        $nextKeyAsar.Contains($currentKeyLoader) -or -not $nextKeyAsar.Contains('Xke(this.resourcesPath+`/crk.cjs`)()')) {
+        throw 'Disabled-fuse existing-key preparation did not preserve network behavior and patch only the audited key loader.'
+    }
+    foreach ($helper in @('crk.cjs', 'crks.cjs')) {
+        if (-not (Test-Path -LiteralPath (Join-Path ([string]$nextKeyResult.runtimeRoot) "resources\$helper") -PathType Leaf)) {
+            throw "Disabled-fuse existing-key preparation omitted $helper."
+        }
+    }
+
     $legacySource = Join-Path $temporaryRoot 'legacy-installed-app'
     Copy-Item -LiteralPath $source -Destination $legacySource -Recurse
     $legacyAsarPath = Join-Path $legacySource 'resources\app.asar'
@@ -172,6 +190,7 @@ try {
         ProxyAndKeyCompatibilityComposed = $true
         PreviousAndNextChatGPTSignaturesPatched = $true
         EnabledAndDisabledAsarFusesSupported = $true
+        DisabledFuseExistingKeyCompatibility = $true
     } | ConvertTo-Json
 } finally {
     $env:LOCALAPPDATA = $previousLocalAppData

@@ -363,6 +363,7 @@ async function testExactRelaunchArguments() {
   const adapter = new session.PlatformAdapter(cfg, { spawn: fakeSpawn });
   await adapter.relaunch();
   assert.ok(invocation.args.includes("-UpdateResume"));
+  assert.ok(invocation.args.includes("-SkipDesktopAppUpdateOnce"), "update-session relaunch must not repeat the already completed desktop-app gate");
   assert.ok(invocation.args.includes("-SkipUpdateCheckOnce"));
   assert.equal(invocation.args.includes("-ReplaceRunningApp"), false, "update resume must never replace a process that appeared during update");
   assert.ok(invocation.args.includes("-UseProxy"), "saved protected-proxy mode must be reloaded by the updated launcher");

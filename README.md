@@ -10,10 +10,11 @@ device filters, native project grouping and ordering, empty remote projects,
 project-hover new-chat actions, and working/unread indicators. The original
 **Native sidebar** remains available, with its grouping preference preserved.
 
-v1.5.58 updates the Windows helper before compatibility probing or injection,
-adds an explicit current-user updater for OpenAI's signed desktop MSIX, and
-retains the audited proxy-runtime and background-publication fixes from the
-preceding releases. See the
+v1.5.59 adds the same verified prelaunch helper update on macOS, makes explicit
+native offline state authoritative for remote request suppression while
+retaining cached rows, and preserves runtime cache across ordinary inventory
+read failures. It retains the Windows prelaunch helper update and explicit
+current-user updater for OpenAI's signed desktop MSIX. See the
 [feature guide](FEATURES.md) for behavior and validation limits.
 
 ## Install when hosted ZIP downloads are blocked
@@ -52,8 +53,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\windows\Update-ChatGPT
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\windows\Update-ChatGPTDesktop.ps1 -Action Update
 ```
 
-The source is `persistent.oaistatic.com`; `Check` reads HTTPS metadata and
-`Update` downloads only after an explicit command. The updater validates the
+The source is `persistent.oaistatic.com`; `Check` reads HTTPS metadata and a
+direct `Update` invocation downloads only after that explicit command. On
+Windows, the Remote Enabler shortcut and sign-in startup run the same updater
+automatically while ChatGPT is closed, before updating Remote Enabler or
+launching the special session. The updater validates the
 OpenAI package identity, publisher, x64 manifest and Windows signature, stages
 the file in per-user temp, refuses equal versions, downgrades, ambiguous mixed
 identities and running `ChatGPT.exe`, then uses current-user
@@ -77,16 +81,16 @@ app build is compatible.
 See the [complete feature guide](FEATURES.md) for defaults, limits, privacy,
 and recovery behavior.
 
-## Install v1.5.58 without administrator access
+## Install v1.5.59 without administrator access
 
 Prerequisites are a supported ChatGPT/Codex desktop app signed in with Remote
 available on the account, Node.js 22 or newer, and a writable per-user package
 folder. Organization policy, account access, MFA, or desktop-app policy can
 still block Remote independently of this helper.
 
-- **[Download Windows 11 x64](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/download/v1.5.58/ChatGPT-Remote-Enabler-Windows-x64-v1.5.58.zip)** and follow the [Windows installation guide](windows/README.md).
-- **[Download macOS Apple Silicon](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/download/v1.5.58/ChatGPT-Remote-Enabler-macOS-arm64-v1.5.58.zip)** and follow the [macOS installation guide](macos/README.md).
-- Use the [v1.5.58 release page](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.58) to inspect release notes and published checksums.
+- **[Download Windows 11 x64](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/download/v1.5.59/ChatGPT-Remote-Enabler-Windows-x64-v1.5.59.zip)** and follow the [Windows installation guide](windows/README.md).
+- **[Download macOS Apple Silicon](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/download/v1.5.59/ChatGPT-Remote-Enabler-macOS-arm64-v1.5.59.zip)** and follow the [macOS installation guide](macos/README.md).
+- Use the [v1.5.59 release page](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.59) to inspect release notes and published checksums.
 
 Both are per-user installs and do not require administrator access. Keep the
 complete package in a writable user-owned folder. Run the platform launcher
@@ -194,13 +198,14 @@ the installation guide, and explicit `Update`/`update` commands remain
 available. The [feature guide](FEATURES.md) documents update history and
 rollback details.
 
-On Windows, both the normal launcher and the mobile-project startup entry point
-perform a verified Git update check before compatibility probing or renderer
-injection and honor the automatic-update setting. This also covers unattended
-startup. If Git advances the installation,
-the entry point verifies recovery and hands off to the updated script before
-continuing; a recoverable network or Git failure remains best effort, while an
-installation whose integrity cannot be proven stops before injection.
+On Windows, both the normal launcher and mobile-project startup first recover
+and verify Remote Enabler's installed integrity, then complete the official
+signed x64 desktop MSIX update, then complete a required verified-Git Remote
+Enabler update before compatibility probing or renderer injection. This also
+covers unattended startup. A running ChatGPT process is preserved and stops
+the sequence. Recovered or updated files are handed to an exact continuation;
+missing helpers, unavailable network/Git, malformed proof, or unprovable
+integrity stop before launch rather than using stale code.
 
 ![Loaded helper version and update control](assets/screenshots/version-v1.5.49.png)
 

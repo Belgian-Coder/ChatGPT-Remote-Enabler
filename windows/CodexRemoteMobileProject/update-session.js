@@ -340,7 +340,7 @@ class PlatformAdapter {
       args = ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", entry];
       if (this.config.relaunch.entryPointRelative.endsWith("MobileProjectStartup.ps1")) args.push("-Action", "Run");
       if (this.config.relaunch.useProxy === true) args.push("-UseProxy");
-      args.push("-UpdateResume", "-SkipUpdateCheckOnce", "-RelaunchHandoffPath", handoffPath);
+      args.push("-UpdateResume", "-SkipDesktopAppUpdateOnce", "-SkipUpdateCheckOnce", "-RelaunchHandoffPath", handoffPath);
     } else {
       command = "/bin/zsh";
       args = [entry, this.config.relaunch.startupMode === true ? "startup" : "enable"];

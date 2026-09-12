@@ -5,7 +5,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 const filename = path.join(__dirname, "..", "renderer-mobile-project-view.js");
 const original = fs.readFileSync(filename, "utf8").replace(/\r\n/gu, "\n");
-const source = original.replace("  return install();\n})();", "  globalThis.fixture = { state, collectModel, hostName, nativeConnectionStatus, startNativeConnectionObservation, refreshNativeConnectionSnapshot, publishedLocalProjectSnapshot, scheduleRemoteProjectInventory, hydrateNativeInventory, connectionGuidance, diagnosticSnapshot, uninstall };\n})();");
+const source = original.replace("  return install();\n})();", "  globalThis.fixture = { state, collectModel, hostName, nativeConnectionStatus, startNativeConnectionObservation, refreshNativeConnectionSnapshot, publishedLocalProjectSnapshot, scheduleRemoteProjectInventory, hydrateNativeInventory, runDeviceRefresh, connectionGuidance, diagnosticSnapshot, uninstall };\n})();");
 assert.notEqual(source, original);
 assert.match(original, /state\.disposed = false;\s+startNativeConnectionObservation\(\);/u, "normal installation must start observation");
 
@@ -134,14 +134,26 @@ const flush = async () => { for (let i = 0; i < 40; i++) await Promise.resolve()
 
   const offlineGeneration = first.f.state.discoveryGeneration;
   const offlineRuntime = first.f.state.remoteRuntimeCache.get(host);
+  const allOfflineRefresh = await first.f.runDeviceRefresh(offlineGeneration);
+  assert.equal(allOfflineRefresh.complete, true, "all known offline peers must be a complete refresh");
+  assert.equal(allOfflineRefresh.error, null, "all known offline peers must not produce an actionable refresh error");
+
   first.snapshots.delete("remote_control_connections");
+  [...first.intervals.values()][0]();
+  assert.equal(first.f.state.discoveryGeneration, offlineGeneration, "a missing native catalog must not invalidate discovery");
+  assert.equal(first.f.state.remoteRuntimeCache.get(host), offlineRuntime, "a missing native catalog must retain the offline runtime cache");
+  assert.equal(first.f.collectModel().hosts.find(item => item.id === host).available, false, "a missing native catalog must preserve authoritative offline state");
+  await first.f.scheduleRemoteProjectInventory(new Map([[host, runtime]]), true);
+  assert.equal(reads.length, readsBeforeOfflineRefresh, "a missing native catalog must not reopen remote reads");
+
+  first.snapshots.set("remote_control_connections", [{ hostId: host, displayName: "Named workstation", online: false }]);
   first.snapshots.delete("remote_control_connections_state");
   [...first.intervals.values()][0]();
-  assert.equal(first.f.state.discoveryGeneration, offlineGeneration, "a transient missing native snapshot must not invalidate discovery");
-  assert.equal(first.f.state.remoteRuntimeCache.get(host), offlineRuntime, "a transient missing native snapshot must retain the offline runtime cache");
-  assert.equal(first.f.collectModel().hosts.find(item => item.id === host).available, false, "a transient native-cache gap must preserve authoritative offline state");
+  assert.equal(first.f.state.discoveryGeneration, offlineGeneration, "a missing native status must not invalidate discovery");
+  assert.equal(first.f.state.remoteRuntimeCache.get(host), offlineRuntime, "a missing native status must retain the offline runtime cache");
+  assert.equal(first.f.collectModel().hosts.find(item => item.id === host).available, false, "a missing native status must preserve authoritative offline state");
   await first.f.scheduleRemoteProjectInventory(new Map([[host, runtime]]), true);
-  assert.equal(reads.length, readsBeforeOfflineRefresh, "a transient native-cache gap must not reopen remote reads");
+  assert.equal(reads.length, readsBeforeOfflineRefresh, "a missing native status must not reopen remote reads");
 
   first.snapshots.set("remote_control_connections_state", nativeState(true));
   first.snapshots.set("remote_control_connections", [{ hostId: host, displayName: "Named workstation", online: true }]);
@@ -184,5 +196,5 @@ const flush = async () => { for (let i = 0; i < 40; i++) await Promise.resolve()
   assert.equal(second.f.nativeConnectionStatus(), "unavailable");
   second.f.uninstall();
   assert.deepEqual([...first.requests, ...second.requests], [], "observation must never initiate authorization or native connection mutations");
-  console.log(JSON.stringify({ delayedNativeBridge: true, authorizationReported: true, catalogNamesWithoutRows: true, reconnectInvalidatesDiscovery: true, emptyProjectTransportAndModel: true, offlineRequestsSuppressed: true, offlineNativeHydrationSuppressed: true, transientNativeSnapshotPreserved: true, cachedRowsRetainedOffline: true, runtimeCacheRetainedOnFailure: true, nativeAvailabilityWins: true, reconnectForcesInventory: true, fullRendererRestartRetainsNames: true, renamedLabelsWinOverInventory: true, observerDisposed: true, noNativeMutations: true }));
+  console.log(JSON.stringify({ delayedNativeBridge: true, authorizationReported: true, catalogNamesWithoutRows: true, reconnectInvalidatesDiscovery: true, emptyProjectTransportAndModel: true, offlineRequestsSuppressed: true, offlineNativeHydrationSuppressed: true, missingCatalogPreservesOffline: true, missingStatusPreservesOffline: true, allOfflineRefreshComplete: true, cachedRowsRetainedOffline: true, runtimeCacheRetainedOnFailure: true, nativeAvailabilityWins: true, reconnectForcesInventory: true, fullRendererRestartRetainsNames: true, renamedLabelsWinOverInventory: true, observerDisposed: true, noNativeMutations: true }));
 })().catch(error => { console.error(error); process.exitCode = 1; });

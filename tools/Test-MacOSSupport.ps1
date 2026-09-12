@@ -53,10 +53,16 @@ foreach ($contract in @(
     'CHATGPT_REMOTE_UPDATE_TRANSPORT=git',
     'CODEX_REMOTE_LAUNCH_GUARD_TOKEN=$launch_guard_token',
     'CODEX_REMOTE_SKIP_PRELAUNCH_UPDATE_ONCE=1',
+    'CODEX_REMOTE_RECOVERY_CONTINUATION=1',
     'Update recovery did not prove installed-file integrity before launch.',
+    'typeof value.recovered !== "boolean"',
+    '["complete-forward", "rollback", "unchanged"].includes(value.recoveryMode)',
     'continue_with_updated_launcher',
     'exec /usr/bin/env "${environment[@]}" /bin/zsh "$script_path" "$action"',
-    'if ! "$node_bin" -e',
+    'if ! validation="$("$node_bin" -e',
+    'The updater final output record was not valid JSON proof.',
+    'The updater returned more than one JSON proof record.',
+    '(!value.updated && value.method !== "verified-git")',
     'New LaunchAgent failed to load; the previous definition was restored.',
     'cp -p -- "$previous_plist" "$plist"'
 )) {
@@ -82,6 +88,8 @@ if ($recoverCallIndex -lt 0 -or $prelaunchCallIndex -le $recoverCallIndex -or
     throw 'macOS verified update/recovery is not ordered before renderer endpoint discovery.'
 }
 if (-not $zshSemanticTest.Contains('PrelaunchRecoveryFailClosed') -or
+    -not $zshSemanticTest.Contains('PrelaunchStrictFinalJsonProof') -or
+    -not $zshSemanticTest.Contains('PrelaunchCurrentMethodRequired') -or
     -not $zshSemanticTest.Contains('InheritedLaunchGuard') -or
     -not $zshSemanticTest.Contains('SourceCheckoutInterpreterHandoff')) {
     throw 'The real-zsh prelaunch recovery and launch-guard handoff regressions are not wired.'
@@ -120,6 +128,8 @@ $global:LASTEXITCODE = 0
     GitUpdaterHelpersBundled = $true
     PrelaunchUpdateBeforeDiscovery = $true
     PrelaunchIntegrityRecovery = $true
+    PrelaunchStrictFinalJsonProof = $true
+    PrelaunchCurrentMethodRequired = $true
     UpdatedEntryPointGuardHandoff = $true
     SourceCheckoutInterpreterHandoff = $true
     DetachedRelaunchSkipsPrelaunchUpdate = $true

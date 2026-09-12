@@ -1002,7 +1002,7 @@
     try {
       const catalog = bridge.getSharedObjectSnapshotValue("remote_control_connections");
       const status = bridge.getSharedObjectSnapshotValue("remote_control_connections_state");
-      if (!Array.isArray(catalog) && (!status || typeof status !== "object")) return null;
+      if (!Array.isArray(catalog) || !status || typeof status !== "object" || Array.isArray(status)) return null;
       const boolean = value => typeof value === "boolean" ? value : null;
       const connections = [];
       for (const item of Array.isArray(catalog) ? catalog.slice(0, 1000) : []) {
@@ -3436,17 +3436,20 @@
       }
     }
     const startedAt = state.deviceRefreshLastStartedAt;
-    const hosts = [...new Set([
+    const knownHosts = [...new Set([
       ...runtimes.keys(),
       ...discovery.names.keys(),
       ...discovery.availability.keys(),
-    ])].filter((hostId) => !state.localRuntimeHostIds.has(hostId) && !nativeConnectionExplicitlyOffline(hostId));
+    ])].filter((hostId) => !state.localRuntimeHostIds.has(hostId));
+    const hosts = knownHosts.filter((hostId) => !nativeConnectionExplicitlyOffline(hostId));
     const freshMembership = (hostId) => {
       const inventory = state.threadInventories.get(hostId);
       return Boolean(inventory && !inventory.error && inventory.truncated !== true
         && Number.isFinite(inventory.fetchedAt) && inventory.fetchedAt >= startedAt);
     };
-    const complete = hosts.length > 0 && hosts.every(freshMembership);
+    const allKnownHostsOffline = knownHosts.length > 0 && hosts.length === 0
+      && knownHosts.every(nativeConnectionExplicitlyOffline);
+    const complete = allKnownHostsOffline || (hosts.length > 0 && hosts.every(freshMembership));
     const connectedHosts = new Set(hosts);
     const failures = [...state.threadInventories.values()]
       .filter((inventory) => connectedHosts.has(inventory.hostId) && inventory.error)

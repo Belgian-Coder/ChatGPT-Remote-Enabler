@@ -45,7 +45,7 @@ install_shortcut() {
   local stamp
   stamp="$(date +%Y%m%d-%H%M%S)-$$"
   local candidate_source="$source_root/.ChatGPT Remote Enabler.applescript.tmp.$$"
-  local candidate_app="$app_root/.ChatGPT Remote Enabler.app.tmp.$$"
+  local candidate_app="$app_root/.ChatGPT Remote Enabler.tmp.$$.$RANDOM.app"
   rm -rf -- "$candidate_source" "$candidate_app"
   local escaped_launcher="$(escape_applescript_string "$launcher")"
   /bin/cat > "$candidate_source" <<APPLESCRIPT

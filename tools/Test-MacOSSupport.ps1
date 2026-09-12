@@ -21,6 +21,9 @@ foreach ($contract in @(
 )) {
     if (-not $updater.Contains($contract)) { throw "macOS updater reliability contract is missing: $contract" }
 }
+if (-not $shortcut.Contains('candidate_app="$app_root/.ChatGPT Remote Enabler.tmp.$$.$RANDOM.app"')) {
+    throw 'The macOS shortcut candidate must end in .app so osacompile emits an application bundle.'
+}
 if ($updater.IndexOf('script_path="${0:A}"') -gt $updater.IndexOf('cd -- "$HOME"')) {
     throw 'Relative updater invocation is resolved only after changing working directory.'
 }

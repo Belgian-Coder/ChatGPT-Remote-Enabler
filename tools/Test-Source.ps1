@@ -53,6 +53,7 @@ $powershell = @(
     'windows\CodexRemoteMobileProject\DesktopShortcut.ps1',
     'windows\CodexRemoteMobileProject\StartupShortcut.ps1',
     'windows\CodexRemoteMobileProject\MobileProjectStartup.ps1',
+    'windows\StableInstall.ps1',
     'windows\CodexRemoteMobileProject\ProxyConfiguration.ps1',
     'windows\CodexRemoteMobileProject\ProxyConfiguration.psm1',
     'windows\CodexRemoteSimple\runtime\PackageProcessLauncher.ps1',
@@ -307,6 +308,9 @@ if ($LASTEXITCODE -ne 0) { throw 'Windows controller reliability self-test faile
 & (Join-Path $root 'tools\Test-WindowsPrelaunchUpdate.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Windows prelaunch update self-test failed.' }
 
+& (Join-Path $root 'tools\Test-StableLauncherResolution.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Stable launcher resolution self-test failed.' }
+
 & (Join-Path $root 'tools\Test-PackageProcessLauncher.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Package process launcher self-test failed.' }
 
@@ -373,6 +377,7 @@ if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
     WindowsPackagedUpdaterSelfTest = $true
     WindowsControllerReliabilitySelfTest = $true
     WindowsPrelaunchUpdateSelfTest = $true
+    StableLauncherResolutionSelfTest = $true
     PackageProcessLauncherSelfTest = $true
     ProxyRuntimePreparerSelfTest = $true
     MacOSUpdaterCompatibilitySelfTest = $true

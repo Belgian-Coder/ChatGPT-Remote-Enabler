@@ -5,7 +5,7 @@ $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $node = (Get-Command node.exe -ErrorAction Stop).Source
 $helper = Join-Path $root 'windows\CodexRemoteMobileProject\maintenance.js'
-$nodeTemp = (& $node -p 'require("node:os").tmpdir()').Trim()
+$nodeTemp = (& $node -p 'process.env.TEMP || process.env.TMP').Trim()
 if ($LASTEXITCODE -ne 0 -or -not $nodeTemp) { throw 'Node temporary directory discovery failed.' }
 $nodeTemp = [IO.Path]::GetFullPath($nodeTemp).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
 $testRoot = Join-Path $nodeTemp ('chatgpt-remote-maintenance-test-' + [guid]::NewGuid().ToString('N'))

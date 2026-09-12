@@ -31,11 +31,21 @@ function Set-ProcessUserTemporaryDirectory {
 }
 
 Set-ProcessUserTemporaryDirectory
-$stable = Join-Path $PSScriptRoot 'CodexRemoteSimple\CodexRemoteSimple.ps1'
-$mobile = Join-Path $PSScriptRoot 'CodexRemoteMobileProject\MobileProjectView.ps1'
-$desktopAppUpdater = Join-Path $PSScriptRoot 'Update-ChatGPTDesktop.ps1'
-$updater = Join-Path $PSScriptRoot 'Update-ChatGPTRemote.ps1'
-$updateSessionLauncher = Join-Path $PSScriptRoot 'CodexRemoteMobileProject\UpdateSessionLauncher.ps1'
+$sourcePackageRoot = [IO.Path]::GetFullPath($PSScriptRoot)
+$stableModule = Join-Path $sourcePackageRoot 'StableInstall.ps1'
+if (-not (Test-Path -LiteralPath $stableModule -PathType Leaf)) { throw "Stable installation resolver is missing: $stableModule" }
+. $stableModule
+$runtimeRoot = Get-StableInstallRoot
+if (-not [string]::Equals($sourcePackageRoot, $runtimeRoot, [StringComparison]::OrdinalIgnoreCase)) {
+    if (-not (Test-StablePackage -Root $runtimeRoot)) {
+        $runtimeRoot = Ensure-StableInstallRoot -SourceRoot $sourcePackageRoot -StableRoot $runtimeRoot
+    }
+}
+$stable = Join-Path $runtimeRoot 'CodexRemoteSimple\CodexRemoteSimple.ps1'
+$mobile = Join-Path $runtimeRoot 'CodexRemoteMobileProject\MobileProjectView.ps1'
+$desktopAppUpdater = Join-Path $runtimeRoot 'Update-ChatGPTDesktop.ps1'
+$updater = Join-Path $runtimeRoot 'Update-ChatGPTRemote.ps1'
+$updateSessionLauncher = Join-Path $runtimeRoot 'CodexRemoteMobileProject\UpdateSessionLauncher.ps1'
 $logRoot = Join-Path $env:LOCALAPPDATA 'CodexRemoteFeatures'
 $logPath = Join-Path $logRoot 'startup.log'
 $launcherMutexName = 'Local\ChatGPTCustomInjectionLauncher'
@@ -468,7 +478,7 @@ try {
         Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] launcher parent exited; continuing update and launch"
     }
     $recoverTimer = [Diagnostics.Stopwatch]::StartNew()
-    $recovery = Invoke-UpdateRecovery -UpdaterPath $updater -InstallRoot $PSScriptRoot
+    $recovery = Invoke-UpdateRecovery -UpdaterPath $updater -InstallRoot $runtimeRoot
     $recoverTimer.Stop()
     Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] stage=update-recovery durationMs=$($recoverTimer.ElapsedMilliseconds) recovered=$($recovery.recovered) mode=$($recovery.recoveryMode)"
     if ($recovery.recovered -and [string]$recovery.recoveryMode -cne 'rollback') {
@@ -500,7 +510,7 @@ try {
         Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] legacy helper handoff detected; verifying Remote Enabler again after the desktop-app update"
     }
     if (-not $SkipUpdate -and -not $SkipUpdateCheckOnce -and -not $UpdateResume -and -not $skipRemotePrelaunch) {
-        $prelaunchUpdate = Invoke-PrelaunchUpdate -UpdaterPath $updater -InstallRoot $PSScriptRoot
+        $prelaunchUpdate = Invoke-PrelaunchUpdate -UpdaterPath $updater -InstallRoot $runtimeRoot
         if ($prelaunchUpdate.updated) {
             $reloadArguments = @('-SkipDesktopAppUpdateOnce', '-SkipPrelaunchUpdateOnce')
             if ($handshakeReady) { $reloadArguments += '-ContinuationAfterAcceptedHandshake' }
@@ -540,7 +550,7 @@ try {
         try {
             $sessionTimer = [Diagnostics.Stopwatch]::StartNew()
             $sessionArguments = @{
-                InstallRoot = $PSScriptRoot
+                InstallRoot = $runtimeRoot
                 EntryPointRelative = 'Enable-ChatGPTRemote.ps1'
                 SkipInitialCheck = [bool]($SkipUpdate -or $SkipUpdateCheckOnce)
             }

@@ -1,6 +1,6 @@
 # Windows 11: install for your user without administrator access
 
-Release v1.5.59 makes explicit native offline state authoritative for remote
+Release v1.5.60 makes explicit native offline state authoritative for remote
 request suppression while retaining cached rows, preserves usable runtime cache
 after ordinary inventory failures, and ships renderer v79. Its shortcut and
 sign-in entry points now recover and verify Remote Enabler integrity, complete
@@ -12,12 +12,12 @@ You need Windows 11 x64, the ChatGPT/Codex desktop app signed in with Remote ava
 
 ## 1. Download and extract
 
-1. Download **ChatGPT-Remote-Enabler-Windows-x64-v1.5.59.zip** from [v1.5.59 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.59). Read the verification limitations.
+1. Download **ChatGPT-Remote-Enabler-Windows-x64-v1.5.60.zip** from [v1.5.60 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.60). Read the verification limitations.
 2. Right-click the ZIP in File Explorer, choose **Properties**, select **Unblock** if offered, and click **OK**. Then choose **Extract All**.
 3. Enter `%LOCALAPPDATA%\Programs` in File Explorer's address bar. Create a **ChatGPTRemoteEnabler** folder and copy the extracted package contents into it.
 4. **ChatGPT Remote Enabler.exe**, **README.md**, and **CodexRemoteMobileProject** must be directly inside that folder. Keep the whole package together.
 
-This location belongs to your user and allows updates. Avoid Program Files, WindowsApps, administrator-owned folders, and running inside the ZIP. Do not choose **Run as administrator**.
+This staging location belongs to your user. Avoid Program Files, WindowsApps, administrator-owned folders, and running inside the ZIP. Setup or first launch installs the verified payload at the permanent path described in step 4. Do not choose **Run as administrator**.
 
 ## 2. Node.js, if needed
 
@@ -43,7 +43,7 @@ Unknown peers initially appear as **Remote device** until a verified name is ava
 
 Double-click **Setup.exe** in the extracted package. Choose **Recheck** to inspect app discovery, Node compatibility, package write access, integration files, and existing startup settings. The diagnostic preview contains status information rather than conversation content or credentials.
 
-Select **Create Desktop and Start menu shortcuts** and/or **Start at sign-in**, then choose **Apply selected options**. Both are optional and unchecked initially. Existing legacy shortcuts and unchecked settings are preserved. Setup does not launch or restart the app. New shortcuts are called **ChatGPT Remote Enabler**; their underlying executable retains its compatibility filename.
+Select **Create Desktop and Start menu shortcuts** and/or **Start at sign-in**, then choose **Apply selected options**. Both are optional and unchecked initially. Existing legacy aliases are migrated to the permanent stable root even when both creation choices remain unchecked; unchecked choices do not create new shortcuts. Setup does not launch or restart the app. New shortcuts are called **ChatGPT Remote Enabler**; their underlying executable retains its compatibility filename.
 
 **Open installation guide** opens this guide. **Copy diagnostic summary** copies the displayed preview. A successful package check does not prove live injection; launch readiness is checked when the enhanced app starts. Sign-in startup waits 60 seconds by default.
 
@@ -53,21 +53,42 @@ For a script-based setup, open ordinary PowerShell in the package folder and run
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Setup-ChatGPTRemote.ps1
 ```
 
-The existing DesktopShortcut and StartupShortcut scripts remain available for automation. No administrator access or system execution-policy change is required.
+The existing DesktopShortcut and StartupShortcut scripts remain available for automation. No system execution-policy change is required.
+
+The Windows install root is always the permanent unversioned path
+`C:\ProgramData\CodexRemoteFeatures\ChatGPT-Remote-Enabler-Windows-x64`.
+Setup verifies write access in the current-user context and stops without
+changing entry points if an organizational ACL blocks that path.
+Desktop, Start-menu, Startup, and **Codex Remote Mobile Features at Logon**
+entries point there forever. Existing **ChatGPT Custom**, proxy-test, and old
+Remote Enabler aliases are migrated in place with their proxy and startup
+arguments preserved. The update manifest, VERSION, and launcher ProductVersion
+are verified before files are replaced. `UpdateSessionTaskHost.exe` is copied
+and hash-verified under
+`%LOCALAPPDATA%\ChatGPTRemoteEnabler\launch-hosts` and
+`%LOCALAPPDATA%\ChatGPTRemoteEnabler\update-sessions\launch-hosts`, outside
+the stable root. Rollback journals and recovery copies stay under
+`%LOCALAPPDATA%\ChatGPTRemoteEnabler\update`; superseded version-named roots
+are removed only after shortcut, task, process, live-coordinator, and recovery
+checks. The updater reports each cleanup as removed or retained with a reason.
 
 ## 5. Updates and removal
 
 **Update available** appears in both views. Click to prepare the verified release and queue it until work finishes. **Cancel** is available until shutdown starts. Saved networking/startup settings are restored on relaunch. See [the feature guide](FEATURES.md) for all controls and optional cleanup, which is off by default.
 
-To remove your shortcuts and stop the helper, run from the same package folder:
+To remove your shortcuts and stop the helper, run from the permanent install
+root:
 
 ```powershell
+Set-Location "$env:ProgramData\CodexRemoteFeatures\ChatGPT-Remote-Enabler-Windows-x64"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\CodexRemoteMobileProject\StartupShortcut.ps1 -Action Remove
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\CodexRemoteMobileProject\DesktopShortcut.ps1 -Action Remove
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Disable-ChatGPTRemote.ps1
 ```
 
-Once stopped, you can delete the package folder. Your conversations and projects are not deleted. Keep portable Node if other applications use it.
+Once stopped, you can delete the permanent install root and the downloaded
+staging folder. Your conversations and projects are not deleted. Keep portable
+Node if other applications use it.
 
 ## 6. ChatGPT desktop installation when Microsoft Store distribution is blocked
 
@@ -119,7 +140,7 @@ built-in updater may also need HTTPS access to `persistent.oaistatic.com`.
 | --- | --- |
 | Node.js missing | Check the location in step 2; `node.exe` must be directly inside `nodejs`. |
 | No enhanced sidebar | Finish work, quit the ordinary app, and launch **ChatGPT Remote Enabler**. Read any compatibility error. |
-| Update cannot write | Move the complete package to the per-user folder above and recreate shortcuts. |
+| Stable install cannot write | Rerun Setup from the per-user staging folder. If it reports that the permanent ProgramData root is not writable, the machine's ACL or application policy must allow current-user writes there. |
 | Startup does nothing | Allow the initial delay; an ordinary running app is left alone. |
 | Update stays queued | Finish active tasks or Cancel. Unknown activity also keeps it queued. |
 | Peer missing or called Remote device | Connect it and run the helper there; wait for fresh peer discovery. |
@@ -367,7 +388,7 @@ Check the target of **ChatGPT Custom** in the Start menu (open its file location
 
 Fully quit the app when your work is safe, then use **ChatGPT Remote Enabler.exe** in the newly extracted folder, or the new **ChatGPT Remote Enabler** shortcut created by that folder's setup assistant. Open Settings to see the loaded helper version and update controls in either view. A missing update service shows recovery instructions there.
 
-v1.5.59 is a normal release and is discoverable by the existing automatic updater. The first Windows upgrade from v1.5.31 attaches the new update helper even through the legacy launcher.
+v1.5.60 is a normal release and is discoverable by the existing automatic updater. The first Windows upgrade from v1.5.31 attaches the new update helper even through the legacy launcher.
 
 
 ### Existing enrollment keys after a Codex update

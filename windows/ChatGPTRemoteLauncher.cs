@@ -1,16 +1,18 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Threading;
 
 [assembly: AssemblyTitle("ChatGPT Remote Enabler")]
 [assembly: AssemblyDescription("Starts ChatGPT with the remote access and Mobile projects injection")]
 [assembly: AssemblyCompany("Community")]
 [assembly: AssemblyProduct("ChatGPT Remote Enabler")]
-[assembly: AssemblyVersion("1.5.59.0")]
-[assembly: AssemblyFileVersion("1.5.59.0")]
+[assembly: AssemblyVersion("1.5.60.0")]
+[assembly: AssemblyFileVersion("1.5.60.0")]
 
 internal static class ChatGPTRemoteLauncher
 {
@@ -35,8 +37,190 @@ internal static class ChatGPTRemoteLauncher
         return "\"" + value.Replace("\"", "\\\"") + "\"";
     }
 
+    private static bool IsLegacyVersionedRoot(string root)
+    {
+        string leaf = Path.GetFileName(root.TrimEnd(Path.DirectorySeparatorChar));
+        return System.Text.RegularExpressions.Regex.IsMatch(leaf, @"^(?:ChatGPT-Remote-Enabler-Windows-x64|ChatGPTRemoteEnabler)(?:[-_]?v\d+\.\d+\.\d+)$", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+    }
+
+    private static string GetStableRoot()
+    {
+        string commonData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
+        if (string.IsNullOrWhiteSpace(commonData)) return null;
+        return Path.GetFullPath(Path.Combine(commonData, "CodexRemoteFeatures", "ChatGPT-Remote-Enabler-Windows-x64"));
+    }
+
+    private static bool HasNoReparsePointsThrough(string path, string stopAt)
+    {
+        string current = Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar);
+        string stop = Path.GetFullPath(stopAt).TrimEnd(Path.DirectorySeparatorChar);
+        while (true)
+        {
+            if (!File.Exists(current) && !Directory.Exists(current)) return false;
+            if ((File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0) return false;
+            if (string.Equals(current, stop, StringComparison.OrdinalIgnoreCase)) return true;
+            string parent = Path.GetDirectoryName(current);
+            if (string.IsNullOrEmpty(parent) || string.Equals(parent, current, StringComparison.OrdinalIgnoreCase)) return false;
+            current = parent.TrimEnd(Path.DirectorySeparatorChar);
+        }
+    }
+
+    private static bool StableRootHasVerifiedEntryPoint(string root, string entryPoint)
+    {
+        try
+        {
+            root = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar);
+            string commonData = Path.GetFullPath(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData)).TrimEnd(Path.DirectorySeparatorChar);
+            if (!root.StartsWith(commonData + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) || !HasNoReparsePointsThrough(root, commonData)) return false;
+            string version = Path.Combine(root, "VERSION");
+            string manifest = Path.Combine(root, "RELEASE-MANIFEST.sha256");
+            string launcher = Path.Combine(root, entryPoint);
+            if (!File.Exists(version) || !File.Exists(manifest) || !File.Exists(launcher) ||
+                !HasNoReparsePointsThrough(version, root) || !HasNoReparsePointsThrough(manifest, root) || !HasNoReparsePointsThrough(launcher, root)) return false;
+            string value = File.ReadAllText(version).Trim();
+            if (!System.Text.RegularExpressions.Regex.IsMatch(value, @"^v\d+\.\d+\.\d+$")) return false;
+            string expected = value.Substring(1) + ".0";
+             bool versionHashVerified = false;
+             bool launcherHashVerified = false;
+             bool manifestHasEntries = false;
+             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+             foreach (string line in File.ReadAllLines(manifest))
+             {
+                 System.Text.RegularExpressions.Match match = System.Text.RegularExpressions.Regex.Match(line, @"^([0-9a-fA-F]{64}) \*(.+)$");
+                 if (!match.Success) return false;
+                  manifestHasEntries = true;
+                  string relative = match.Groups[2].Value.Replace('/', Path.DirectorySeparatorChar);
+                  if (Path.IsPathRooted(relative) || !seen.Add(relative)) return false;
+                  string candidate = Path.GetFullPath(Path.Combine(root, relative));
+                  if (!candidate.StartsWith(root.TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase)) return false;
+                  if (!File.Exists(candidate) || !HasNoReparsePointsThrough(candidate, root)) return false;
+                 using (SHA256 algorithm = SHA256.Create())
+                 using (FileStream stream = File.OpenRead(candidate))
+                 {
+                     string hash = BitConverter.ToString(algorithm.ComputeHash(stream)).Replace("-", "");
+                     if (!string.Equals(hash, match.Groups[1].Value, StringComparison.OrdinalIgnoreCase)) return false;
+                 }
+                 if (string.Equals(candidate, version, StringComparison.OrdinalIgnoreCase)) versionHashVerified = true;
+                 if (string.Equals(candidate, launcher, StringComparison.OrdinalIgnoreCase)) launcherHashVerified = true;
+             }
+             return manifestHasEntries && versionHashVerified && launcherHashVerified && string.Equals(FileVersionInfo.GetVersionInfo(launcher).FileVersion, expected, StringComparison.OrdinalIgnoreCase);
+        }
+        catch { return false; }
+    }
+
+    private static int RedirectLegacyAlias(string root, string[] args)
+    {
+        if (!IsLegacyVersionedRoot(root)) return -1;
+        string stableRoot = GetStableRoot();
+        if (string.IsNullOrWhiteSpace(stableRoot) || string.Equals(Path.GetFullPath(root).TrimEnd('\\'), stableRoot.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase)) return -1;
+        string entryPoint = "ChatGPT Remote Enabler.exe";
+        if (!StableRootHasVerifiedEntryPoint(stableRoot, entryPoint)) return -1;
+        string arguments = string.Join(" ", Array.ConvertAll(args, QuoteArgument));
+        Process.Start(new ProcessStartInfo {
+            FileName = Path.Combine(stableRoot, entryPoint), Arguments = arguments,
+            WorkingDirectory = stableRoot, UseShellExecute = false, CreateNoWindow = true,
+            WindowStyle = ProcessWindowStyle.Hidden
+        });
+        return 0;
+    }
+
+    private static string PrepareDetachedTaskHost(string source)
+    {
+        string localApplicationData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        if (string.IsNullOrWhiteSpace(localApplicationData)) throw new InvalidOperationException("The per-user local application-data directory is unavailable.");
+        string directory = Path.Combine(localApplicationData, "ChatGPTRemoteEnabler", "launch-hosts", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        string destination = Path.Combine(directory, "UpdateSessionTaskHost.exe");
+        try
+        {
+            File.Copy(source, destination, false);
+            if (!string.Equals(Sha256File(source), Sha256File(destination), StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("The detached launch-worker copy failed hash verification.");
+            return destination;
+        }
+        catch
+        {
+            try { if (File.Exists(destination)) File.Delete(destination); if (Directory.Exists(directory)) Directory.Delete(directory, true); } catch { }
+            throw;
+        }
+    }
+
+    private static string Sha256File(string path)
+    {
+        using (SHA256 algorithm = SHA256.Create())
+        using (FileStream stream = File.OpenRead(path))
+            return BitConverter.ToString(algorithm.ComputeHash(stream)).Replace("-", "").ToLowerInvariant();
+    }
+
+    private static void TryDeleteDetachedHostDirectory(string directory)
+    {
+        try { if (Directory.Exists(directory)) Directory.Delete(directory, true); } catch { }
+    }
+
+    private static void PruneDetachedTaskHosts()
+    {
+        try
+        {
+            string localApplicationData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            string root = Path.Combine(localApplicationData, "ChatGPTRemoteEnabler", "launch-hosts");
+            if (!Directory.Exists(root)) return;
+            foreach (string directory in Directory.GetDirectories(root))
+            {
+                var directoryInfo = new DirectoryInfo(directory);
+                if (!System.Text.RegularExpressions.Regex.IsMatch(directoryInfo.Name, "^[0-9a-f]{32}$") ||
+                    (directoryInfo.Attributes & FileAttributes.ReparsePoint) != 0) continue;
+                if (DateTime.UtcNow - Directory.GetLastWriteTimeUtc(directory) < TimeSpan.FromMinutes(10)) continue;
+                string executable = Path.Combine(directory, "UpdateSessionTaskHost.exe");
+                bool referenced = false;
+                bool inventoryComplete = true;
+                foreach (Process process in Process.GetProcessesByName("UpdateSessionTaskHost"))
+                {
+                    try
+                    {
+                        string path = process.MainModule.FileName;
+                        if (string.Equals(Path.GetFullPath(path), Path.GetFullPath(executable), StringComparison.OrdinalIgnoreCase)) referenced = true;
+                    }
+                    catch { inventoryComplete = false; }
+                    finally { process.Dispose(); }
+                }
+                if (inventoryComplete && !referenced) TryDeleteDetachedHostDirectory(directory);
+            }
+        }
+        catch { }
+    }
+
+    private static void ScheduleDetachedTaskHostCleanup(Process process, string executable)
+    {
+        try
+        {
+            string localApplicationData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            string hostsRoot = Path.GetFullPath(Path.Combine(localApplicationData, "ChatGPTRemoteEnabler", "launch-hosts"));
+            string directory = Path.GetFullPath(Path.GetDirectoryName(executable));
+            if (!string.Equals(Path.GetDirectoryName(directory), hostsRoot, StringComparison.OrdinalIgnoreCase) ||
+                !System.Text.RegularExpressions.Regex.IsMatch(Path.GetFileName(directory), "^[0-9a-f]{32}$")) return;
+            string cleanup = Path.Combine(Path.GetDirectoryName(hostsRoot), "launch-host-cleanup-" + Guid.NewGuid().ToString("N") + ".ps1");
+            string source =
+                "param([int]$ProcessId,[long]$StartTimeFileTimeUtc,[string]$ExecutablePath,[string]$Directory)\r\n" +
+                "$finished=$false;$deadline=[DateTime]::UtcNow.AddMinutes(10)\r\n" +
+                "while([DateTime]::UtcNow -lt $deadline){try{$p=[Diagnostics.Process]::GetProcessById($ProcessId);try{$same=($p.StartTime.ToUniversalTime().ToFileTimeUtc() -eq $StartTimeFileTimeUtc) -and [string]::Equals([IO.Path]::GetFullPath($p.MainModule.FileName),[IO.Path]::GetFullPath($ExecutablePath),[StringComparison]::OrdinalIgnoreCase)}finally{$p.Dispose()};if(-not $same){$finished=$true;break}}catch{$finished=$true;break};Start-Sleep -Milliseconds 250}\r\n" +
+                "if($finished){Remove-Item -LiteralPath $Directory -Recurse -Force -ErrorAction SilentlyContinue};Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue\r\n";
+            File.WriteAllText(cleanup, source, new System.Text.UTF8Encoding(false));
+            string powerShell = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), @"WindowsPowerShell\v1.0\powershell.exe");
+            var start = new ProcessStartInfo {
+                FileName = powerShell,
+                Arguments = "-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File " + QuoteArgument(cleanup) +
+                    " -ProcessId " + process.Id + " -StartTimeFileTimeUtc " + process.StartTime.ToUniversalTime().ToFileTimeUtc() +
+                    " -ExecutablePath " + QuoteArgument(executable) + " -Directory " + QuoteArgument(directory),
+                WorkingDirectory = Path.GetDirectoryName(cleanup), UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden
+            };
+            using (Process cleanupProcess = Process.Start(start)) { }
+        }
+        catch { }
+    }
+
     private static Process StartSurvivingWorker(string executable, string arguments, string workingDirectory)
     {
+        PruneDetachedTaskHosts();
         object serviceObject = null;
         object rootObject = null;
         object definitionObject = null;
@@ -65,12 +249,16 @@ internal static class ChatGPTRemoteLauncher
             definition.Settings.ExecutionTimeLimit = "PT0S";
             definition.Settings.MultipleInstances = 2; // TASK_INSTANCES_IGNORE_NEW
             dynamic action = definition.Actions.Create(0);
-            string taskHost = Path.GetFullPath(Path.Combine(workingDirectory, @"CodexRemoteMobileProject\UpdateSessionTaskHost.exe"));
-            if (!File.Exists(taskHost)) throw new FileNotFoundException("The GUI launch-worker task host was not found.");
+            string taskHostSource = Path.GetFullPath(Path.Combine(workingDirectory, @"CodexRemoteMobileProject\UpdateSessionTaskHost.exe"));
+            if (!File.Exists(taskHostSource)) throw new FileNotFoundException("The GUI launch-worker task host was not found.");
+            string taskHost = PrepareDetachedTaskHost(taskHostSource);
+            string workerScript = Path.Combine(workingDirectory, "Enable-ChatGPTRemote.ps1");
+            string packageRoot = workingDirectory.TrimEnd(Path.DirectorySeparatorChar);
             string encodedArguments = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(arguments));
             long expiresAtUnixMs = (long)(DateTime.UtcNow.AddSeconds(15) - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalMilliseconds;
             action.Path = taskHost;
-            action.Arguments = "--worker " + QuoteArgument(executable) + " " + QuoteArgument(Path.Combine(workingDirectory, "Enable-ChatGPTRemote.ps1")) + " " + encodedArguments + " " + expiresAtUnixMs;
+            action.Arguments = "--worker " + QuoteArgument(executable) + " " + QuoteArgument(workerScript) + " " + encodedArguments + " " + expiresAtUnixMs +
+                " " + Sha256File(workerScript) + " " + Sha256File(taskHostSource) + " " + QuoteArgument(packageRoot);
             action.WorkingDirectory = workingDirectory;
             registeredObject = root.RegisterTaskDefinition(taskName, definition, 6, null, null, 3, null);
             dynamic registered = registeredObject;
@@ -91,6 +279,7 @@ internal static class ChatGPTRemoteLauncher
                 process.Dispose();
                 throw new InvalidOperationException("Task Scheduler started an unexpected launch worker executable.");
             }
+            ScheduleDetachedTaskHostCleanup(process, taskHost);
             return process;
         }
         finally
@@ -113,6 +302,8 @@ internal static class ChatGPTRemoteLauncher
     private static int Main()
     {
         string root = AppDomain.CurrentDomain.BaseDirectory;
+        int redirected = RedirectLegacyAlias(root, new string[0]);
+        if (redirected >= 0) return redirected;
         string script = Path.Combine(root, "Enable-ChatGPTRemote.ps1");
         if (!File.Exists(script))
         {

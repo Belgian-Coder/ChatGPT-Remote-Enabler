@@ -3,15 +3,21 @@ param(
     [ValidateSet('Show','Probe')][string]$Action = 'Show',
     [string]$DesktopPath = [Environment]::GetFolderPath('Desktop'),
     [string]$StartMenuPath = [Environment]::GetFolderPath('Programs'),
-    [string]$StartupPath = [Environment]::GetFolderPath('Startup')
+    [string]$StartupPath = [Environment]::GetFolderPath('Startup'),
+    [string]$StableRoot
 )
 
 $ErrorActionPreference = 'Stop'
 $packageRoot = $PSScriptRoot
+$stableModule = Join-Path $packageRoot 'StableInstall.ps1'
+if (-not (Test-Path -LiteralPath $stableModule -PathType Leaf)) { throw "Stable installation resolver is missing: $stableModule" }
+. $stableModule
+if ([string]::IsNullOrWhiteSpace($StableRoot)) { $StableRoot = Get-StableInstallRoot }
+$StableRoot = [IO.Path]::GetFullPath($StableRoot).TrimEnd('\')
 
 function Get-SetupStatus {
-    param([string]$Root)
-    $result = [ordered]@{ App = 'Not found'; Node = 'Not found'; Folder = 'Not writable'; Integration = 'Not checked'; DesktopShortcut = 'Not installed'; Startup = 'Not installed' }
+    param([string]$Root, [string]$CanonicalRoot = $StableRoot)
+    $result = [ordered]@{ App = 'Not found'; Node = 'Not found'; Folder = 'Not writable'; Integration = 'Not checked'; StableRoot = $CanonicalRoot; StableRootStatus = 'Not installed'; DesktopShortcut = 'Not installed'; Startup = 'Not installed' }
     try {
         $apps = @(Get-AppxPackage | Where-Object { $_.Name -match '^(OpenAI\.ChatGPT-Desktop|OpenAI\.Codex)$' })
         if ($apps.Count) { $result.App = 'Installed for this user' }
@@ -39,13 +45,18 @@ function Get-SetupStatus {
     $required = @('Enable-ChatGPTRemote.ps1','CodexRemoteMobileProject\ChatGPT Custom.exe','CodexRemoteMobileProject\inject.js','CodexRemoteMobileProject\renderer-mobile-project-view.js')
     $missing = @($required | Where-Object { -not (Test-Path -LiteralPath (Join-Path $Root $_) -PathType Leaf) })
     $result.Integration = if ($missing.Count) { 'Package incomplete; extract the complete release' } else { 'Package files present; live readiness is checked at launch' }
+    if (Test-StablePackage -Root $CanonicalRoot) {
+        $result.StableRootStatus = 'Installed and validated'
+    } elseif (Test-Path -LiteralPath $CanonicalRoot -PathType Container) {
+        $result.StableRootStatus = 'Present but failed validation'
+    }
     if (Test-Path -LiteralPath (Join-Path $DesktopPath 'ChatGPT Remote Enabler.lnk')) { $result.DesktopShortcut = 'Installed' }
     elseif (Test-Path -LiteralPath (Join-Path $DesktopPath 'ChatGPT Custom.lnk')) { $result.DesktopShortcut = 'Legacy shortcut retained' }
     if (Test-Path -LiteralPath (Join-Path $StartupPath 'ChatGPT Remote Enabler Startup.lnk')) { $result.Startup = 'Installed; sign-in execution not verified by this check' }
     [pscustomobject]$result
 }
 
-if ($Action -eq 'Probe') { Get-SetupStatus -Root $packageRoot | ConvertTo-Json; return }
+if ($Action -eq 'Probe') { Get-SetupStatus -Root $packageRoot -CanonicalRoot $StableRoot | ConvertTo-Json; return }
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -89,7 +100,7 @@ function Add-SetupButton {
 }
 $recheck = Add-SetupButton 'Recheck' 20 415 120 {
     $form.UseWaitCursor = $true
-    try { $report.Text = ((Get-SetupStatus -Root $packageRoot).PSObject.Properties | ForEach-Object { "$($_.Name): $($_.Value)" }) -join "`r`n`r`n" }
+    try { $report.Text = ((Get-SetupStatus -Root $packageRoot -CanonicalRoot $StableRoot).PSObject.Properties | ForEach-Object { "$($_.Name): $($_.Value)" }) -join "`r`n`r`n" }
     catch { $report.Text = 'The setup check failed. Open the installation guide and verify the complete package.' }
     finally { $form.UseWaitCursor = $false }
 }
@@ -98,9 +109,19 @@ $copy = Add-SetupButton 'Copy diagnostic summary' 380 415 280 { [Windows.Forms.C
 $apply = Add-SetupButton 'Apply selected options' 20 462 250 {
     $form.UseWaitCursor = $true
     try {
-        $checks = Get-SetupStatus -Root $packageRoot
+        $checks = Get-SetupStatus -Root $packageRoot -CanonicalRoot $StableRoot
         if ($checks.Folder -notlike 'Writable*' -or $checks.Integration -notlike 'Package files present*') { throw 'The package is incomplete or is not writable. Recheck and follow the installation guide.' }
-        if (-not $desktop.Checked -and -not $startup.Checked) { $report.Text = 'No changes selected. Existing shortcuts and startup settings are preserved.'; return }
+        $stableRootResolved = Ensure-StableInstallRoot -SourceRoot $packageRoot -StableRoot $StableRoot
+        # Existing aliases and the durable logon task are compatibility entry
+        # points. Migrate them whenever setup makes the stable root ready,
+        # even when the optional creation checkboxes are left unchecked.
+        $legacyMigrations = @(Invoke-StableShortcutMigration -StableRoot $stableRootResolved -DesktopPath $DesktopPath -StartMenuPath $StartMenuPath -StartupPath $StartupPath)
+        $taskMigrations = @(Invoke-StableTaskMigration -StableRoot $stableRootResolved)
+        if (-not $desktop.Checked -and -not $startup.Checked) {
+            $legacyCleanup = @(Invoke-StableLegacyCleanup -StableRoot $stableRootResolved -MigrateEntryPoints)
+            $report.Text = "The canonical stable installation is ready at $stableRootResolved. Existing aliases were migrated and obsolete version folders were checked for safe removal. No new shortcut choices were selected."
+            return
+        }
         $desktopProxy = $false
         $shortcutShell = New-Object -ComObject WScript.Shell
         foreach ($name in @('ChatGPT Remote Enabler.lnk','ChatGPT Custom.lnk')) {
@@ -110,13 +131,14 @@ $apply = Add-SetupButton 'Apply selected options' 20 462 250 {
                 break
             }
         }
-        if ($desktop.Checked) { & (Join-Path $packageRoot 'CodexRemoteMobileProject\DesktopShortcut.ps1') -Action Install -UseProxy:$desktopProxy -DesktopPath $DesktopPath -StartMenuPath $StartMenuPath | Out-Null }
+        if ($desktop.Checked) { & (Join-Path $stableRootResolved 'CodexRemoteMobileProject\DesktopShortcut.ps1') -Action Install -UseProxy:$desktopProxy -StableRoot $stableRootResolved -DesktopPath $DesktopPath -StartMenuPath $StartMenuPath | Out-Null }
         if ($startup.Checked) {
-            $existingStartup = & (Join-Path $packageRoot 'CodexRemoteMobileProject\StartupShortcut.ps1') -Action Probe -StartupPath $StartupPath | ConvertFrom-Json
+            $existingStartup = & (Join-Path $stableRootResolved 'CodexRemoteMobileProject\StartupShortcut.ps1') -Action Probe -StableRoot $stableRootResolved -StartupPath $StartupPath | ConvertFrom-Json
             $startupProxy = if ($existingStartup.installed) { [bool]$existingStartup.proxyMode } else { $desktopProxy }
-            & (Join-Path $packageRoot 'CodexRemoteMobileProject\StartupShortcut.ps1') -Action Install -UseProxy:$startupProxy -StartupPath $StartupPath | Out-Null
+            & (Join-Path $stableRootResolved 'CodexRemoteMobileProject\StartupShortcut.ps1') -Action Install -UseProxy:$startupProxy -StableRoot $stableRootResolved -StartupPath $StartupPath | Out-Null
         }
-        $report.Text = "Selected options applied. Existing legacy shortcuts were retained.`r`n`r`nFinish active tasks and quit the ordinary app, then open ChatGPT Remote Enabler. Live integration readiness is checked during launch."
+        $legacyCleanup = @(Invoke-StableLegacyCleanup -StableRoot $stableRootResolved -MigrateEntryPoints)
+        $report.Text = "Selected options applied. Legacy aliases and existing logon entries now use the canonical stable installation at $stableRootResolved.`r`n`r`nFinish active tasks and quit the ordinary app, then open ChatGPT Remote Enabler. Live integration readiness is checked during launch."
         $desktop.Checked = $false; $startup.Checked = $false
     } catch { $report.Text = "Setup did not complete. Some selected options may have succeeded; choose Recheck.`r`n`r`n" + $_.Exception.Message }
     finally { $form.UseWaitCursor = $false }

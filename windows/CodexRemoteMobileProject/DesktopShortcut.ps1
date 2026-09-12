@@ -4,6 +4,7 @@ param(
     [string]$Action = 'Probe',
     [string]$DesktopPath,
     [string]$StartMenuPath,
+    [string]$StableRoot,
     [switch]$UseProxy
 )
 
@@ -11,8 +12,15 @@ $ErrorActionPreference = 'Stop'
 $computerName = $env:COMPUTERNAME.ToUpperInvariant()
 
 $bundleRoot = [IO.Path]::GetFullPath($PSScriptRoot)
-$launcherPath = Join-Path $bundleRoot 'ChatGPT Custom.exe'
-$rollbackRoot = Join-Path $bundleRoot 'rollback'
+$sourcePackageRoot = Split-Path -Parent $bundleRoot
+$stableModule = Join-Path $sourcePackageRoot 'StableInstall.ps1'
+if (-not (Test-Path -LiteralPath $stableModule -PathType Leaf)) { throw "Stable installation resolver is missing: $stableModule" }
+. $stableModule
+if ([string]::IsNullOrWhiteSpace($StableRoot)) { $StableRoot = Get-StableInstallRoot }
+$StableRoot = [IO.Path]::GetFullPath($StableRoot).TrimEnd('\')
+$launcherPath = Join-Path $StableRoot 'CodexRemoteMobileProject\ChatGPT Custom.exe'
+$rootLauncherPath = Join-Path $StableRoot 'ChatGPT Remote Enabler.exe'
+$rollbackRoot = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) 'ChatGPTRemoteEnabler\shortcut-rollback'
 if (-not $DesktopPath) { $DesktopPath = [Environment]::GetFolderPath('Desktop') }
 if (-not $StartMenuPath) { $StartMenuPath = [Environment]::GetFolderPath('Programs') }
 $DesktopPath = [IO.Path]::GetFullPath($DesktopPath)
@@ -30,10 +38,10 @@ $primaryShortcutTargets = @(
 $shortcutTargets = @($primaryShortcutTargets)
 $summaryTargets = @($primaryShortcutTargets)
 $legacyShortcutTargets = @(
-    [ordered]@{ kind = 'LegacyDesktop'; path = Join-Path $DesktopPath 'ChatGPT Custom.lnk' },
-    [ordered]@{ kind = 'LegacyStartMenu'; path = Join-Path $StartMenuPath 'ChatGPT Custom.lnk' },
-    [ordered]@{ kind = 'LegacyStartMenuProxyTest'; path = Join-Path $StartMenuPath 'ChatGPT Custom (Proxy Test).lnk' },
-    [ordered]@{ kind = 'LegacyStartMenuProxy'; path = Join-Path $StartMenuPath 'ChatGPT Custom (Proxy).lnk' }
+    [ordered]@{ kind = 'LegacyDesktop'; path = Join-Path $DesktopPath 'ChatGPT Custom.lnk'; launcher = $launcherPath },
+    [ordered]@{ kind = 'LegacyStartMenu'; path = Join-Path $StartMenuPath 'ChatGPT Custom.lnk'; launcher = $launcherPath },
+    [ordered]@{ kind = 'LegacyStartMenuProxyTest'; path = Join-Path $StartMenuPath 'ChatGPT Custom (Proxy Test).lnk'; launcher = $launcherPath },
+    [ordered]@{ kind = 'LegacyStartMenuProxy'; path = Join-Path $StartMenuPath 'ChatGPT Custom (Proxy).lnk'; launcher = $launcherPath }
 )
 
 function Backup-Shortcut {
@@ -62,6 +70,7 @@ function Get-ShortcutSummary {
     }
     return [ordered]@{
         host = $computerName
+        stableRoot = $StableRoot
         launcherPath = $launcherPath
         launcherPresent = Test-Path -LiteralPath $launcherPath -PathType Leaf
         requestedProxyMode = [bool]$UseProxy
@@ -74,11 +83,13 @@ function Get-ShortcutSummary {
 
 switch ($Action) {
     'Install' {
-        if (-not (Test-Path -LiteralPath $launcherPath -PathType Leaf)) {
-            throw "Launcher is missing: $launcherPath"
-        }
         $backups = @()
-        # Installation preserves all legacy shortcuts. Removal remains explicit.
+        $stableRootResolved = Ensure-StableInstallRoot -SourceRoot $sourcePackageRoot -StableRoot $StableRoot
+        $launcherPath = Join-Path $stableRootResolved 'CodexRemoteMobileProject\ChatGPT Custom.exe'
+        $rootLauncherPath = Join-Path $stableRootResolved 'ChatGPT Remote Enabler.exe'
+        if (-not (Test-Path -LiteralPath $launcherPath -PathType Leaf) -or -not (Test-Path -LiteralPath $rootLauncherPath -PathType Leaf)) {
+            throw "Stable launchers are missing: $stableRootResolved"
+        }
         foreach ($target in $shortcutTargets) {
             $parent = Split-Path -Parent $target.path
             if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
@@ -91,8 +102,29 @@ switch ($Action) {
                 $shortcut = $shell.CreateShortcut($target.path)
                 $shortcut.TargetPath = $launcherPath
                 $shortcut.Arguments = $target.arguments
-                $shortcut.WorkingDirectory = $bundleRoot
+                $shortcut.WorkingDirectory = $stableRootResolved
                 $shortcut.Description = $target.description
+                $shortcut.IconLocation = "$launcherPath,0"
+                $shortcut.WindowStyle = 1
+                $shortcut.Save()
+            }
+        }
+        # Existing ChatGPT Custom aliases are compatibility entry points. Keep
+        # their display names and proxy choice while retargeting every one to
+        # the permanent stable root.
+        foreach ($target in $legacyShortcutTargets) {
+            if (-not (Test-Path -LiteralPath $target.path -PathType Leaf)) { continue }
+            $backup = Backup-Shortcut -Path $target.path -Kind $target.kind
+            if ($backup) { $backups += $backup }
+            if ($PSCmdlet.ShouldProcess($target.path, 'migrate legacy ChatGPT Custom shortcut')) {
+                $shell = New-Object -ComObject WScript.Shell
+                $existing = $shell.CreateShortcut($target.path)
+                $legacyArguments = [string]$existing.Arguments
+                $shortcut = $shell.CreateShortcut($target.path)
+                $shortcut.TargetPath = $launcherPath
+                $shortcut.Arguments = if ($legacyArguments -match '(?:^|\s)--proxy(?:\s|$)') { '--proxy' } else { '' }
+                $shortcut.WorkingDirectory = $stableRootResolved
+                $shortcut.Description = 'ChatGPT Remote Enabler compatibility entry point.'
                 $shortcut.IconLocation = "$launcherPath,0"
                 $shortcut.WindowStyle = 1
                 $shortcut.Save()
@@ -100,6 +132,8 @@ switch ($Action) {
         }
         $result = Get-ShortcutSummary
         $result.backupPaths = @($backups)
+        $result.stableRoot = $stableRootResolved
+        $result.legacyMigration = @(Invoke-StableLegacyCleanup -StableRoot $stableRootResolved -ShortcutPaths (@($shortcutTargets.path) + @($legacyShortcutTargets.path)) -TaskNames @('Codex Remote Mobile Features at Logon') -MigrateEntryPoints)
         $result | ConvertTo-Json -Depth 4
     }
     'Remove' {

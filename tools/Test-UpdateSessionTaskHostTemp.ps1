@@ -155,7 +155,10 @@ Add-Type -TypeDefinition 'public static class EntryPointCompilerProbe { public s
     $workerResult = Join-Path $testRoot 'worker-add-type.json'
     $fullQualificationResult = Join-Path $testRoot 'full-fake-app-qualification.json'
     $fullQualificationError = Join-Path $testRoot 'full-fake-app-qualification-error.json'
-    $workerScript = Join-Path $testRoot 'MobileProjectStartup.ps1'
+    $workerPackageRoot = Join-Path $testRoot 'ChatGPT-Remote-Enabler-Windows-x64'
+    $workerBundleRoot = Join-Path $workerPackageRoot 'CodexRemoteMobileProject'
+    New-Item -ItemType Directory -Path $workerBundleRoot -Force | Out-Null
+    $workerScript = Join-Path $workerBundleRoot 'MobileProjectStartup.ps1'
     [IO.File]::WriteAllText($workerScript, @'
 [CmdletBinding()]
 param(
@@ -198,8 +201,9 @@ if (-not [string]::IsNullOrWhiteSpace($env:CHATGPT_REMOTE_FULL_QUALIFICATION_ROO
     $workerArguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File {0} -Action Run -ParentProcessId {1} -ParentProcessStartTimeFileTimeUtc {2} -ReadyEventName {3} -RejectedEventName {4}' -f
         (Quote-NativeArgument $workerScript),$PID,$selfStart,(Quote-NativeArgument $readyName),(Quote-NativeArgument $rejectedName)
     $encodedWorkerArguments = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($workerArguments))
-    $workerHostArguments = '--worker {0} {1} {2} {3}' -f
-        (Quote-NativeArgument $powerShell),(Quote-NativeArgument $workerScript),(Quote-NativeArgument $encodedWorkerArguments),[DateTimeOffset]::UtcNow.AddSeconds(30).ToUnixTimeMilliseconds()
+    $workerHostArguments = '--worker {0} {1} {2} {3} {4} {5} {6}' -f
+        (Quote-NativeArgument $powerShell),(Quote-NativeArgument $workerScript),(Quote-NativeArgument $encodedWorkerArguments),[DateTimeOffset]::UtcNow.AddSeconds(30).ToUnixTimeMilliseconds(),
+        (Get-FileHash -LiteralPath $workerScript -Algorithm SHA256).Hash.ToLowerInvariant(),(Get-FileHash -LiteralPath $taskHost -Algorithm SHA256).Hash.ToLowerInvariant(),(Quote-NativeArgument $workerPackageRoot)
     $fullQualificationEnvironment = if ($RunFullFakeAppQualification) {
         @{
             CHATGPT_REMOTE_FULL_QUALIFICATION_ROOT = $repositoryRoot

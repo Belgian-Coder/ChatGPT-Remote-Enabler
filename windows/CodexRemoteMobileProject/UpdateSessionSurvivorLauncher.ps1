@@ -59,6 +59,64 @@ function Write-AtomicJson {
     Move-Item -LiteralPath $temporary -Destination $Path -Force
 }
 
+function Copy-DetachedTaskHost {
+    param([Parameter(Mandatory)][string]$Source)
+    $launchHostsRoot = Join-Path $stateRoot 'launch-hosts'
+    New-Item -ItemType Directory -Path $launchHostsRoot -Force | Out-Null
+    try { $processes = @(Get-CimInstance Win32_Process -Filter "Name='UpdateSessionTaskHost.exe'" -ErrorAction Stop) }
+    catch { $processes = $null }
+    if ($null -ne $processes) {
+        foreach ($directory in Get-ChildItem -LiteralPath $launchHostsRoot -Directory -Force -ErrorAction SilentlyContinue) {
+            if ($directory.Name -notmatch '^[0-9a-f]{32}$' -or ($directory.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+                $directory.LastWriteTimeUtc -gt [DateTime]::UtcNow.AddMinutes(-10)) { continue }
+            $candidate = Join-Path $directory.FullName 'UpdateSessionTaskHost.exe'
+            $referenced = @($processes | Where-Object { [string]$_.ExecutablePath -and [string]::Equals([IO.Path]::GetFullPath([string]$_.ExecutablePath), $candidate, [StringComparison]::OrdinalIgnoreCase) }).Count -gt 0
+            if (-not $referenced) {
+                try {
+                    $reparse = @(Get-ChildItem -LiteralPath $directory.FullName -Recurse -Force -ErrorAction Stop | Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint })
+                    if ($reparse.Count -eq 0) { Remove-Item -LiteralPath $directory.FullName -Recurse -Force -ErrorAction Stop }
+                } catch { }
+            }
+        }
+    }
+    $destinationDirectory = Join-Path $launchHostsRoot ([guid]::NewGuid().ToString('N'))
+    $destination = Join-Path $destinationDirectory 'UpdateSessionTaskHost.exe'
+    New-Item -ItemType Directory -Path $destinationDirectory -Force | Out-Null
+    try {
+        Copy-Item -LiteralPath $Source -Destination $destination -Force
+        $expected = Get-Sha256File -Path $Source
+        $actual = Get-Sha256File -Path $destination
+        if ($expected -cne $actual) { throw 'The detached update-session task-host copy failed hash verification.' }
+        return $destination
+    } catch {
+        Remove-Item -LiteralPath $destinationDirectory -Recurse -Force -ErrorAction SilentlyContinue
+        throw
+    }
+}
+
+function Start-DetachedTaskHostCleanup {
+    param([Parameter(Mandatory)][int]$ProcessId, [Parameter(Mandatory)][string]$ExecutablePath)
+    $cleanupPath = Join-Path $stateRoot ('launch-host-cleanup-' + [guid]::NewGuid().ToString('N') + '.ps1')
+    $cleanupSource = @'
+param([int]$ProcessId, [string]$ExecutablePath, [string]$Directory)
+$deadline = [DateTime]::UtcNow.AddMinutes(2)
+$finished = $false
+while ([DateTime]::UtcNow -lt $deadline) {
+    try {
+        $process = Get-Process -Id $ProcessId -ErrorAction Stop
+        try { $path = [IO.Path]::GetFullPath($process.MainModule.FileName) } finally { $process.Dispose() }
+        if (-not [string]::Equals($path, [IO.Path]::GetFullPath($ExecutablePath), [StringComparison]::OrdinalIgnoreCase)) { $finished = $true; break }
+        Start-Sleep -Milliseconds 250
+    } catch { $finished = $true; break }
+}
+if ($finished) { Remove-Item -LiteralPath $Directory -Recurse -Force -ErrorAction SilentlyContinue }
+Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
+'@
+    [IO.File]::WriteAllText($cleanupPath, $cleanupSource, [Text.UTF8Encoding]::new($false))
+    $powerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    Start-Process -FilePath $powerShell -WindowStyle Hidden -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$cleanupPath,'-ProcessId',$ProcessId,'-ExecutablePath',$ExecutablePath,'-Directory',(Split-Path -Parent $ExecutablePath)) | Out-Null
+}
+
 function Test-ExactCoordinator {
     param([int]$ProcessId, [long]$StartTimeFileTimeUtc, [string]$ExecutablePath)
     try {
@@ -111,8 +169,9 @@ $identityPath = Get-NormalizedPath ([string]$config.launchReceipt.identityPath)
 Remove-Item -LiteralPath $receiptPath -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $identityPath -Force -ErrorAction SilentlyContinue
 
-$taskHostPath = Get-NormalizedPath (Join-Path $PSScriptRoot 'UpdateSessionTaskHost.exe')
-if (-not (Test-Path -LiteralPath $taskHostPath -PathType Leaf)) { throw "The GUI update-session task host is missing: $taskHostPath" }
+$taskHostSource = Get-NormalizedPath (Join-Path $PSScriptRoot 'UpdateSessionTaskHost.exe')
+if (-not (Test-Path -LiteralPath $taskHostSource -PathType Leaf)) { throw "The GUI update-session task host is missing: $taskHostSource" }
+$taskHostPath = Copy-DetachedTaskHost -Source $taskHostSource
 $taskArguments = '"{0}" "{1}" "{2}" {3} {4} {5} "{6}" {7}' -f $NodePath,$ScriptPath,$ConfigPath,$configHash,$nodeHash,$scriptHash,$identityPath,[string]$config.launchReceipt.nonce
 $service = $null
 $rootFolder = $null
@@ -162,6 +221,7 @@ try {
         Start-Sleep -Milliseconds 25
     } while ([DateTime]::UtcNow -lt $pidDeadline)
     if ($hostPid -le 0) { throw 'Task Scheduler did not report the verified GUI task-host identity.' }
+    Start-DetachedTaskHostCleanup -ProcessId $hostPid -ExecutablePath $taskHostPath
     $identityDeadline = [DateTime]::UtcNow.AddSeconds(5)
     while (-not (Test-Path -LiteralPath $identityPath -PathType Leaf) -and [DateTime]::UtcNow -lt $identityDeadline) { Start-Sleep -Milliseconds 25 }
     if (-not (Test-Path -LiteralPath $identityPath -PathType Leaf)) {

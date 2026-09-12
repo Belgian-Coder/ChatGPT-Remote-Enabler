@@ -32,6 +32,7 @@ try {
     $dependencyPaths = [ordered]@{
         'cdp.js' = 'CodexRemoteSimple\runtime\lib\cdp.js'
         'Update-ChatGPTRemote.ps1' = 'Update-ChatGPTRemote.ps1'
+        'StableInstall.ps1' = 'StableInstall.ps1'
         'update-transaction.js' = 'update-transaction.js'
         'git-release.js' = 'git-release.js'
         'git-checkout-update.js' = 'git-checkout-update.js'
@@ -104,7 +105,7 @@ $bundle = Copy-ImmutableUpdateSessionBundle -Node 'unused'
         throw 'The Git helper fingerprint selected a snapshot without the changed helper.'
     }
 
-    foreach ($relative in @('Update-ChatGPTRemote.ps1', 'update-transaction.js', 'git-release.js', 'git-checkout-update.js')) {
+    foreach ($relative in @('Update-ChatGPTRemote.ps1', 'StableInstall.ps1', 'update-transaction.js', 'git-release.js', 'git-checkout-update.js')) {
         Copy-Item -LiteralPath (Join-Path $repositoryRoot "windows\$relative") -Destination (Join-Path $candidateRoot $relative) -Force
     }
     $actualResult = & $fixtureLauncher -InstallRoot $candidateRoot -EntryPointRelative 'Enable-ChatGPTRemote.ps1' -BundleRoot $candidateRoot | ConvertFrom-Json

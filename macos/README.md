@@ -1,6 +1,6 @@
 # macOS Apple Silicon: install for your user without sudo
 
-Release v1.5.64 moves recognized version-named installations to the fixed
+Release v1.5.65 moves recognized version-named installations to the fixed
 per-user root `~/Library/Application Support/CodexRemoteFeatures/ChatGPT-Remote-Enabler-macOS-arm64`
 and rewires the LaunchAgent and app shortcut to that root. Each successful
 update keeps only the immediately previous updater generation and removes
@@ -18,12 +18,12 @@ You need an Apple Silicon Mac (arm64), the ChatGPT/Codex desktop app installed a
 preceding installed build. v1.5.49 was then manually installed and its live
 renderer readiness was checked on the participating test devices. The next
 sign-in startup trigger and future desktop-app builds remain separate checks.
-v1.5.64 is a normal release. Installing it still requires a normal graceful
+v1.5.65 is a normal release. Installing it still requires a normal graceful
 quit of the desktop app and is not implied by release publication.
 
 ## 1. Download and extract
 
-1. Download **ChatGPT-Remote-Enabler-macOS-arm64-v1.5.64.zip** from [v1.5.64 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.64).
+1. Download **ChatGPT-Remote-Enabler-macOS-arm64-v1.5.65.zip** from [v1.5.65 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.65).
 2. Double-click the ZIP in Finder. In Finder choose **Go > Go to Folder** and enter `~/Library/Application Support/CodexRemoteFeatures`. Create **ChatGPT-Remote-Enabler-macOS-arm64** there and move the extracted package contents into it.
 3. `MobileProjectView-macOS-arm64.sh` must be directly inside that fixed folder. Keep the complete package together there; future updates replace it in place.
 
@@ -250,4 +250,4 @@ Settings now provides per-device connection findings, next steps, explicit evide
 
 ## Version or update icon missing
 
-Fully quit the app when your work is safe and launch through Remote Enabler. The updater migrates recognized historical version folders and rewires existing startup and app entry points to the fixed root. Open Settings to see the loaded helper version and update controls; a missing updater has recovery instructions. v1.5.64 is a normal release available to the existing updater.
+Fully quit the app when your work is safe and launch through Remote Enabler. The updater migrates recognized historical version folders and rewires existing startup and app entry points to the fixed root. Open Settings to see the loaded helper version and update controls; a missing updater has recovery instructions. v1.5.65 is a normal release available to the existing updater.

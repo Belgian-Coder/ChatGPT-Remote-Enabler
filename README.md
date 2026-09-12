@@ -10,7 +10,7 @@ device filters, native project grouping and ordering, empty remote projects,
 project-hover new-chat actions, and working/unread indicators. The original
 **Native sidebar** remains available, with its grouping preference preserved.
 
-v1.5.64 keeps each platform's permanent helper in one unversioned per-user
+v1.5.65 keeps each platform's permanent helper in one unversioned per-user
 root. Windows migrates the former ProgramData root; macOS migrates recognized
 version-named release roots and rewires its LaunchAgent and app shortcut to the
 stable root. Every successful update retains only the immediate prior updater
@@ -85,16 +85,16 @@ app build is compatible.
 See the [complete feature guide](FEATURES.md) for defaults, limits, privacy,
 and recovery behavior.
 
-## Install v1.5.64
+## Install v1.5.65
 
 Prerequisites are a supported ChatGPT/Codex desktop app signed in with Remote
 available on the account, Node.js 22 or newer, and a writable folder for the
 downloaded package. Organization policy, account access, MFA, or desktop-app
 policy can still block Remote independently of this helper.
 
-- **[Download Windows 11 x64](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/download/v1.5.64/ChatGPT-Remote-Enabler-Windows-x64-v1.5.64.zip)** and follow the [Windows installation guide](windows/README.md).
-- **[Download macOS Apple Silicon](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/download/v1.5.64/ChatGPT-Remote-Enabler-macOS-arm64-v1.5.64.zip)** and follow the [macOS installation guide](macos/README.md).
-- Use the [v1.5.64 release page](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.64) to inspect release notes and published checksums.
+- **[Download Windows 11 x64](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/download/v1.5.65/ChatGPT-Remote-Enabler-Windows-x64-v1.5.65.zip)** and follow the [Windows installation guide](windows/README.md).
+- **[Download macOS Apple Silicon](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/download/v1.5.65/ChatGPT-Remote-Enabler-macOS-arm64-v1.5.65.zip)** and follow the [macOS installation guide](macos/README.md).
+- Use the [v1.5.65 release page](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.65) to inspect release notes and published checksums.
 
 Both installers run in the current-user context and do not request elevation.
 macOS keeps the package in its fixed per-user Application Support root. On Windows, keep the downloaded

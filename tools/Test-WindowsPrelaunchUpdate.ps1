@@ -62,15 +62,16 @@ Add-Content -LiteralPath '$($fakeDesktopLog.Replace("'", "''"))' -Value `$Action
 if (Test-Path -LiteralPath (Join-Path `$root 'desktop-fail')) { Write-Error 'fixture desktop failure'; exit 19 }
 if (Test-Path -LiteralPath (Join-Path `$root 'desktop-invalid')) { Write-Output '{"Action":"Update","Decision":"Installed"}'; exit 0 }
 `$installedVersion = if (Test-Path -LiteralPath (Join-Path `$root 'desktop-newer')) { '26.904.0.0' } else { '26.903.9999.0' }
-`$remoteVersion = if (Test-Path -LiteralPath (Join-Path `$root 'desktop-newer')) { '26.903.9999.0' } else { '26.903.9999.0' }
+`$remoteVersionText = if (Test-Path -LiteralPath (Join-Path `$root 'desktop-newer')) { '26.903.9999.0' } else { '26.903.9999.0' }
+`$remoteVersion = [version]`$remoteVersionText
 `$decision = if (Test-Path -LiteralPath (Join-Path `$root 'desktop-newer')) { 'DowngradeRefused' } elseif (Test-Path -LiteralPath (Join-Path `$root 'desktop-current')) { 'EqualVersion' } else { 'Installed' }
 `$canInstall = `$decision -eq 'Installed'
 `$proof = [ordered]@{
   Action='Update'; InstalledState='Installed';
   Installed=[ordered]@{Name='OpenAI.Codex';Version=`$installedVersion;Architecture='X64';Publisher='CN=50BDFD77-8903-4850-9FFE-6E8522F64D5B'};
-  Remote=[ordered]@{Name='OpenAI.Codex';Version=`$remoteVersion}; Decision=`$decision; CanInstall=`$canInstall
+  Remote=[ordered]@{Name='OpenAI.Codex';Version=`$remoteVersion;VersionText=`$remoteVersion.ToString()}; Decision=`$decision; CanInstall=`$canInstall
 }
-if (`$decision -eq 'Installed') { `$proof.Manifest = [ordered]@{Name='OpenAI.Codex';Version=`$installedVersion} }
+if (`$decision -eq 'Installed') { `$proof.Manifest = [ordered]@{Name='OpenAI.Codex';Version=[version]`$installedVersion;VersionText=`$installedVersion} }
 `$proof | ConvertTo-Json -Depth 5
 "@
     [IO.File]::WriteAllText($fakeDesktopUpdater, $fakeDesktopUpdaterSource, [Text.UTF8Encoding]::new($false))

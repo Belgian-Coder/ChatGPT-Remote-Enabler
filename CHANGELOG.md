@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.5.68 — 2026-09-14
+
+- Load compatible verified updates into the current renderer without closing or
+  restarting ChatGPT. The coordinator compares protected runtime hashes, proves
+  the prepared renderer and full Device projects readiness before replacing
+  files, verifies the exact app identity afterward, and records a distinct live
+  reload confirmation.
+- Keep the existing idle gate and graceful restart path for releases that change
+  the Windows compatibility bridge or platform publisher. A prepared renderer
+  failure leaves installed files untouched; a failed apply uses journal recovery
+  and reloads the prior renderer while ChatGPT remains open.
+- Apply the same live update contract on Windows and macOS. Both packages use
+  renderer v81 and retain one immediate package rollback.
+
 ## v1.5.67 — 2026-09-14
 
 - Retry transient failures from the official ChatGPT MSIX metadata endpoint

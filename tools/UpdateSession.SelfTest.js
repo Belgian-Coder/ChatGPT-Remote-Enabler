@@ -57,7 +57,7 @@ assert.throws(() => session.safeRemovePrepared(config(), tempRoot), /outside the
 
 function harness(options = {}) {
   const statuses = [];
-  const calls = { apply: 0, check: 0, close: 0, closingExpected: [], isAlive: 0, notify: 0, prepare: 0, probe: 0, recover: 0, relaunch: 0, removed: [] };
+  const calls = { apply: 0, check: 0, close: 0, closingExpected: [], hotReload: 0, isAlive: 0, notify: 0, prepare: 0, probe: 0, recover: 0, relaunch: 0, removed: [] };
   const release = { version: "v1.5.32", archiveSha256: "b".repeat(64) };
   const activities = [...(options.activities ?? [{ known: true, busy: false }, { known: true, busy: false }])];
   const retained = path.join(sessionDirectory, "prepared", release.version, "verified");
@@ -92,6 +92,11 @@ function harness(options = {}) {
     async probe() { calls.probe += 1; return options.probe ? options.probe() : options.running !== false; },
     isAlive() { calls.isAlive += 1; return options.alive !== false; },
     async closeGracefully() { calls.close += 1; return options.closeResult !== false; },
+    async hotReload(actual) {
+      calls.hotReload += 1;
+      if (options.hotReloadError) throw options.hotReloadError;
+      return { loaded: true, helperVersion: actual.version, rendererVersion: 81, ready: true };
+    },
     async relaunch() { calls.relaunch += 1; if (options.relaunchError) throw options.relaunchError; return { ready: true }; },
     async notifyFailure() { calls.notify += 1; },
   };
@@ -101,6 +106,7 @@ function harness(options = {}) {
     platform,
     sleep: async () => {},
     isWritable: () => options.writable !== false,
+    canHotReload: () => ({ compatible: options.hotCompatible === true, reason: "fixture" }),
     removePrepared: (directory) => calls.removed.push(directory),
   });
   return { activities, calls, controller, release, statuses, retained };
@@ -168,6 +174,79 @@ async function testPinnedIdleFlow() {
   assert.equal(h.controller.status.details.installedVersion, h.release.version);
   assert.ok(h.statuses.some((value) => value.state === "queued" && /Inventory/u.test(value.message)));
   assert.ok(h.statuses.some((value) => value.state === "closing" && value.canCancel === false));
+}
+
+async function testPinnedHotReloadFlow() {
+  const h = harness({ hotCompatible: true });
+  await h.controller.check(true);
+  await h.controller.request("queue", "queue-hot");
+  await waitOperation(h.controller);
+  assert.equal(h.calls.apply, 1);
+  assert.equal(h.calls.recover, 1);
+  assert.equal(h.calls.hotReload, 1);
+  assert.equal(h.calls.close, 0, "a compatible update must not close ChatGPT");
+  assert.equal(h.calls.relaunch, 0, "a compatible update must not relaunch ChatGPT");
+  assert.equal(h.controller.stopping, false, "the coordinator must remain attached after live reload");
+  assert.equal(h.controller.status.state, "current");
+  assert.equal(h.controller.status.details.installedVersion, h.release.version);
+  assert.match(h.controller.status.message, /without restarting ChatGPT/u);
+  assert.ok(h.controller.history.some(entry => entry.state === "hot-reload-confirmed" && entry.version === h.release.version));
+}
+
+async function testHotReloadFailureKeepsAppOpen() {
+  const h = harness({ hotCompatible: true, hotReloadError: new Error("simulated reload failure") });
+  await h.controller.check(true);
+  await h.controller.queue();
+  await waitOperation(h.controller);
+  assert.equal(h.calls.apply, 0, "file replacement must not start when prepared live reload fails");
+  assert.equal(h.calls.recover, 0);
+  assert.equal(h.calls.hotReload, 1);
+  assert.equal(h.calls.close, 0);
+  assert.equal(h.calls.relaunch, 0);
+  assert.equal(h.calls.notify, 0);
+  assert.equal(h.controller.stopping, false);
+  assert.equal(h.controller.status.state, "error");
+}
+
+async function testHotApplyFailureRestoresPriorRenderer() {
+  const h = harness({ hotCompatible: true, applyError: new Error("simulated apply failure") });
+  await h.controller.check(true);
+  await h.controller.queue();
+  await waitOperation(h.controller);
+  assert.equal(h.calls.apply, 1);
+  assert.equal(h.calls.recover, 1);
+  assert.equal(h.calls.hotReload, 2, "the prepared renderer and recovered prior renderer must each load once");
+  assert.equal(h.calls.close, 0);
+  assert.equal(h.calls.relaunch, 0);
+  assert.equal(h.controller.stopping, false);
+  assert.equal(h.controller.status.state, "error");
+}
+
+function testHotReloadCompatibility() {
+  const prepared = path.join(sessionDirectory, "prepared", "compatibility");
+  const coldRelative = "CodexRemoteSimple/runtime/orchestrator.js";
+  const publisherRelative = "CodexRemoteMobileProject/publisher-heartbeat.js";
+  for (const relative of [coldRelative, publisherRelative]) {
+    const installed = path.join(installRoot, ...relative.split("/"));
+    const candidate = path.join(prepared, ...relative.split("/"));
+    fs.mkdirSync(path.dirname(installed), { recursive: true });
+    fs.mkdirSync(path.dirname(candidate), { recursive: true });
+    fs.writeFileSync(installed, relative);
+    fs.writeFileSync(candidate, relative);
+  }
+  const manifest = [coldRelative, publisherRelative].map((relative) =>
+    `${crypto.createHash("sha256").update(relative).digest("hex")} *${relative}`
+  ).join("\n") + "\n";
+  fs.writeFileSync(path.join(prepared, "RELEASE-MANIFEST.sha256"), manifest);
+  fs.writeFileSync(path.join(installRoot, "RELEASE-MANIFEST.sha256"), manifest);
+  assert.equal(session.hotReloadCompatibility(config(), prepared).compatible, true);
+  fs.writeFileSync(path.join(prepared, "RELEASE-MANIFEST.sha256"), manifest.split("\n")[0] + "\n");
+  assert.equal(session.hotReloadCompatibility(config(), prepared).compatible, false, "a protected file removal must require restart");
+  fs.writeFileSync(path.join(prepared, "RELEASE-MANIFEST.sha256"), manifest);
+  fs.writeFileSync(path.join(installRoot, ...coldRelative.split("/")), "changed");
+  const incompatible = session.hotReloadCompatibility(config(), prepared);
+  assert.equal(incompatible.compatible, false);
+  assert.match(incompatible.reason, /CodexRemoteSimple/u);
 }
 
 async function testCancelDuringPrepare() {
@@ -466,6 +545,10 @@ async function testActualWindowsCheck() {
     testPersistentHistory();
     await testReadOnlyHistoryRefresh();
     await testPinnedIdleFlow();
+    await testPinnedHotReloadFlow();
+    await testHotReloadFailureKeepsAppOpen();
+    await testHotApplyFailureRestoresPriorRenderer();
+    testHotReloadCompatibility();
     await testCancelDuringPrepare();
     await testDuplicateQueueGuard();
     await testCloseRefusal();
@@ -481,7 +564,7 @@ async function testActualWindowsCheck() {
     await testExactMacRelaunchArguments();
     await testUpdaterMappingsAndPrettyJson();
     await testActualWindowsCheck();
-    process.stdout.write(`${JSON.stringify({ ok: true, persistentHistory: true, controllerFlows: 8, monitorSingleflight: true, malformedLockFailClosed: true, concurrentLockReclaim: true, timeoutTreeContained: true, exactRelaunch: true, exactMacRelaunchSkipsPrelaunch: true, prettyJson: true, actualWindowsCheck: process.platform === "win32" && !process.argv.includes("--skip-actual-updater") })}\n`);
+    process.stdout.write(`${JSON.stringify({ ok: true, persistentHistory: true, controllerFlows: 11, monitorSingleflight: true, malformedLockFailClosed: true, concurrentLockReclaim: true, timeoutTreeContained: true, exactRelaunch: true, exactMacRelaunchSkipsPrelaunch: true, prettyJson: true, actualWindowsCheck: process.platform === "win32" && !process.argv.includes("--skip-actual-updater") })}\n`);
   } finally {
     fs.rmSync(tempRoot, { force: true, recursive: true });
   }

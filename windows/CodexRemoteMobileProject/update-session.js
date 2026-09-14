@@ -416,16 +416,17 @@ class PlatformAdapter {
         "--target-wait-ms", "10000"], { cwd: sourceRoot, timeoutMs: 30_000 });
       return parseLastJson(result.stdout);
     };
+    const rendererReady = (value) => value?.report?.readiness?.ready === true;
     let result = await invoke("enable");
     if (result?.ok !== true || result?.report?.active !== true || !Number.isInteger(result.report.version)) {
       throw new Error("The updated renderer did not return valid live-reload proof.");
     }
     const deadline = Date.now() + 45_000;
-    while (result.report.ready !== true && Date.now() < deadline) {
+    while (!rendererReady(result) && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 500));
       result = await invoke("probe");
     }
-    if (result?.report?.ready !== true) throw new Error("The updated renderer did not become ready after live reload.");
+    if (!rendererReady(result)) throw new Error("The updated renderer did not become ready after live reload.");
     if (await this.probe() !== true) throw new Error("The exact ChatGPT process changed during live reload.");
     return { loaded: true, helperVersion: installedVersion, rendererVersion: result.report.version, ready: true };
   }

@@ -255,19 +255,63 @@ function Compare-MsixUpdateTarget {
     return [pscustomobject][ordered]@{ Decision = 'DowngradeRefused'; CanInstall = $false; Message = "Downloaded package $remoteVersion is older than installed $installedVersion; refusing a downgrade." }
 }
 
+function Test-TransientPackageMetadataFailure {
+    param([Parameter(Mandatory)][Management.Automation.ErrorRecord]$ErrorRecord)
+
+    $exception = $ErrorRecord.Exception
+    while ($null -ne $exception) {
+        $response = Get-PropertyValue $exception 'Response'
+        $statusCode = Get-PropertyValue $response 'StatusCode'
+        if ($null -ne $statusCode) {
+            try {
+                if ([int]$statusCode -in @(408, 429, 500, 502, 503, 504)) { return $true }
+            } catch {}
+        }
+        if ($exception -is [Net.WebException]) {
+            if ($exception.Status -in @(
+                [Net.WebExceptionStatus]::Timeout,
+                [Net.WebExceptionStatus]::ConnectFailure,
+                [Net.WebExceptionStatus]::ConnectionClosed,
+                [Net.WebExceptionStatus]::KeepAliveFailure,
+                [Net.WebExceptionStatus]::ReceiveFailure,
+                [Net.WebExceptionStatus]::SendFailure,
+                [Net.WebExceptionStatus]::NameResolutionFailure
+            )) { return $true }
+        }
+        $exception = $exception.InnerException
+    }
+    return ([string]$ErrorRecord -match '(?i)\b(408|429|500|502|503|504)\b|timed?\s*out|connection\s+(?:was\s+)?closed')
+}
+
 function Get-HeadPackageMetadata {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$Uri, [scriptblock]$HeadRequester)
+    param(
+        [Parameter(Mandatory)][string]$Uri,
+        [scriptblock]$HeadRequester,
+        [ValidateRange(1, 5)][int]$MaximumAttempts = 3,
+        [ValidateRange(0, 30)][int]$RetryDelaySeconds = 2,
+        [scriptblock]$Sleeper
+    )
     $officialUri = Assert-OfficialPackageUri $Uri
-    $response = if ($null -ne $HeadRequester) {
-        & $HeadRequester $officialUri
-    } else {
-        $originalProtocol = [Net.ServicePointManager]::SecurityProtocol
+    $response = $null
+    for ($attempt = 1; $attempt -le $MaximumAttempts; $attempt++) {
         try {
-            [Net.ServicePointManager]::SecurityProtocol = $originalProtocol -bor [Net.SecurityProtocolType]::Tls12
-            Invoke-WebRequest -Uri $officialUri -Method Head -UseBasicParsing -MaximumRedirection 3 -TimeoutSec 60
-        } finally {
-            [Net.ServicePointManager]::SecurityProtocol = $originalProtocol
+            $response = if ($null -ne $HeadRequester) {
+                & $HeadRequester $officialUri
+            } else {
+                $originalProtocol = [Net.ServicePointManager]::SecurityProtocol
+                try {
+                    [Net.ServicePointManager]::SecurityProtocol = $originalProtocol -bor [Net.SecurityProtocolType]::Tls12
+                    Invoke-WebRequest -Uri $officialUri -Method Head -UseBasicParsing -MaximumRedirection 3 -TimeoutSec 60
+                } finally {
+                    [Net.ServicePointManager]::SecurityProtocol = $originalProtocol
+                }
+            }
+            break
+        } catch {
+            if ($attempt -ge $MaximumAttempts -or -not (Test-TransientPackageMetadataFailure -ErrorRecord $_)) { throw }
+            $delay = $RetryDelaySeconds * $attempt
+            if ($null -ne $Sleeper) { & $Sleeper $delay } elseif ($delay -gt 0) { Start-Sleep -Seconds $delay }
         }
     }
     $headers = Get-PropertyValue $response 'Headers'
@@ -346,7 +390,10 @@ function Invoke-ChatGPTDesktopMsixUpdater {
         [scriptblock]$ProcessEnumerator,
         [scriptblock]$HeadRequester,
         [scriptblock]$SignatureReader,
-        [scriptblock]$Installer
+        [scriptblock]$Installer,
+        [ValidateRange(1, 5)][int]$MetadataMaximumAttempts = 3,
+        [ValidateRange(0, 30)][int]$MetadataRetryDelaySeconds = 2,
+        [scriptblock]$MetadataSleeper
     )
 
     Assert-Condition ($Action -in @('Probe', 'Check', 'Update')) "Unsupported action: $Action"
@@ -369,7 +416,25 @@ function Invoke-ChatGPTDesktopMsixUpdater {
         }
     }
 
-    $remote = Get-HeadPackageMetadata -Uri $PackageUri -HeadRequester $HeadRequester
+    try {
+        $remote = Get-HeadPackageMetadata -Uri $PackageUri -HeadRequester $HeadRequester -MaximumAttempts $MetadataMaximumAttempts -RetryDelaySeconds $MetadataRetryDelaySeconds -Sleeper $MetadataSleeper
+    } catch {
+        if ($Action -eq 'Update' -and $installed.State -eq 'Installed' -and
+            [string]$installed.Summary.SignatureKind -ieq 'Store' -and [string]$installed.Summary.Status -ieq 'Ok' -and
+            (Test-TransientPackageMetadataFailure -ErrorRecord $_)) {
+            return [pscustomobject][ordered]@{
+                Action = $Action
+                InstalledState = $installed.State
+                Installed = $installed.Summary
+                Remote = $null
+                Decision = 'RemoteUnavailableCurrentInstalled'
+                CanInstall = $false
+                TransientFailure = $true
+                Message = 'The official update endpoint is temporarily unavailable. Launching the verified current-user installation without changing it.'
+            }
+        }
+        throw
+    }
     if ($installed.State -eq 'Installed' -and $installed.Identity -cne $remote.Name) {
         return [pscustomobject][ordered]@{
             Action = $Action; InstalledState = $installed.State; Installed = $installed.Summary; Remote = $remote

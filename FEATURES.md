@@ -1,6 +1,6 @@
 # Feature guide
 
-This guide describes the Windows and macOS v1.5.66 source, including reliable
+This guide describes the Windows and macOS v1.5.67 source, including reliable
 background inventory publication, loaded search, compact Settings, guarded navigation, and stale-Steer recovery. Historical v1.5.49 packages and
 screenshots do not include those changes. Both packages share the Device
 projects renderer and the feature behavior below; the
@@ -53,9 +53,9 @@ connection** preference.
 | Find projects and chats | Search loaded project names and chat titles within the selected device filter. Matching projects include their loaded chats; matching chats reveal their project. | Case-insensitive literal words; no remote search or saved queries. Escape or Clear search restores normal expansion. Reordering is unavailable while searching. |
 | Device names | Remember verified native or inventory names across reloads and restarts. | Unknown peers display **Remote device**; internal environment IDs are never labels. |
 | Project rows | Show active projects, including empty projects, with native folder styling and project-hover new-chat actions when supported. | Last-known rows survive unavailable or incomplete refreshes with stale status; fresh authoritative membership determines removals. |
-| Task state | Show a spinner while working and a blue unread dot after completion until viewed. | State and membership are refreshed independently; collapsed folders aggregate child state. |
+| Task state | Show a spinner while working and a blue unread dot after completion until viewed. Native task-presentation changes trigger immediate coalesced status publication. | State and membership are refreshed independently; collapsed folders aggregate child state. |
 | Quiet discovery | Discover remote projects and chats without opening registration dialogs or navigating away. | Applies even when an older installation enabled Auto-register; explicit project actions can still open native registration. |
-| Force refresh | Rediscover connections and request fresh chat membership from connected devices. | Preserves the current chat, draft, filters, expansion, focus, and scroll; repeated requests are coalesced. |
+| Force refresh | Rediscover connections and request fresh chat membership from connected devices. Remote archive actions hide the selected row immediately and perform two bounded membership rechecks. | Preserves the current chat, draft, filters, expansion, focus, and scroll; repeated requests are coalesced. |
 | Sync status | Show concise refresh progress and stale-data status with a direct Device health shortcut. Last successful sync remains in the status tooltip and Device health. | A failed or incomplete read retains existing rows and does not renew inventory authority. |
 | Remove auto projects | Remove registrations created by older Auto-register versions. | Manual registrations, chats, folders, and source data are kept. |
 

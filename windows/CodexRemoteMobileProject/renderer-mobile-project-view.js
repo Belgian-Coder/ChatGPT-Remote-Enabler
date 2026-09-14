@@ -50,6 +50,7 @@
   const REMOTE_INVENTORY_IDLE_TTL_MS = 30000;
   const RECENT_TASK_ACTIVATION_RETENTION_MS = 120000;
   const REMOTE_TASK_STATUS_MAX_AGE_MS = 30000;
+  const ARCHIVE_RECONCILIATION_DELAYS_MS = Object.freeze([750, 2500]);
   const REQUEST_TIMEOUT_MS = 12000;
   const MAX_THREAD_LIST_PAGES = 200;
   const THREAD_VISIBILITY_CONTRACT_VERSION = 53;
@@ -69,7 +70,7 @@
     "unknown",
   ]);
   const PUBLISHER_VERSION = 53;
-  const VERSION = 79;
+  const VERSION = 80;
   // Keep outstanding writes locked across renderer reinjection until the underlying RPC settles.
   const peerWriteLocks = globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ instanceof Map
     ? globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ : (globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ = new Map());
@@ -188,6 +189,7 @@
     localInventoryPublishedAt: 0,
     localInventoryProjects: [],
     localInventoryPublisherError: null,
+    localInventoryPublisherForceQueued: false,
     localInventoryPublisherPending: false,
     localInventoryPublisherTimer: null,
     localInventoryStatusSignature: "",
@@ -202,6 +204,8 @@
     localRegisteredProjectsQueuedPromise: null,
     localRuntime: null,
     localRuntimeGeneration: 0,
+    nativeTaskStatusObservations: new Map(),
+    nativeTaskStatusMutationAt: new Map(),
     localThreadListActiveClients: new Set(),
     localThreadListGates: sharedThreadListRegistry.gates,
     localThreadListQuarantines: sharedThreadListRegistry.quarantines,
@@ -216,6 +220,8 @@
     panel: null,
     panelActionSignature: null,
     pendingNewThreads: new Set(),
+    pendingArchivedTasks: new Map(),
+    pendingArchiveRefreshTimers: new Map(),
     pendingTaskOpens: new Set(),
     recentTaskActivations: new Map(),
     peerCacheStates: new Map(),
@@ -228,6 +234,7 @@
     remoteCodexHomes: new Map(),
     remoteRuntimeCache: new Map(),
     remoteRuntimeScannedAt: 0,
+    remoteInventoryTimer: null,
     remoteUnreadRecords: null,
     reorderPending: false,
     scheduledFrame: null,
@@ -688,13 +695,20 @@
     return /^(?:active|generating|in[_-]?progress|loading|pending|queued|running|working)$/iu.test(value || "") ? "loading" : "idle";
   }
 
-  function publishedTaskMetadata(task, thread) {
+  function publishedTaskMetadata(task, thread, threadFetchedAt = 0) {
     const runtimeStatus = typeof thread?.status === "string" ? thread.status : thread?.status?.type;
     const unreadKnown = typeof thread?.hasUnreadTurn === "boolean" || typeof thread?.unread === "boolean";
+    const nativeObservedAt = Number(task.statusObservedAt ?? 0);
+    const useNativeStatus = task.originalRow && nativeObservedAt >= Number(threadFetchedAt ?? 0);
+    const activeFlags = useNativeStatus
+      ? task.attentionKind === "input" ? ["waitingOnUserInput"] : task.attentionKind === "approval" ? ["waitingOnApproval"] : []
+      : Array.isArray(thread?.status?.activeFlags) ? thread.status.activeFlags.filter((flag) => typeof flag === "string").slice(0, 8) : [];
     return {
       conversationKey: task.conversationId || rawConversationId(task.conversationKey),
-      statusType: typeof runtimeStatus === "string" && runtimeStatus ? normalizeTaskStatus(runtimeStatus) : task.statusType,
-      unread: unreadKnown ? thread?.hasUnreadTurn === true || thread?.unread === true : task.unread,
+      activeFlags,
+      statusObservedAt: useNativeStatus ? nativeObservedAt : Number(threadFetchedAt ?? nativeObservedAt),
+      statusType: useNativeStatus || typeof runtimeStatus !== "string" || !runtimeStatus ? task.statusType : normalizeTaskStatus(runtimeStatus),
+      unread: useNativeStatus || !unreadKnown ? task.unread : thread?.hasUnreadTurn === true || thread?.unread === true,
     };
   }
 
@@ -902,6 +916,30 @@
     return candidates.find((value) => typeof value === "string" && value.trim()) ?? null;
   }
 
+  function nativeTaskStatusObservedAt(hostId, conversationId, nativeStatus) {
+    if (!conversationId) return Date.now();
+    const key = `${hostId}::${conversationId}`;
+    const signature = JSON.stringify({
+      attentionKind: nativeStatus?.attentionKind ?? null,
+      attentionLabel: nativeStatus?.attentionLabel ?? null,
+      needsAttention: nativeStatus?.needsAttention === true,
+      statusState: normalizeSidebarStatus(nativeStatus?.statusState),
+    });
+    const existing = state.nativeTaskStatusObservations.get(key);
+    if (existing?.signature === signature) {
+      if (existing.confirmed) existing.observedAt = Date.now();
+      return existing.observedAt;
+    }
+    // A first-seen native row may itself be stale after renderer reinjection.
+    // Only a post-observation DOM mutation may advance presentation authority.
+    const mutationAt = state.nativeTaskStatusMutationAt.get(key);
+    const confirmed = existing?.confirmed === true || Number.isFinite(mutationAt);
+    const observedAt = confirmed ? Number(mutationAt ?? Date.now()) : 0;
+    state.nativeTaskStatusMutationAt.delete(key);
+    state.nativeTaskStatusObservations.set(key, { confirmed, observedAt, signature });
+    return observedAt;
+  }
+
   function metadataFromRow(row) {
     let cwd = null;
     let isGrouped = null;
@@ -937,7 +975,8 @@
     const conversationId = rawConversationId(conversationKey);
     const title = row.getAttribute("data-app-action-sidebar-thread-title") || "Untitled task";
     const selected = row.getAttribute("data-app-action-sidebar-thread-selected") === "true";
-    return { conversationId, conversationKey, cwd, hostDisplayName, hostId, hostNames, isGrouped, isProjectless, originalRow: row, projectId, projectLabel, selected, statusType, title, titleSource: title === "Untitled task" ? "none" : "native-dom", unread, unreadCount: nativeStatus?.statusState?.unreadCount ?? 0, nativeStatusState: nativeStatus?.statusState ?? null, needsAttention: nativeStatus?.needsAttention === true, attentionLabel: nativeStatus?.attentionLabel ?? null, attentionKind: nativeStatus?.attentionKind ?? null };
+    const statusObservedAt = nativeTaskStatusObservedAt(hostId, conversationId, nativeStatus);
+    return { conversationId, conversationKey, cwd, hostDisplayName, hostId, hostNames, isGrouped, isProjectless, originalRow: row, projectId, projectLabel, selected, statusKnown: true, statusObservedAt, statusType, threadStatusKnown: false, title, titleSource: title === "Untitled task" ? "none" : "native-dom", unread, unreadKnown: true, unreadObservedAt: statusObservedAt, unreadCount: nativeStatus?.statusState?.unreadCount ?? 0, nativeStatusState: nativeStatus?.statusState ?? null, needsAttention: nativeStatus?.needsAttention === true, attentionLabel: nativeStatus?.attentionLabel ?? null, attentionKind: nativeStatus?.attentionKind ?? null };
   }
 
   function commonAncestor(elements) {
@@ -1564,21 +1603,28 @@
     if (inventory?.error || !Number.isFinite(inventory?.generatedAt)
       || now - inventory.generatedAt > REMOTE_INVENTORY_MAX_AGE_MS
       || inventory.generatedAt - now > REMOTE_INVENTORY_FUTURE_SKEW_MS) return false;
+    const observedAt = Number(taskState.statusObservedAt);
+    if (!Number.isFinite(observedAt) || observedAt - now > REMOTE_INVENTORY_FUTURE_SKEW_MS) return false;
     if (taskState.statusType !== "loading") return true;
-    return Number.isFinite(inventory?.generatedAt)
-      && now - inventory.generatedAt >= -REMOTE_INVENTORY_FUTURE_SKEW_MS
-      && now - inventory.generatedAt <= REMOTE_TASK_STATUS_MAX_AGE_MS;
+    return now - observedAt >= -REMOTE_INVENTORY_FUTURE_SKEW_MS
+      && now - observedAt <= REMOTE_TASK_STATUS_MAX_AGE_MS;
   }
 
   function applyRemoteTaskState(task, inventory, now = Date.now()) {
     const taskState = inventory?.tasks?.get(task.conversationKey) ?? inventory?.tasks?.get(task.conversationId) ?? null;
-    if (!task.threadStatusKnown && remoteTaskStatusIsFresh(inventory, taskState, now)) {
+    if (remoteTaskStatusIsFresh(inventory, taskState, now)
+      && (!task.statusKnown || Number(taskState.statusObservedAt) > Number(task.statusObservedAt ?? 0))) {
       task.statusKnown = true;
+      task.statusActiveFlags = taskState.activeFlags ?? [];
+      task.statusObservedAt = taskState.statusObservedAt;
       task.statusType = taskState.statusType;
     }
     if (taskState?.unreadKnown !== false && taskState) {
-      task.unread = taskState.unread;
-      task.unreadKnown = true;
+      if (!task.unreadKnown || Number(taskState.statusObservedAt) > Number(task.unreadObservedAt ?? 0)) {
+        task.unread = taskState.unread;
+        task.unreadKnown = true;
+        task.unreadObservedAt = taskState.statusObservedAt;
+      }
     }
     return taskState;
   }
@@ -1779,8 +1825,12 @@
       if (!metadata || typeof metadata !== "object" || typeof metadata.conversationKey !== "string" || !metadata.conversationKey) continue;
       const unreadKnown = typeof metadata.unread === "boolean";
       const statusKnown = typeof metadata.statusType === "string";
+      const statusObservedAt = Number(metadata.statusObservedAt);
       if (unreadKnown || statusKnown) tasks.set(metadata.conversationKey, {
+        activeFlags: Array.isArray(metadata.activeFlags) ? metadata.activeFlags.filter((flag) => typeof flag === "string").slice(0, 8) : [],
         statusKnown,
+        statusObservedAt: Number.isFinite(statusObservedAt) && statusObservedAt > 0
+          && statusObservedAt <= Date.now() + REMOTE_INVENTORY_FUTURE_SKEW_MS ? statusObservedAt : 0,
         statusType: normalizeTaskStatus(metadata.statusType),
         unread: metadata.unread === true,
         unreadKnown,
@@ -1800,7 +1850,10 @@
         hasUnreadTurn: typeof thread?.hasUnreadTurn === "boolean" ? thread.hasUnreadTurn : undefined,
         id,
         projectId: typeof thread?.projectId === "string" ? thread.projectId : null,
-        status: typeof thread?.status === "string" ? thread.status : thread?.status?.type,
+        status: typeof thread?.status === "string" ? thread.status : thread?.status && typeof thread.status === "object" ? {
+          activeFlags: Array.isArray(thread.status.activeFlags) ? thread.status.activeFlags.filter((flag) => typeof flag === "string").slice(0, 8) : [],
+          type: thread.status.type,
+        } : undefined,
         updatedAt: thread?.updatedAt ?? null,
         workspaceKind: typeof thread?.workspaceKind === "string" ? thread.workspaceKind : null,
       };
@@ -1833,7 +1886,7 @@
       })),
       publisherVersion: inventory.publisherVersion,
       schemaVersion: 1,
-      tasks: [...(inventory.tasks ?? new Map())].map(([conversationKey, task]) => ({ conversationKey, statusType: task.statusType, unread: task.unread })),
+      tasks: [...(inventory.tasks ?? new Map())].map(([conversationKey, task]) => ({ activeFlags: task.activeFlags ?? [], conversationKey, statusObservedAt: task.statusObservedAt, statusType: task.statusType, unread: task.unread })),
       threadScope: inventory.threadScope,
       threads: inventory.threads ?? [],
     };
@@ -1862,6 +1915,20 @@
     if (!currentRemoteRuntime(hostId, runtime)) return false;
     const latest = state.remoteProjectInventories.get(hostId);
     return !latest?.pendingToken || latest.pendingToken === token;
+  }
+
+  function armRemoteProjectInventoryRefresh(runtimes) {
+    if (state.disposed || state.remoteInventoryTimer !== null
+      || ![...runtimes.keys()].some((hostId) => hostId !== "local" && !state.localRuntimeHostIds.has(hostId))) return;
+    const active = [...state.remoteProjectInventories.values()].some((inventory) => inventoryHasWork(inventory?.tasks, inventory?.threads));
+    state.remoteInventoryTimer = setTimeout(() => {
+      state.remoteInventoryTimer = null;
+      if (state.disposed) return;
+      const discovery = discoverHostNames();
+      const currentRuntimes = discoverRemoteRuntimes(discovery.runtimes);
+      void scheduleRemoteProjectInventory(currentRuntimes);
+      schedule();
+    }, active ? REMOTE_INVENTORY_ACTIVE_MS : REMOTE_INVENTORY_IDLE_MS);
   }
 
   function scheduleRemoteProjectInventory(runtimes, force = false, generation = state.discoveryGeneration) {
@@ -2062,11 +2129,12 @@
       state.remoteProjectInventories.set(hostId, { ...current, pending: true, pendingGeneration: operationGeneration, pendingPromise: operation, pendingToken: token });
       promises.push(operation);
     }
+    armRemoteProjectInventoryRefresh(runtimes);
     return Promise.all(promises);
   }
 
   function inventoryHasWork(tasks, threads = []) {
-    const values = tasks instanceof Map ? [...tasks.values()] : tasks ?? [];
+    const values = typeof tasks?.values === "function" ? [...tasks.values()] : tasks ?? [];
     return values.some(task => normalizeTaskStatus(task.statusType) === "loading")
       || threads.some(thread => normalizeTaskStatus(typeof thread.status === "string" ? thread.status : thread.status?.type) === "loading");
   }
@@ -2348,6 +2416,7 @@
     const runtime = state.localRuntime;
     const now = Date.now();
     const currentThreadInventory = state.threadInventories.get("local");
+    if (force && state.localInventoryPublisherPending) state.localInventoryPublisherForceQueued = true;
     if (!runtime
       || state.disposed
       || state.localInventoryPublisherPending
@@ -2366,7 +2435,7 @@
       .filter((row) => !row.closest(`#${PANEL_ID}`))
       .map(metadataFromRow)
       .filter((task) => task.hostId === "local")
-      .map((task) => publishedTaskMetadata(task, localThreadsById.get(task.conversationId)));
+      .map((task) => publishedTaskMetadata(task, localThreadsById.get(task.conversationId), currentThreadInventory.fetchedAt));
     const threads = (state.threadInventories.get("local")?.threads ?? []).flatMap((thread) => {
       const id = rawConversationId(thread?.id ?? thread?.conversationId ?? "");
       if (!id) return [];
@@ -2376,7 +2445,10 @@
         hasUnreadTurn: thread?.hasUnreadTurn === true,
         id,
         projectId: typeof thread?.projectId === "string" ? thread.projectId : null,
-        status: typeof thread?.status === "string" ? thread.status : thread?.status?.type,
+        status: typeof thread?.status === "string" ? thread.status : thread?.status && typeof thread.status === "object" ? {
+          activeFlags: Array.isArray(thread.status.activeFlags) ? thread.status.activeFlags.filter((flag) => typeof flag === "string").slice(0, 8) : [],
+          type: thread.status.type,
+        } : undefined,
         titleSource: titleRecord.titleSource,
         updatedAt: thread?.updatedAt ?? null,
         workspaceKind: typeof thread?.workspaceKind === "string" ? thread.workspaceKind : null,
@@ -2437,8 +2509,11 @@
     }).finally(() => {
       if (state.disposed) return;
       state.localInventoryPublisherPending = false;
+      const forceQueued = state.localInventoryPublisherForceQueued;
+      state.localInventoryPublisherForceQueued = false;
       armLocalProjectInventoryPublication(tasks, threads);
       schedule();
+      if (forceQueued) queueMicrotask(() => scheduleLocalProjectInventoryPublication(true));
     });
   }
 
@@ -2544,7 +2619,7 @@
     return null;
   }
 
-  function taskFromThread(thread, hostId) {
+  function taskFromThread(thread, hostId, statusObservedAt = 0) {
     const conversationId = rawConversationId(thread?.id ?? thread?.conversationId ?? "");
     if (!conversationId) return null;
     const cwd = canonicalRemotePath(thread?.cwd ?? thread?.workingDirectory ?? thread?.workspace?.cwd);
@@ -2573,11 +2648,14 @@
       directStatusKnown: false,
       threadStatusKnown: statusKnown,
       statusKnown,
+      statusActiveFlags: Array.isArray(thread?.status?.activeFlags) ? thread.status.activeFlags : [],
+      statusObservedAt,
       statusType: normalizeTaskStatus(runtimeStatus),
       title: titleRecord.title ?? "Untitled task",
       titleSource: titleRecord.titleSource,
       unread: thread?.hasUnreadTurn === true || thread?.unread === true,
       unreadKnown,
+      unreadObservedAt: statusObservedAt,
     };
   }
 
@@ -2622,6 +2700,85 @@
       return remote.threads.some((thread) => rawConversationId(thread?.id ?? "") === task.conversationId);
     }
     return null;
+  }
+
+  function remoteTaskMembershipEvidence(task, notBefore = 0) {
+    if (!task?.conversationId || task.hostId === "local") return { authoritativeAt: Date.now(), present: true };
+    const direct = state.threadInventories.get(task.hostId);
+    if (direct && !direct.error && direct.truncated !== true && Number.isFinite(direct.fetchedAt)
+      && direct.fetchedAt >= notBefore && Date.now() - direct.fetchedAt <= NATIVE_INVENTORY_REFRESH_MS) {
+      return {
+        authoritativeAt: direct.fetchedAt,
+        present: (direct.threads ?? []).some((thread) => rawConversationId(thread?.id ?? thread?.conversationId ?? "") === task.conversationId),
+      };
+    }
+    const remote = freshInventory(task.hostId);
+    const authoritativeAt = remote?.threadScopeGeneratedAt ?? remote?.generatedAt;
+    if (scopedThreadsAreFresh(remote) && Number.isFinite(authoritativeAt) && authoritativeAt >= notBefore) {
+      return {
+        authoritativeAt,
+        present: remote.threads.some((thread) => rawConversationId(thread?.id ?? "") === task.conversationId),
+      };
+    }
+    return null;
+  }
+
+  function pendingArchiveKey(task) {
+    return task?.conversationId ? `${task.hostId}::${task.conversationId}` : null;
+  }
+
+  function reconcilePendingArchivedTask(key) {
+    const record = state.pendingArchivedTasks.get(key);
+    if (!record) return false;
+    const evidence = remoteTaskMembershipEvidence(record.task, record.requestedAt);
+    if (evidence?.present === false || record.attempts >= ARCHIVE_RECONCILIATION_DELAYS_MS.length) {
+      state.pendingArchivedTasks.delete(key);
+      return false;
+    }
+    return true;
+  }
+
+  function queuePendingArchiveRefresh(key) {
+    const record = state.pendingArchivedTasks.get(key);
+    if (!record || state.disposed || state.pendingArchiveRefreshTimers.has(key)) return;
+    const delay = ARCHIVE_RECONCILIATION_DELAYS_MS[record.attempts];
+    if (!Number.isFinite(delay)) {
+      state.pendingArchivedTasks.delete(key);
+      schedule();
+      return;
+    }
+    const timer = setTimeout(async () => {
+      state.pendingArchiveRefreshTimers.delete(key);
+      const current = state.pendingArchivedTasks.get(key);
+      if (!current || state.disposed) return;
+      current.attempts += 1;
+      await requestDeviceRefresh();
+      if (state.disposed) return;
+      if (reconcilePendingArchivedTask(key)) queuePendingArchiveRefresh(key);
+      schedule();
+    }, delay);
+    state.pendingArchiveRefreshTimers.set(key, timer);
+  }
+
+  function markPendingArchivedTask(task, scheduleRefresh = true) {
+    const key = pendingArchiveKey(task);
+    if (!key || task.hostId === "local") return false;
+    state.pendingArchivedTasks.set(key, {
+      attempts: 0,
+      requestedAt: Date.now(),
+      task: { conversationId: task.conversationId, hostId: task.hostId },
+    });
+    state.recentTaskActivations.delete(key);
+    if (scheduleRefresh) queuePendingArchiveRefresh(key);
+    schedule();
+    return true;
+  }
+
+  function suppressPendingArchivedTasks(taskMap) {
+    for (const [key] of state.pendingArchivedTasks) {
+      reconcilePendingArchivedTask(key);
+      if (state.pendingArchivedTasks.has(key)) taskMap.delete(key);
+    }
   }
 
   async function confirmRemoteTaskMembership(task) {
@@ -2674,7 +2831,7 @@
         && Number.isFinite(inventory.fetchedAt) && Date.now() - inventory.fetchedAt <= REMOTE_INVENTORY_MAX_AGE_MS;
       const cachedIds = authoritativeIds.get(hostId);
       for (const thread of inventory.threads ?? []) {
-        const task = taskFromThread(thread, hostId);
+        const task = taskFromThread(thread, hostId, inventory.fetchedAt);
         if (!task) continue;
         if (inventoryFresh ? !cachedIds?.has(task.conversationId) : !Array.isArray(inventory.threads)) continue;
         task.inventoryFresh = inventoryFresh;
@@ -2706,15 +2863,20 @@
           if (task.projectLabel) nativeTask.projectLabel = task.projectLabel;
           nativeTask.sourceThread = thread;
           mergeTaskTitle(nativeTask, task);
-          if (task.statusKnown && inventoryFresh) {
+          if (task.statusKnown && inventoryFresh
+            && (!nativeTask.statusKnown || Number(task.statusObservedAt) > Number(nativeTask.statusObservedAt ?? 0))) {
             nativeTask.directStatusKnown = true;
             nativeTask.statusKnown = true;
+            nativeTask.statusActiveFlags = task.statusActiveFlags;
+            nativeTask.statusObservedAt = task.statusObservedAt;
             nativeTask.threadStatusKnown = true;
             nativeTask.statusType = task.statusType;
           }
-          if (task.unreadKnown && inventoryFresh) {
+          if (task.unreadKnown && inventoryFresh
+            && (!nativeTask.unreadKnown || Number(task.unreadObservedAt) > Number(nativeTask.unreadObservedAt ?? 0))) {
             nativeTask.unread = task.unread;
             nativeTask.unreadKnown = true;
+            nativeTask.unreadObservedAt = task.unreadObservedAt;
           }
         } else {
           taskMap.set(key, task);
@@ -2726,9 +2888,14 @@
       const allowCachedRows = inventory?.threadsAuthoritative === true && Array.isArray(inventory?.threads);
       if (!authoritativeIds.has(hostId) && !allowCachedRows) continue;
       for (const thread of inventory?.threads ?? []) {
-        const task = taskFromThread(thread, hostId);
+        const taskState = inventory?.tasks?.get(rawConversationId(thread?.id ?? thread?.conversationId ?? ""));
+        const taskObservedAt = Number(taskState?.statusObservedAt) > 0
+          ? taskState.statusObservedAt : inventory?.threadScopeGeneratedAt ?? inventory?.generatedAt;
+        const task = taskFromThread(thread, hostId, taskObservedAt);
         if (!task) continue;
-        if (task.statusType === "loading" && !remoteTaskStatusIsFresh(inventory, { statusKnown: true, statusType: "loading" })) {
+        if (task.statusType === "loading" && !remoteTaskStatusIsFresh(inventory, {
+          statusKnown: true, statusObservedAt: taskObservedAt, statusType: "loading",
+        })) {
           task.statusKnown = false;
           task.threadStatusKnown = false;
           task.statusType = "idle";
@@ -2752,20 +2919,26 @@
           if (task.projectId) existing.projectId = task.projectId;
           existing.sourceThread = thread;
           mergeTaskTitle(existing, task);
-          if (task.statusKnown && task.inventoryFresh !== false && !existing.directStatusKnown) {
+          if (task.statusKnown && task.inventoryFresh !== false
+            && (!existing.statusKnown || Number(task.statusObservedAt) > Number(existing.statusObservedAt ?? 0))) {
             existing.statusKnown = true;
+            existing.statusActiveFlags = task.statusActiveFlags;
+            existing.statusObservedAt = task.statusObservedAt;
             existing.statusType = task.statusType;
             existing.threadStatusKnown = true;
           }
-          if (task.unreadKnown && task.inventoryFresh !== false) {
+          if (task.unreadKnown && task.inventoryFresh !== false
+            && (!existing.unreadKnown || Number(task.unreadObservedAt) > Number(existing.unreadObservedAt ?? 0))) {
             existing.unread = task.unread;
             existing.unreadKnown = true;
+            existing.unreadObservedAt = task.unreadObservedAt;
           }
         } else {
           taskMap.set(key, task);
         }
       }
     }
+    suppressPendingArchivedTasks(taskMap);
     retainRecentTaskActivations(taskMap);
     const tasks = [...taskMap.values()];
     const remoteInventoryProjects = inventoryProjects();
@@ -4481,7 +4654,7 @@
 
   function taskSidebarStatus(task) {
     const native = normalizeSidebarStatus(task.nativeStatusState);
-    const flags = task.sourceThread?.status?.activeFlags;
+    const flags = Array.isArray(task.statusActiveFlags) ? task.statusActiveFlags : task.sourceThread?.status?.activeFlags;
     const waiting = Array.isArray(flags) && flags.some((flag) => flag === "waitingOnApproval" || flag === "waitingOnUserInput");
     return {
       type: task.statusType === "loading" ? "loading" : native.type === "error" ? "error" : "idle",
@@ -4620,13 +4793,13 @@
         status.appendChild(clone);
       }
     }
-    if (!attention && taskState.attentionKind === "input") {
+    if (!attention && taskState.needsAttention) {
       attention = document.createElement("span");
       attention.className = "relative inline-grid max-w-[150px] shrink-0 items-center overflow-hidden rounded-full bg-chart-blue/15 py-0.5 pe-2.5 ps-2 text-sm text-chart-blue";
-      attention.textContent = taskState.attentionLabel || "Needs input";
+      attention.textContent = taskState.attentionLabel || (taskState.attentionKind === "approval" ? "Awaiting approval" : "Needs input");
       status.appendChild(attention);
     }
-    const kind = taskState.attentionKind === "input" && attention ? "attention" : sidebarStatusKind(taskState);
+    const kind = attention ? "attention" : sidebarStatusKind(taskState);
     const content = kind === "attention" ? null : sidebarStatusContent(taskState, task.originalRow);
     if (content) status.appendChild(content);
     if (!attention && !content && taskState.needsAttention) status.appendChild(sidebarStatusContent({ unread: true }));
@@ -5067,6 +5240,7 @@
     try {
       const invoked = invokeNativeElement(action);
       state.lastAction = { actionName, found: true, hostId: task.hostId, invoked, task: task.title };
+      if (invoked && actionName === "archive") markPendingArchivedTask(task);
     } catch (error) {
       state.lastAction = { actionName, error: error?.message || String(error), found: true, hostId: task.hostId, invoked: false, task: task.title };
     }
@@ -5165,6 +5339,10 @@
     try {
       const recoveredSubmissions = await recoverUnconfirmedRemoteSteer({ ...task, conversationId }, manager, isCurrent);
       if (!isCurrent()) return false;
+      if (!(await confirmRemoteTaskMembership({ ...task, conversationId }))) {
+        throw new Error("Remote task navigation was blocked because fresh membership could not be confirmed");
+      }
+      if (!isCurrent()) return false;
       const nativeRow = nativeThreadRow(task) ?? task.originalRow;
       if (nativeRow?.isConnected) {
         const invoked = invokeNativeElement(nativeRow);
@@ -5172,10 +5350,6 @@
           mode: "native-row", recoveredSubmissions };
         return invoked;
       }
-      if (!(await confirmRemoteTaskMembership({ ...task, conversationId }))) {
-        throw new Error("Remote task navigation was blocked because fresh membership could not be confirmed");
-      }
-      if (!isCurrent()) return false;
       // Resolve late navigation before waiting for native hydration, so an
       // already expanded project can immediately use the available bridge.
       if (typeof state.navigationBridge?.navigateToLocalConversation !== "function") {
@@ -7036,12 +7210,40 @@
       && [...mutation.addedNodes, ...mutation.removedNodes].some(mutationNodeContainsThreadRow)));
   }
 
+  function mutationsChangeTaskPresentation(mutations) {
+    return Boolean(mutations?.some((mutation) => {
+      if (state.panel?.contains(mutation.target)) return false;
+      if (mutation.target instanceof Element && mutation.target.closest?.(ROW_SELECTOR)) return true;
+      return mutation.type === "childList"
+        && [...mutation.addedNodes, ...mutation.removedNodes].some(mutationNodeContainsThreadRow);
+    }));
+  }
+
+  function rememberNativeTaskPresentationMutations(mutations) {
+    const observedAt = Date.now();
+    for (const mutation of mutations ?? []) {
+      const target = mutation.target instanceof Element ? mutation.target : null;
+      const rows = new Set([
+        target?.closest?.(ROW_SELECTOR),
+        ...[...mutation.addedNodes, ...mutation.removedNodes].flatMap((node) => {
+          if (!(node instanceof Element)) return [];
+          return [node.matches?.(ROW_SELECTOR) ? node : null, node.closest?.(ROW_SELECTOR)].filter(Boolean);
+        }),
+      ].filter(Boolean));
+      for (const row of rows) {
+        const hostId = normalizeHostId(row.getAttribute("data-app-action-sidebar-thread-host-id") || "local");
+        const conversationId = rawConversationId(row.getAttribute("data-app-action-sidebar-thread-id") || "");
+        if (conversationId) state.nativeTaskStatusMutationAt.set(`${hostId}::${conversationId}`, observedAt);
+      }
+    }
+  }
+
   function observeSidebarMutations(target) {
     if (!target || typeof MutationObserver !== "function" || state.observerTarget === target) return;
     state.observer?.disconnect();
     state.observer ??= new MutationObserver(schedule);
     state.observer.observe(target, {
-      attributeFilter: ["data-app-action-sidebar-thread-selected", "data-app-action-sidebar-thread-title", "data-app-action-sidebar-project-collapsed", "aria-expanded", "disabled"],
+      attributeFilter: ["data-app-action-sidebar-thread-selected", "data-app-action-sidebar-thread-title", "data-app-action-sidebar-project-collapsed", "aria-expanded", "aria-label", "aria-busy", "class", "data-state", "disabled"],
       attributes: true,
       childList: true,
       subtree: true,
@@ -7058,6 +7260,10 @@
     })) return;
     if (mutations?.length) {
       state.hostDiscoveryDirty = true;
+      if (mutationsChangeTaskPresentation(mutations)) {
+        rememberNativeTaskPresentationMutations(mutations);
+        scheduleLocalProjectInventoryPublication(true);
+      }
       if (mutationsChangeThreadMembership(mutations)) {
         state.counters.inventoryDirtyRequests += 1;
         state.inventoryHydrationDirty = true;
@@ -7311,8 +7517,13 @@
     for (const transfer of state.peerTransfers.values()) { if (transfer.timer !== null) clearTimeout(transfer.timer); transfer.latest = null; }
     if (state.localInventoryPublisherTimer !== null) clearTimeout(state.localInventoryPublisherTimer);
     state.localInventoryPublisherTimer = null;
+    state.localInventoryPublisherForceQueued = false;
+    if (state.remoteInventoryTimer !== null) clearTimeout(state.remoteInventoryTimer);
+    state.remoteInventoryTimer = null;
     if (state.inventoryHydrationTimer !== null) clearTimeout(state.inventoryHydrationTimer);
     state.inventoryHydrationTimer = null;
+    for (const timer of state.pendingArchiveRefreshTimers.values()) clearTimeout(timer);
+    state.pendingArchiveRefreshTimers.clear();
     state.inventoryHydrationScheduled?.resolve(null);
     state.inventoryHydrationScheduled = null;
     if (state.healthRefreshTimer !== null) clearTimeout(state.healthRefreshTimer);
@@ -7329,7 +7540,7 @@
     document.getElementById(STYLE_ID)?.remove();
     state.active = false;
     const report = renderReport();
-    for (const collection of [state.autoRegistrationFailures, state.collapsed, state.hostConnectivity, state.localRegisteredProjects, state.localRuntimeHostIds, state.peerCacheStates, state.peerTransfers, state.recentTaskActivations, state.transferStats, state.remoteHomeRequests, state.remoteCodexHomes, state.remoteProjectInventories, state.remoteRuntimeCache, state.threadInventories, state.threadManagers, state.verifiedThreadIds]) collection.clear();
+    for (const collection of [state.autoRegistrationFailures, state.collapsed, state.hostConnectivity, state.localRegisteredProjects, state.localRuntimeHostIds, state.nativeTaskStatusMutationAt, state.nativeTaskStatusObservations, state.peerCacheStates, state.peerTransfers, state.pendingArchivedTasks, state.recentTaskActivations, state.transferStats, state.remoteHomeRequests, state.remoteCodexHomes, state.remoteProjectInventories, state.remoteRuntimeCache, state.threadInventories, state.threadManagers, state.verifiedThreadIds]) collection.clear();
     for (const controller of state.nativeStateBridgeControllers) controller.abort();
     state.nativeStateBridgeControllers.clear();
     state.healthRefreshOutcomes.clear();

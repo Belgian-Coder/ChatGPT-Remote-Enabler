@@ -113,6 +113,29 @@ try {
 
     $metadata = [pscustomobject]@{ Headers = @{ 'x-ms-meta-package_identity' = 'OpenAI.Codex'; 'x-ms-meta-package_version' = '26.903.9999.0'; 'x-ms-meta-architecture' = 'x64'; 'Content-Length' = '123'; 'ETag' = 'fixture' } }
     $head = { param($uri) $metadata }
+    $retryState = @{ Count = 0; Delays = @() }
+    $retriedMetadata = Get-HeadPackageMetadata -Uri 'https://persistent.oaistatic.com/codex-app-prod/ChatGPT-x64.msix' -HeadRequester {
+        param($uri)
+        $retryState.Count++
+        if ($retryState.Count -lt 3) { throw [Net.WebException]::new('The remote server returned an error: (504) Gateway Timeout.') }
+        return $metadata
+    } -RetryDelaySeconds 1 -Sleeper { param($seconds) $retryState.Delays += $seconds }
+    Assert-Condition ($retryState.Count -eq 3 -and ($retryState.Delays -join ',') -ceq '1,2') 'Transient metadata failures were not retried with bounded backoff.'
+    Assert-Condition ($retriedMetadata.VersionText -ceq '26.903.9999.0') 'The metadata retry did not return the eventual verified response.'
+    $permanentState = @{ Count = 0 }
+    Assert-Throws {
+        Get-HeadPackageMetadata -Uri 'https://persistent.oaistatic.com/codex-app-prod/ChatGPT-x64.msix' -HeadRequester {
+            param($uri)
+            $permanentState.Count++
+            throw [Net.WebException]::new('The remote server returned an error: (401) Unauthorized.')
+        } -RetryDelaySeconds 0
+    } '401'
+    Assert-Condition ($permanentState.Count -eq 1) 'A permanent metadata failure was retried.'
+    $offlineCurrent = Invoke-ChatGPTDesktopMsixUpdater -Action Update -PackageUri 'https://persistent.oaistatic.com/codex-app-prod/ChatGPT-x64.msix' -HeadRequester {
+        param($uri)
+        throw [Net.WebException]::new('The remote server returned an error: (504) Gateway Timeout.')
+    } -PackageEnumerator { ,(New-FixturePackage -Version '26.903.9000.0') } -ProcessEnumerator { @() } -MetadataMaximumAttempts 1 -MetadataRetryDelaySeconds 0
+    Assert-Condition ($offlineCurrent.Decision -ceq 'RemoteUnavailableCurrentInstalled' -and -not $offlineCurrent.CanInstall -and $offlineCurrent.TransientFailure) 'A transient endpoint outage did not preserve the verified installed package for launch.'
     $check = Invoke-ChatGPTDesktopMsixUpdater -Action Check -PackageUri 'https://persistent.oaistatic.com/codex-app-prod/ChatGPT-x64.msix' -HeadRequester $head -PackageEnumerator { ,(New-FixturePackage -Version '26.903.9000.0') }
     Assert-Condition ($check.Decision -ceq 'UpdateAvailable' -and $check.CanInstall) 'Check did not identify the newer direct package.'
     $freshCheck = Invoke-ChatGPTDesktopMsixUpdater -Action Check -PackageUri 'https://persistent.oaistatic.com/codex-app-prod/ChatGPT-x64.msix' -HeadRequester $head -PackageEnumerator { @() }

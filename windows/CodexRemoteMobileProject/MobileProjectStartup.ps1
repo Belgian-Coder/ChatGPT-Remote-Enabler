@@ -59,18 +59,21 @@ $publisherHeartbeatHelper = Join-Path $bundleRoot 'publisher-heartbeat.js'
 $desktopAppUpdater = Join-Path $bundleParent 'Update-ChatGPTDesktop.ps1'
 $updateController = Join-Path $bundleParent 'Update-ChatGPTRemote.ps1'
 $updateSessionLauncher = Join-Path $bundleRoot 'UpdateSessionLauncher.ps1'
+$startupProgressHelper = Join-Path $bundleRoot 'StartupProgress.ps1'
 $proxyModule = Join-Path $bundleRoot 'ProxyConfiguration.psm1'
 $logRoot = Join-Path $env:LOCALAPPDATA 'CodexRemoteFeatures'
 $logPath = Join-Path $logRoot 'startup.log'
 $rollbackRoot = Join-Path $env:LOCALAPPDATA 'ChatGPTRemoteEnabler\rollback'
 
 function Assert-Controllers {
-    foreach ($path in @($stableController, $mobileController, $maintenanceHelper, $publisherHeartbeatHelper, $proxyModule, $updateSessionLauncher)) {
+    foreach ($path in @($stableController, $mobileController, $maintenanceHelper, $publisherHeartbeatHelper, $proxyModule, $updateSessionLauncher, $startupProgressHelper)) {
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
             throw "Required controller is missing: $path"
         }
     }
 }
+
+. $startupProgressHelper
 
 function Write-StartupLog {
     param([AllowEmptyString()][string]$Message)
@@ -329,6 +332,21 @@ function Invoke-DesktopAppPrelaunchUpdate {
         throw "The signed ChatGPT desktop update failed before launch (exit $exitCode): $detail"
     }
     $result = Get-CompleteJsonResult -Output $output
+    if ([string]$result.Decision -ceq 'RemoteUnavailableCurrentInstalled') {
+        if ([string]$result.Action -cne 'Update' -or [string]$result.InstalledState -cne 'Installed' -or
+            $null -eq $result.Installed -or [string]$result.Installed.Name -cnotin @('OpenAI.Codex', 'OpenAI.ChatGPT-Desktop') -or
+            [string]$result.Installed.Publisher -cne 'CN=50BDFD77-8903-4850-9FFE-6E8522F64D5B' -or
+            [string]$result.Installed.Architecture -ine 'X64' -or
+            [string]$result.Installed.SignatureKind -ine 'Store' -or [string]$result.Installed.Status -ine 'Ok' -or
+            $result.CanInstall -isnot [bool] -or $result.CanInstall -or $result.TransientFailure -isnot [bool] -or -not $result.TransientFailure) {
+            throw 'The signed ChatGPT desktop updater returned inconsistent offline launch proof.'
+        }
+        try { $installedVersion = [version]([string]$result.Installed.Version) } catch { throw 'The signed ChatGPT desktop updater returned invalid installed-version proof.' }
+        Assert-DesktopAppNotRunning -ProcessEnumerator $ProcessEnumerator
+        $timer.Stop()
+        Write-StartupLog "$(Get-Date -Format o) [$computerName] stage=desktop-app-update durationMs=$($timer.ElapsedMilliseconds) decision=$($result.Decision) installedVersion=$installedVersion remoteVersion=unavailable"
+        return $result
+    }
     if ([string]$result.Action -cne 'Update' -or [string]$result.InstalledState -cne 'Installed' -or
         $null -eq $result.Installed -or [string]$result.Installed.Name -cnotin @('OpenAI.Codex', 'OpenAI.ChatGPT-Desktop') -or
         [string]$result.Remote.Name -cne [string]$result.Installed.Name -or
@@ -566,6 +584,8 @@ switch ($Action) {
             }
 
             try {
+                Start-StartupProgress -Message 'Checking the installed ChatGPT app...'
+                Set-StartupProgress -Message 'Recovering any interrupted update...'
                 $recoverTimer = [Diagnostics.Stopwatch]::StartNew()
                 $recovery = Invoke-UpdateRecovery -UpdaterPath $updateController -InstallRoot $bundleParent
                 $recoverTimer.Stop()
@@ -591,6 +611,7 @@ switch ($Action) {
 
                 $desktopUpdateExecuted = $false
                 if (-not $SkipDesktopAppUpdateOnce -and -not $UpdateResume) {
+                    Set-StartupProgress -Message 'Checking the installed ChatGPT app...'
                     [void](Invoke-DesktopAppPrelaunchUpdate -UpdaterPath $desktopAppUpdater)
                     $desktopUpdateExecuted = $true
                 }
@@ -601,6 +622,7 @@ switch ($Action) {
                     Write-StartupLog "$(Get-Date -Format o) [$computerName] legacy helper handoff detected; verifying Remote Enabler again after the desktop-app update"
                 }
                 if (-not $SkipUpdateCheckOnce -and -not $UpdateResume -and -not $skipRemotePrelaunch) {
+                    Set-StartupProgress -Message 'Checking and updating Remote Enabler...'
                     $prelaunchUpdate = Invoke-PrelaunchUpdate -UpdaterPath $updateController -InstallRoot $bundleParent
                     if ($prelaunchUpdate.updated) {
                         $reloadArguments = @('-Action', 'Run', '-SkipDesktopAppUpdateOnce', '-SkipPrelaunchUpdateOnce')
@@ -620,6 +642,7 @@ switch ($Action) {
                 $node = Resolve-NodePath
                 $proxyServer = $null
                 if ($UseProxy) {
+                    Set-StartupProgress -Message 'Preparing the protected proxy bridge...'
                     Import-Module $proxyModule -Force
                     $proxyServer = Get-ChatGPTRemoteProxy -AllowEnvironmentFallback
                     foreach ($name in @('HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy')) {
@@ -628,6 +651,7 @@ switch ($Action) {
                     Write-StartupLog "$(Get-Date -Format o) [$computerName] protected Remote-only proxy configuration loaded"
                 }
                 $maintenanceTimer = [Diagnostics.Stopwatch]::StartNew()
+                Set-StartupProgress -Message 'Preparing the local ChatGPT session...'
                 Write-CommandOutput @(& $node --no-warnings $maintenanceHelper --best-effort 2>&1)
                 $maintenanceTimer.Stop()
                 Write-StartupLog "$(Get-Date -Format o) [$computerName] stage=maintenance durationMs=$($maintenanceTimer.ElapsedMilliseconds)"
@@ -646,6 +670,7 @@ switch ($Action) {
                     Write-StartupLog "$(Get-Date -Format o) [$computerName] existing debug session found; validating its durable proxy transport before reuse"
                 }
                 $stableTimer = [Diagnostics.Stopwatch]::StartNew()
+                Set-StartupProgress -Message 'Launching ChatGPT with Remote enabled...'
                 for ($stableAttempt = 1; $stableAttempt -le 2; $stableAttempt++) {
                     try {
                         $stableArguments = @{
@@ -671,6 +696,7 @@ switch ($Action) {
                 Write-StartupLog "$(Get-Date -Format o) [$computerName] stage=stable-runtime durationMs=$($stableTimer.ElapsedMilliseconds)"
                 $deadline = (Get-Date).AddSeconds($MobileReadyTimeoutSeconds)
                 $mobileTimer = [Diagnostics.Stopwatch]::StartNew()
+                Set-StartupProgress -Message 'Loading Device projects and remote connections...'
                 $enableOutput = @(& $mobileController -Action Enable -NodePath $node -DeferUpdateSession -Confirm:$false 2>&1)
                 Write-CommandOutput $enableOutput
                 $report = Get-MobileReport -Output $enableOutput
@@ -734,6 +760,7 @@ switch ($Action) {
             }
             throw
         } finally {
+            Stop-StartupProgress
             if ($parentProcess) { $parentProcess.Dispose() }
             if ($readyEvent) { $readyEvent.Dispose() }
             if ($rejectedEvent) { $rejectedEvent.Dispose() }

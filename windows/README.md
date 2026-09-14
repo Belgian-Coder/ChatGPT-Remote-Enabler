@@ -1,6 +1,6 @@
 # Windows 11: install for your user without administrator access
 
-Release v1.5.66 keeps the permanent helper in the current user's unversioned
+Release v1.5.67 keeps the permanent helper in the current user's unversioned
 LocalAppData root and migrates the v1.5.60 ProgramData root as legacy. Automatic
 updates therefore replace files owned by the same limited user that owns the
 shortcuts and updater state. Successful updates retain only the immediate prior
@@ -14,7 +14,7 @@ You need Windows 11 x64, the ChatGPT/Codex desktop app signed in with Remote ava
 
 ## 1. Download and extract
 
-1. Download **ChatGPT-Remote-Enabler-Windows-x64-v1.5.66.zip** from [v1.5.66 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.66). Read the verification limitations.
+1. Download **ChatGPT-Remote-Enabler-Windows-x64-v1.5.67.zip** from [v1.5.67 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.67). Read the verification limitations.
 2. Right-click the ZIP in File Explorer, choose **Properties**, select **Unblock** if offered, and click **OK**. Then choose **Extract All**.
 3. Enter `%LOCALAPPDATA%\Programs` in File Explorer's address bar. Create a **ChatGPTRemoteEnabler** folder and copy the extracted package contents into it.
 4. **ChatGPT Remote Enabler.exe**, **README.md**, and **CodexRemoteMobileProject** must be directly inside that folder. Keep the whole package together.
@@ -196,8 +196,13 @@ new registrations before recording success. Remote chats match projects by
 device and normalized path, so they remain under the registered project.
 The complete task inventory refreshes on startup and every 60 seconds, with
 debounced refreshes after native task rows change. Working/unread status is
-published separately at the existing fast cadence. Refresh does not open the
-grouping menu or change its value. Hovering a
+published separately at the existing fast cadence and immediately when a
+native task icon or presentation changes; concurrent changes coalesce into one
+follow-up publication. A remote archive action hides its row immediately and
+performs two bounded authoritative membership rechecks. If the archive or both
+reads fail, the last-known row returns with stale state instead of remaining
+hidden. Cached native rows cannot open until remote membership is confirmed.
+Refresh does not open the grouping menu or change its value. Hovering a
 Device Projects folder opens the exact native project composer when available;
 registered projects retain a native global-composer fallback when their folder
 row is not mounted by the selected grouping.
@@ -299,6 +304,10 @@ The installer replaces a disabled legacy startup shortcut after preserving a
 rollback copy. Use `-Action Remove` to remove the active shortcut. The target is
 the versioned `ChatGPT Custom.exe` in this folder. The launcher exits after
 handing off startup, so a later user-requested update can replace it.
+A temporary progress window identifies the active recovery, update, proxy,
+launch, and Device projects phase, then closes automatically when startup
+completes or fails. Set `CHATGPT_REMOTE_STARTUP_PROGRESS=0` only when a managed
+deployment intentionally needs silent startup.
 A manual **ChatGPT Remote Enabler** click is explicit
 permission to replace an ordinary running ChatGPT session. Unattended startup
 uses `--startup`, never terminates an active ordinary session, and records the
@@ -391,7 +400,7 @@ Check the target of **ChatGPT Custom** in the Start menu (open its file location
 
 Fully quit the app when your work is safe, then use **ChatGPT Remote Enabler.exe** in the newly extracted folder, or the new **ChatGPT Remote Enabler** shortcut created by that folder's setup assistant. Open Settings to see the loaded helper version and update controls in either view. A missing update service shows recovery instructions there.
 
-v1.5.66 is a normal release and is discoverable by the existing automatic updater. The first Windows upgrade from v1.5.31 attaches the new update helper even through the legacy launcher.
+v1.5.67 is a normal release and is discoverable by the existing automatic updater. The first Windows upgrade from v1.5.31 attaches the new update helper even through the legacy launcher.
 
 
 ### Existing enrollment keys after a Codex update

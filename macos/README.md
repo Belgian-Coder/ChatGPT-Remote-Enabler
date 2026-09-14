@@ -1,6 +1,6 @@
 # macOS Apple Silicon: install for your user without sudo
 
-Release v1.5.66 moves recognized version-named installations to the fixed
+Release v1.5.67 moves recognized version-named installations to the fixed
 per-user root `~/Library/Application Support/CodexRemoteFeatures/ChatGPT-Remote-Enabler-macOS-arm64`
 and rewires the LaunchAgent and app shortcut to that root. Each successful
 update keeps only the immediately previous updater generation and removes
@@ -18,12 +18,12 @@ You need an Apple Silicon Mac (arm64), the ChatGPT/Codex desktop app installed a
 preceding installed build. v1.5.49 was then manually installed and its live
 renderer readiness was checked on the participating test devices. The next
 sign-in startup trigger and future desktop-app builds remain separate checks.
-v1.5.66 is a normal release. Installing it still requires a normal graceful
+v1.5.67 is a normal release. Installing it still requires a normal graceful
 quit of the desktop app and is not implied by release publication.
 
 ## 1. Download and extract
 
-1. Download **ChatGPT-Remote-Enabler-macOS-arm64-v1.5.66.zip** from [v1.5.66 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.66).
+1. Download **ChatGPT-Remote-Enabler-macOS-arm64-v1.5.67.zip** from [v1.5.67 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.67).
 2. Double-click the ZIP in Finder. In Finder choose **Go > Go to Folder** and enter `~/Library/Application Support/CodexRemoteFeatures`. Create **ChatGPT-Remote-Enabler-macOS-arm64** there and move the extracted package contents into it.
 3. `MobileProjectView-macOS-arm64.sh` must be directly inside that fixed folder. Keep the complete package together there; future updates replace it in place.
 
@@ -134,8 +134,13 @@ new registrations before recording success. Remote chats match projects by
 device and normalized path, so they remain under the registered project.
 The complete task inventory refreshes on startup and every 60 seconds, with
 debounced refreshes after native task rows change. Working/unread status is
-published separately at the existing fast cadence. Refresh does not open the
-grouping menu or change its value. Hovering a
+published separately at the existing fast cadence and immediately when a
+native task icon or presentation changes; concurrent changes coalesce into one
+follow-up publication. A remote archive action hides its row immediately and
+performs two bounded authoritative membership rechecks. If the archive or both
+reads fail, the last-known row returns with stale state instead of remaining
+hidden. Cached native rows cannot open until remote membership is confirmed.
+Refresh does not open the grouping menu or change its value. Hovering a
 Device Projects folder opens the exact native project composer when available;
 registered projects retain a native global-composer fallback when their folder
 row is not mounted by the selected grouping.
@@ -250,4 +255,4 @@ Settings now provides per-device connection findings, next steps, explicit evide
 
 ## Version or update icon missing
 
-Fully quit the app when your work is safe and launch through Remote Enabler. The updater migrates recognized historical version folders and rewires existing startup and app entry points to the fixed root. Open Settings to see the loaded helper version and update controls; a missing updater has recovery instructions. v1.5.66 is a normal release available to the existing updater.
+Fully quit the app when your work is safe and launch through Remote Enabler. The updater migrates recognized historical version folders and rewires existing startup and app entry points to the fixed root. Open Settings to see the loaded helper version and update controls; a missing updater has recovery instructions. v1.5.67 is a normal release available to the existing updater.

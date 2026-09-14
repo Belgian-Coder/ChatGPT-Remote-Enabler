@@ -61,6 +61,10 @@ Add-Content -LiteralPath '$($fakeDesktopLog.Replace("'", "''"))' -Value `$Action
 `$root = Split-Path -Parent `$PSCommandPath
 if (Test-Path -LiteralPath (Join-Path `$root 'desktop-fail')) { Write-Error 'fixture desktop failure'; exit 19 }
 if (Test-Path -LiteralPath (Join-Path `$root 'desktop-invalid')) { Write-Output '{"Action":"Update","Decision":"Installed"}'; exit 0 }
+if (Test-Path -LiteralPath (Join-Path `$root 'desktop-offline')) {
+  [ordered]@{Action='Update';InstalledState='Installed';Installed=[ordered]@{Name='OpenAI.Codex';Version='26.903.9999.0';Architecture='X64';Publisher='CN=50BDFD77-8903-4850-9FFE-6E8522F64D5B';SignatureKind='Store';Status='Ok'};Remote=`$null;Decision='RemoteUnavailableCurrentInstalled';CanInstall=`$false;TransientFailure=`$true} | ConvertTo-Json -Depth 5
+  exit 0
+}
 `$installedVersion = if (Test-Path -LiteralPath (Join-Path `$root 'desktop-newer')) { '26.904.0.0' } else { '26.903.9999.0' }
 `$remoteVersionText = if (Test-Path -LiteralPath (Join-Path `$root 'desktop-newer')) { '26.903.9999.0' } else { '26.903.9999.0' }
 `$remoteVersion = [version]`$remoteVersionText
@@ -104,6 +108,9 @@ if (`$decision -eq 'Installed') { `$proof.Manifest = [ordered]@{Name='OpenAI.Cod
         $parseErrors = $null
         $ast = [Management.Automation.Language.Parser]::ParseFile($sourcePath, [ref]$tokens, [ref]$parseErrors)
         if ($parseErrors.Count) { throw "PowerShell parse failed for $($case.Path): $($parseErrors[0].Message)" }
+        foreach ($progressContract in @('Start-StartupProgress', 'Set-StartupProgress', 'Stop-StartupProgress', 'Checking the installed ChatGPT app', 'Checking and updating Remote Enabler', 'Launching ChatGPT with Remote enabled', 'Loading Device projects and remote connections')) {
+            Assert-Condition $sourceText.Contains($progressContract) "$($case.Name) is missing startup progress contract '$progressContract'."
+        }
 
         $flowIndex = $sourceText.IndexOf('$recoverTimer = [Diagnostics.Stopwatch]::StartNew()', [StringComparison]::Ordinal)
         $recoveryIndex = $sourceText.IndexOf('$recovery = Invoke-UpdateRecovery -UpdaterPath', $flowIndex, [StringComparison]::Ordinal)
@@ -155,6 +162,11 @@ if (`$decision -eq 'Installed') { `$proof.Manifest = [ordered]@{Name='OpenAI.Cod
         $desktopNewer = Invoke-DesktopAppPrelaunchUpdate -UpdaterPath $fakeDesktopUpdater -ProcessEnumerator { @() }
         Assert-Condition ($desktopNewer.Decision -ceq 'DowngradeRefused') "$($case.Name) did not preserve a newer installed desktop package."
         Remove-Item -LiteralPath (Join-Path $temporaryRoot 'desktop-newer') -Force
+
+        New-Item -ItemType File -Path (Join-Path $temporaryRoot 'desktop-offline') -Force | Out-Null
+        $desktopOffline = Invoke-DesktopAppPrelaunchUpdate -UpdaterPath $fakeDesktopUpdater -ProcessEnumerator { @() }
+        Assert-Condition ($desktopOffline.Decision -ceq 'RemoteUnavailableCurrentInstalled') "$($case.Name) did not accept a transient endpoint outage with verified installed-package proof."
+        Remove-Item -LiteralPath (Join-Path $temporaryRoot 'desktop-offline') -Force
 
         $runningRejected = $false
         try { [void](Invoke-DesktopAppPrelaunchUpdate -UpdaterPath $fakeDesktopUpdater -ProcessEnumerator { ,([pscustomobject]@{ Id = 42 }) }) } catch {
@@ -251,6 +263,8 @@ if (`$decision -eq 'Installed') { `$proof.Manifest = [ordered]@{Name='OpenAI.Cod
         IntegrityRecoveryBeforeDesktopApp = $true
         DesktopAppUpdateBeforeGit = $true
         DesktopAppProofFailClosed = $true
+        TransientDesktopEndpointFallback = $true
+        StartupProgressPhases = $true
         RunningAppPreserved = $true
         LegacyHandoffOrderRepaired = $true
         GitUpdateBeforeInjection = $true

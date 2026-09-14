@@ -53,6 +53,7 @@ $powershell = @(
     'windows\CodexRemoteMobileProject\DesktopShortcut.ps1',
     'windows\CodexRemoteMobileProject\StartupShortcut.ps1',
     'windows\CodexRemoteMobileProject\MobileProjectStartup.ps1',
+    'windows\CodexRemoteMobileProject\StartupProgress.ps1',
     'windows\StableInstall.ps1',
     'windows\CodexRemoteMobileProject\ProxyConfiguration.ps1',
     'windows\CodexRemoteMobileProject\ProxyConfiguration.psm1',
@@ -136,7 +137,7 @@ foreach ($pair in @(
 }
 $renderer = Get-Content -LiteralPath $windowsRenderer -Raw
 $requiredContracts = @(
-    'const VERSION = 79;',
+    'const VERSION = 80;',
     'hostDisplayName: config.localDisplayName || null',
     'codex-remote-mobile-verified-thread-ids-v2',
     'THREAD_VISIBILITY_CONTRACT_VERSION',
@@ -255,7 +256,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Thread visibility self-test failed.' }
 & $node (Join-Path $root 'windows\CodexRemoteMobileProject\tests\TaskStatus.SelfTest.js')
 if ($LASTEXITCODE -ne 0) { throw 'Task status self-test failed.' }
 
-foreach ($test in @('HostNames', 'SidebarLayout', 'SidebarStatus', 'SidebarBehavior', 'LoadedSearch', 'TaskNavigation', 'RendererReliability', 'PublisherHeartbeat', 'FeatureState', 'PeerTransfer', 'NativeStateBridge', 'NativeConnectionLifecycle', 'DiscoveryRefresh')) {
+foreach ($test in @('HostNames', 'SidebarLayout', 'SidebarStatus', 'SidebarBehavior', 'LoadedSearch', 'TaskNavigation', 'StatusInvalidation', 'RendererReliability', 'PublisherHeartbeat', 'FeatureState', 'PeerTransfer', 'NativeStateBridge', 'NativeConnectionLifecycle', 'DiscoveryRefresh')) {
     & $node (Join-Path $root "windows\CodexRemoteMobileProject\tests\$test.SelfTest.js")
     if ($LASTEXITCODE -ne 0) { throw "$test self-test failed." }
 }
@@ -341,7 +342,7 @@ if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
 [pscustomobject]@{
     JavaScriptFiles = $javascript.Count
     PowerShellFiles = $powershell.Count
-    RendererVersion = 79
+    RendererVersion = 80
     LegacyUpdateBootstrapSelfTest = $true
     SetupAssistantSelfTest = $true
     RendererParity = $true

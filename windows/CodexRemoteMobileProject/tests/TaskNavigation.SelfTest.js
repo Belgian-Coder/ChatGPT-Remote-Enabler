@@ -10,7 +10,8 @@ const originalSource = fs.readFileSync(rendererPath, "utf8");
 const testSource = originalSource
   .replace("(() => {", "globalThis.__navigationTest = (() => {")
   .replace(/  return install\(\);\r?\n\}\)\(\);\s*$/u, `  return {
-    state, openNativeTask, recoverUnconfirmedRemoteSteer, rememberTaskActivation, retainRecentTaskActivations,
+    state, markPendingArchivedTask, openNativeTask, pendingArchiveKey, reconcilePendingArchivedTask,
+    recoverUnconfirmedRemoteSteer, rememberTaskActivation, retainRecentTaskActivations, suppressPendingArchivedTasks,
     configure(fixture) {
       confirmRemoteTaskMembership = async () => fixture.membershipPromise ?? fixture.membership !== false;
       nativeNavigationDispatcher = () => fixture.navigate;
@@ -36,6 +37,7 @@ const testSource = originalSource
       nativeThreadRow = () => fixture.hydrated ? fixture.nativeRow : null;
       invokeNativeElement = (element) => { element.click(); return true; };
       requestDeviceRefresh = async () => fixture.refreshResult ?? { complete: true };
+      schedule = () => {};
     },
   };\n})();`);
 assert.notEqual(testSource, originalSource, "test adapter must replace startup");
@@ -106,6 +108,13 @@ const task = { conversationId: "01a07ab9-07e9-7671-a2b9-e99236f4e986", conversat
   assert.equal(nativeRow.clicks, 0, "unconfirmed membership must never invoke a native row");
   assert.match(navigation.state.lastAction.error, /fresh membership could not be confirmed/u);
 
+  fixture.hydrated = true;
+  nativeRow.clicks = 0;
+  const connectedButArchived = await navigation.openNativeTask(task, registeredProject);
+  assert.equal(connectedButArchived, false, "a connected native row must still require current remote membership");
+  assert.equal(nativeRow.clicks, 0, "cached connected rows must not bypass archive membership checks");
+  fixture.hydrated = false;
+
   // Cancelling a deferred activation must leave the current task untouched.
   fixture.membership = true;
   let resolveMembership;
@@ -126,6 +135,32 @@ const task = { conversationId: "01a07ab9-07e9-7671-a2b9-e99236f4e986", conversat
   navigation.state.disposed = false;
   fixture.membershipPromise = null;
 
+  const archiveKey = navigation.pendingArchiveKey(task);
+  assert.equal(navigation.markPendingArchivedTask(task, false), true);
+  let archiveTasks = new Map([[archiveKey, { ...task }]]);
+  navigation.suppressPendingArchivedTasks(archiveTasks);
+  assert.equal(archiveTasks.has(archiveKey), false, "an invoked archive must disappear before the sidebar mutation arrives");
+  const archiveRecord = navigation.state.pendingArchivedTasks.get(archiveKey);
+  navigation.state.threadInventories.set(hostId, {
+    error: null, fetchedAt: archiveRecord.requestedAt + 1, threads: [task], truncated: false,
+  });
+  archiveRecord.attempts = 1;
+  assert.equal(navigation.reconcilePendingArchivedTask(archiveKey), true,
+    "the first racing inventory that still contains the task must keep it suppressed for a bounded retry");
+  archiveRecord.attempts = 2;
+  assert.equal(navigation.reconcilePendingArchivedTask(archiveKey), false,
+    "a second authoritative inventory may restore a task when archive did not persist");
+  assert.equal(navigation.state.pendingArchivedTasks.has(archiveKey), false);
+
+  assert.equal(navigation.markPendingArchivedTask(task, false), true);
+  const omittedRecord = navigation.state.pendingArchivedTasks.get(archiveKey);
+  navigation.state.threadInventories.set(hostId, {
+    error: null, fetchedAt: omittedRecord.requestedAt + 1, threads: [], truncated: false,
+  });
+  assert.equal(navigation.reconcilePendingArchivedTask(archiveKey), false,
+    "a fresh authoritative omission must confirm the archive and release temporary suppression");
+
+  navigation.state.threadInventories.delete(hostId);
   navigation.rememberTaskActivation(task);
   const retained = new Map();
   navigation.retainRecentTaskActivations(retained);

@@ -180,6 +180,9 @@ assert.ok(inputStatus.children[0].events.has("click"), "the cloned input control
 const inputFallback = sidebar.taskStatusIndicator({ ...loading, sourceThread: { status: { type: "active", activeFlags: ["waitingOnUserInput"] } } });
 assert.ok(inputFallback.classList.contains("crmp-task-status-attention"));
 assert.equal(inputFallback.textContent, "Needs input");
+const approvalFallback = sidebar.taskStatusIndicator({ ...loading, statusActiveFlags: ["waitingOnApproval"] });
+assert.ok(approvalFallback.classList.contains("crmp-task-status-attention"));
+assert.equal(approvalFallback.textContent, "Awaiting approval", "unmounted approval must outrank a stale working spinner");
 const errorFallback = sidebar.taskStatusIndicator({ ...idle, nativeStatusState: { type: "error" } });
 assert.match(errorFallback.children[0].innerHTML, /M8 1\.48633C11\.5972/, "fallback error must use the native circle-info asset");
 const longTitle = new FixtureElement("button");

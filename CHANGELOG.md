@@ -1,5 +1,28 @@
 # Changelog
 
+## v1.5.67 — 2026-09-14
+
+- Retry transient failures from the official ChatGPT MSIX metadata endpoint
+  with bounded backoff. If the endpoint remains temporarily unavailable, the
+  launcher may continue with the already validated current-user ChatGPT
+  package; publisher, identity, architecture, health, and installation
+  failures remain fail-closed.
+- Show a temporary startup-progress window during recovery, desktop-app and
+  Remote Enabler update checks, protected-proxy preparation, launch, and Device
+  projects readiness. The window closes automatically when startup completes
+  or fails.
+- Immediately suppress a remotely archived task, perform two bounded
+  authoritative membership checks, and block cached native-row navigation
+  until remote membership is confirmed. A failed archive or refresh restores
+  the last-known row instead of hiding it indefinitely.
+- Publish task-status changes as soon as the native sidebar presentation
+  changes, including one coalesced follow-up when a publication is already in
+  flight. This keeps working, unread, error, and attention icons aligned across
+  connected devices. Per-task observation timestamps prevent inventory
+  heartbeats from renewing stale spinners, bounded attention flags survive peer
+  relay, and an independent 5/15-second activity timer keeps remote status reads
+  moving even when the controller is idle. Windows and macOS use renderer v80.
+
 ## v1.5.66 — 2026-09-12
 
 - Remove every package-created Windows shortcut, startup-task, and package-local

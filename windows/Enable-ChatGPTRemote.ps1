@@ -46,6 +46,9 @@ $mobile = Join-Path $runtimeRoot 'CodexRemoteMobileProject\MobileProjectView.ps1
 $desktopAppUpdater = Join-Path $runtimeRoot 'Update-ChatGPTDesktop.ps1'
 $updater = Join-Path $runtimeRoot 'Update-ChatGPTRemote.ps1'
 $updateSessionLauncher = Join-Path $runtimeRoot 'CodexRemoteMobileProject\UpdateSessionLauncher.ps1'
+$startupProgressHelper = Join-Path $runtimeRoot 'CodexRemoteMobileProject\StartupProgress.ps1'
+if (-not (Test-Path -LiteralPath $startupProgressHelper -PathType Leaf)) { throw "Startup progress helper is missing: $startupProgressHelper" }
+. $startupProgressHelper
 $logRoot = Join-Path $env:LOCALAPPDATA 'CodexRemoteFeatures'
 $logPath = Join-Path $logRoot 'startup.log'
 $launcherMutexName = 'Local\ChatGPTCustomInjectionLauncher'
@@ -251,6 +254,21 @@ function Invoke-DesktopAppPrelaunchUpdate {
         throw "The signed ChatGPT desktop update failed before launch (exit $exitCode): $detail"
     }
     $result = Get-CompleteJsonResult -Output $output
+    if ([string]$result.Decision -ceq 'RemoteUnavailableCurrentInstalled') {
+        if ([string]$result.Action -cne 'Update' -or [string]$result.InstalledState -cne 'Installed' -or
+            $null -eq $result.Installed -or [string]$result.Installed.Name -cnotin @('OpenAI.Codex', 'OpenAI.ChatGPT-Desktop') -or
+            [string]$result.Installed.Publisher -cne 'CN=50BDFD77-8903-4850-9FFE-6E8522F64D5B' -or
+            [string]$result.Installed.Architecture -ine 'X64' -or
+            [string]$result.Installed.SignatureKind -ine 'Store' -or [string]$result.Installed.Status -ine 'Ok' -or
+            $result.CanInstall -isnot [bool] -or $result.CanInstall -or $result.TransientFailure -isnot [bool] -or -not $result.TransientFailure) {
+            throw 'The signed ChatGPT desktop updater returned inconsistent offline launch proof.'
+        }
+        try { $installedVersion = [version]([string]$result.Installed.Version) } catch { throw 'The signed ChatGPT desktop updater returned invalid installed-version proof.' }
+        Assert-DesktopAppNotRunning -ProcessEnumerator $ProcessEnumerator
+        $timer.Stop()
+        Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] stage=desktop-app-update durationMs=$($timer.ElapsedMilliseconds) decision=$($result.Decision) installedVersion=$installedVersion remoteVersion=unavailable"
+        return $result
+    }
     if ([string]$result.Action -cne 'Update' -or [string]$result.InstalledState -cne 'Installed' -or
         $null -eq $result.Installed -or [string]$result.Installed.Name -cnotin @('OpenAI.Codex', 'OpenAI.ChatGPT-Desktop') -or
         [string]$result.Remote.Name -cne [string]$result.Installed.Name -or
@@ -484,6 +502,7 @@ try {
         Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] launcher parent exited; continuing update and launch"
     }
     $recoverTimer = [Diagnostics.Stopwatch]::StartNew()
+    Start-StartupProgress -Message 'Recovering any interrupted update...'
     $recovery = Invoke-UpdateRecovery -UpdaterPath $updater -InstallRoot $runtimeRoot
     $recoverTimer.Stop()
     Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] stage=update-recovery durationMs=$($recoverTimer.ElapsedMilliseconds) recovered=$($recovery.recovered) mode=$($recovery.recoveryMode)"
@@ -506,6 +525,7 @@ try {
 
     $desktopUpdateExecuted = $false
     if (-not $SkipDesktopAppUpdateOnce -and -not $UpdateResume) {
+        Set-StartupProgress -Message 'Checking the installed ChatGPT app...'
         [void](Invoke-DesktopAppPrelaunchUpdate -UpdaterPath $desktopAppUpdater)
         $desktopUpdateExecuted = $true
     }
@@ -516,6 +536,7 @@ try {
         Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] legacy helper handoff detected; verifying Remote Enabler again after the desktop-app update"
     }
     if (-not $SkipUpdate -and -not $SkipUpdateCheckOnce -and -not $UpdateResume -and -not $skipRemotePrelaunch) {
+        Set-StartupProgress -Message 'Checking and updating Remote Enabler...'
         $prelaunchUpdate = Invoke-PrelaunchUpdate -UpdaterPath $updater -InstallRoot $runtimeRoot
         if ($prelaunchUpdate.updated) {
             $reloadArguments = @('-SkipDesktopAppUpdateOnce', '-SkipPrelaunchUpdateOnce')
@@ -534,10 +555,12 @@ try {
         throw 'Another ChatGPT/Codex process appeared during the update. The verified relaunch was aborted without closing or replacing it.'
     }
     $stableTimer = [Diagnostics.Stopwatch]::StartNew()
+    Set-StartupProgress -Message 'Launching ChatGPT with Remote enabled...'
     & $stable -Action Enable -RefuseExistingApp:$UpdateResume -Confirm:$false
     $stableTimer.Stop()
     Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] stage=stable-runtime durationMs=$($stableTimer.ElapsedMilliseconds)"
     if (-not $SkipMobileProjects) {
+        Set-StartupProgress -Message 'Loading Device projects and remote connections...'
         $mobileTimer = [Diagnostics.Stopwatch]::StartNew()
         $deadline = [DateTime]::UtcNow.AddSeconds(45)
         $enableOutput = @(& $mobile -Action Enable -DeferUpdateSession -Confirm:$false 2>&1)
@@ -581,6 +604,7 @@ try {
     }
     throw
 } finally {
+    Stop-StartupProgress
     if ($parentProcess) { $parentProcess.Dispose() }
     if ($readyEvent) { $readyEvent.Dispose() }
     if ($rejectedEvent) { $rejectedEvent.Dispose() }

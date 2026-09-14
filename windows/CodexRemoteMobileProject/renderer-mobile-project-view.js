@@ -71,7 +71,7 @@
     "unknown",
   ]);
   const PUBLISHER_VERSION = 53;
-  const VERSION = 84;
+  const VERSION = 85;
   // Keep outstanding writes locked across renderer reinjection until the underlying RPC settles.
   const peerWriteLocks = globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ instanceof Map
     ? globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ : (globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ = new Map());
@@ -1581,7 +1581,10 @@
     const pathsMatch = localPaths.size > 0 && localPaths.size === remotePaths.size && [...localPaths].every((path) => remotePaths.has(path));
     const localName = !isSyntheticHostName(config.localDisplayName) ? config.localDisplayName.trim().replace(/\.local$/iu, "").toLocaleLowerCase() : null;
     const inventoryName = !isSyntheticHostName(inventory?.hostDisplayName) ? inventory.hostDisplayName.trim().replace(/\.local$/iu, "").toLocaleLowerCase() : null;
-    return threadsMatch && (pathsMatch || Boolean(localName && inventoryName === localName));
+    const namesMatch = Boolean(localName && inventoryName === localName);
+    // Two independent matches identify a peer's echo of this device. Requiring
+    // thread ids as one of them fails on a healthy device with no local chats.
+    return Number(threadsMatch) + Number(pathsMatch) + Number(namesMatch) >= 2;
   }
 
   function removeRemoteHostState(hostId) {

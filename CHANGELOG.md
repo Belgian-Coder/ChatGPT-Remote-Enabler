@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.5.77 — 2026-09-14
+
+- Remove a peer-relayed echo of the current device when its reported name and
+  project paths match even if the local ChatGPT account currently has no chats.
+  A zero-chat PC-Marc exposed that the former duplicate detector unnecessarily
+  required matching non-empty thread ids.
+- Advance the shared Windows/macOS renderer to v85 and add a zero-chat local
+  inventory regression while retaining the two-of-three identity safeguard.
+
 ## v1.5.76 — 2026-09-14
 
 - Treat the current machine's native Remote host id as a local runtime alias,

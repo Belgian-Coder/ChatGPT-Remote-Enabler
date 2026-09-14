@@ -206,6 +206,7 @@ const directSameNameHostId = "remote-control:test-direct";
 const relayToDirectConnectivityHostId = "remote-control:test-relay-to-direct-connectivity";
 const relayToDirectRuntimeHostId = "remote-control:test-relay-to-direct-runtime";
 const pathDriftSelfEchoHostId = "remote-control:test-path-drift-self";
+const emptyThreadSelfEchoHostId = "remote-control:test-empty-thread-self";
 const matchingLocalInventory = {
   error: null,
   fetchedAt: now,
@@ -281,6 +282,18 @@ assert.equal(visibility.state.remoteRuntimeCache.get(relayToDirectRuntimeHostId)
 assert.equal(visibility.state.remoteProjectInventories.has(pathDriftSelfEchoHostId), false);
 assert.equal(visibility.state.hostConnectivity.has(pathDriftSelfEchoHostId), false);
 assert.equal(visibility.state.localRuntimeHostIds.has(pathDriftSelfEchoHostId), true);
+
+visibility.state.threadInventories.set("local", { error: null, fetchedAt: Date.now(), truncated: false, threads: [] });
+visibility.state.remoteProjectInventories.set(emptyThreadSelfEchoHostId, {
+  ...matchingLocalInventory,
+  sourcePeerHostId: "remote-control:test-relay",
+  threads: [],
+});
+visibility.state.hostConnectivity.set(emptyThreadSelfEchoHostId, { available: false, checkedAt: now });
+visibility.removeGossipedLocalInventoryDuplicates();
+assert.equal(visibility.state.remoteProjectInventories.has(emptyThreadSelfEchoHostId), false, "matching local name and project paths must remove a peer echo when this device has no chats");
+assert.equal(visibility.state.hostConnectivity.has(emptyThreadSelfEchoHostId), false);
+assert.equal(visibility.state.localRuntimeHostIds.has(emptyThreadSelfEchoHostId), true);
 
 visibility.state.hostConnectivity.set(pathDriftSelfEchoHostId, { available: false, checkedAt: now });
 visibility.state.remoteCodexHomes.set(pathDriftSelfEchoHostId, "C:\\orphan-home");

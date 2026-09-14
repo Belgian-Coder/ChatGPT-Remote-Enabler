@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.5.76 — 2026-09-14
+
+- Treat the current machine's native Remote host id as a local runtime alias,
+  removing stale projects, tasks, connectivity, and remembered discovery data
+  for that id. This closes the cached-inventory path that could keep a duplicate
+  disconnected self row visible after v1.5.75 filtered the native catalogue.
+- Advance the shared Windows/macOS renderer to v84 and extend the regression to
+  seed the same stale inventory and connectivity state observed on PC-Marc.
+
 ## v1.5.75 — 2026-09-14
 
 - Exclude the current machine from ChatGPT's refreshed native Remote device

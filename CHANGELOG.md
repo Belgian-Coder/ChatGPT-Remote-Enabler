@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.5.71 — 2026-09-14
+
+- After a compatible no-close update, schedule a detached handoff to the
+  coordinator from the newly installed package. The replacement waits for the
+  old exact coordinator and its session lock to exit before it attaches, so
+  ChatGPT remains open and only one updater owns the renderer.
+- Keep the old coordinator running when replacement scheduling fails. Windows
+  uses the stable coordinator-only launcher; macOS adds an internal
+  coordinator-only action that does not reinject, relaunch, or duplicate the
+  publisher heartbeat.
+- Add controller and launcher-schedule regression coverage and ship the same
+  bounded handoff helper in both platform packages.
+
 ## v1.5.70 — 2026-09-14
 
 - Read the production injector's nested renderer readiness proof during a live update so a healthy dynamically loaded renderer can proceed to transactional installation.

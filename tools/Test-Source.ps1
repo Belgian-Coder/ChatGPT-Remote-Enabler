@@ -126,6 +126,7 @@ if ((Get-FileHash -LiteralPath $windowsMaintenance -Algorithm SHA256).Hash -ne (
 }
 foreach ($pair in @(
     @('windows\CodexRemoteMobileProject\publisher-heartbeat.js', 'macos\publisher-heartbeat.js'),
+    @('windows\CodexRemoteMobileProject\coordinator-handoff.js', 'macos\coordinator-handoff.js'),
     @('windows\CodexRemoteMobileProject\update-session.js', 'macos\update-session.js'),
     @('windows\CodexRemoteMobileProject\update-session-cdp.js', 'macos\update-session-cdp.js'),
     @('windows\update-transaction.js', 'macos\update-transaction.js'),

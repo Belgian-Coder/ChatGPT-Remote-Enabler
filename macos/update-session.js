@@ -431,6 +431,57 @@ class PlatformAdapter {
     return { loaded: true, helperVersion: installedVersion, rendererVersion: result.report.version, ready: true };
   }
 
+  async handoffCoordinator() {
+    const helper = path.resolve(__dirname, "coordinator-handoff.js");
+    const lockPath = path.resolve(this.config.coordinatorLockPath ?? "");
+    if (!path.isAbsolute(this.config.coordinatorLockPath ?? "") || !fs.existsSync(helper) || fs.lstatSync(helper).isSymbolicLink()) {
+      throw new Error("The immutable coordinator handoff helper is unavailable.");
+    }
+    const resultPath = path.join(this.config.sessionDirectory, "coordinator-handoff-result.json");
+    const handoffPath = path.join(this.config.sessionDirectory, "coordinator-handoff.json");
+    const launcherPath = this.config.platform === "win32"
+      ? path.join(this.config.installRoot, "CodexRemoteMobileProject", "UpdateSessionLauncher.ps1")
+      : path.join(this.config.installRoot, "MobileProjectView-macOS-arm64.sh");
+    const handoff = {
+      schemaVersion: 1,
+      platform: this.config.platform,
+      previousPid: process.pid,
+      installRoot: this.config.installRoot,
+      lockPath,
+      resultPath,
+      nodePath: process.execPath,
+      launcherPath,
+      rendererPort: this.config.rendererPort,
+      entryPointRelative: this.config.relaunch.entryPointRelative,
+      useProxy: this.config.relaunch.useProxy === true,
+      replaceRunningApp: this.config.relaunch.replaceRunningApp === true,
+      environment: this.config.relaunch.environment ?? {},
+    };
+    try { fs.rmSync(resultPath, { force: true }); } catch {}
+    const temporary = `${handoffPath}.${process.pid}.tmp`;
+    fs.writeFileSync(temporary, `${JSON.stringify(handoff, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    fs.renameSync(temporary, handoffPath);
+    const child = this.spawn(process.execPath, ["--no-warnings", helper, handoffPath], {
+      cwd: this.config.sessionDirectory, detached: true, env: { ...process.env }, stdio: "ignore", windowsHide: true,
+    });
+    const spawned = new Promise((resolve, reject) => {
+      child.once?.("spawn", resolve);
+      child.once?.("error", reject);
+      if (Number.isInteger(child.pid) && child.pid > 0 && typeof child.once !== "function") resolve();
+    });
+    let timer;
+    try {
+      await Promise.race([spawned, new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("The coordinator handoff helper did not start.")), 10_000);
+        timer.unref?.();
+      })]);
+    } finally {
+      clearTimeout(timer);
+    }
+    child.unref?.();
+    return { scheduled: true, processId: child.pid, resultPath };
+  }
+
   async relaunch() {
     const entry = path.join(this.config.installRoot, this.config.relaunch.entryPointRelative);
     const handoffPath = path.join(this.config.sessionDirectory, "relaunch-handoff.json");
@@ -832,7 +883,18 @@ class UpdateSessionController {
         this.config.log?.("hot-reload-confirmed", { version: release.version, rendererVersion: loaded.rendererVersion });
         this.release = null;
         this.recordHistory("hot-reload-confirmed", release.version);
+        let coordinatorHandoff = false;
+        try {
+          if (typeof this.platform.handoffCoordinator === "function") {
+            await this.platform.handoffCoordinator();
+            coordinatorHandoff = true;
+            this.config.log?.("coordinator-handoff-scheduled", { version: release.version });
+          }
+        } catch (handoffError) {
+          this.config.log?.("coordinator-handoff-failed", { version: release.version, error: cleanMessage(handoffError?.message) });
+        }
         await this.setStatus({ state: "current", version: release.version, message: `Updated to ${release.version} and loaded without restarting ChatGPT.` });
+        if (coordinatorHandoff) this.stopping = true;
         return;
       }
       this.config.log?.("hot-reload-unavailable", { version: release.version, reason: cleanMessage(hotReload?.reason) });
@@ -1063,6 +1125,7 @@ async function main() {
   config.log = (stage, detail) => writeLog(config.logPath, stage, detail);
   const lock = acquireLock(config);
   if (!lock.acquired) return;
+  config.coordinatorLockPath = lock.lockPath;
   let transport;
   let monitorTimer;
   let checkTimer;

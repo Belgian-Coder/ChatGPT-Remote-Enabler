@@ -11,6 +11,7 @@ maintenance_helper="$bundle_root/maintenance.js"
 updater="$bundle_root/Update-ChatGPTRemote.sh"
 update_session_source="$bundle_root/update-session.js"
 update_session_cdp_source="$bundle_root/update-session-cdp.js"
+coordinator_handoff_source="$bundle_root/coordinator-handoff.js"
 publisher_heartbeat_source="$bundle_root/publisher-heartbeat.js"
 update_session_platform_source="$bundle_root/UpdateSessionPlatform.sh"
 update_transaction_source="$bundle_root/update-transaction.js"
@@ -354,8 +355,8 @@ start_update_session() {
   local node_bin="$1" identity="$2"
   local state_root="$HOME/Library/Application Support/ChatGPTRemoteEnabler/update-sessions"
   local source name fingerprint="" bundle_hash bundle session_directory config_path
-  local -a names=(update-session.js update-session-cdp.js UpdateSessionPlatform.sh cdp.js Update-ChatGPTRemote.sh update-transaction.js git-release.js git-checkout-update.js)
-  local -a sources=("$update_session_source" "$update_session_cdp_source" "$update_session_platform_source" "$cdp_source" "$updater" "$update_transaction_source" "$git_release_source" "$git_checkout_update_source")
+  local -a names=(update-session.js update-session-cdp.js coordinator-handoff.js UpdateSessionPlatform.sh cdp.js Update-ChatGPTRemote.sh update-transaction.js git-release.js git-checkout-update.js)
+  local -a sources=("$update_session_source" "$update_session_cdp_source" "$coordinator_handoff_source" "$update_session_platform_source" "$cdp_source" "$updater" "$update_transaction_source" "$git_release_source" "$git_checkout_update_source")
   for source in "${sources[@]}"; do [[ -f "$source" && ! -L "$source" ]] || { print -u2 "Update-session dependency is missing: $source"; return 1; }; done
   local index
   for (( index=1; index<=${#sources[@]}; index++ )); do
@@ -405,6 +406,14 @@ start_publisher_heartbeat() {
   mkdir -m 700 -p "$heartbeat_root"
   [[ -f "$publisher_heartbeat_source" && ! -L "$publisher_heartbeat_source" ]] || { print -u2 "Publisher heartbeat helper is missing."; return 1; }
   "$node_bin" --no-warnings "$publisher_heartbeat_source" --port "$port" --parent-pid "$pid_value" --lock-path "$heartbeat_root/renderer-$port.lock" </dev/null >>"$heartbeat_root/helper.log" 2>&1 &!
+}
+
+handoff_update_session() {
+  acquire_launch_guard
+  local node_bin identity
+  node_bin="$(resolve_node)"
+  identity="$(capture_exact_app_identity)"
+  start_update_session "$node_bin" "$identity"
 }
 
 write_relaunch_handoff() {
@@ -578,6 +587,7 @@ case "$action" in
   setup-check) setup_check ;;
   enable) enable_view ;;
   startup) startup_view ;;
+  handoff-update-session) handoff_update_session ;;
   disable) run_injector "$(resolve_node)" disable ;;
   probe) run_injector "$(resolve_node)" probe ;;
   enable-auto-registration) run_injector "$(resolve_node)" auto-on ;;
@@ -594,5 +604,5 @@ case "$action" in
   remove-auto-registrations) run_injector "$(resolve_node)" auto-remove ;;
   install-startup) install_startup ;;
   remove-startup) remove_startup ;;
-  *) print -u2 "Usage: $0 {enable|startup|disable|probe|enable-auto-registration|disable-auto-registration|enable-auto-maintenance|disable-auto-maintenance|preview-auto-maintenance|run-auto-maintenance|reconcile-auto-registrations|remove-auto-registrations|install-startup|remove-startup}"; exit 2 ;;
+  *) print -u2 "Usage: $0 {enable|startup|handoff-update-session|disable|probe|enable-auto-registration|disable-auto-registration|enable-auto-maintenance|disable-auto-maintenance|preview-auto-maintenance|run-auto-maintenance|reconcile-auto-registrations|remove-auto-registrations|install-startup|remove-startup}"; exit 2 ;;
 esac

@@ -89,6 +89,7 @@ function Copy-ImmutableUpdateSessionBundle {
     $sources = [ordered]@{
         'update-session.js' = Join-Path $sourceRoot 'update-session.js'
         'update-session-cdp.js' = Join-Path $sourceRoot 'update-session-cdp.js'
+        'coordinator-handoff.js' = Join-Path $sourceRoot 'coordinator-handoff.js'
         'UpdateSessionPlatform.ps1' = Join-Path $sourceRoot 'UpdateSessionPlatform.ps1'
         'cdp.js' = Join-Path $BundleRoot 'CodexRemoteSimple\runtime\lib\cdp.js'
         'Update-ChatGPTRemote.ps1' = Join-Path $BundleRoot 'Update-ChatGPTRemote.ps1'

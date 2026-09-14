@@ -13,6 +13,7 @@ const root = path.resolve(__dirname, "..");
 const windowsModulePath = path.join(root, "windows", "CodexRemoteMobileProject", "update-session.js");
 const macModulePath = path.join(root, "macos", "update-session.js");
 const session = require(windowsModulePath);
+const handoffHelper = require(path.join(root, "windows", "CodexRemoteMobileProject", "coordinator-handoff.js"));
 
 assert.equal(fs.readFileSync(windowsModulePath, "utf8"), fs.readFileSync(macModulePath, "utf8"), "platform update-session controllers must stay mirrored");
 assert.deepEqual(session.canonicalStatus({ state: "available", version: "v1.2.3", message: "ok", canQueue: true, extra: 1 }), {
@@ -57,7 +58,7 @@ assert.throws(() => session.safeRemovePrepared(config(), tempRoot), /outside the
 
 function harness(options = {}) {
   const statuses = [];
-  const calls = { apply: 0, check: 0, close: 0, closingExpected: [], hotReload: 0, isAlive: 0, notify: 0, prepare: 0, probe: 0, recover: 0, relaunch: 0, removed: [] };
+  const calls = { apply: 0, check: 0, close: 0, closingExpected: [], handoff: 0, hotReload: 0, isAlive: 0, notify: 0, prepare: 0, probe: 0, recover: 0, relaunch: 0, removed: [] };
   const release = { version: "v1.5.32", archiveSha256: "b".repeat(64) };
   const activities = [...(options.activities ?? [{ known: true, busy: false }, { known: true, busy: false }])];
   const retained = path.join(sessionDirectory, "prepared", release.version, "verified");
@@ -97,6 +98,7 @@ function harness(options = {}) {
       if (options.hotReloadError) throw options.hotReloadError;
       return { loaded: true, helperVersion: actual.version, rendererVersion: 81, ready: true };
     },
+    async handoffCoordinator() { calls.handoff += 1; if (options.handoffError) throw options.handoffError; return { scheduled: true }; },
     async relaunch() { calls.relaunch += 1; if (options.relaunchError) throw options.relaunchError; return { ready: true }; },
     async notifyFailure() { calls.notify += 1; },
   };
@@ -184,13 +186,26 @@ async function testPinnedHotReloadFlow() {
   assert.equal(h.calls.apply, 1);
   assert.equal(h.calls.recover, 1);
   assert.equal(h.calls.hotReload, 1);
+  assert.equal(h.calls.handoff, 1, "a compatible update must schedule the installed coordinator");
   assert.equal(h.calls.close, 0, "a compatible update must not close ChatGPT");
   assert.equal(h.calls.relaunch, 0, "a compatible update must not relaunch ChatGPT");
-  assert.equal(h.controller.stopping, false, "the coordinator must remain attached after live reload");
+  assert.equal(h.controller.stopping, true, "the old coordinator must yield after scheduling its installed replacement");
   assert.equal(h.controller.status.state, "current");
   assert.equal(h.controller.status.details.installedVersion, h.release.version);
   assert.match(h.controller.status.message, /without restarting ChatGPT/u);
   assert.ok(h.controller.history.some(entry => entry.state === "hot-reload-confirmed" && entry.version === h.release.version));
+}
+
+async function testHandoffFailureKeepsOldCoordinator() {
+  const h = harness({ hotCompatible: true, handoffError: new Error("simulated handoff failure") });
+  await h.controller.check(true);
+  await h.controller.queue();
+  await waitOperation(h.controller);
+  assert.equal(h.calls.apply, 1);
+  assert.equal(h.calls.handoff, 1);
+  assert.equal(h.calls.close, 0);
+  assert.equal(h.controller.status.state, "current", "the installed live renderer remains current when only coordinator handoff fails");
+  assert.equal(h.controller.stopping, false, "the old coordinator must remain attached when replacement scheduling fails");
 }
 
 async function testHotReloadFailureKeepsAppOpen() {
@@ -475,6 +490,50 @@ async function testExactRelaunchArguments() {
   assert.equal(invocation.options.windowsHide, true, "Windows relaunch must remain hidden");
 }
 
+async function testCoordinatorHandoffSchedule() {
+  const cfg = config();
+  cfg.configPath = path.join(sessionDirectory, "session.json");
+  cfg.coordinatorLockPath = path.join(stateRoot, "active", "fixture.lock");
+  let invocation;
+  const fakeSpawn = (command, args, options) => {
+    invocation = { command, args, options };
+    const child = new events.EventEmitter();
+    child.pid = 1001;
+    child.unref = () => {};
+    setImmediate(() => child.emit("spawn"));
+    return child;
+  };
+  const adapter = new session.PlatformAdapter(cfg, { spawn: fakeSpawn });
+  const result = await adapter.handoffCoordinator();
+  assert.equal(result.scheduled, true);
+  assert.equal(invocation.command, process.execPath);
+  assert.equal(path.basename(invocation.args[1]), "coordinator-handoff.js");
+  assert.equal(invocation.options.detached, true);
+  assert.equal(invocation.options.windowsHide, true);
+  const handoff = JSON.parse(fs.readFileSync(path.join(sessionDirectory, "coordinator-handoff.json"), "utf8"));
+  assert.equal(handoff.previousPid, process.pid);
+  assert.equal(handoff.lockPath, cfg.coordinatorLockPath);
+  assert.equal(handoff.entryPointRelative, cfg.relaunch.entryPointRelative);
+  assert.equal(handoff.useProxy, true);
+  assert.equal(handoff.replaceRunningApp, true);
+}
+
+function testCoordinatorHandoffConfigBoundary() {
+  const configPath = path.join(sessionDirectory, "coordinator-handoff.json");
+  const launcherPath = path.join(installRoot, "CodexRemoteMobileProject", "UpdateSessionLauncher.ps1");
+  fs.mkdirSync(path.dirname(launcherPath), { recursive: true });
+  fs.writeFileSync(launcherPath, "fixture");
+  const value = {
+    platform: "win32", previousPid: 4321, installRoot,
+    lockPath: path.join(stateRoot, "active", "fixture.lock"),
+    resultPath: path.join(sessionDirectory, "coordinator-handoff-result.json"),
+    nodePath: process.execPath, launcherPath,
+  };
+  assert.equal(handoffHelper.exactChildConfig({ ...value }, configPath).launcherPath, launcherPath);
+  assert.throws(() => handoffHelper.exactChildConfig({ ...value, resultPath: path.join(tempRoot, "outside.json") }, configPath), /outside its session/u);
+  assert.throws(() => handoffHelper.exactChildConfig({ ...value, launcherPath: path.join(tempRoot, "other.ps1") }, configPath), /launcher is unavailable/u);
+}
+
 async function testExactMacRelaunchArguments() {
   const cfg = config({
     platform: "darwin",
@@ -593,6 +652,7 @@ async function testActualWindowsCheck() {
     await testReadOnlyHistoryRefresh();
     await testPinnedIdleFlow();
     await testPinnedHotReloadFlow();
+    await testHandoffFailureKeepsOldCoordinator();
     await testHotReloadFailureKeepsAppOpen();
     await testHotApplyFailureRestoresPriorRenderer();
     testHotReloadCompatibility();
@@ -608,11 +668,13 @@ async function testActualWindowsCheck() {
     await testConcurrentStaleLockReclamation();
     await testTimedOutCommandTreeLeavesNoMutation();
     await testExactRelaunchArguments();
+    await testCoordinatorHandoffSchedule();
+    testCoordinatorHandoffConfigBoundary();
     await testExactMacRelaunchArguments();
     await testUpdaterMappingsAndPrettyJson();
     await testProductionRendererReadinessContract();
     await testActualWindowsCheck();
-    process.stdout.write(`${JSON.stringify({ ok: true, persistentHistory: true, controllerFlows: 11, monitorSingleflight: true, malformedLockFailClosed: true, concurrentLockReclaim: true, timeoutTreeContained: true, exactRelaunch: true, exactMacRelaunchSkipsPrelaunch: true, prettyJson: true, actualWindowsCheck: process.platform === "win32" && !process.argv.includes("--skip-actual-updater") })}\n`);
+    process.stdout.write(`${JSON.stringify({ ok: true, persistentHistory: true, controllerFlows: 13, monitorSingleflight: true, malformedLockFailClosed: true, concurrentLockReclaim: true, timeoutTreeContained: true, exactRelaunch: true, exactMacRelaunchSkipsPrelaunch: true, prettyJson: true, actualWindowsCheck: process.platform === "win32" && !process.argv.includes("--skip-actual-updater") })}\n`);
   } finally {
     fs.rmSync(tempRoot, { force: true, recursive: true });
   }

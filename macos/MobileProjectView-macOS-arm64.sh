@@ -354,7 +354,8 @@ APPLESCRIPT
 start_update_session() {
   local node_bin="$1" identity="$2"
   local state_root="$HOME/Library/Application Support/ChatGPTRemoteEnabler/update-sessions"
-  local source name fingerprint="" bundle_hash bundle session_directory config_path
+  local source name fingerprint="" bundle_hash bundle session_directory config_path local_name
+  local_name="$(computer_name)"
   local -a names=(update-session.js update-session-cdp.js coordinator-handoff.js UpdateSessionPlatform.sh cdp.js Update-ChatGPTRemote.sh update-transaction.js git-release.js git-checkout-update.js)
   local -a sources=("$update_session_source" "$update_session_cdp_source" "$coordinator_handoff_source" "$update_session_platform_source" "$cdp_source" "$updater" "$update_transaction_source" "$git_release_source" "$git_checkout_update_source")
   for source in "${sources[@]}"; do [[ -f "$source" && ! -L "$source" ]] || { print -u2 "Update-session dependency is missing: $source"; return 1; }; done
@@ -386,15 +387,15 @@ start_update_session() {
   [[ -f "$HOME/Library/Application Support/ChatGPTRemoteEnabler/update/auto-update-disabled" ]] && automatic=false
   "$node_bin" -e '
     const fs = require("node:fs");
-    const [file, installRoot, stateRoot, sessionDirectory, updaterPath, platformHelperPath, port, automatic, skip, pid, startToken, executablePath, appPath, bundleId, appName, peerName, requiredPath, startupMode] = process.argv.slice(1);
+    const [file, installRoot, stateRoot, sessionDirectory, updaterPath, platformHelperPath, port, automatic, skip, pid, startToken, executablePath, appPath, bundleId, appName, localName, peerName, requiredPath, startupMode] = process.argv.slice(1);
     const value = { schemaVersion:1, platform:"darwin", installRoot, stateRoot, sessionDirectory, updaterPath, platformHelperPath,
       rendererPort:Number(port), autoCheckEnabled:automatic === "true", skipInitialCheck:skip === "1", logPath:sessionDirectory + "/update-session.log",
       app:{ pid:Number(pid), startToken, executablePath, appPath, bundleId },
-      relaunch:{ entryPointRelative:"MobileProjectView-macOS-arm64.sh", startupMode:startupMode === "true", environment:{ CODEX_APP_NAME:appName, CODEX_REMOTE_PEER_NAME:peerName, CODEX_STARTUP_REQUIRED_PATH:requiredPath } } };
+      relaunch:{ entryPointRelative:"MobileProjectView-macOS-arm64.sh", startupMode:startupMode === "true", environment:{ CODEX_APP_NAME:appName, CODEX_REMOTE_LOCAL_NAME:localName, CODEX_REMOTE_PEER_NAME:peerName, CODEX_STARTUP_REQUIRED_PATH:requiredPath } } };
     const temporary = file + ".tmp";
     fs.writeFileSync(temporary, JSON.stringify(value, null, 2) + "\n", { encoding:"utf8", mode:0o600 });
     fs.renameSync(temporary, file);
-  ' "$config_path" "$bundle_root" "$state_root" "$session_directory" "$bundle/Update-ChatGPTRemote.sh" "$bundle/UpdateSessionPlatform.sh" "$port" "$automatic" "$skip_update_check_once" "$pid_value" "$start_token" "$executable_path" "$app_path" "$bundle_id" "$app_name" "$peer_name" "$startup_required_path" "$([[ "$action" == startup ]] && print true || print false)"
+  ' "$config_path" "$bundle_root" "$state_root" "$session_directory" "$bundle/Update-ChatGPTRemote.sh" "$bundle/UpdateSessionPlatform.sh" "$port" "$automatic" "$skip_update_check_once" "$pid_value" "$start_token" "$executable_path" "$app_path" "$bundle_id" "$app_name" "$local_name" "$peer_name" "$startup_required_path" "$([[ "$action" == startup ]] && print true || print false)"
   "$node_bin" --no-warnings "$bundle/update-session.js" --config "$config_path" --best-effort </dev/null >>"$session_directory/helper.log" 2>&1 &!
   print "Update session started for exact application process $pid_value."
 }
@@ -412,7 +413,7 @@ handoff_update_session() {
   acquire_launch_guard
   local node_bin identity
   node_bin="$(resolve_node)"
-  identity="$(capture_exact_app_identity)"
+  identity="$(capture_app_identity)"
   start_update_session "$node_bin" "$identity"
 }
 

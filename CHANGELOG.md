@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.5.78 — 2026-09-14
+
+- Make live updates recover the exact installed renderer when candidate
+  activation succeeds but its readiness or process proof later fails.
+- Keep distinct native devices that share a display name, and bind cached peer
+  inventories to their publisher identity so slug collisions and duplicate
+  names cannot show one device's projects under another device.
+- Preserve case-sensitive POSIX project paths while retaining Windows drive and
+  UNC case folding. Hidden renderer instances also stop making periodic native
+  catalogue refresh requests.
+- Make macOS shortcut removal transactional and discard successful-operation
+  scratch rollback files. A live update now keeps its proven coordinator until
+  the current ChatGPT process ends; stable-root adoption, failed prepared-update
+  cleanup, and hot-reload local/remote identity match a cold launch.
+- Correct Windows source-checkout detection inside unrelated Git repositories
+  and let disable remove stale registrations left by older ephemeral ports.
+- Advance the shared Windows/macOS renderer to v86 and add regression coverage
+  for these update, identity, path, cleanup, and performance boundaries.
+
 ## v1.5.77 — 2026-09-14
 
 - Remove a peer-relayed echo of the current device when its reported name and

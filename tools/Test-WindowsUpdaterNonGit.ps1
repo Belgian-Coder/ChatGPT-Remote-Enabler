@@ -305,6 +305,28 @@ $wrongLeafPreserved = [IO.File]::Exists($refusalSentinel) -and [IO.File]::ReadAl
         if ($helperSafety.$property -ne $true) { throw "Updater-owned cleanup safety fixture did not prove ${property}." }
     }
 
+    $redirectGuardCommand = @'
+function Invoke-WebRequest {
+    param([string]$Uri, [hashtable]$Headers, [switch]$UseBasicParsing, [int]$MaximumRedirection, [int]$TimeoutSec)
+    [pscustomobject]@{
+        BaseResponse = [pscustomobject]@{ ResponseUri = [Uri]'http://example.invalid/final-release.json' }
+        RawContentStream = [IO.MemoryStream]::new([Text.Encoding]::UTF8.GetBytes('{}'))
+    }
+}
+. __UPDATER__ -Action Probe -InstallRoot __INSTALL__ | Out-Null
+$blocked = $false
+try { Invoke-SafeWebRequest -Uri 'https://source.example.invalid/release.json' -TimeoutSec 1 | Out-Null } catch {
+    $blocked = $_.Exception.Message -match 'Update URL must use HTTPS'
+}
+if (-not $blocked) { throw 'The updater accepted a redirected HTTP final URI.' }
+[pscustomobject]@{ FinalRedirectSchemeRejected = $blocked } | ConvertTo-Json -Compress
+'@
+    $redirectGuardCommand = $redirectGuardCommand.Replace('__UPDATER__', $quotedUpdater).Replace('__INSTALL__', $quotedFixture)
+    $redirectGuardCapture = Invoke-WindowsPowerShellCapture $redirectGuardCommand
+    if ($redirectGuardCapture.exitCode -ne 0) { throw "Final redirect scheme guard fixture failed: $($redirectGuardCapture.text)" }
+    $redirectGuard = $redirectGuardCapture.text | ConvertFrom-Json
+    if ($redirectGuard.FinalRedirectSchemeRejected -ne $true) { throw 'The updater final redirect scheme guard did not reject HTTP.' }
+
     Copy-Item -LiteralPath (Join-Path $repositoryRoot 'windows\update-transaction.js') -Destination (Join-Path $fixtureRoot 'update-transaction.js')
     [IO.File]::WriteAllText((Join-Path $fixtureRoot 'VERSION'), "v9.8.6$([Environment]::NewLine)", [Text.UTF8Encoding]::new($false))
     $lastCheckPath = Join-Path $fixtureLocalAppData 'ChatGPTRemoteEnabler\update\last-check.json'
@@ -351,6 +373,40 @@ $wrongLeafPreserved = [IO.File]::Exists($refusalSentinel) -and [IO.File]::ReadAl
         throw 'Unexpected-origin source checkout reached the package transaction.'
     }
 
+    $unrelatedRepoRoot = Join-Path $temporaryRoot 'unrelated-git-repository'
+    $stableInstallInRepo = Join-Path $unrelatedRepoRoot 'ChatGPT-Remote-Enabler-Windows-x64'
+    New-Item -ItemType Directory -Path $stableInstallInRepo -Force | Out-Null
+    Copy-Item -Path (Join-Path $fixtureRoot '*') -Destination $stableInstallInRepo -Recurse -Force
+    $stableManifestLines = foreach ($relative in @('Update-ChatGPTRemote.ps1', 'StableInstall.ps1', 'update-transaction.js', 'VERSION')) {
+        $hash = (Get-FileHash -LiteralPath (Join-Path $stableInstallInRepo $relative) -Algorithm SHA256).Hash.ToLowerInvariant()
+        "$hash *$relative"
+    }
+    [IO.File]::WriteAllText(
+        (Join-Path $stableInstallInRepo 'RELEASE-MANIFEST.sha256'),
+        ([string]::Join([Environment]::NewLine, $stableManifestLines) + [Environment]::NewLine),
+        [Text.UTF8Encoding]::new($false)
+    )
+    & git -C $unrelatedRepoRoot init --quiet --initial-branch=main
+    if ($LASTEXITCODE -ne 0) { throw 'Could not initialize the unrelated Git repository fixture.' }
+    & git -C $unrelatedRepoRoot config user.name Fixture
+    & git -C $unrelatedRepoRoot config user.email fixture@example.invalid
+    & git -C $unrelatedRepoRoot add .
+    & git -C $unrelatedRepoRoot commit --quiet -m 'Packaged install inside unrelated repository'
+    if ($LASTEXITCODE -ne 0) { throw 'Could not commit the unrelated Git repository fixture.' }
+    $stableUpdater = Quote-PowerShellLiteral (Join-Path $stableInstallInRepo 'Update-ChatGPTRemote.ps1')
+    $quotedStableInstall = Quote-PowerShellLiteral $stableInstallInRepo
+    $stableProbeCapture = Invoke-WindowsPowerShellCapture "& $stableUpdater -Action Probe -InstallRoot $quotedStableInstall 2>&1"
+    if ($stableProbeCapture.exitCode -ne 0) { throw "Packaged install inside unrelated Git repository Probe failed: $($stableProbeCapture.text)" }
+    $stableProbe = $stableProbeCapture.text | ConvertFrom-Json
+    if ($stableProbe.installKind -ne 'release') { throw 'An installed root inside an unrelated Git repository was misclassified as a source checkout.' }
+    $stableApplyCommand = "& $stableUpdater -Action ApplyPrepared -InstallRoot $quotedStableInstall -Transport Git -TargetVersion 'v9.8.7' -ExpectedArchiveSha256 '$prepareArchiveHash' -PreparedDirectory $quotedPreparedDirectory 2>&1"
+    $stableApplyCapture = Invoke-WindowsPowerShellCapture $stableApplyCommand
+    if ($stableApplyCapture.exitCode -ne 0) { throw "Packaged install inside unrelated Git repository could not update as a stable install: $($stableApplyCapture.text)" }
+    $stableApply = $stableApplyCapture.text | ConvertFrom-Json
+    if ($stableApply.updated -ne $true -or $stableApply.version -ne 'v9.8.7' -or (Get-Content -LiteralPath (Join-Path $stableInstallInRepo 'VERSION') -Raw).Trim() -ne 'v9.8.7') {
+        throw 'Packaged install inside unrelated Git repository did not complete the stable package transaction.'
+    }
+
     $global:LASTEXITCODE = 0 # Expected rejection probes must not leak their native exit code to Test-Source.
     [pscustomobject]@{
         WindowsPowerShell51 = $true
@@ -364,9 +420,11 @@ $wrongLeafPreserved = [IO.File]::Exists($refusalSentinel) -and [IO.File]::ReadAl
         ReadOnlyCleanup = [bool]$helperSafety.ReadOnlyDeleted
         JunctionCleanupSafe = [bool]($helperSafety.JunctionUnlinked -and $helperSafety.OutsidePreserved)
         CleanupScopeRefusal = [bool]($helperSafety.WrongParentRefused -and $helperSafety.WrongParentPreserved -and $helperSafety.WrongLeafRefused -and $helperSafety.WrongLeafPreserved)
+        FinalRedirectSchemeRejected = [bool]$redirectGuard.FinalRedirectSchemeRejected
         FailedUpdateNotStamped = $true
         SourceInstallKind = $sourceProbe.installKind
         UnexpectedOriginCheckoutPreserved = $true
+        UnrelatedGitRepositoryStableInstall = $true
     } | ConvertTo-Json
 } finally {
     $env:LOCALAPPDATA = $previousLocalAppData

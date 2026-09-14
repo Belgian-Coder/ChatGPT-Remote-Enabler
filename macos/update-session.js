@@ -5,6 +5,7 @@
 
 const crypto = require("node:crypto");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { BINDING_NAME, CdpTransport, TARGET_URL, bootstrapSource, normalizeUpdateDetails } = require("./update-session-cdp.js");
@@ -409,11 +410,16 @@ class PlatformAdapter {
     if (installedVersion !== release.version) throw new Error("The installed version changed before live reload.");
     const localName = this.config.platform === "win32"
       ? (process.env.COMPUTERNAME || "Local")
-      : (this.config.relaunch?.environment?.CODEX_REMOTE_PEER_NAME || "Local");
+      : (this.config.relaunch?.environment?.CODEX_REMOTE_LOCAL_NAME || os.hostname() || "Local");
+    const singleRemoteName = this.config.platform === "darwin"
+      ? this.config.relaunch?.environment?.CODEX_REMOTE_PEER_NAME
+      : null;
     const invoke = async (action) => {
-      const result = await this.run(process.execPath, ["--no-warnings", injector,
-        "--action", action, "--port", String(this.config.rendererPort), "--local-name", localName,
-        "--target-wait-ms", "10000"], { cwd: sourceRoot, timeoutMs: 30_000 });
+      const args = ["--no-warnings", injector,
+        "--action", action, "--port", String(this.config.rendererPort), "--local-name", localName];
+      if (singleRemoteName) args.push("--single-remote-name", singleRemoteName);
+      args.push("--target-wait-ms", "10000");
+      const result = await this.run(process.execPath, args, { cwd: sourceRoot, timeoutMs: 30_000 });
       return parseLastJson(result.stdout);
     };
     const rendererReady = (value) => value?.report?.readiness?.ready === true;
@@ -791,7 +797,7 @@ class UpdateSessionController {
     let appClosed = false;
     let applyAttempted = false;
     let applied = false;
-    let hotReloadPrepared = false;
+    let hotReloadAttempted = false;
     const priorInstalledVersion = this.installedVersion;
     let recovered = false;
     let relaunchAttempted = false;
@@ -860,12 +866,15 @@ class UpdateSessionController {
       const hotReload = this.canHotReload(retainedDirectory);
       if (hotReload?.compatible === true) {
         await this.setStatus({ state: "updating", version: release.version, message: "Validating the update inside this ChatGPT session…" });
+        // The injector can replace the registered renderer before readiness or
+        // final process proof fails. From this point onward every non-closing
+        // failure must restore the installed renderer when its files are safe.
+        hotReloadAttempted = true;
         const loaded = await this.platform.hotReload(release, retainedDirectory);
         if (loaded?.loaded !== true || loaded.helperVersion !== release.version || loaded.ready !== true ||
             !Number.isInteger(loaded.rendererVersion)) {
           throw new Error("The prepared helper did not return complete live-reload proof.");
         }
-        hotReloadPrepared = true;
         await this.setStatus({ state: "updating", version: release.version, message: "Installing the live-validated update without closing ChatGPT…" });
         this.config.log?.("hot-reload-apply-start", { version: release.version, archiveSha256: release.archiveSha256 });
         applyAttempted = true;
@@ -883,18 +892,11 @@ class UpdateSessionController {
         this.config.log?.("hot-reload-confirmed", { version: release.version, rendererVersion: loaded.rendererVersion });
         this.release = null;
         this.recordHistory("hot-reload-confirmed", release.version);
-        let coordinatorHandoff = false;
-        try {
-          if (typeof this.platform.handoffCoordinator === "function") {
-            await this.platform.handoffCoordinator();
-            coordinatorHandoff = true;
-            this.config.log?.("coordinator-handoff-scheduled", { version: release.version });
-          }
-        } catch (handoffError) {
-          this.config.log?.("coordinator-handoff-failed", { version: release.version, error: cleanMessage(handoffError?.message) });
-        }
+        // Keep this proven coordinator attached for the lifetime of the
+        // existing ChatGPT process. A detached replacement cannot prove its
+        // takeover before this coordinator releases its lock, so the next
+        // normal launch starts the installed coordinator instead.
         await this.setStatus({ state: "current", version: release.version, message: `Updated to ${release.version} and loaded without restarting ChatGPT.` });
-        if (coordinatorHandoff) this.stopping = true;
         return;
       }
       this.config.log?.("hot-reload-unavailable", { version: release.version, reason: cleanMessage(hotReload?.reason) });
@@ -944,7 +946,7 @@ class UpdateSessionController {
           error = new Error(`${cleanMessage(error?.message, "Update failed")} Recovery failed: ${cleanMessage(recoveryError?.message, "unknown error")}`);
         }
       }
-      if (!appClosed && hotReloadPrepared && recovered && validVersion(priorInstalledVersion)) {
+      if (!appClosed && hotReloadAttempted && (!applyAttempted || recovered) && validVersion(priorInstalledVersion)) {
         try {
           await this.platform.hotReload({ version: priorInstalledVersion });
           this.config.log?.("hot-reload-restored", { version: priorInstalledVersion });
@@ -961,7 +963,7 @@ class UpdateSessionController {
         }
       }
       this.config.log?.("terminal-update-failure", {
-        appClosed, applied, applyAttempted, recovered, relaunchAttempted, retainedPrepared: retainPrepared,
+        appClosed, applied, applyAttempted, hotReloadAttempted, recovered, relaunchAttempted, retainedPrepared: retainPrepared,
         error: cleanMessage(error?.message),
       });
       if (appClosed) {

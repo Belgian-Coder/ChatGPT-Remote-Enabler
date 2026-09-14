@@ -13,7 +13,7 @@ const testSource = originalSource
   .replace("    const report = probe();", "    const report = {};")
   .replace(
     "  return install();\n})();",
-    "  return { assignLocalRuntime, collectAuthoritativeThreadIds, directInventoryHasPriority, eligibleAutoArchiveThreads, eligibleAutoDeleteThreads, lexicalAbsolutePath, listAllLocalThreads, listAllRuntimeThreads, maintenanceThreadPathManaged, parseInventoryPayload, preferredThreadInventory, pruneVerifiedThreadIds, publishedLocalProjectSnapshot, purgeLocalRuntimeAliases, rememberVerifiedThreadIds, removeGossipedLocalInventoryDuplicates, runAutoArchiveNow, runtimeThreadInventoryDue, sanitizedMaintenanceFailure, scopedThreadsAreFresh, serializePeerInventory, sharedThreadListRegistry, state, taskIsAuthoritative, unmanagedMaintenanceThreadCount, uninstall, updateActivity };\n})();",
+    "  return { assignLocalRuntime, collectAuthoritativeThreadIds, directInventoryHasPriority, eligibleAutoArchiveThreads, eligibleAutoDeleteThreads, lexicalAbsolutePath, listAllLocalThreads, listAllRuntimeThreads, maintenanceThreadPathManaged, normalizePath, parseInventoryPayload, preferredThreadInventory, pruneVerifiedThreadIds, publishedLocalProjectSnapshot, purgeLocalRuntimeAliases, rememberVerifiedThreadIds, removeGossipedLocalInventoryDuplicates, runAutoArchiveNow, runtimeThreadInventoryDue, sanitizedMaintenanceFailure, scopedThreadsAreFresh, serializePeerInventory, sharedThreadListRegistry, state, taskIsAuthoritative, unmanagedMaintenanceThreadCount, uninstall, updateActivity };\n})();",
   );
 
 const now = Date.now();
@@ -52,6 +52,9 @@ const context = vm.createContext({
 context.globalThis = context;
 vm.runInContext(testSource, context, { filename: rendererPath });
 const visibility = context.__visibilityTest;
+assert.equal(visibility.normalizePath("C:\\Work\\Project"), "c:/work/project", "Windows drive paths must remain case-insensitive");
+assert.equal(visibility.normalizePath("\\\\Server\\Share\\Project"), "//server/share/project", "Windows UNC paths must remain case-insensitive");
+assert.notEqual(visibility.normalizePath("/work/Foo"), visibility.normalizePath("/work/foo"), "POSIX path identity must preserve case");
 
 const nativeProjectItem = {
   __reactFiber$fixture: {

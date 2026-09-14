@@ -82,7 +82,7 @@ APPLESCRIPT
   fi
   if [[ -e "$app_path" ]]; then
     if ! mv -- "$app_path" "$previous_app"; then
-      (( source_preserved )) && mv -- "$previous_source" "$source_file"
+      if (( source_preserved )); then mv -- "$previous_source" "$source_file"; fi
       rm -rf -- "$candidate_source" "$candidate_app"
       return 1
     fi
@@ -90,31 +90,55 @@ APPLESCRIPT
   fi
   if ! mv -- "$candidate_source" "$source_file" || ! mv -- "$candidate_app" "$app_path"; then
     rm -rf -- "$source_file" "$app_path" "$candidate_source" "$candidate_app"
-    (( source_preserved )) && mv -- "$previous_source" "$source_file"
-    (( app_preserved )) && mv -- "$previous_app" "$app_path"
+    if (( source_preserved )); then mv -- "$previous_source" "$source_file"; fi
+    if (( app_preserved )); then mv -- "$previous_app" "$app_path"; fi
     print -u2 "Shortcut replacement failed; the previous shortcut was restored."
     return 1
   fi
   if ! probe_shortcut; then
     rm -rf -- "$source_file" "$app_path"
-    (( source_preserved )) && mv -- "$previous_source" "$source_file"
-    (( app_preserved )) && mv -- "$previous_app" "$app_path"
+    if (( source_preserved )); then mv -- "$previous_source" "$source_file"; fi
+    if (( app_preserved )); then mv -- "$previous_app" "$app_path"; fi
     print -u2 "Installed shortcut failed final validation; the previous shortcut was restored."
     return 1
   fi
+  # The package updater owns the one previous package generation. Shortcut
+  # swaps use rollback files only during this transaction and retain none after
+  # a successful exact probe.
+  if (( source_preserved )); then rm -f -- "$previous_source"; fi
+  if (( app_preserved )); then rm -rf -- "$previous_app"; fi
+  rmdir -- "$rollback_root" 2>/dev/null || true
 }
 
 remove_shortcut() {
   mkdir -p "$rollback_root"
   local stamp
   stamp="$(date +%Y%m%d-%H%M%S)-$$"
+  local previous_app="$rollback_root/ChatGPT Remote Enabler-removed-$stamp.app"
+  local previous_source="$rollback_root/ChatGPT Remote Enabler-removed-$stamp.applescript"
+  local app_preserved=0 source_preserved=0
   if [[ -e "$app_path" ]]; then
-    mv "$app_path" "$rollback_root/ChatGPT Remote Enabler-removed-$stamp.app"
+    mv -- "$app_path" "$previous_app"
+    app_preserved=1
   fi
   if [[ -f "$source_file" ]]; then
-    mv "$source_file" "$rollback_root/ChatGPT Remote Enabler-removed-$stamp.applescript"
+    if ! mv -- "$source_file" "$previous_source"; then
+      if (( app_preserved )); then mv -- "$previous_app" "$app_path"; fi
+      print -u2 "Shortcut removal failed; the application wrapper was restored."
+      return 1
+    fi
+    source_preserved=1
   fi
-  print "Shortcut files were preserved under $rollback_root. Remove the stale Dock icon manually if present."
+  if [[ -e "$app_path" || -f "$source_file" ]]; then
+    if (( source_preserved )); then mv -- "$previous_source" "$source_file"; fi
+    if (( app_preserved )); then mv -- "$previous_app" "$app_path"; fi
+    print -u2 "Shortcut removal did not complete; the previous shortcut was restored."
+    return 1
+  fi
+  if (( source_preserved )); then rm -f -- "$previous_source"; fi
+  if (( app_preserved )); then rm -rf -- "$previous_app"; fi
+  rmdir -- "$rollback_root" 2>/dev/null || true
+  print "Shortcut removed."
 }
 
 case "$action" in

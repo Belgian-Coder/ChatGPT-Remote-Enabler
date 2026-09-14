@@ -5,7 +5,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 const filename = path.join(__dirname, "..", "renderer-mobile-project-view.js");
 const original = fs.readFileSync(filename, "utf8").replace(/\r\n/gu, "\n");
-const source = original.replace("  return install();\n})();", "  globalThis.fixture = { state, collectModel, hostName, nativeConnectionStatus, startNativeConnectionObservation, refreshNativeConnectionCatalog, refreshNativeConnectionSnapshot, publishedLocalProjectSnapshot, scheduleRemoteProjectInventory, hydrateNativeInventory, runDeviceRefresh, connectionGuidance, diagnosticSnapshot, uninstall };\n})();");
+const source = original.replace("  return install();\n})();", "  globalThis.fixture = { state, collectModel, hostName, nativeConnectionStatus, startNativeConnectionObservation, refreshDeviceHealth, refreshNativeConnectionCatalog, refreshNativeConnectionSnapshot, publishedLocalProjectSnapshot, scheduleRemoteProjectInventory, hydrateNativeInventory, runDeviceRefresh, connectionGuidance, diagnosticSnapshot, uninstall };\n})();");
 assert.notEqual(source, original);
 assert.match(original, /state\.disposed = false;\s+startNativeConnectionObservation\(\);/u, "normal installation must start observation");
 
@@ -207,6 +207,39 @@ const flush = async () => { for (let i = 0; i < 40; i++) await Promise.resolve()
   assert.equal(second.f.nativeConnectionStatus(), "unavailable");
   second.f.uninstall();
 
+  const sameName = boot();
+  sameName.bridge();
+  sameName.snapshots.set("remote_control_connections_state", nativeState(true));
+  sameName.snapshots.set("remote_control_connections", [{ hostId: host, displayName: "Fixture Local.local", online: true }]);
+  sameName.f.startNativeConnectionObservation();
+  assert.equal(sameName.f.state.nativeConnectionSnapshot.connections.length, 1, "an online distinct peer must not be removed solely because its editable name matches this computer");
+  assert.equal(sameName.f.state.localRuntimeHostIds.has(host), false, "direct native proof must reverse an earlier ambiguous name-only classification");
+  assert.equal(sameName.f.collectModel().hosts.find(item => item.id === host).name, "Fixture Local.local", "the same-named connected peer must remain visible");
+  sameName.f.uninstall();
+
+  const forced = boot();
+  forced.bridge();
+  forced.snapshots.set("remote_control_connections_state", nativeState(true));
+  forced.snapshots.set("remote_control_connections", [{ hostId: host, displayName: "Named workstation", online: false }]);
+  let forcedCatalogueRefreshes = 0;
+  forced.f.state.localFetchFromHost = async action => {
+    assert.equal(action, "refresh-remote-control-connections");
+    forcedCatalogueRefreshes += 1;
+    forced.snapshots.set("remote_control_connections", [{ hostId: host, displayName: "Named workstation", online: true }]);
+    return { remoteControlConnections: [{ hostId: host, displayName: "Named workstation", online: true }] };
+  };
+  forced.f.state.healthRefreshUntil = 0;
+  const forcedGeneration = forced.f.state.discoveryGeneration;
+  assert.equal(forced.f.refreshDeviceHealth(), true, "an explicit refresh must start one coordinator cycle");
+  const forcedPromise = forced.f.state.deviceRefreshPromise;
+  await forcedPromise;
+  await flush();
+  assert.equal(forcedCatalogueRefreshes, 1, "one refresh click must perform one forced native catalogue round trip");
+  assert.equal(forced.f.state.discoveryGeneration, forcedGeneration + 1, "the coordinator-owned catalogue update must not supersede its active generation");
+  assert.equal(forced.f.state.deviceRefreshQueued, false, "the coordinator-owned catalogue update must not queue a second refresh");
+  assert.equal(forced.f.state.deviceRefreshPending, false, "the forced discovery pass must settle after the one backend round trip");
+  forced.f.uninstall();
+
   const automatic = boot();
   automatic.bridge();
   automatic.snapshots.set("remote_control_connections_state", nativeState(true));
@@ -218,14 +251,22 @@ const flush = async () => { for (let i = 0; i < 40; i++) await Promise.resolve()
     automatic.snapshots.set("remote_control_connections", [{ hostId: host, displayName: "Named workstation", online: true }]);
     return { remoteControlConnections: [{ hostId: host, displayName: "Named workstation", online: true }] };
   };
+  automatic.context.document.visibilityState = "hidden";
   automatic.f.startNativeConnectionObservation();
   await new Promise(resolve => setTimeout(resolve, 10));
-  assert.equal(catalogueRefreshes, 1, "observation must refresh the native catalogue without opening Settings");
+  assert.equal(catalogueRefreshes, 0, "a hidden renderer must not poll the account connection catalogue");
+  [...automatic.intervals.values()][0]();
+  await flush();
+  assert.equal(catalogueRefreshes, 0, "background observation must stay local while the renderer is hidden");
+  automatic.context.document.visibilityState = "visible";
+  [...automatic.intervals.values()][0]();
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(catalogueRefreshes, 1, "visible observation must refresh the native catalogue without opening Settings");
   assert.equal(automatic.f.collectModel().hosts.find(item => item.id === host).available, true, "automatic catalogue refresh must recover an old offline record");
   [...automatic.intervals.values()][0]();
   await flush();
   assert.equal(catalogueRefreshes, 1, "the two-second observer must honor the bounded native refresh cadence");
   automatic.f.uninstall();
   assert.deepEqual([...first.requests, ...second.requests], [], "observation must never initiate authorization or native connection mutations");
-  console.log(JSON.stringify({ delayedNativeBridge: true, authorizationReported: true, catalogNamesWithoutRows: true, localCatalogEntryExcluded: true, reconnectInvalidatesDiscovery: true, automaticNativeCatalogRefresh: true, boundedNativeCatalogRefresh: true, emptyProjectTransportAndModel: true, offlineRequestsSuppressed: true, offlineNativeHydrationSuppressed: true, missingCatalogPreservesOffline: true, missingStatusPreservesOffline: true, allOfflineRefreshComplete: true, cachedRowsRetainedOffline: true, runtimeCacheRetainedOnFailure: true, nativeAvailabilityWins: true, reconnectForcesInventory: true, fullRendererRestartRetainsNames: true, renamedLabelsWinOverInventory: true, observerDisposed: true, noNativeMutations: true }));
+  console.log(JSON.stringify({ delayedNativeBridge: true, authorizationReported: true, catalogNamesWithoutRows: true, localCatalogEntryExcluded: true, sameNamedConnectedPeerRetained: true, forcedCatalogueSingleflight: true, forcedGenerationSettled: true, reconnectInvalidatesDiscovery: true, automaticNativeCatalogRefresh: true, backgroundCatalogPollingSuppressed: true, boundedNativeCatalogRefresh: true, emptyProjectTransportAndModel: true, offlineRequestsSuppressed: true, offlineNativeHydrationSuppressed: true, missingCatalogPreservesOffline: true, missingStatusPreservesOffline: true, allOfflineRefreshComplete: true, cachedRowsRetainedOffline: true, runtimeCacheRetainedOnFailure: true, nativeAvailabilityWins: true, reconnectForcesInventory: true, fullRendererRestartRetainsNames: true, renamedLabelsWinOverInventory: true, observerDisposed: true, noNativeMutations: true }));
 })().catch(error => { console.error(error); process.exitCode = 1; });

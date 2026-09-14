@@ -43,10 +43,38 @@ async function testPersistentCleanupRetention() {
         throw error;
       }
     },
-  }, registrations, 41001);
+  }, registrations, 41001, {
+    discoverTargets: async () => [{ type: "page", url: "app://-/index.html", webSocketDebuggerUrl: "ws://127.0.0.1/fake" }],
+  });
   assert.deepEqual(calls, ["remove-me", "retain-failed"]);
   assert.deepEqual(result.pending.map((item) => item.identifier), ["retain-failed", "other-port"]);
   assert.equal(result.failures.length, 1);
+  assert.deepEqual(result.stale, []);
+}
+
+async function testDisablePrunesDeadRegistrations() {
+  let persisted = [
+    { identifier: "current", port: 41001 },
+    { identifier: "dead-ephemeral", port: 41002 },
+  ];
+  const calls = [];
+  const result = await injector.disableRenderer({
+    call: async (_method, { identifier }) => { calls.push(identifier); },
+  }, 41001, {
+    evaluate: async () => ({ active: false, version: null }),
+    readSessionState: () => persisted,
+    persistSessionState: (registrations) => { persisted = registrations; },
+    discoverTargets: async (port) => {
+      assert.equal(port, 41002);
+      const error = new Error("old renderer port is closed");
+      error.code = "ECONNREFUSED";
+      throw error;
+    },
+  });
+  assert.deepEqual(calls, ["current"]);
+  assert.deepEqual(persisted, [], "dead old registrations must be pruned from durable state");
+  assert.deepEqual(result.stale, [{ identifier: "dead-ephemeral", port: 41002 }]);
+  assert.deepEqual(result.report, { active: false, version: null });
 }
 
 function testAtomicStateAndLegacyMigration() {
@@ -91,9 +119,10 @@ function testInactiveMutationFails() {
 async function main() {
   await testTransientDiscoveryRetry();
   await testPersistentCleanupRetention();
+  await testDisablePrunesDeadRegistrations();
   testAtomicStateAndLegacyMigration();
   testInactiveMutationFails();
-  process.stdout.write(`${JSON.stringify({ atomicState: true, cleanupRetention: true, inactiveMutationFails: true, transientDiscoveryRetry: true })}\n`);
+  process.stdout.write(`${JSON.stringify({ atomicState: true, cleanupRetention: true, disablePrunesDeadRegistrations: true, inactiveMutationFails: true, transientDiscoveryRetry: true })}\n`);
 }
 
 main().catch((error) => {

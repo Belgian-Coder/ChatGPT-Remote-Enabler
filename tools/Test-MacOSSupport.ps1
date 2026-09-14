@@ -41,6 +41,27 @@ if ($launchGuardIndex -lt 0 -or $updateLockIndex -lt $launchGuardIndex) {
 if ($updater.Contains("cleanup`nlock_acquired=0") -or $updater.Contains('Could not reacquire update lock')) {
     throw 'macOS updater still releases and reacquires its lock during one update transaction.'
 }
+foreach ($contract in @(
+    'is_owned_prepared_directory() {',
+    'cleanup_failed_prepared_directory() {',
+    '[[ -f "$transaction_journal" || -f "$git_transaction_journal" ]] && return 0',
+    'cleanup_failed_prepared_directory "$prepared_directory"',
+    'cleanup_failed_prepared_directory "$prepared_root"',
+    'source_checkout && return 0',
+    'installed_integrity_valid ||',
+    'install_root="$canonical_install_root"',
+    'stable_migration_pending=1',
+    'if (( ! read_only_action )) && [[ ! -f "$transaction_journal" && ! -f "$git_transaction_journal" ]]; then',
+    'CODEX_STARTUP_REQUIRED_PATH="$required" /bin/zsh "$launcher" install-startup'
+)) {
+    if (-not $updater.Contains($contract)) { throw "macOS updater stable-root/prepared-cleanup contract is missing: $contract" }
+}
+if ($updater.Contains('"${install_root:h}" != "${legacy_release_root:A}"')) {
+    throw 'macOS stable-root migration is still restricted to one legacy parent path.'
+}
+if ($updater.Contains('Stable install root already exists and was not replaced')) {
+    throw 'macOS updater still fails when a valid canonical stable root already exists.'
+}
 $windowsTransaction = Join-Path $root 'windows\update-transaction.js'
 $macTransaction = Join-Path $root 'macos\update-transaction.js'
 if ((Get-FileHash $windowsTransaction -Algorithm SHA256).Hash -ne (Get-FileHash $macTransaction -Algorithm SHA256).Hash) {
@@ -106,9 +127,17 @@ foreach ($contract in @(
     'Shortcut candidate failed validation; the installed shortcut was left unchanged.',
     'escape_applescript_string() {',
     'set launcherPath to \"$escaped_launcher\"',
-    '/usr/bin/pgrep -x Codex'
+    '/usr/bin/pgrep -x Codex',
+    'Shortcut removal failed; the application wrapper was restored.',
+    'Shortcut removal did not complete; the previous shortcut was restored.',
+    'if (( source_preserved )); then rm -f -- "$previous_source"; fi',
+    'if (( app_preserved )); then rm -rf -- "$previous_app"; fi'
 )) {
     if (-not $shortcut.Contains($contract)) { throw "macOS shortcut reliability contract is missing: $contract" }
+}
+if ($shortcut.Contains('Remove the stale Dock icon manually') -or
+    $shortcut.Contains('Shortcut files were preserved under')) {
+    throw 'Successful macOS shortcut removal still requires manual cleanup or retains auxiliary rollback material.'
 }
 if (([regex]::Matches($shortcut, 'escape_applescript_string "\$launcher"')).Count -ne 2 -or
     -not $zshSemanticTest.Contains('actual="$(escape_applescript_string "$input")"') -or
@@ -136,7 +165,13 @@ $global:LASTEXITCODE = 0
     UpdatedEntryPointGuardHandoff = $true
     SourceCheckoutInterpreterHandoff = $true
     DetachedRelaunchSkipsPrelaunchUpdate = $true
+    PreparedDirectoryCleanup = $true
+    StableRootExistingAdoption = $true
+    ArbitraryLegacyRootMigration = $true
+    StableAliasRewire = $true
     ShortcutCandidateSwap = $true
     ShortcutExactTarget = $true
+    ShortcutRemovalTransactional = $true
+    ShortcutRollbackCleanup = $true
     RealZshSemanticTestPresent = $true
 } | ConvertTo-Json -Compress

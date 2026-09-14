@@ -1,13 +1,13 @@
 # Feature guide
 
-This guide describes the Windows and macOS v1.5.73 source, including reliable
+This guide describes the Windows and macOS v1.5.74 source, including reliable
 background inventory publication, loaded search, compact Settings, guarded navigation, and stale-Steer recovery. Historical v1.5.49 packages and
 screenshots do not include those changes. Both packages share the Device
 projects renderer and the feature behavior below; the
 platform guides document their different launchers, setup assistants, proxy
 options, and shortcut/startup commands.
 
-Renderer v81 adds verified in-process update loading; renderer v79 makes native offline state authoritative while retaining cached rows and runtime evidence; renderer v78 adds a parent-bound heartbeat for fully frozen hidden renderers; renderer v77 adds the background inventory reliability correction; renderer
+Renderer v82 adds automatic native device-catalogue recovery; renderer v81 added verified in-process update loading; renderer v79 makes native offline state authoritative while retaining cached rows and runtime evidence; renderer v78 adds a parent-bound heartbeat for fully frozen hidden renderers; renderer v77 adds the background inventory reliability correction; renderer
 v76 added the search and Settings improvements described below.
 
 After a compatible live update succeeds, a detached handoff waits for the old
@@ -79,8 +79,10 @@ Windows or macOS screenshots and are not proof of native app acceptance.
 ## Native Remote authorization, hosting, and reconnect
 
 Native Remote owns authorization and connection preferences. The helper reads
-those states and adds project inventory exchange; it cannot authorize a
-computer, grant account access, or change native connection settings.
+those states, refreshes ChatGPT's device catalogue through its built-in
+read-only method every 15 seconds, and adds project inventory exchange. It
+cannot authorize a computer, grant account access, or change native connection
+settings.
 
 For the outgoing/controller role, open **ChatGPT/Codex → Settings →
 Connections → Control other devices** and complete the native authorization
@@ -125,8 +127,11 @@ or fetch unloaded history.
 
 **Device health** shows each reported device name, native connection
 availability, connection-check time, inventory age/source, publisher protocol,
-and helper version when supplied by the peer. **Refresh devices** uses the same
-refresh coordinator as **Force refresh**. Device filters expose their
+and helper version when supplied by the peer. **Refresh devices** first refreshes
+the native device catalogue, then uses the same refresh coordinator as **Force
+refresh**. The catalogue refresh also runs automatically while the renderer is
+active, so recovery does not require opening Settings or restarting ChatGPT.
+Device filters expose their
 connection state to assistive technology. Empty projects distinguish loading,
 disconnected, stale/incomplete, and verified-empty states.
 

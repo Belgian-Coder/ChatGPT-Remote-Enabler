@@ -53,6 +53,22 @@ temporary_root=""
 temporary_staging=""
 stable_migration_pending=0
 
+is_owned_prepared_directory() {
+  local requested="$1" resolved="${1:A}" prepared_root="${state_root}/prepared" resolved_root
+  resolved_root="${prepared_root:A}"
+  [[ -n "$requested" && -d "$resolved" && ! -L "$resolved" ]] || return 1
+  [[ "$resolved" != "$resolved_root" && "$resolved" == "$resolved_root/"* ]] || return 1
+  print -r -- "$resolved"
+}
+
+cleanup_failed_prepared_directory() {
+  local requested="$1" resolved
+  [[ -f "$transaction_journal" || -f "$git_transaction_journal" ]] && return 0
+  resolved="$(is_owned_prepared_directory "$requested" 2>/dev/null || true)"
+  [[ -n "$resolved" ]] || return 0
+  rm -rf -- "$resolved" || print -u2 "Prepared update cleanup could not remove: $resolved"
+}
+
 prune_package_history_root() {
   local root="$1" retain_count="$2" kind="$3"
   [[ -d "$root" ]] || return 0
@@ -486,14 +502,29 @@ installed_integrity_valid() {
 
 ensure_stable_install_root() {
   [[ "$install_root" != "$canonical_install_root" ]] || return 0
-  if [[ "${install_root:h}" != "${legacy_release_root:A}" || "${install_root:t}" != ChatGPT-Remote-Enabler-macOS-arm64-v* ]]; then
+  source_checkout && return 0
+  if [[ ! -d "$install_root" || -L "$install_root" ]]; then
+    return 0
+  fi
+  if [[ -e "$canonical_install_root" ]]; then
+    [[ -d "$canonical_install_root" && ! -L "$canonical_install_root" ]] || {
+      print -u2 "Canonical stable install root exists but is not a real directory: $canonical_install_root"
+      return 1
+    }
+    local previous_install_root="$install_root"
+    install_root="$canonical_install_root"
+    if ! installed_integrity_valid; then
+      install_root="$previous_install_root"
+      print -u2 "Canonical stable install root failed integrity validation and was not replaced: $canonical_install_root"
+      return 1
+    fi
+    stable_migration_pending=1
+    return 0
+  fi
+  if [[ ! -f "$install_root/VERSION" || ! -f "$install_root/RELEASE-MANIFEST.sha256" ]]; then
     return 0
   fi
   installed_integrity_valid || { print -u2 "Legacy installation failed integrity validation and was not migrated: $install_root"; return 1; }
-  if [[ -e "$canonical_install_root" ]]; then
-    print -u2 "Stable install root already exists and was not replaced: $canonical_install_root"
-    return 1
-  fi
   local candidate="$canonical_install_root.migrate-$$-$RANDOM" manifest="$install_root/RELEASE-MANIFEST.sha256"
   local line relative source destination
   mkdir -p "${canonical_install_root:h}" "$candidate"
@@ -611,12 +642,15 @@ if (( ! read_only_action && ! launch_lock_held )) && [[ "${CHATGPT_REMOTE_LAUNCH
 fi
 acquire_lock
 typeset recovery_output='{"recovered":false,"integrityValid":true}'
+if (( ! read_only_action )) && [[ ! -f "$transaction_journal" && ! -f "$git_transaction_journal" ]]; then
+  ensure_stable_install_root
+fi
 if (( read_only_action )); then
   [[ ! -f "$transaction_journal" && ! -f "$git_transaction_journal" ]] || { print -u2 'UPDATE_RECOVERY_REQUIRED: a pending update transaction must be recovered before checking or preparing another release.'; exit 1; }
 else
   recovery_output="$(recover_pending_transaction)"
 fi
-if (( ! read_only_action )); then ensure_stable_install_root; fi
+if (( ! read_only_action && ! stable_migration_pending )); then ensure_stable_install_root; fi
 if [[ "$action" == recover ]]; then
   finalize_stable_install_root
   print -r -- "$recovery_output"
@@ -634,6 +668,7 @@ if [[ "$action" == prepare || "$action" == apply-prepared || "$action" == applyp
   fi
   typeset apply_output=""
   if ! apply_output="$(apply_prepared_release "$target_version" "$expected_archive_sha256" "$prepared_directory" 2>&1)"; then
+    cleanup_failed_prepared_directory "$prepared_directory"
     [[ "$apply_output" == *UNSAFE_MIXED_INSTALL* || "$apply_output" == *UPDATE_BUSY* ]] && print -u2 -- "$apply_output" || print -u2 -- "UPDATE_APPLY_FAILED: $apply_output"
     exit 1
   fi
@@ -671,6 +706,7 @@ typeset prepared_root="$state_root/prepared/${tag}-${published_hash[1,16]}"
 prepare_release "$tag" "$published_hash" "$prepared_root" >/dev/null
 typeset update_output=""
 if ! update_output="$(apply_prepared_release "$tag" "$published_hash" "$prepared_root" 2>&1)"; then
+  cleanup_failed_prepared_directory "$prepared_root"
   [[ "$update_output" == *UNSAFE_MIXED_INSTALL* || "$update_output" == *UPDATE_BUSY* ]] && print -u2 -- "$update_output" || print -u2 -- "UPDATE_APPLY_FAILED: $update_output"
   exit 1
 fi

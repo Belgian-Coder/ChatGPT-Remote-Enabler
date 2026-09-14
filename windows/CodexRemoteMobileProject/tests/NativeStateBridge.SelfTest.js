@@ -58,6 +58,24 @@ function fixture() {
   assert.deepEqual(await bridge("refresh-remote-control-connections"), { remoteControlConnections: [] });
   assert.equal(requests.at(-1).url, "vscode://codex/refresh-remote-control-connections");
 
+  const superseded = fixture();
+  let releaseSuperseded;
+  const supersededImport = new Promise(resolve => { releaseSuperseded = resolve; });
+  const oldBridge = superseded.f.ensureLocalStateBridge(async () => {
+    await supersededImport;
+    return { NativeClient };
+  }, false, 0);
+  superseded.f.state.discoveryGeneration = 1;
+  let forcedImports = 0;
+  const forcedBridge = superseded.f.ensureLocalStateBridge(async () => {
+    forcedImports += 1;
+    return { NativeClient };
+  }, true, 1);
+  releaseSuperseded();
+  assert.equal(await oldBridge, null, "a superseded bridge probe must not publish an old-generation client");
+  assert.equal(typeof await forcedBridge, "function", "a forced refresh must retry a superseded bridge probe");
+  assert.equal(forcedImports, 1, "the forced bridge retry must remain singleflight");
+
   f.state.localRuntime = { requestClient: { sendRequest: async method => { assert.equal(method, "thread/list"); return { data: [], nextCursor: null }; } } };
   const preview = await f.previewAutoArchive();
   assert.equal(preview.archiveEligible, 0);

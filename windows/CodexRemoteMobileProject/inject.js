@@ -23,6 +23,14 @@ const RETRYABLE_DISCOVERY_CODES = new Set([
   "DISCOVERY_RESPONSE_FAILED",
   "DISCOVERY_TIMEOUT",
 ]);
+const DEAD_REGISTRATION_PORT_CODES = new Set([
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EPIPE",
+  "DISCOVERY_ABORTED",
+  "DISCOVERY_RESPONSE_FAILED",
+  "DISCOVERY_TIMEOUT",
+]);
 
 function parseArgs(argv) {
   const values = {};
@@ -101,12 +109,27 @@ function isMissingPersistentScriptError(error) {
     && /(?:no script|script.*not found|invalid.*(?:identifier|script)|unknown.*(?:identifier|script))/iu.test(error?.message ?? "");
 }
 
-async function removeRegistrations(client, registrations, port) {
+async function registrationPortState(port, dependencies = {}) {
+  const discover = dependencies.discoverTargets ?? discoverTargets;
+  try {
+    const targets = await discover(port, dependencies.discoveryTimeoutMs ?? 1000);
+    if (!Array.isArray(targets)) return "unknown";
+    return exactRendererTarget(targets) ? "active" : "stale";
+  } catch (error) {
+    return DEAD_REGISTRATION_PORT_CODES.has(error?.code) ? "stale" : "unknown";
+  }
+}
+
+async function removeRegistrations(client, registrations, port, dependencies = {}) {
   const failures = [];
   const pending = [];
+  const stale = [];
+  const portStates = new Map();
   for (const registration of registrations) {
     if (registration.port !== port) {
-      pending.push(registration);
+      if (!portStates.has(registration.port)) portStates.set(registration.port, registrationPortState(registration.port, dependencies));
+      if (await portStates.get(registration.port) === "stale") stale.push(registration);
+      else pending.push(registration);
       continue;
     }
     try {
@@ -117,7 +140,7 @@ async function removeRegistrations(client, registrations, port) {
       pending.push(registration);
     }
   }
-  return { failures, pending };
+  return { failures, pending, stale };
 }
 
 function throwCleanupFailure(failures) {
@@ -200,6 +223,29 @@ function assertCommandResult(result, action) {
   return result;
 }
 
+async function disableRenderer(client, port, dependencies = {}) {
+  const evaluateCall = dependencies.evaluate ?? evaluate;
+  const readState = dependencies.readSessionState ?? readSessionState;
+  const persistState = dependencies.persistSessionState ?? persistSessionState;
+  let report = { active: false, version: null };
+  let uninstallError = null;
+  try {
+    report = await evaluateCall(client, "globalThis.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__?.uninstall?.() ?? { active:false, version:null }", 5000);
+  } catch (error) {
+    uninstallError = error;
+  }
+  const cleanup = await removeRegistrations(client, readState(), port, dependencies);
+  persistState(cleanup.pending);
+  throwCleanupFailure(cleanup.failures);
+  if (cleanup.pending.length > 0) {
+    const error = new Error("Persistent mobile project script registrations remain on another renderer port");
+    error.code = "PERSISTENT_SCRIPT_CLEANUP_PENDING";
+    throw error;
+  }
+  if (uninstallError) throw uninstallError;
+  return { report, stale: cleanup.stale };
+}
+
 async function main(argv = process.argv.slice(2)) {
   const options = parseArgs(argv);
   const target = await discoverRendererTarget(options.port, options.targetWaitMs);
@@ -253,23 +299,9 @@ async function main(argv = process.argv.slice(2)) {
       }
     }
     if (options.action === "disable") {
-      let report = { active: false, version: null };
-      let uninstallError = null;
-      try {
-        report = await evaluate(client, "globalThis.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__?.uninstall?.() ?? { active:false, version:null }", 5000);
-      } catch (error) {
-        uninstallError = error;
-      }
-      const cleanup = await removeRegistrations(client, readSessionState(), options.port);
-      persistSessionState(cleanup.pending);
-      throwCleanupFailure(cleanup.failures);
-      if (cleanup.pending.length > 0) {
-        const error = new Error("Persistent mobile project script registrations remain on another renderer port");
-        error.code = "PERSISTENT_SCRIPT_CLEANUP_PENDING";
-        throw error;
-      }
-      if (uninstallError) throw uninstallError;
-      process.stdout.write(`${JSON.stringify({ action: options.action, ok: true, report })}\n`);
+      const disabled = await disableRenderer(client, options.port);
+      const staleRegistrations = disabled.stale.map(({ identifier, port }) => ({ identifier, port }));
+      process.stdout.write(`${JSON.stringify({ action: options.action, ok: true, report: disabled.report, staleRegistrations })}\n`);
       return;
     }
     if (options.action === "auto-on" || options.action === "auto-off") {
@@ -327,7 +359,9 @@ module.exports = {
   main,
   normalizeRegistration,
   persistSessionState,
+  registrationPortState,
   readSessionState,
   removeRegistrations,
   requiredApiCall,
+  disableRenderer,
 };

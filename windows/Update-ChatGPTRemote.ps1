@@ -119,12 +119,54 @@ function Write-LastCheck {
     }
 }
 
+function Assert-SafeResponseUri {
+    param($Response)
+    $finalUri = $null
+    try { $finalUri = $Response.BaseResponse.ResponseUri } catch {}
+    if (-not $finalUri) { throw 'Update response did not expose its final URI.' }
+    Assert-SafeHttpsUrl ([string]$finalUri.AbsoluteUri)
+}
+
+function Invoke-SafeWebRequest {
+    param(
+        [Parameter(Mandatory)][string]$Uri,
+        [hashtable]$Headers,
+        [Parameter(Mandatory)][int]$TimeoutSec
+    )
+    $response = Invoke-WebRequest -Uri $Uri -Headers $Headers -UseBasicParsing -MaximumRedirection 3 -TimeoutSec $TimeoutSec
+    Assert-SafeResponseUri $response
+    return $response
+}
+
+function Get-WebResponseBytes {
+    param($Response)
+    if ($Response.RawContentStream) {
+        $stream = $Response.RawContentStream
+        if ($stream.CanSeek) { $stream.Position = 0 }
+        $memory = [IO.MemoryStream]::new()
+        try {
+            $stream.CopyTo($memory)
+            return ,$memory.ToArray()
+        } finally {
+            $memory.Dispose()
+        }
+    }
+    if ($Response.Content -is [byte[]]) { return ,([byte[]]$Response.Content) }
+    return ,([Text.Encoding]::UTF8.GetBytes([string]$Response.Content))
+}
+
+function Get-WebResponseText {
+    param($Response)
+    return [Text.Encoding]::UTF8.GetString([byte[]](Get-WebResponseBytes $Response))
+}
+
 function Get-LatestRelease {
     param([string]$RequestedTag)
     if ($Transport -eq 'Git') { return Get-GitRelease -RequestedTag $RequestedTag }
     $url = Get-ReleaseUrl -Tag $RequestedTag
     $headers = @{ Accept = 'application/vnd.github+json'; 'User-Agent' = 'ChatGPT-Remote-Enabler-Updater' }
-    $release = Invoke-RestMethod -Uri $url -Headers $headers -UseBasicParsing -TimeoutSec 20
+    $releaseResponse = Invoke-SafeWebRequest -Uri $url -Headers $headers -TimeoutSec 20
+    $release = Get-WebResponseText $releaseResponse | ConvertFrom-Json
     if ($release.draft -eq $true -or $release.prerelease -eq $true) { throw 'The latest endpoint returned a draft or prerelease.' }
     $tag = [string]$release.tag_name
     if ($tag -notmatch '^v\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$') { throw "Invalid release tag: $tag" }
@@ -205,7 +247,8 @@ function Get-PublishedArchiveHash {
         return $Matches.hash.ToLowerInvariant()
     }
     $checksumsPath = Join-Path $TemporaryRoot $Release.checksumsName
-    Invoke-WebRequest -Uri $Release.checksumsUrl -OutFile $checksumsPath -UseBasicParsing -TimeoutSec 20
+    $checksumsResponse = Invoke-SafeWebRequest -Uri $Release.checksumsUrl -TimeoutSec 20
+    [IO.File]::WriteAllBytes($checksumsPath, [byte[]](Get-WebResponseBytes $checksumsResponse))
     $escapedName = [regex]::Escape($Release.archiveName)
     $checksumLine = Get-Content -LiteralPath $checksumsPath | Where-Object { $_ -match "^([0-9a-fA-F]{64})\s+(?:\*)?$escapedName$" } | Select-Object -First 1
     if (-not $checksumLine) { throw "Published checksum for $($Release.archiveName) is missing." }
@@ -381,7 +424,8 @@ function New-PreparedRelease {
             $publishedHash = Get-PublishedArchiveHash -Release $release -TemporaryRoot $temporaryRoot
             if ($publishedHash -ne $ExpectedHash) { throw "Pinned archive hash $ExpectedHash does not match the published hash $publishedHash." }
             $archivePath = Join-Path $temporaryRoot $release.archiveName
-            Invoke-WebRequest -Uri $release.archiveUrl -OutFile $archivePath -UseBasicParsing -TimeoutSec 120
+            $archiveResponse = Invoke-SafeWebRequest -Uri $release.archiveUrl -TimeoutSec 120
+            [IO.File]::WriteAllBytes($archivePath, [byte[]](Get-WebResponseBytes $archiveResponse))
         }
         if (-not (Test-ZipHeader $archivePath)) {
             throw 'The release download is not a ZIP archive. A proxy or network security gateway may have replaced it with a block page.'
@@ -583,6 +627,15 @@ function Test-InstalledIntegrity {
 
 function Get-SourceCheckout {
     $candidateRoot = Split-Path -Parent $InstallRoot
+    $expectedPlatformLeaf = switch ($platformName) {
+        'Windows-x64' { 'windows' }
+        default { $null }
+    }
+    $installLeaf = Split-Path -Leaf $InstallRoot.TrimEnd('\')
+    if (-not $expectedPlatformLeaf -or -not [string]::Equals($installLeaf, $expectedPlatformLeaf, [StringComparison]::OrdinalIgnoreCase)) {
+        return $null
+    }
+    $candidateRoot = [IO.Path]::GetFullPath($candidateRoot).TrimEnd('\')
     $gitCommand = Get-Command git.exe -ErrorAction SilentlyContinue
     $gitPath = @(
         $(if ($gitCommand) { $gitCommand.Source }),
@@ -610,7 +663,10 @@ function Get-SourceCheckout {
         }
         return $null
     }
-    $root = [IO.Path]::GetFullPath(([string]$rootOutput[0]).Trim())
+    $root = [IO.Path]::GetFullPath(([string]$rootOutput[0]).Trim()).TrimEnd('\')
+    if (-not [string]::Equals($root, $candidateRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        return $null
+    }
     return [pscustomobject]@{ git = $gitPath; root = $root }
 }
 

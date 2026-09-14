@@ -11,8 +11,8 @@ using System.Threading;
 [assembly: AssemblyDescription("Starts ChatGPT with the remote access and Mobile projects injection")]
 [assembly: AssemblyCompany("Community")]
 [assembly: AssemblyProduct("ChatGPT Remote Enabler")]
-[assembly: AssemblyVersion("1.5.77.0")]
-[assembly: AssemblyFileVersion("1.5.77.0")]
+[assembly: AssemblyVersion("1.5.78.0")]
+[assembly: AssemblyFileVersion("1.5.78.0")]
 
 internal static class ChatGPTRemoteLauncher
 {
@@ -45,9 +45,9 @@ internal static class ChatGPTRemoteLauncher
 
     private static string GetStableRoot()
     {
-        string commonData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
-        if (string.IsNullOrWhiteSpace(commonData)) return null;
-        return Path.GetFullPath(Path.Combine(commonData, "CodexRemoteFeatures", "ChatGPT-Remote-Enabler-Windows-x64"));
+        string localData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        if (string.IsNullOrWhiteSpace(localData)) return null;
+        return Path.GetFullPath(Path.Combine(localData, "CodexRemoteFeatures", "ChatGPT-Remote-Enabler-Windows-x64"));
     }
 
     private static bool HasNoReparsePointsThrough(string path, string stopAt)
@@ -70,8 +70,8 @@ internal static class ChatGPTRemoteLauncher
         try
         {
             root = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar);
-            string commonData = Path.GetFullPath(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData)).TrimEnd(Path.DirectorySeparatorChar);
-            if (!root.StartsWith(commonData + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) || !HasNoReparsePointsThrough(root, commonData)) return false;
+            string localData = Path.GetFullPath(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData)).TrimEnd(Path.DirectorySeparatorChar);
+            if (!root.StartsWith(localData + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) || !HasNoReparsePointsThrough(root, localData)) return false;
             string version = Path.Combine(root, "VERSION");
             string manifest = Path.Combine(root, "RELEASE-MANIFEST.sha256");
             string launcher = Path.Combine(root, entryPoint);

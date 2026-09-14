@@ -58,7 +58,7 @@ assert.throws(() => session.safeRemovePrepared(config(), tempRoot), /outside the
 
 function harness(options = {}) {
   const statuses = [];
-  const calls = { apply: 0, check: 0, close: 0, closingExpected: [], handoff: 0, hotReload: 0, isAlive: 0, notify: 0, prepare: 0, probe: 0, recover: 0, relaunch: 0, removed: [] };
+  const calls = { apply: 0, check: 0, close: 0, closingExpected: [], handoff: 0, hotReload: 0, hotReloadVersions: [], isAlive: 0, notify: 0, prepare: 0, probe: 0, recover: 0, relaunch: 0, removed: [] };
   const release = { version: "v1.5.32", archiveSha256: "b".repeat(64) };
   const activities = [...(options.activities ?? [{ known: true, busy: false }, { known: true, busy: false }])];
   const retained = path.join(sessionDirectory, "prepared", release.version, "verified");
@@ -95,7 +95,8 @@ function harness(options = {}) {
     async closeGracefully() { calls.close += 1; return options.closeResult !== false; },
     async hotReload(actual) {
       calls.hotReload += 1;
-      if (options.hotReloadError) throw options.hotReloadError;
+      calls.hotReloadVersions.push(actual.version);
+      if (options.hotReloadError && calls.hotReload === 1) throw options.hotReloadError;
       return { loaded: true, helperVersion: actual.version, rendererVersion: 82, ready: true };
     },
     async handoffCoordinator() { calls.handoff += 1; if (options.handoffError) throw options.handoffError; return { scheduled: true }; },
@@ -186,26 +187,14 @@ async function testPinnedHotReloadFlow() {
   assert.equal(h.calls.apply, 1);
   assert.equal(h.calls.recover, 1);
   assert.equal(h.calls.hotReload, 1);
-  assert.equal(h.calls.handoff, 1, "a compatible update must schedule the installed coordinator");
+  assert.equal(h.calls.handoff, 0, "a compatible update must keep the proven coordinator attached");
   assert.equal(h.calls.close, 0, "a compatible update must not close ChatGPT");
   assert.equal(h.calls.relaunch, 0, "a compatible update must not relaunch ChatGPT");
-  assert.equal(h.controller.stopping, true, "the old coordinator must yield after scheduling its installed replacement");
+  assert.equal(h.controller.stopping, false, "the old coordinator must remain attached when no takeover proof exists");
   assert.equal(h.controller.status.state, "current");
   assert.equal(h.controller.status.details.installedVersion, h.release.version);
   assert.match(h.controller.status.message, /without restarting ChatGPT/u);
   assert.ok(h.controller.history.some(entry => entry.state === "hot-reload-confirmed" && entry.version === h.release.version));
-}
-
-async function testHandoffFailureKeepsOldCoordinator() {
-  const h = harness({ hotCompatible: true, handoffError: new Error("simulated handoff failure") });
-  await h.controller.check(true);
-  await h.controller.queue();
-  await waitOperation(h.controller);
-  assert.equal(h.calls.apply, 1);
-  assert.equal(h.calls.handoff, 1);
-  assert.equal(h.calls.close, 0);
-  assert.equal(h.controller.status.state, "current", "the installed live renderer remains current when only coordinator handoff fails");
-  assert.equal(h.controller.stopping, false, "the old coordinator must remain attached when replacement scheduling fails");
 }
 
 async function testHotReloadFailureKeepsAppOpen() {
@@ -215,7 +204,8 @@ async function testHotReloadFailureKeepsAppOpen() {
   await waitOperation(h.controller);
   assert.equal(h.calls.apply, 0, "file replacement must not start when prepared live reload fails");
   assert.equal(h.calls.recover, 0);
-  assert.equal(h.calls.hotReload, 1);
+  assert.equal(h.calls.hotReload, 2, "a partially activated candidate must be replaced by the still-installed prior renderer");
+  assert.deepEqual(h.calls.hotReloadVersions, [h.release.version, "v1.0.0"], "the rollback reload must use the exact prior installed version");
   assert.equal(h.calls.close, 0);
   assert.equal(h.calls.relaunch, 0);
   assert.equal(h.calls.notify, 0);
@@ -609,6 +599,42 @@ async function testProductionRendererReadinessContract() {
   }
 }
 
+async function testMacHotReloadIdentityArguments() {
+  const cfg = config({
+    platform: "darwin",
+    updaterPath: path.join(bundleRoot, "Update-ChatGPTRemote.sh"),
+    platformHelperPath: path.join(bundleRoot, "UpdateSessionPlatform.sh"),
+    app: { pid: 4321, startToken: "Sat Sep  5 12:00:00 2026", executablePath: "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT", appPath: "/Applications/ChatGPT.app", bundleId: "com.example.ChatGPT" },
+    relaunch: { entryPointRelative: "MobileProjectView-macOS-arm64.sh", environment: { CODEX_REMOTE_LOCAL_NAME: "MacBook-Pro", CODEX_REMOTE_PEER_NAME: "Windows-VM" } },
+  });
+  const injector = path.join(installRoot, "inject.js");
+  fs.writeFileSync(injector, "// fixture injector\n");
+  fs.writeFileSync(path.join(installRoot, "VERSION"), "v2.0.0\n");
+  let invocation;
+  const adapter = new session.PlatformAdapter(cfg, { runCommand: async (command, args) => {
+    if (command === process.execPath) {
+      invocation = { command, args };
+      return { stdout: `${JSON.stringify({ ok: true, report: { active: true, version: 82, readiness: { ready: true } } })}\n`, stderr: "" };
+    }
+    return { stdout: '{"running":true}\n', stderr: "" };
+  } });
+  try {
+    await adapter.hotReload({ version: "v2.0.0" });
+    assert.equal(invocation.args[invocation.args.indexOf("--local-name") + 1], "MacBook-Pro");
+    assert.equal(invocation.args[invocation.args.indexOf("--single-remote-name") + 1], "Windows-VM");
+  } finally {
+    fs.rmSync(injector, { force: true });
+    fs.writeFileSync(path.join(installRoot, "VERSION"), "v1.0.0\n");
+  }
+}
+
+function testMacLauncherCaptureIdentity() {
+  const source = fs.readFileSync(path.join(root, "macos", "MobileProjectView-macOS-arm64.sh"), "utf8");
+  assert.doesNotMatch(source, /capture_exact_app_identity/u, "the coordinator-only macOS path must call the defined identity capture function");
+  assert.match(source, /identity="\$\(capture_app_identity\)"/u);
+  assert.match(source, /CODEX_REMOTE_LOCAL_NAME:localName/u, "new macOS coordinators must retain the actual local computer name");
+}
+
 async function testActualWindowsCheck() {
   if (process.platform !== "win32" || process.argv.includes("--skip-actual-updater")) return;
   const archiveSha256 = crypto.createHash("sha256").update("fixture archive").digest("hex");
@@ -658,7 +684,6 @@ async function testActualWindowsCheck() {
     await testReadOnlyHistoryRefresh();
     await testPinnedIdleFlow();
     await testPinnedHotReloadFlow();
-    await testHandoffFailureKeepsOldCoordinator();
     await testHotReloadFailureKeepsAppOpen();
     await testHotApplyFailureRestoresPriorRenderer();
     testHotReloadCompatibility();
@@ -679,6 +704,8 @@ async function testActualWindowsCheck() {
     await testExactMacRelaunchArguments();
     await testUpdaterMappingsAndPrettyJson();
     await testProductionRendererReadinessContract();
+    await testMacHotReloadIdentityArguments();
+    testMacLauncherCaptureIdentity();
     await testActualWindowsCheck();
     process.stdout.write(`${JSON.stringify({ ok: true, persistentHistory: true, controllerFlows: 13, monitorSingleflight: true, malformedLockFailClosed: true, concurrentLockReclaim: true, timeoutTreeContained: true, exactRelaunch: true, exactMacRelaunchSkipsPrelaunch: true, prettyJson: true, actualWindowsCheck: process.platform === "win32" && !process.argv.includes("--skip-actual-updater") })}\n`);
   } finally {

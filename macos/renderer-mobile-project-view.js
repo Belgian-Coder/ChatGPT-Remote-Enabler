@@ -49,6 +49,8 @@
   const REMOTE_INVENTORY_RETRY_MS = 15000;
   const REMOTE_INVENTORY_ACTIVE_TTL_MS = 5000;
   const REMOTE_INVENTORY_IDLE_TTL_MS = 30000;
+  const MAX_RELAY_PEER_COUNT = 20;
+  const MAX_RELAY_PEER_BYTES = 512 * 1024;
   const RECENT_TASK_ACTIVATION_RETENTION_MS = 120000;
   const REMOTE_TASK_STATUS_MAX_AGE_MS = 30000;
   const ARCHIVE_RECONCILIATION_DELAYS_MS = Object.freeze([750, 2500]);
@@ -71,7 +73,7 @@
     "unknown",
   ]);
   const PUBLISHER_VERSION = 53;
-  const VERSION = 85;
+  const VERSION = 86;
   // Keep outstanding writes locked across renderer reinjection until the underlying RPC settles.
   const peerWriteLocks = globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ instanceof Map
     ? globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ : (globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ = new Map());
@@ -290,6 +292,7 @@
     nativeConnectionSignature: "",
     nativeConnectionTimer: null,
     nativeConnectionCatalogPending: null,
+    nativeConnectionCatalogGeneration: null,
     nativeConnectionCatalogLastAttemptAt: 0,
     nativeConnectionCatalogLastSuccessfulAt: 0,
     nativeConnectionCatalogLastError: null,
@@ -312,8 +315,8 @@
     return !state.disposed && generation === state.discoveryGeneration;
   }
 
-  function invalidateDiscoveryCaches() {
-    state.discoveryGeneration += 1;
+  function invalidateDiscoveryCaches(options = {}) {
+    if (options.bumpGeneration !== false) state.discoveryGeneration += 1;
     state.deviceRefreshGeneration += 1;
     state.hostDiscoveryCache = null;
     state.hostDiscoveryDirty = true;
@@ -381,7 +384,17 @@
     const operationGeneration = Number.isInteger(generation) ? generation : state.discoveryGeneration;
     if (force === true) state.nativeStateBridgeRetryAt = 0;
     if (typeof state.localFetchFromHost === "function") return Promise.resolve(state.localFetchFromHost);
-    if (state.nativeStateBridgePending) return state.nativeStateBridgePending;
+    if (state.nativeStateBridgePending) {
+      const pending = state.nativeStateBridgePending;
+      if (force === true && state.nativeStateBridgeGeneration !== operationGeneration) {
+        const retry = pending.then(() => {
+          if (state.disposed || typeof state.localFetchFromHost === "function") return state.localFetchFromHost;
+          return ensureLocalStateBridge(importModule, true, operationGeneration);
+        }, () => ensureLocalStateBridge(importModule, true, operationGeneration));
+        return retry;
+      }
+      return pending;
+    }
     if (force !== true && Date.now() < state.nativeStateBridgeRetryAt) return Promise.resolve(null);
     state.nativeStateBridgeRetryAt = Date.now() + 10000;
     state.nativeStateBridgeGeneration = operationGeneration;
@@ -1062,14 +1075,24 @@
         // ChatGPT can include the current host in its returned account catalog.
         // It is already represented by the permanent local entry and must not
         // be reintroduced as a disconnected remote device.
-        if (localName && connectionName === localName) {
+        const online = boolean(item.online);
+        const inventory = state.remoteProjectInventories.get(hostId);
+        const inventoryHasIdentity = Boolean((inventory?.threadsAuthoritative === true
+          && (inventory.threads ?? []).some(thread => rawConversationId(thread?.id ?? "")))
+          || (inventory?.projects ?? []).some(project => [project.cwd, ...(project.rootPaths ?? [])].some(Boolean)));
+        const distinctInventory = Boolean(inventoryHasIdentity && inventory.pending !== true && !inventory.error && !inventoryMatchesLocal(inventory));
+        if (localName && connectionName === localName && online !== true && !distinctInventory) {
           // Remember the native id as another identity for this process. Other
           // discovery and cached-inventory paths can contain the same id even
           // after it is removed from the native catalog snapshot.
           removeRemoteHostState(hostId);
           continue;
         }
-        connections.push({ hostId, name: reportedName?.trim() ?? null, online: boolean(item.online), autoConnect: boolean(item.autoConnect) });
+        // A connected native peer or a complete, distinct inventory overrides
+        // an earlier ambiguous name-only classification. Computer names are
+        // user-editable and are not unique account identities.
+        if (localName && connectionName === localName) state.localRuntimeHostIds.delete(hostId);
+        connections.push({ hostId, name: reportedName?.trim() ?? null, online, autoConnect: boolean(item.autoConnect) });
       }
       connections.sort((left, right) => left.hostId.localeCompare(right.hostId));
       return {
@@ -1103,23 +1126,35 @@
     return "unknown";
   }
 
-  function refreshNativeConnectionCatalog(force = false) {
+  function refreshNativeConnectionCatalog(force = false, generation = null) {
     if (state.disposed) return Promise.resolve(false);
-    if (state.nativeConnectionCatalogPending) return state.nativeConnectionCatalogPending;
+    if (state.nativeConnectionCatalogPending) {
+      if (Number.isInteger(generation)
+        && state.deviceRefreshPending
+        && state.deviceRefreshActiveGeneration === generation) state.nativeConnectionCatalogGeneration = generation;
+      return state.nativeConnectionCatalogPending;
+    }
     const now = Date.now();
     if (force !== true && now - state.nativeConnectionCatalogLastAttemptAt < NATIVE_CONNECTION_CATALOG_REFRESH_MS) return Promise.resolve(false);
     state.nativeConnectionCatalogLastAttemptAt = now;
     const pending = (async () => {
-      const fetchFromHost = await ensureLocalStateBridge(undefined, force, state.discoveryGeneration);
+      const ownsGeneration = () => {
+        const operationGeneration = Number.isInteger(generation) ? generation : state.nativeConnectionCatalogGeneration;
+        return Number.isInteger(operationGeneration)
+          && state.deviceRefreshPending
+          && state.deviceRefreshActiveGeneration === operationGeneration
+          && state.discoveryGeneration === operationGeneration;
+      };
+      const fetchFromHost = await ensureLocalStateBridge(undefined, force, Number.isInteger(generation) ? generation : state.discoveryGeneration);
       if (typeof fetchFromHost !== "function") throw new Error("Native connection refresh is unavailable");
       const result = await fetchFromHost("refresh-remote-control-connections");
       if (!result || !Array.isArray(result.remoteControlConnections)) throw new Error("Native connection refresh returned invalid data");
       // The native handler updates Electron's shared catalogue before returning.
       // Read it immediately and once more on the next task so a restored device
       // invalidates cached discovery without requiring Settings or an app restart.
-      let changed = refreshNativeConnectionSnapshot();
+      let changed = refreshNativeConnectionSnapshot({ preserveGeneration: ownsGeneration() });
       await new Promise(resolve => setTimeout(resolve, 0));
-      changed = refreshNativeConnectionSnapshot() || changed;
+      changed = refreshNativeConnectionSnapshot({ preserveGeneration: ownsGeneration() }) || changed;
       state.nativeConnectionCatalogLastSuccessfulAt = Date.now();
       state.nativeConnectionCatalogLastError = null;
       return changed;
@@ -1127,13 +1162,17 @@
       state.nativeConnectionCatalogLastError = String(error?.message ?? error).slice(0, 160);
       return false;
     }).finally(() => {
-      if (state.nativeConnectionCatalogPending === pending) state.nativeConnectionCatalogPending = null;
+      if (state.nativeConnectionCatalogPending === pending) {
+        state.nativeConnectionCatalogPending = null;
+        state.nativeConnectionCatalogGeneration = null;
+      }
     });
+    state.nativeConnectionCatalogGeneration = Number.isInteger(generation) ? generation : null;
     state.nativeConnectionCatalogPending = pending;
     return pending;
   }
 
-  function refreshNativeConnectionSnapshot() {
+  function refreshNativeConnectionSnapshot(options = {}) {
     if (state.disposed) return false;
     const snapshot = readNativeConnectionSnapshot();
     // A missing bridge/cache read is not evidence that a known device changed
@@ -1167,8 +1206,9 @@
     // Cached project/task rows remain available until a complete replacement
     // arrives, while the generation prevents an old read from winning later.
     const refreshWasPending = state.deviceRefreshPending;
-    invalidateDiscoveryCaches();
-    if (refreshWasPending) state.deviceRefreshQueued = true;
+    const preserveGeneration = options.preserveGeneration === true;
+    invalidateDiscoveryCaches({ bumpGeneration: !preserveGeneration });
+    if (refreshWasPending && !preserveGeneration) state.deviceRefreshQueued = true;
     state.nativeConnectionRefreshPending = true;
     if (state.active) {
       scheduleNativeInventoryHydration();
@@ -1184,10 +1224,10 @@
     // method. The stock Settings screen does this only while it is mounted;
     // keeping the same bounded cadence here prevents a controller sidebar from
     // retaining an old offline record while the remote host is already online.
-    void refreshNativeConnectionCatalog(true);
+    if (document.visibilityState !== "hidden") void refreshNativeConnectionCatalog(true);
     state.nativeConnectionTimer = setInterval(() => {
       refreshNativeConnectionSnapshot();
-      void refreshNativeConnectionCatalog();
+      if (document.visibilityState !== "hidden") void refreshNativeConnectionCatalog();
     }, 2000);
     state.nativeConnectionTimer?.unref?.();
   }
@@ -1440,7 +1480,10 @@
   }
 
   function normalizePath(value) {
-    return (canonicalRemotePath(value) ?? value).replace(/\\/gu, "/").replace(/\/+$/u, "").toLocaleLowerCase();
+    const normalized = (canonicalRemotePath(value) ?? value).replace(/\\/gu, "/").replace(/\/+$/u, "");
+    // Windows drive and UNC paths are case-insensitive. POSIX paths are not;
+    // folding them merges distinct projects such as /work/Foo and /work/foo.
+    return /^(?:[A-Za-z]:\/|\/\/)/u.test(normalized) ? normalized.toLocaleLowerCase() : normalized;
   }
 
   function normalizeHostId(hostId) {
@@ -1756,6 +1799,19 @@
     return `${codexHome.replace(/[\\/]+$/u, "")}${separator}remote-project-peer-${peerInventorySlug(name)}-v1.json`;
   }
 
+  function peerCacheDisplayName(value) {
+    return typeof value === "string" ? value.trim().toLocaleLowerCase() : "";
+  }
+
+  function peerCacheIdentityMatches(host, inventory, sameNameCount = 1) {
+    const hostId = normalizeHostId(host?.id);
+    const publisherHostId = normalizeHostId(inventory?.publisherHostId);
+    if (publisherHostId && publisherHostId !== "local") return publisherHostId === hostId;
+    const expectedName = peerCacheDisplayName(host?.name);
+    return Boolean(expectedName && sameNameCount === 1
+      && peerCacheDisplayName(inventory?.hostDisplayName) === expectedName);
+  }
+
   function encodeText(value) {
     const bytes = new TextEncoder().encode(value);
     let binary = "";
@@ -1899,6 +1955,7 @@
     const threadsTruncated = Array.isArray(value.threads) && value.threads.length > 10000;
     const threadsAuthoritative = Array.isArray(value.threads) && !threadsTruncated;
     const publisherVersion = Number.isInteger(value.publisherVersion) ? value.publisherVersion : undefined;
+    const publisherHostId = normalizeHostId(value.publisherHostId);
     const threadScope = value.threadScope === "user-visible" ? "user-visible" : null;
     const threadScopeGeneratedAt = threadScope ? Date.parse(value.threadScopeGeneratedAt ?? value.generatedAt) : undefined;
     const threads = (Array.isArray(value.threads) ? value.threads : []).slice(0, 10000).flatMap((thread) => {
@@ -1932,7 +1989,7 @@
         } catch {}
       }
     }
-    return { deviceAliases, generatedAt, hostDisplayName, helperVersion: releaseVersion(value.helperVersion), peers, projects: [...projects.values()].sort((left, right) => left.name.localeCompare(right.name)), projectsAuthoritative: !projectsTruncated, projectsTruncated, publisherVersion, tasks, tasksTruncated, threadScope, threadScopeGeneratedAt, threads, threadsAuthoritative, threadsTruncated };
+    return { deviceAliases, generatedAt, hostDisplayName, helperVersion: releaseVersion(value.helperVersion), peers, projects: [...projects.values()].sort((left, right) => left.name.localeCompare(right.name)), projectsAuthoritative: !projectsTruncated, projectsTruncated, publisherHostId: publisherHostId && publisherHostId !== "local" ? publisherHostId : null, publisherVersion, tasks, tasksTruncated, threadScope, threadScopeGeneratedAt, threads, threadsAuthoritative, threadsTruncated };
   }
 
   function serializePeerInventory(inventory) {
@@ -1950,6 +2007,7 @@
       threadScope: inventory.threadScope,
       threads: inventory.threads ?? [],
     };
+    if (inventory.publisherHostId) payload.publisherHostId = inventory.publisherHostId;
     const threadScopeGeneratedAt = Number(inventory.threadScopeGeneratedAt ?? inventory.generatedAt);
     if (inventory.threadScope === "user-visible" && Number.isFinite(threadScopeGeneratedAt)) {
       payload.threadScopeGeneratedAt = new Date(threadScopeGeneratedAt).toISOString();
@@ -2213,8 +2271,31 @@
     return JSON.stringify(payload, (key, value) => value === null && ["projectId", "workspaceKind", "updatedAt", "helperVersion"].includes(key) ? undefined : value);
   }
 
+  function utf8ByteLength(value) {
+    return new TextEncoder().encode(value).length;
+  }
+
+  function boundedRelayPeers(peers, hostId = null) {
+    const excludedHostId = normalizeHostId(hostId);
+    const candidates = Object.entries(peers ?? {})
+      .filter(([id, peer]) => normalizeHostId(id) !== excludedHostId && peer && typeof peer === "object" && !Array.isArray(peer))
+      .map(([id, peer]) => {
+        const generatedAt = Number.isFinite(peer.generatedAt) ? peer.generatedAt : Date.parse(peer.generatedAt ?? "");
+        return { generatedAt: Number.isFinite(generatedAt) ? generatedAt : 0, id, peer };
+      })
+      .sort((left, right) => right.generatedAt - left.generatedAt || left.id.localeCompare(right.id));
+    const selected = {};
+    for (const candidate of candidates) {
+      if (Object.keys(selected).length >= MAX_RELAY_PEER_COUNT) break;
+      const next = { ...selected, [candidate.id]: candidate.peer };
+      if (utf8ByteLength(compactInventoryText(next)) > MAX_RELAY_PEER_BYTES) continue;
+      selected[candidate.id] = candidate.peer;
+    }
+    return selected;
+  }
+
   function peerTransferText(payload, hostId) {
-    const peers = Object.fromEntries(Object.entries(payload.peers ?? {}).filter(([id]) => normalizeHostId(id) !== normalizeHostId(hostId)));
+    const peers = boundedRelayPeers(payload.peers, hostId);
     const deviceAliases = deviceAliasesForDestination(payload.deviceAliases, hostId);
     const transferred = { ...payload, peers };
     if (deviceAliases) transferred.deviceAliases = deviceAliases; else delete transferred.deviceAliases;
@@ -2363,6 +2444,11 @@
     const runtime = state.localRuntime;
     if (!state.localCodexHome || typeof runtime?.requestClient?.sendRequest !== "function") return;
     const now = Date.now();
+    const displayNameCounts = new Map();
+    for (const host of hosts) {
+      const name = peerCacheDisplayName(host?.name);
+      if (name) displayNameCounts.set(name, (displayNameCounts.get(name) ?? 0) + 1);
+    }
     for (const host of hosts) {
       if (host.id === "local") continue;
       const cache = state.peerCacheStates.get(host.id) ?? {};
@@ -2371,6 +2457,9 @@
       sendRequestWithTimeout(runtime.requestClient, "fs/readFile", { path: peerInventoryPath(state.localCodexHome, host.name) }).then((result) => {
         if (state.disposed) return;
         const parsed = parseRemoteProjectInventory(result);
+        if (!peerCacheIdentityMatches(host, parsed, displayNameCounts.get(peerCacheDisplayName(host.name)) ?? 0)) {
+          throw new Error("Peer cache identity does not match the requested device");
+        }
         mergeInventoryDeviceAliases(parsed.deviceAliases, host.id, true);
         const existing = state.remoteProjectInventories.get(host.id);
         if (!directInventoryHasPriority(host.id, existing)
@@ -2521,10 +2610,11 @@
       if (!inventory || inventory.threadsAuthoritative !== true) return [];
       return [[hostId, serializePeerInventory(inventory)]];
     }));
+    const boundedPeers = boundedRelayPeers(peers);
     const localThreadInventory = state.threadInventories.get("local");
     const nativeProjectSnapshot = publishedLocalProjectSnapshot(null);
     const deviceAliases = publishedDeviceAliases();
-    const statusSignature = publicationSignature(peers, nativeProjectSnapshot.projects, tasks, threads, localThreadInventory?.fetchedAt ?? 0, deviceAliases);
+    const statusSignature = publicationSignature(boundedPeers, nativeProjectSnapshot.projects, tasks, threads, localThreadInventory?.fetchedAt ?? 0, deviceAliases);
     const publishInterval = inventoryHasWork(tasks, threads) ? REMOTE_INVENTORY_ACTIVE_MS : REMOTE_INVENTORY_IDLE_MS;
     const statusChanged = statusSignature !== state.localInventoryStatusSignature;
     if (!force && !statusChanged && now - state.localInventoryPublishedAt < publishInterval) return;
@@ -2553,7 +2643,8 @@
       removeGossipedLocalInventoryDuplicates();
       const generatedAt = new Date().toISOString();
       const threadScopeGeneratedAt = new Date(currentThreadInventory.fetchedAt).toISOString();
-      const payload = { generatedAt, hostDisplayName: config.localDisplayName || null, helperVersion: releaseVersion(config.helperVersion), peers, projects, publisherVersion: PUBLISHER_VERSION, schemaVersion: 1, tasks, threadScope: "user-visible", threadScopeGeneratedAt, threads };
+      const localHostIds = [...state.localRuntimeHostIds].filter((hostId) => normalizeHostId(hostId) !== "local");
+      const payload = { generatedAt, hostDisplayName: config.localDisplayName || null, helperVersion: releaseVersion(config.helperVersion), peers: boundedPeers, projects, publisherHostId: localHostIds.length === 1 ? normalizeHostId(localHostIds[0]) : undefined, publisherVersion: PUBLISHER_VERSION, schemaVersion: 1, tasks, threadScope: "user-visible", threadScopeGeneratedAt, threads };
       if (deviceAliases) payload.deviceAliases = deviceAliases;
       const dataBase64 = encodeText(compactInventoryText(payload));
       return sendRequestWithTimeout(runtime.requestClient, "fs/writeFile", { dataBase64, path: inventoryPath(codexHome) })
@@ -3605,6 +3696,7 @@
 
   function refreshStaleDeviceDataOnResume() {
     if (state.disposed || (document.visibilityState && document.visibilityState !== "visible")) return;
+    void refreshNativeConnectionCatalog(true);
     if (deviceDataIsStale()) refreshDeviceHealth();
   }
 
@@ -3613,7 +3705,7 @@
     const bridgeWasPending = Boolean(state.nativeStateBridgePending);
     const remoteInventoryWasPending = [...state.remoteProjectInventories.values()].some((inventory) => inventory?.pending === true);
     const localBridge = ensureLocalStateBridge(undefined, true, generation);
-    await refreshNativeConnectionCatalog(true);
+    await refreshNativeConnectionCatalog(true, generation);
     if (!isCurrentDiscoveryGeneration(generation)) {
       if (!state.disposed) state.deviceRefreshQueued = true;
       return { complete: false, error: "Refresh was superseded" };
@@ -3711,8 +3803,8 @@
     if (options.respectCooldown === true && Date.now() < state.healthRefreshUntil) return Promise.resolve(false);
     const backgroundPending = state.inventoryHydrationPending
       || [...state.remoteProjectInventories.values()].some((inventory) => inventory?.pending === true);
-    refreshNativeConnectionSnapshot();
-    const generation = invalidateDiscoveryCaches();
+    const snapshotChanged = refreshNativeConnectionSnapshot();
+    const generation = snapshotChanged ? state.discoveryGeneration : invalidateDiscoveryCaches();
     state.deviceRefreshPending = true;
     state.deviceRefreshQueueEligible = backgroundPending;
     state.deviceRefreshActiveGeneration = generation;
@@ -7540,6 +7632,7 @@
     state.nativeStateBridgePending = null;
     state.nativeStateBridgeGeneration = null;
     state.nativeConnectionCatalogPending = null;
+    state.nativeConnectionCatalogGeneration = null;
     state.localRegisteredProjectsPending = false;
     state.localRegisteredProjectsPendingGeneration = null;
     state.localRegisteredProjectsPendingPromise = null;

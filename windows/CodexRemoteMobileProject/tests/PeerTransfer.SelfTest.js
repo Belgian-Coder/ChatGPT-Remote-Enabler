@@ -5,7 +5,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 const filename = path.join(__dirname, "..", "renderer-mobile-project-view.js");
 const original = fs.readFileSync(filename, "utf8").replace(/\r\n/g, "\n");
-const source = original.replace("  return install();\n})();", "  globalThis.transportFixture = { state, compactInventoryText, peerTransferText, peerContentSignature, inventoryHasWork, parseInventoryPayload, serializePeerInventory, queuePeerTransfer, drainPeerTransfer, pausePeerTransfer, resumePausedPeerTransfers, resolveRemoteHome, scheduleRemoteProjectInventory, connectionGuidance, peerWriteLocks };\n})();");
+const source = original.replace("  return install();\n})();", "  globalThis.transportFixture = { state, boundedRelayPeers, compactInventoryText, peerTransferText, peerContentSignature, peerCacheIdentityMatches, inventoryHasWork, parseInventoryPayload, serializePeerInventory, queuePeerTransfer, drainPeerTransfer, pausePeerTransfer, resumePausedPeerTransfers, resolveRemoteHome, scheduleRemoteProjectInventory, connectionGuidance, peerWriteLocks };\n})();");
 assert.notEqual(original, source);
 let now = Date.now();
 let timerId = 0;
@@ -28,12 +28,35 @@ const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve()
 async function advance(ms) { now += ms; for (let i = 0; i < 30; i++) { const due = [...timers].filter(([,v]) => v.at <= now); if (!due.length) break; for (const [id, v] of due) { timers.delete(id); v.fn(); } await flush(); } }
 (async () => {
   const originalPayload = snapshot("Unicode task ✨");
+  const identityInventory = t.parseInventoryPayload(originalPayload);
+  assert.equal(t.peerCacheIdentityMatches({ id: host, name: "Fixture peer" }, identityInventory, 1), true);
+  assert.equal(t.peerCacheIdentityMatches({ id: host, name: "Fixture-peer" }, identityInventory, 1), false, "lossy filename slug collisions must not misattribute another device's cache");
+  assert.equal(t.peerCacheIdentityMatches({ id: host, name: "Fixture peer" }, identityInventory, 2), false, "duplicate display names without a stable publisher id are ambiguous");
+  const identifiedInventory = t.parseInventoryPayload({ ...originalPayload, publisherHostId: host });
+  assert.equal(t.peerCacheIdentityMatches({ id: host, name: "Fixture peer" }, identifiedInventory, 2), true);
+  assert.equal(t.peerCacheIdentityMatches({ id: other, name: "Fixture peer" }, identifiedInventory, 2), false);
   const compact = JSON.parse(t.compactInventoryText(originalPayload));
   assert.deepEqual(JSON.parse(JSON.stringify(t.parseInventoryPayload(compact))), JSON.parse(JSON.stringify(t.parseInventoryPayload(originalPayload))), "nullable-field removal must preserve all parsed semantics");
   const payload = { ...originalPayload, peers: { [host]: snapshot("Receiver copy"), [other]: snapshot("Third peer") } };
   const sent = JSON.parse(t.peerTransferText(payload, host));
   assert.equal(sent.peers[host], undefined);
   assert.equal(sent.peers[other].threads[0].title, "Third peer");
+  const relayPeers = Object.fromEntries(Array.from({ length: 30 }, (_, index) => {
+    const peerHost = `${host}-relay-${String(index).padStart(2, "0")}`;
+    return [peerHost, { ...snapshot(`Relay ${index}`), generatedAt: new Date(now - index * 1000).toISOString() }];
+  }));
+  const relayPayload = JSON.parse(t.peerTransferText({ ...originalPayload, peers: { [host]: snapshot("Receiver copy"), ...relayPeers } }, host));
+  const relayIds = Object.keys(relayPayload.peers);
+  assert.equal(relayIds.length, 20, "relay payloads must cap the number of forwarded peers");
+  assert.ok(relayIds.every(id => Number(id.split("-relay-").at(-1)) < 20), "relay cap must retain the freshest peer snapshots");
+  assert.ok(Buffer.byteLength(JSON.stringify(relayPayload.peers), "utf8") <= 512 * 1024, "relay payloads must stay inside the aggregate byte budget");
+  const oversizedPeers = Object.fromEntries(Array.from({ length: 4 }, (_, index) => {
+    const peerHost = `${host}-oversized-${index}`;
+    const oversized = { ...snapshot(`Oversized ${index}`), threads: Array.from({ length: 100 }, (__, threadIndex) => ({ id: `oversized-${index}-${threadIndex}`, title: "x".repeat(2000) })) };
+    return [peerHost, oversized];
+  }));
+  const boundedOversized = JSON.parse(t.peerTransferText({ ...originalPayload, peers: oversizedPeers }, host));
+  assert.ok(Buffer.byteLength(JSON.stringify(boundedOversized.peers), "utf8") <= 512 * 1024, "large relayed peers must be dropped before the aggregate exceeds its budget");
   const selfAlias = { schemaVersion: 1, updatedAt: now, value: "Source alias", writerId: "source" };
   const recipientAlias = { schemaVersion: 1, updatedAt: now + 1, value: null, writerId: "source" };
   const otherAlias = { schemaVersion: 1, updatedAt: now + 2, value: "Third alias", writerId: "source" };
@@ -230,5 +253,5 @@ async function advance(ms) { now += ms; for (let i = 0; i < 30; i++) { const due
   const twoClient = { ...large, peers: { [host]: large } };
   const oldBytes = Buffer.byteLength(JSON.stringify(twoClient)); const newBytes = Buffer.byteLength(t.peerTransferText(twoClient, host));
   assert.ok(newBytes < oldBytes * .55);
-  console.log(JSON.stringify({ nullableSemanticsPreserved: true, recipientEchoRemoved: true, aliasRecipientContextMapped: true, aliasRecipientContextNotForwarded: true, aliasTombstoneSerialized: true, thirdPeerRetained: true, timestampEchoSuppressed: true, idleTaskDetection: true, latestSnapshotCoalesced: true, offlineOutboundPaused: true, offlineNewestResumed: true, offlineConfigRaceGuarded: true, offlineWriteRaceSerialized: true, maxConcurrentWrites: maxActive, timeoutLockAcrossReinjection: true, exponentialRetry: true, expiredAndDisposedJobsSkipped: true, sharedPullPushDiscovery: true, failedReadPreservesAuthority: true, connectionFindings: 6, fixtureThreadsPerClient: 1000, previousPushJsonBytes: oldBytes, optimizedPushJsonBytes: newBytes, pushReductionPercent: Math.round(100 * (1 - newBytes / oldBytes)) }));
+  console.log(JSON.stringify({ nullableSemanticsPreserved: true, recipientEchoRemoved: true, relayPeerCountCapped: true, relayPeerBudgetCapped: true, relayFreshestPeersRetained: true, aliasRecipientContextMapped: true, aliasRecipientContextNotForwarded: true, aliasTombstoneSerialized: true, thirdPeerRetained: true, timestampEchoSuppressed: true, idleTaskDetection: true, latestSnapshotCoalesced: true, offlineOutboundPaused: true, offlineNewestResumed: true, offlineConfigRaceGuarded: true, offlineWriteRaceSerialized: true, maxConcurrentWrites: maxActive, timeoutLockAcrossReinjection: true, exponentialRetry: true, expiredAndDisposedJobsSkipped: true, sharedPullPushDiscovery: true, failedReadPreservesAuthority: true, connectionFindings: 6, fixtureThreadsPerClient: 1000, previousPushJsonBytes: oldBytes, optimizedPushJsonBytes: newBytes, pushReductionPercent: Math.round(100 * (1 - newBytes / oldBytes)) }));
 })().catch(error => { console.error(error); process.exitCode = 1; });

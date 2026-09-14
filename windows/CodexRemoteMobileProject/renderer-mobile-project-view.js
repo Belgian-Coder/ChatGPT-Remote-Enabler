@@ -71,7 +71,7 @@
     "unknown",
   ]);
   const PUBLISHER_VERSION = 53;
-  const VERSION = 83;
+  const VERSION = 84;
   // Keep outstanding writes locked across renderer reinjection until the underlying RPC settles.
   const peerWriteLocks = globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ instanceof Map
     ? globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ : (globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ = new Map());
@@ -1049,20 +1049,26 @@
       if (!Array.isArray(catalog) || !status || typeof status !== "object" || Array.isArray(status)) return null;
       const boolean = value => typeof value === "boolean" ? value : null;
       const connections = [];
+      const localName = !isSyntheticHostName(config.localDisplayName)
+        ? config.localDisplayName.trim().replace(/\.local$/iu, "").toLocaleLowerCase()
+        : null;
       for (const item of Array.isArray(catalog) ? catalog.slice(0, 1000) : []) {
         const hostId = normalizeHostId(item?.hostId ?? item?.envId);
         if (typeof hostId !== "string" || !/^remote-control:env_/iu.test(hostId)) continue;
         const reportedName = [item.displayName, item.hostName].find(name => !isSyntheticHostName(name));
-        const localName = !isSyntheticHostName(config.localDisplayName)
-          ? config.localDisplayName.trim().replace(/\.local$/iu, "").toLocaleLowerCase()
-          : null;
         const connectionName = !isSyntheticHostName(reportedName)
           ? reportedName.trim().replace(/\.local$/iu, "").toLocaleLowerCase()
           : null;
         // ChatGPT can include the current host in its returned account catalog.
         // It is already represented by the permanent local entry and must not
         // be reintroduced as a disconnected remote device.
-        if (localName && connectionName === localName) continue;
+        if (localName && connectionName === localName) {
+          // Remember the native id as another identity for this process. Other
+          // discovery and cached-inventory paths can contain the same id even
+          // after it is removed from the native catalog snapshot.
+          removeRemoteHostState(hostId);
+          continue;
+        }
         connections.push({ hostId, name: reportedName?.trim() ?? null, online: boolean(item.online), autoConnect: boolean(item.autoConnect) });
       }
       connections.sort((left, right) => left.hostId.localeCompare(right.hostId));

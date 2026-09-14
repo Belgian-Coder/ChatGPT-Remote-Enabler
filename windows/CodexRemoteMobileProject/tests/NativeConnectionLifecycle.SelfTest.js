@@ -58,6 +58,8 @@ const flush = async () => { for (let i = 0; i < 40; i++) await Promise.resolve()
 
   first.f.state.remoteRuntimeCache.set(host, { obsolete: true });
   first.f.state.remoteRuntimeScannedAt = Date.now();
+  first.f.state.remoteProjectInventories.set(localHost, { hostDisplayName: "Fixture Local", projects: [], tasks: new Map(), threads: [] });
+  first.f.state.hostConnectivity.set(localHost, { available: false, checkedAt: Date.now() });
   first.snapshots.set("remote_control_connections_state", nativeState(true));
   first.snapshots.set("remote_control_connections", [
     { hostId: host, displayName: "Named workstation", hostName: "reported-hostname", online: true, autoConnect: true },
@@ -66,6 +68,9 @@ const flush = async () => { for (let i = 0; i < 40; i++) await Promise.resolve()
   [...first.intervals.values()][0]();
   assert.equal(first.f.nativeConnectionStatus(), "authorized");
   assert.equal(first.f.state.nativeConnectionSnapshot.connections.length, 1, "the native catalogue must exclude the current machine");
+  assert.equal(first.f.state.localRuntimeHostIds.has(localHost), true, "the native local id must be remembered across every discovery path");
+  assert.equal(first.f.state.remoteProjectInventories.has(localHost), false, "cached self inventory must be removed");
+  assert.equal(first.f.state.hostConnectivity.has(localHost), false, "cached self connectivity must be removed");
   assert.equal(first.f.state.remoteRuntimeCache.size, 0, "authorization must discard obsolete runtime discovery");
   assert.equal(first.f.state.remoteRuntimeScannedAt, 0);
   assert.equal(first.f.state.nativeConnectionRefreshPending, true, "a restored connection must bypass the previous inventory retry delay");

@@ -36,6 +36,7 @@ function boot(storage = new Map()) {
 }
 const host = "remote-control:" + "env" + "_lifecycle_peer";
 const newHost = "remote-control:" + "env" + "_empty_peer";
+const localHost = "remote-control:" + "env" + "_local_fixture";
 const nativeState = (authorized, extra = {}) => ({ available: true, authRequired: false, accessRequired: false, clientAuthorized: authorized, ...extra });
 const flush = async () => { for (let i = 0; i < 40; i++) await Promise.resolve(); };
 
@@ -58,12 +59,17 @@ const flush = async () => { for (let i = 0; i < 40; i++) await Promise.resolve()
   first.f.state.remoteRuntimeCache.set(host, { obsolete: true });
   first.f.state.remoteRuntimeScannedAt = Date.now();
   first.snapshots.set("remote_control_connections_state", nativeState(true));
-  first.snapshots.set("remote_control_connections", [{ hostId: host, displayName: "Named workstation", hostName: "reported-hostname", online: true, autoConnect: true }]);
+  first.snapshots.set("remote_control_connections", [
+    { hostId: host, displayName: "Named workstation", hostName: "reported-hostname", online: true, autoConnect: true },
+    { hostId: localHost, displayName: "Fixture Local.local", online: false, autoConnect: false },
+  ]);
   [...first.intervals.values()][0]();
   assert.equal(first.f.nativeConnectionStatus(), "authorized");
+  assert.equal(first.f.state.nativeConnectionSnapshot.connections.length, 1, "the native catalogue must exclude the current machine");
   assert.equal(first.f.state.remoteRuntimeCache.size, 0, "authorization must discard obsolete runtime discovery");
   assert.equal(first.f.state.remoteRuntimeScannedAt, 0);
   assert.equal(first.f.state.nativeConnectionRefreshPending, true, "a restored connection must bypass the previous inventory retry delay");
+  assert.equal(first.f.collectModel().hosts.some(item => item.id === localHost), false, "the current machine must not return as a disconnected remote duplicate");
   assert.equal(first.f.collectModel().hosts.find(item => item.id === host).name, "Named workstation", "a device without sidebar rows must use the native label");
   assert.equal(first.f.collectModel().tasks.length, 0);
   assert.equal(first.f.collectModel().projects.length, 0);
@@ -216,5 +222,5 @@ const flush = async () => { for (let i = 0; i < 40; i++) await Promise.resolve()
   assert.equal(catalogueRefreshes, 1, "the two-second observer must honor the bounded native refresh cadence");
   automatic.f.uninstall();
   assert.deepEqual([...first.requests, ...second.requests], [], "observation must never initiate authorization or native connection mutations");
-  console.log(JSON.stringify({ delayedNativeBridge: true, authorizationReported: true, catalogNamesWithoutRows: true, reconnectInvalidatesDiscovery: true, automaticNativeCatalogRefresh: true, boundedNativeCatalogRefresh: true, emptyProjectTransportAndModel: true, offlineRequestsSuppressed: true, offlineNativeHydrationSuppressed: true, missingCatalogPreservesOffline: true, missingStatusPreservesOffline: true, allOfflineRefreshComplete: true, cachedRowsRetainedOffline: true, runtimeCacheRetainedOnFailure: true, nativeAvailabilityWins: true, reconnectForcesInventory: true, fullRendererRestartRetainsNames: true, renamedLabelsWinOverInventory: true, observerDisposed: true, noNativeMutations: true }));
+  console.log(JSON.stringify({ delayedNativeBridge: true, authorizationReported: true, catalogNamesWithoutRows: true, localCatalogEntryExcluded: true, reconnectInvalidatesDiscovery: true, automaticNativeCatalogRefresh: true, boundedNativeCatalogRefresh: true, emptyProjectTransportAndModel: true, offlineRequestsSuppressed: true, offlineNativeHydrationSuppressed: true, missingCatalogPreservesOffline: true, missingStatusPreservesOffline: true, allOfflineRefreshComplete: true, cachedRowsRetainedOffline: true, runtimeCacheRetainedOnFailure: true, nativeAvailabilityWins: true, reconnectForcesInventory: true, fullRendererRestartRetainsNames: true, renamedLabelsWinOverInventory: true, observerDisposed: true, noNativeMutations: true }));
 })().catch(error => { console.error(error); process.exitCode = 1; });

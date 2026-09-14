@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.5.75 — 2026-09-14
+
+- Exclude the current machine from ChatGPT's refreshed native Remote device
+  catalogue by its normalized reported name. The permanent **This device** row
+  remains authoritative, while the same machine can no longer reappear as a
+  second disconnected remote entry after an automatic catalogue refresh.
+- Advance the shared Windows/macOS renderer to v83 and add regression coverage
+  for case-insensitive names with the optional macOS `.local` suffix.
+
 ## v1.5.74 — 2026-09-14
 
 - Refresh ChatGPT's native Remote device catalogue automatically at renderer

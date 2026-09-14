@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.5.73 — 2026-09-14
+
+- Normalize the detached Windows handoff helper's `PSModulePath` to the native
+  Windows PowerShell module roots before it invokes the coordinator launcher.
+  This prevents a PowerShell 7 parent environment from hiding standard
+  Windows PowerShell 5.1 commands during the live coordinator replacement.
+
 ## v1.5.72 — 2026-09-14
 
 - Keep the stable-install cleanup test's deliberately newer legacy fixture at

@@ -18,6 +18,14 @@ function processAlive(pid) {
   catch (error) { return error?.code === "EPERM"; }
 }
 
+function windowsPowerShellModulePath(env) {
+  return [
+    env.USERPROFILE && path.join(env.USERPROFILE, "Documents", "WindowsPowerShell", "Modules"),
+    env.ProgramFiles && path.join(env.ProgramFiles, "WindowsPowerShell", "Modules"),
+    env.SystemRoot && path.join(env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "Modules"),
+  ].filter(Boolean).join(";");
+}
+
 function exactChildConfig(config, configPath) {
   if (!config || !["win32", "darwin"].includes(config.platform) ||
       !Number.isSafeInteger(config.previousPid) || config.previousPid <= 0) {
@@ -59,6 +67,7 @@ async function main(argv = process.argv.slice(2)) {
   let args;
   const env = { ...process.env };
   if (config.platform === "win32") {
+    env.PSModulePath = windowsPowerShellModulePath(env);
     command = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
     args = ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File",
       config.launcherPath, "-InstallRoot", config.installRoot, "-EntryPointRelative", config.entryPointRelative,
@@ -81,7 +90,7 @@ async function main(argv = process.argv.slice(2)) {
   return { started: true };
 }
 
-module.exports = { exactChildConfig, main, processAlive };
+module.exports = { exactChildConfig, main, processAlive, windowsPowerShellModulePath };
 
 if (require.main === module) {
   main().catch((error) => {

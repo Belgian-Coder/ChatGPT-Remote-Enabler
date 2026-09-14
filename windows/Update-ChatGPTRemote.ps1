@@ -123,6 +123,9 @@ function Assert-SafeResponseUri {
     param($Response)
     $finalUri = $null
     try { $finalUri = $Response.BaseResponse.ResponseUri } catch {}
+    if (-not $finalUri) {
+        try { $finalUri = $Response.BaseResponse.RequestMessage.RequestUri } catch {}
+    }
     if (-not $finalUri) { throw 'Update response did not expose its final URI.' }
     Assert-SafeHttpsUrl ([string]$finalUri.AbsoluteUri)
 }

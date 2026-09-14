@@ -240,9 +240,33 @@ function testHotReloadCompatibility() {
   fs.writeFileSync(path.join(prepared, "RELEASE-MANIFEST.sha256"), manifest);
   fs.writeFileSync(path.join(installRoot, "RELEASE-MANIFEST.sha256"), manifest);
   assert.equal(session.hotReloadCompatibility(config(), prepared).compatible, true);
-  fs.writeFileSync(path.join(prepared, "RELEASE-MANIFEST.sha256"), manifest.split("\n")[0] + "\n");
+
+  const scriptRelative = "CodexRemoteSimple/CodexRemoteSimple.ps1";
+  const installedScript = path.join(installRoot, ...scriptRelative.split("/"));
+  const candidateScript = path.join(prepared, ...scriptRelative.split("/"));
+  fs.mkdirSync(path.dirname(installedScript), { recursive: true });
+  fs.mkdirSync(path.dirname(candidateScript), { recursive: true });
+  fs.writeFileSync(installedScript, "Write-Output one\r\nWrite-Output two\r\n");
+  fs.writeFileSync(candidateScript, "Write-Output one\nWrite-Output two\n");
+  const manifestFor = (root, relatives) => relatives.map((relative) => {
+    const file = path.join(root, ...relative.split("/"));
+    return `${crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex")} *${relative}`;
+  }).join("\n") + "\n";
+  const completeRelatives = [coldRelative, publisherRelative, scriptRelative];
+  fs.writeFileSync(path.join(prepared, "RELEASE-MANIFEST.sha256"), manifestFor(prepared, completeRelatives));
+  fs.writeFileSync(path.join(installRoot, "RELEASE-MANIFEST.sha256"), manifestFor(installRoot, completeRelatives));
+  assert.equal(session.hotReloadCompatibility(config(), prepared).compatible, true,
+    "PowerShell line-ending conversion must not force a ChatGPT restart");
+  fs.writeFileSync(candidateScript, "Write-Output one\nWrite-Output changed\n");
+  fs.writeFileSync(path.join(prepared, "RELEASE-MANIFEST.sha256"), manifestFor(prepared, completeRelatives));
+  assert.equal(session.hotReloadCompatibility(config(), prepared).compatible, false,
+    "a semantic PowerShell runtime change must still require restart");
+  fs.writeFileSync(candidateScript, "Write-Output one\nWrite-Output two\n");
+  fs.writeFileSync(path.join(prepared, "RELEASE-MANIFEST.sha256"), manifestFor(prepared, completeRelatives));
+
+  fs.writeFileSync(path.join(prepared, "RELEASE-MANIFEST.sha256"), manifestFor(prepared, [coldRelative, scriptRelative]));
   assert.equal(session.hotReloadCompatibility(config(), prepared).compatible, false, "a protected file removal must require restart");
-  fs.writeFileSync(path.join(prepared, "RELEASE-MANIFEST.sha256"), manifest);
+  fs.writeFileSync(path.join(prepared, "RELEASE-MANIFEST.sha256"), manifestFor(prepared, completeRelatives));
   fs.writeFileSync(path.join(installRoot, ...coldRelative.split("/")), "changed");
   const incompatible = session.hotReloadCompatibility(config(), prepared);
   assert.equal(incompatible.compatible, false);

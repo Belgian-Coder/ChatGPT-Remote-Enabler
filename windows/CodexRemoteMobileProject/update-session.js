@@ -64,6 +64,26 @@ function readReleaseManifest(root) {
   return entries;
 }
 
+function protectedEntryMatches(config, preparedDirectory, relative, candidateHash, installedHash = null) {
+  const installedPath = path.resolve(config.installRoot, ...relative.split("/"));
+  const candidatePath = path.resolve(preparedDirectory, ...relative.split("/"));
+  const normalize = (value) => config.platform === "win32" ? value.toLowerCase() : value;
+  const installedPrefix = path.resolve(config.installRoot) + path.sep;
+  const candidatePrefix = path.resolve(preparedDirectory) + path.sep;
+  if (!normalize(installedPath).startsWith(normalize(installedPrefix)) ||
+      !normalize(candidatePath).startsWith(normalize(candidatePrefix))) return false;
+  for (const file of [installedPath, candidatePath]) {
+    if (!fs.existsSync(file) || fs.lstatSync(file).isSymbolicLink()) return false;
+  }
+  const installedActual = sha256File(installedPath);
+  const candidateActual = sha256File(candidatePath);
+  if (candidateActual !== candidateHash || (installedHash && installedActual !== installedHash)) return false;
+  if (installedActual === candidateActual) return true;
+  if (config.platform !== "win32" || !relative.toLowerCase().endsWith(".ps1")) return false;
+  const canonicalText = (file) => fs.readFileSync(file, "utf8").replace(/\r\n?/gu, "\n");
+  return canonicalText(installedPath) === canonicalText(candidatePath);
+}
+
 function hotReloadCompatibility(config, preparedDirectory) {
   const candidate = readReleaseManifest(preparedDirectory);
   const cold = config.platform === "win32"
@@ -77,17 +97,12 @@ function hotReloadCompatibility(config, preparedDirectory) {
   try { installedManifest = readReleaseManifest(config.installRoot); } catch {}
   if (installedManifest) {
     const installedCold = [...installedManifest].filter(([relative]) => cold(relative));
-    if (installedCold.length !== coldEntries.length || installedCold.some(([relative, hash]) => candidate.get(relative) !== hash)) {
+    if (installedCold.length !== coldEntries.length || installedCold.some(([relative]) => !candidate.has(relative))) {
       return { compatible: false, reason: "The release changes the protected runtime inventory." };
     }
   }
   for (const [relative, expected] of coldEntries) {
-    const installedPath = path.resolve(config.installRoot, ...relative.split("/"));
-    const installPrefix = path.resolve(config.installRoot) + path.sep;
-    const left = config.platform === "win32" ? installedPath.toLowerCase() : installedPath;
-    const right = config.platform === "win32" ? installPrefix.toLowerCase() : installPrefix;
-    if (!left.startsWith(right) || !fs.existsSync(installedPath) || fs.lstatSync(installedPath).isSymbolicLink() ||
-        sha256File(installedPath) !== expected) {
+    if (!protectedEntryMatches(config, preparedDirectory, relative, expected, installedManifest?.get(relative) ?? null)) {
       return { compatible: false, reason: `The running runtime changes in ${relative}.` };
     }
   }

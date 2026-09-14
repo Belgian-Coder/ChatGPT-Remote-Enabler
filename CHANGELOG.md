@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.5.69 — 2026-09-14
+
+- Treat CRLF/LF-only conversion in protected Windows PowerShell files as the same running runtime, while still validating both manifests and both files before a live update.
+- Keep semantic protected-runtime changes fail-closed so they continue to require a normal app restart.
+- Add regression coverage for line-ending-only Git/release packaging differences that previously misclassified a compatible update and attempted the restart path.
+
 ## v1.5.68 — 2026-09-14
 
 - Load compatible verified updates into the current renderer without closing or

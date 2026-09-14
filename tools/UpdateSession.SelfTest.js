@@ -96,7 +96,7 @@ function harness(options = {}) {
     async hotReload(actual) {
       calls.hotReload += 1;
       if (options.hotReloadError) throw options.hotReloadError;
-      return { loaded: true, helperVersion: actual.version, rendererVersion: 81, ready: true };
+      return { loaded: true, helperVersion: actual.version, rendererVersion: 82, ready: true };
     },
     async handoffCoordinator() { calls.handoff += 1; if (options.handoffError) throw options.handoffError; return { scheduled: true }; },
     async relaunch() { calls.relaunch += 1; if (options.relaunchError) throw options.relaunchError; return { ready: true }; },
@@ -595,13 +595,13 @@ async function testProductionRendererReadinessContract() {
   const adapter = new session.PlatformAdapter(config(), { runCommand: async (command, args) => {
     invocations.push({ command, args });
     if (command === process.execPath) {
-      return { stdout: `${JSON.stringify({ ok: true, report: { active: true, version: 81, readiness: { ready: true } } })}\n`, stderr: "" };
+      return { stdout: `${JSON.stringify({ ok: true, report: { active: true, version: 82, readiness: { ready: true } } })}\n`, stderr: "" };
     }
     return { stdout: '{"running":true}\n', stderr: "" };
   } });
   try {
     const result = await adapter.hotReload({ version: "v2.0.0" });
-    assert.deepEqual(result, { loaded: true, helperVersion: "v2.0.0", rendererVersion: 81, ready: true });
+    assert.deepEqual(result, { loaded: true, helperVersion: "v2.0.0", rendererVersion: 82, ready: true });
     assert.equal(invocations.filter(item => item.command === process.execPath).length, 1,
       "production-shaped nested readiness must complete on the enable proof");
   } finally {

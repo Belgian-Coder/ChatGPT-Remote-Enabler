@@ -40,6 +40,7 @@
   const NATIVE_INVENTORY_REFRESH_MS = 60000;
   const NATIVE_INVENTORY_DIRTY_DEBOUNCE_MS = 250;
   const NATIVE_INVENTORY_ERROR_RETRY_MS = 60000;
+  const NATIVE_CONNECTION_CATALOG_REFRESH_MS = 15000;
   const REMOTE_INVENTORY_FILENAME = "remote-project-inventory-v1.json";
   const REMOTE_INVENTORY_MAX_AGE_MS = 180000;
   const REMOTE_INVENTORY_ACTIVE_MS = 5000;
@@ -70,7 +71,7 @@
     "unknown",
   ]);
   const PUBLISHER_VERSION = 53;
-  const VERSION = 81;
+  const VERSION = 82;
   // Keep outstanding writes locked across renderer reinjection until the underlying RPC settles.
   const peerWriteLocks = globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ instanceof Map
     ? globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ : (globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ = new Map());
@@ -288,6 +289,10 @@
     nativeConnectionSnapshot: null,
     nativeConnectionSignature: "",
     nativeConnectionTimer: null,
+    nativeConnectionCatalogPending: null,
+    nativeConnectionCatalogLastAttemptAt: 0,
+    nativeConnectionCatalogLastSuccessfulAt: 0,
+    nativeConnectionCatalogLastError: null,
     nativeConnectionRefreshPending: false,
     healthRefreshOutcomes: new Map(),
     resumeRefreshHandler: null,
@@ -391,7 +396,7 @@
           if (!client || typeof client.post !== "function") continue;
           const fetchFromHost = async (action, options = {}) => {
             if (state.disposed) throw new Error("Local state bridge was disposed");
-            if (!["get-global-state", "set-global-state", "save-file"].includes(action)) throw new Error("Unsupported local state request");
+            if (!["get-global-state", "set-global-state", "save-file", "refresh-remote-control-connections"].includes(action)) throw new Error("Unsupported local state request");
             const controller = new AbortController();
             state.nativeStateBridgeControllers.add(controller);
             const timer = action === "save-file" ? null : setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -1082,6 +1087,36 @@
     return "unknown";
   }
 
+  function refreshNativeConnectionCatalog(force = false) {
+    if (state.disposed) return Promise.resolve(false);
+    if (state.nativeConnectionCatalogPending) return state.nativeConnectionCatalogPending;
+    const now = Date.now();
+    if (force !== true && now - state.nativeConnectionCatalogLastAttemptAt < NATIVE_CONNECTION_CATALOG_REFRESH_MS) return Promise.resolve(false);
+    state.nativeConnectionCatalogLastAttemptAt = now;
+    const pending = (async () => {
+      const fetchFromHost = await ensureLocalStateBridge(undefined, force, state.discoveryGeneration);
+      if (typeof fetchFromHost !== "function") throw new Error("Native connection refresh is unavailable");
+      const result = await fetchFromHost("refresh-remote-control-connections");
+      if (!result || !Array.isArray(result.remoteControlConnections)) throw new Error("Native connection refresh returned invalid data");
+      // The native handler updates Electron's shared catalogue before returning.
+      // Read it immediately and once more on the next task so a restored device
+      // invalidates cached discovery without requiring Settings or an app restart.
+      let changed = refreshNativeConnectionSnapshot();
+      await new Promise(resolve => setTimeout(resolve, 0));
+      changed = refreshNativeConnectionSnapshot() || changed;
+      state.nativeConnectionCatalogLastSuccessfulAt = Date.now();
+      state.nativeConnectionCatalogLastError = null;
+      return changed;
+    })().catch((error) => {
+      state.nativeConnectionCatalogLastError = String(error?.message ?? error).slice(0, 160);
+      return false;
+    }).finally(() => {
+      if (state.nativeConnectionCatalogPending === pending) state.nativeConnectionCatalogPending = null;
+    });
+    state.nativeConnectionCatalogPending = pending;
+    return pending;
+  }
+
   function refreshNativeConnectionSnapshot() {
     if (state.disposed) return false;
     const snapshot = readNativeConnectionSnapshot();
@@ -1129,9 +1164,15 @@
   function startNativeConnectionObservation() {
     refreshNativeConnectionSnapshot();
     if (state.nativeConnectionTimer !== null) return;
-    // Read the native shared cache only. Do not initiate enrollment, change
-    // connection settings, or make repeated backend refresh requests.
-    state.nativeConnectionTimer = setInterval(refreshNativeConnectionSnapshot, 2000);
+    // Refresh the native catalogue through ChatGPT's own read-only connection
+    // method. The stock Settings screen does this only while it is mounted;
+    // keeping the same bounded cadence here prevents a controller sidebar from
+    // retaining an old offline record while the remote host is already online.
+    void refreshNativeConnectionCatalog(true);
+    state.nativeConnectionTimer = setInterval(() => {
+      refreshNativeConnectionSnapshot();
+      void refreshNativeConnectionCatalog();
+    }, 2000);
     state.nativeConnectionTimer?.unref?.();
   }
 
@@ -3553,6 +3594,11 @@
     const bridgeWasPending = Boolean(state.nativeStateBridgePending);
     const remoteInventoryWasPending = [...state.remoteProjectInventories.values()].some((inventory) => inventory?.pending === true);
     const localBridge = ensureLocalStateBridge(undefined, true, generation);
+    await refreshNativeConnectionCatalog(true);
+    if (!isCurrentDiscoveryGeneration(generation)) {
+      if (!state.disposed) state.deviceRefreshQueued = true;
+      return { complete: false, error: "Refresh was superseded" };
+    }
     const discovery = discoverHostNames();
     if (!isCurrentDiscoveryGeneration(generation)) return { complete: false, error: "Refresh was superseded" };
     const runtimes = new Map(discoverRemoteRuntimes(discovery.runtimes));
@@ -7474,6 +7520,7 @@
     state.inventoryHydrationPhase = "idle";
     state.nativeStateBridgePending = null;
     state.nativeStateBridgeGeneration = null;
+    state.nativeConnectionCatalogPending = null;
     state.localRegisteredProjectsPending = false;
     state.localRegisteredProjectsPendingGeneration = null;
     state.localRegisteredProjectsPendingPromise = null;

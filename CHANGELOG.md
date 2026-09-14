@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.5.74 — 2026-09-14
+
+- Refresh ChatGPT's native Remote device catalogue automatically at renderer
+  startup and every 15 seconds through the app's own read-only connection
+  method. A controller now recovers a peer that came online after its cached
+  catalogue went stale without opening Settings, running a command, or
+  restarting ChatGPT.
+- Make **Refresh devices** and **Force refresh** update the native catalogue
+  before direct project and task inventory discovery. Requests are singleflight,
+  time bounded, and cadence limited; authorization and connection preferences
+  remain native ChatGPT responsibilities.
+- Add Windows and macOS source parity plus regression coverage for automatic
+  recovery, bounded polling, and the allowlisted native refresh operation.
+
 ## v1.5.73 — 2026-09-14
 
 - Normalize the detached Windows handoff helper's `PSModulePath` to the native

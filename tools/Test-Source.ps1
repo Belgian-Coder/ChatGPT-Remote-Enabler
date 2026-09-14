@@ -138,7 +138,9 @@ foreach ($pair in @(
 }
 $renderer = Get-Content -LiteralPath $windowsRenderer -Raw
 $requiredContracts = @(
-    'const VERSION = 81;',
+    'const VERSION = 82;',
+    'NATIVE_CONNECTION_CATALOG_REFRESH_MS',
+    'refresh-remote-control-connections',
     'hostDisplayName: config.localDisplayName || null',
     'codex-remote-mobile-verified-thread-ids-v2',
     'THREAD_VISIBILITY_CONTRACT_VERSION',
@@ -343,7 +345,7 @@ if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
 [pscustomobject]@{
     JavaScriptFiles = $javascript.Count
     PowerShellFiles = $powershell.Count
-    RendererVersion = 81
+    RendererVersion = 82
     LegacyUpdateBootstrapSelfTest = $true
     SetupAssistantSelfTest = $true
     RendererParity = $true

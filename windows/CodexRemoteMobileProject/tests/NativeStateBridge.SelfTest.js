@@ -37,9 +37,10 @@ function fixture() {
     static getInstance() { return NativeClient.instance; }
     onFetchResponse() {}
     async post(url, body, headers, signal) {
-      requests.push({ url, body: JSON.parse(body) });
+      requests.push({ url, body: body === undefined ? undefined : JSON.parse(body) });
       assert.ok(signal instanceof AbortSignal);
-      return { status: 200, body: { value: [] } };
+      return { status: 200, body: url.endsWith("refresh-remote-control-connections")
+        ? { remoteControlConnections: [] } : { value: [] } };
     }
   }
   NativeClient.instance = new NativeClient();
@@ -54,12 +55,14 @@ function fixture() {
   assert.deepEqual(requests, [{ url: "vscode://codex/get-global-state", body: { key: "pinned-thread-ids" } }]);
   await assert.rejects(bridge("run-arbitrary-command", { params: {} }), /Unsupported/);
   assert.equal(requests.length, 1, "unsupported actions must never reach the native service");
+  assert.deepEqual(await bridge("refresh-remote-control-connections"), { remoteControlConnections: [] });
+  assert.equal(requests.at(-1).url, "vscode://codex/refresh-remote-control-connections");
 
   f.state.localRuntime = { requestClient: { sendRequest: async method => { assert.equal(method, "thread/list"); return { data: [], nextCursor: null }; } } };
   const preview = await f.previewAutoArchive();
   assert.equal(preview.archiveEligible, 0);
   assert.equal(preview.deleteEligible, 0);
-  assert.ok(requests.every(request => request.url.endsWith("get-global-state")), "recovered preview must remain read-only");
+  assert.ok(requests.every(request => request.url.endsWith("get-global-state") || request.url.endsWith("refresh-remote-control-connections")), "recovered preview and connection refresh must remain read-only");
   assert.equal(storage.size, 0);
 
   f.state.diagnosticPreview = JSON.stringify({ unicode: "caf\u00e9 \ud83d\udd27", schemaVersion: 1 });
@@ -114,5 +117,5 @@ function fixture() {
   assert.equal(await blocked, null);
   assert.equal(disposed.f.state.localFetchFromHost, null);
   f.state.disposed = true;
-  console.log(JSON.stringify({ nativeBridgeDiscovery: true, proxyDescriptorsExcluded: true, sameAppModulesOnly: true, singleflightDiscovery: true, recoveredPreviewReadOnly: true, exactUnicodeSave: true, singleDialog: true, cancelAndFailureFeedback: true, browserPickerFallback: true, cleanupReasonsAllowlisted: true, disposedDiscoveryIgnored: true }));
+  console.log(JSON.stringify({ nativeBridgeDiscovery: true, proxyDescriptorsExcluded: true, sameAppModulesOnly: true, singleflightDiscovery: true, nativeConnectionRefreshAllowlisted: true, recoveredPreviewReadOnly: true, exactUnicodeSave: true, singleDialog: true, cancelAndFailureFeedback: true, browserPickerFallback: true, cleanupReasonsAllowlisted: true, disposedDiscoveryIgnored: true }));
 })().catch(error => { console.error(error); process.exitCode = 1; });

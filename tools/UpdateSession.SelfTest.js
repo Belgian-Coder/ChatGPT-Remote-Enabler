@@ -521,6 +521,29 @@ async function testUpdaterMappingsAndPrettyJson() {
   assert.equal(invocations[0].args[1], "apply-prepared");
 }
 
+async function testProductionRendererReadinessContract() {
+  const injector = path.join(installRoot, "CodexRemoteMobileProject", "inject.js");
+  fs.mkdirSync(path.dirname(injector), { recursive: true });
+  fs.writeFileSync(injector, "// fixture injector\n");
+  fs.writeFileSync(path.join(installRoot, "VERSION"), "v2.0.0\n");
+  const invocations = [];
+  const adapter = new session.PlatformAdapter(config(), { runCommand: async (command, args) => {
+    invocations.push({ command, args });
+    if (command === process.execPath) {
+      return { stdout: `${JSON.stringify({ ok: true, report: { active: true, version: 81, readiness: { ready: true } } })}\n`, stderr: "" };
+    }
+    return { stdout: '{"running":true}\n', stderr: "" };
+  } });
+  try {
+    const result = await adapter.hotReload({ version: "v2.0.0" });
+    assert.deepEqual(result, { loaded: true, helperVersion: "v2.0.0", rendererVersion: 81, ready: true });
+    assert.equal(invocations.filter(item => item.command === process.execPath).length, 1,
+      "production-shaped nested readiness must complete on the enable proof");
+  } finally {
+    fs.writeFileSync(path.join(installRoot, "VERSION"), "v1.0.0\n");
+  }
+}
+
 async function testActualWindowsCheck() {
   if (process.platform !== "win32" || process.argv.includes("--skip-actual-updater")) return;
   const archiveSha256 = crypto.createHash("sha256").update("fixture archive").digest("hex");
@@ -587,6 +610,7 @@ async function testActualWindowsCheck() {
     await testExactRelaunchArguments();
     await testExactMacRelaunchArguments();
     await testUpdaterMappingsAndPrettyJson();
+    await testProductionRendererReadinessContract();
     await testActualWindowsCheck();
     process.stdout.write(`${JSON.stringify({ ok: true, persistentHistory: true, controllerFlows: 11, monitorSingleflight: true, malformedLockFailClosed: true, concurrentLockReclaim: true, timeoutTreeContained: true, exactRelaunch: true, exactMacRelaunchSkipsPrelaunch: true, prettyJson: true, actualWindowsCheck: process.platform === "win32" && !process.argv.includes("--skip-actual-updater") })}\n`);
   } finally {

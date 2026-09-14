@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.5.70 — 2026-09-14
+
+- Read the production injector's nested renderer readiness proof during a live update so a healthy dynamically loaded renderer can proceed to transactional installation.
+- Add a platform-adapter regression test using the exact production readiness shape.
+
 ## v1.5.69 — 2026-09-14
 
 - Treat CRLF/LF-only conversion in protected Windows PowerShell files as the same running runtime, while still validating both manifests and both files before a live update.

@@ -28,6 +28,7 @@ try {
         'update-session.js' = 'candidate:update-session.js'
         'update-session-cdp.js' = 'candidate:update-session-cdp.js'
         'UpdateSessionPlatform.ps1' = 'candidate:UpdateSessionPlatform.ps1'
+        'coordinator-handoff.js' = 'candidate:coordinator-handoff.js'
     }
     $dependencyPaths = [ordered]@{
         'cdp.js' = 'CodexRemoteSimple\runtime\lib\cdp.js'

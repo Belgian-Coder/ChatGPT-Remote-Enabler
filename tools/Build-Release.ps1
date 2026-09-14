@@ -148,10 +148,11 @@ try {
             @('Update-ChatGPTRemote.ps1', 'Update-ChatGPTDesktop.ps1', 'StableInstall.ps1', 'update-transaction.js', 'git-release.js', 'git-checkout-update.js', 'CodexRemoteMobileProject/update-session.js',
               'CodexRemoteMobileProject/publisher-heartbeat.js',
               'CodexRemoteMobileProject/update-session-cdp.js', 'CodexRemoteMobileProject/UpdateSessionLauncher.ps1',
+              'CodexRemoteMobileProject/coordinator-handoff.js',
               'CodexRemoteMobileProject/UpdateSessionSurvivorLauncher.ps1', 'CodexRemoteMobileProject/UpdateSessionTaskHost.exe',
               'CodexRemoteMobileProject/UpdateSessionPlatform.ps1', 'CodexRemoteSimple/runtime/lib/cdp.js')
         } else {
-            @('Update-ChatGPTRemote.sh', 'update-transaction.js', 'git-release.js', 'git-checkout-update.js', 'update-session.js', 'update-session-cdp.js',
+            @('Update-ChatGPTRemote.sh', 'update-transaction.js', 'git-release.js', 'git-checkout-update.js', 'update-session.js', 'update-session-cdp.js', 'coordinator-handoff.js',
               'publisher-heartbeat.js', 'UpdateSessionPlatform.sh', 'runtime/lib/cdp.js')
         }
         foreach ($required in $requiredUpdateFiles) {

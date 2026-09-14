@@ -197,6 +197,8 @@ try {
 
   const macOptions = { repository: "owner/repo", platform: "macOS-arm64", cacheRoot };
   const mac = resolve(macosHelper, macOptions, repo);
+  assert.ok(fs.readdirSync(path.join(cacheRoot, "archives")).filter(name => /^[0-9a-f]{64}\.zip$/u.test(name)).length <= 2,
+    "Git release archive cache must retain at most the current and one previous archive");
   const macEntries = readZip(mac.archivePath);
   const macScript = macEntries.find((entry) => entry.name.endsWith("/Update-ChatGPTRemote.sh"));
   assert.ok(macScript);

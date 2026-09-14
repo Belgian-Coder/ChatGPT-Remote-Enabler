@@ -18,6 +18,7 @@ const TOTAL_TIMEOUT_MS = 175_000;
 const SOURCE_METADATA = ".chatgpt-remote-git-source.json";
 const RELEASE_MANIFEST = "RELEASE-MANIFEST.sha256";
 const ARCHIVE_DIRECTORY = "archives";
+const ARCHIVE_CACHE_RETENTION = 2;
 const SOURCE_SCHEMA_VERSION = 1;
 
 const PLATFORM_DIRECTORIES = Object.freeze({
@@ -461,6 +462,23 @@ function safeRemoveScratch(scratch, cacheRoot) {
   } catch {}
 }
 
+function pruneArchiveCache(archiveDirectory, retainedPath) {
+  const resolvedDirectory = path.resolve(archiveDirectory);
+  const retained = path.resolve(retainedPath);
+  const candidates = [];
+  for (const name of fs.readdirSync(resolvedDirectory)) {
+    if (!/^[0-9a-f]{64}\.zip$/iu.test(name)) continue;
+    const candidate = path.resolve(resolvedDirectory, name);
+    if (!isWithin(resolvedDirectory, candidate)) continue;
+    const details = fs.lstatSync(candidate);
+    if (!details.isFile() || details.isSymbolicLink()) continue;
+    candidates.push({ candidate, modified: details.mtimeMs });
+  }
+  candidates.sort((left, right) => Number(right.candidate === retained) - Number(left.candidate === retained)
+    || right.modified - left.modified || left.candidate.localeCompare(right.candidate));
+  for (const { candidate } of candidates.slice(ARCHIVE_CACHE_RETENTION)) fs.unlinkSync(candidate);
+}
+
 function cacheArchive(tempArchive, archiveHash, cacheRoot) {
   const archiveDirectory = path.join(cacheRoot, ARCHIVE_DIRECTORY);
   if (!isWithin(cacheRoot, archiveDirectory)) throw new Error("Archive cache path escapes cache root.");
@@ -474,6 +492,7 @@ function cacheArchive(tempArchive, archiveHash, cacheRoot) {
     if (!details.isFile() || details.isSymbolicLink()) throw new Error("Content-addressed archive cache entry is unsafe.");
     if (sha256File(destination) !== archiveHash) throw new Error("Content-addressed archive cache entry failed revalidation.");
     fs.unlinkSync(tempArchive);
+    pruneArchiveCache(archiveDirectory, destination);
     return destination;
   }
   try {
@@ -488,6 +507,7 @@ function cacheArchive(tempArchive, archiveHash, cacheRoot) {
   }
   const details = fs.lstatSync(destination);
   if (!details.isFile() || details.isSymbolicLink() || sha256File(destination) !== archiveHash) throw new Error("Cached release archive failed final verification.");
+  pruneArchiveCache(archiveDirectory, destination);
   return destination;
 }
 

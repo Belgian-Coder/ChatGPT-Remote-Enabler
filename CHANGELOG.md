@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.5.79 — 2026-09-14
+
+- Prune the content-addressed Git release archive cache automatically after
+  every successful resolution. Each machine now retains at most the current
+  archive and one previous archive, while unsafe or unrecognized entries remain
+  untouched for fail-closed handling.
+
 ## v1.5.78 — 2026-09-14
 
 - Make live updates recover the exact installed renderer when candidate

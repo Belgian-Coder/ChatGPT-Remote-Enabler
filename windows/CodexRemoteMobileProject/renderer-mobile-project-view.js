@@ -71,7 +71,7 @@
     "unknown",
   ]);
   const PUBLISHER_VERSION = 53;
-  const VERSION = 82;
+  const VERSION = 83;
   // Keep outstanding writes locked across renderer reinjection until the underlying RPC settles.
   const peerWriteLocks = globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ instanceof Map
     ? globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ : (globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ = new Map());
@@ -1053,6 +1053,16 @@
         const hostId = normalizeHostId(item?.hostId ?? item?.envId);
         if (typeof hostId !== "string" || !/^remote-control:env_/iu.test(hostId)) continue;
         const reportedName = [item.displayName, item.hostName].find(name => !isSyntheticHostName(name));
+        const localName = !isSyntheticHostName(config.localDisplayName)
+          ? config.localDisplayName.trim().replace(/\.local$/iu, "").toLocaleLowerCase()
+          : null;
+        const connectionName = !isSyntheticHostName(reportedName)
+          ? reportedName.trim().replace(/\.local$/iu, "").toLocaleLowerCase()
+          : null;
+        // ChatGPT can include the current host in its returned account catalog.
+        // It is already represented by the permanent local entry and must not
+        // be reintroduced as a disconnected remote device.
+        if (localName && connectionName === localName) continue;
         connections.push({ hostId, name: reportedName?.trim() ?? null, online: boolean(item.online), autoConnect: boolean(item.autoConnect) });
       }
       connections.sort((left, right) => left.hostId.localeCompare(right.hostId));

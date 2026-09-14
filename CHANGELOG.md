@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.5.72 — 2026-09-14
+
+- Keep the stable-install cleanup test's deliberately newer legacy fixture at
+  v9.9.9 so routine package version bumps cannot turn it into an equal-version
+  fixture and produce a false regression failure. Include the coordinator
+  handoff helper in bundle-root fixtures and require it in both release packages.
+  Runtime behavior is unchanged from v1.5.71.
+
 ## v1.5.71 — 2026-09-14
 
 - After a compatible no-close update, schedule a detached handoff to the

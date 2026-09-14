@@ -33,7 +33,7 @@ function cleanMessage(value, fallback = null) {
   return cleaned || fallback;
 }
 
-const HISTORY_STATES = new Set([...STATUS_STATES, "restart-confirmed", "cancelled", "checked"]);
+const HISTORY_STATES = new Set([...STATUS_STATES, "hot-reload-confirmed", "restart-confirmed", "cancelled", "checked"]);
 function normalizeUpdateDetails(value) {
   if (!value || typeof value !== "object") return null;
   const version = input => typeof input === "string" && /^v\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/u.test(input) && input.length <= 64 ? input : null;

@@ -1,13 +1,13 @@
 # Feature guide
 
-This guide describes the Windows and macOS v1.5.67 source, including reliable
+This guide describes the Windows and macOS v1.5.68 source, including reliable
 background inventory publication, loaded search, compact Settings, guarded navigation, and stale-Steer recovery. Historical v1.5.49 packages and
 screenshots do not include those changes. Both packages share the Device
 projects renderer and the feature behavior below; the
 platform guides document their different launchers, setup assistants, proxy
 options, and shortcut/startup commands.
 
-Renderer v79 makes native offline state authoritative while retaining cached rows and runtime evidence; renderer v78 adds a parent-bound heartbeat for fully frozen hidden renderers; renderer v77 adds the background inventory reliability correction; renderer
+Renderer v81 adds verified in-process update loading; renderer v79 makes native offline state authoritative while retaining cached rows and runtime evidence; renderer v78 adds a parent-bound heartbeat for fully frozen hidden renderers; renderer v77 adds the background inventory reliability correction; renderer
 v76 added the search and Settings improvements described below.
 
 On Windows, each shortcut or sign-in launch verifies Remote Enabler recovery,
@@ -176,10 +176,13 @@ sidecar is unavailable. An update is installed only after an explicit click.
 The helper discovers stable Git tags and shallow-fetches the selected commit,
 builds a deterministic local package, and pins its SHA-256 and file manifest.
 Git is required; no hosted ZIP or GitHub API download is used by default. It
-waits for authoritative idle activity, requests a graceful
-close of the exact app instance, applies the files, and relaunches with saved
-direct/proxy and startup options. Unknown activity keeps it queued; **Cancel**
-is available until shutdown begins. A refused close is never force-killed.
+waits for authoritative idle activity, and compares the verified package with
+the live protected runtime. Compatible changes are loaded and proved in the
+current renderer before transactional file replacement, without closing
+ChatGPT. A change to the protected runtime or publisher uses the existing
+graceful close and relaunch path with saved options. Unknown activity keeps it
+queued; **Cancel** is available until installation begins. A refused close is
+never force-killed.
 
 Interrupted package replacement uses a durable journal and verified recovery.
 Failed package updates restore the previous verified installation, and competing
@@ -199,8 +202,8 @@ it is never an automatic fallback. Corporate Git proxy and CA settings are honor
 **Update details and history** shows installed/available versions, the last
 successful check, release-note links, and durable stages. History retains up to
 100 events from the latest 20 sessions within 90 days and stores stage, version,
-and timestamp. A replacement or restart-requested stage is not success;
-relaunch confirmation is recorded only after readiness is acknowledged.
+and timestamp. Replacement alone is not success; live reload or relaunch
+confirmation is recorded only after readiness is acknowledged.
 
 ## Diagnostic export preview
 

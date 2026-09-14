@@ -70,7 +70,7 @@
     "unknown",
   ]);
   const PUBLISHER_VERSION = 53;
-  const VERSION = 80;
+  const VERSION = 81;
   // Keep outstanding writes locked across renderer reinjection until the underlying RPC settles.
   const peerWriteLocks = globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ instanceof Map
     ? globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ : (globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ = new Map());
@@ -3953,7 +3953,7 @@
       availableVersion: releaseVersion(value.availableVersion),
       lastCheckedAt: Number.isFinite(value.lastCheckedAt) && value.lastCheckedAt > 0 && value.lastCheckedAt <= Date.now() + 60000 ? value.lastCheckedAt : null,
       historyAvailable: value.historyAvailable !== false,
-      history: (Array.isArray(value.history) ? value.history : []).filter(entry => entry && (UPDATE_STATES.has(entry.state) || ["restart-confirmed", "cancelled", "checked"].includes(entry.state))
+      history: (Array.isArray(value.history) ? value.history : []).filter(entry => entry && (UPDATE_STATES.has(entry.state) || ["hot-reload-confirmed", "restart-confirmed", "cancelled", "checked"].includes(entry.state))
         && Number.isFinite(entry.at) && entry.at > Date.now() - HISTORY_MAX_AGE_MS && entry.at <= Date.now() + 60000)
         .slice(-100).map(entry => ({ at: entry.at, state: entry.state, version: releaseVersion(entry.version) })),
     };
@@ -3986,7 +3986,7 @@
     helpText(details, `Last successful update check: ${timeLabel(metadata?.lastCheckedAt)}.`);
     appendReleaseLink(details, installed, "Installed release notes:");
     appendReleaseLink(details, available, "Available release notes:");
-    const labels = { checked: "Update check completed", current: "Up-to-date check", available: "Update offered", queued: "Waiting for idle activity", preparing: "Preparation started", closing: "Graceful close requested", updating: "File replacement started", restarting: "Installed files verified; restart requested", "restart-confirmed": "Relaunch confirmed", cancelled: "Update cancelled", error: "Error recorded", unavailable: "Service unavailable", checking: "Check started" };
+    const labels = { checked: "Update check completed", current: "Up-to-date check", available: "Update offered", queued: "Waiting for idle activity", preparing: "Preparation started", closing: "Graceful close requested", updating: "File replacement started", restarting: "Installed files verified; restart requested", "hot-reload-confirmed": "Live reload confirmed", "restart-confirmed": "Relaunch confirmed", cancelled: "Update cancelled", error: "Error recorded", unavailable: "Service unavailable", checking: "Check started" };
     helpText(details, "Up to 100 events from the latest 20 recorded sessions within 90 days. An unfinished stage is the last recorded state, not proof of success.");
     if (!metadata) helpText(details, "This session helper does not report persistent update history.");
     else if (!metadata.historyAvailable) helpText(details, "Update history could not be fully saved in this session.");
@@ -4137,15 +4137,15 @@
   function updateExplanation(status) {
     if (status.state === "queued") return /unknown|authoritative|unavailable|information/i.test(status.message || "")
       ? "Waiting for activity information. The app will stay open until it is safe to update."
-      : "Waiting for tasks to finish. The app will restart when it is safe to update.";
+      : "Waiting for tasks to finish. The helper will update in place when the release supports it.";
     if (status.state === "preparing") return status.canCancel
-      ? "Downloading and verifying the update. You can cancel before shutdown starts."
+      ? "Downloading and verifying the update. You can cancel before installation starts."
       : /cancell/i.test(status.message || "") ? "Finishing preparation before cancellation completes. The app will stay open." : "Preparing the verified update…";
     return ({
       current: "Checks run at launch and every 30 minutes. Use the version button to check now.",
-      available: "Install when tasks finish; the app will close and reopen automatically.",
+      available: "Install when tasks finish. Compatible updates load without closing ChatGPT.",
       checking: "Checking for a new release…", closing: "Closing the app normally before updating…",
-      updating: "Installing the verified update…", restarting: "Reopening the app with your saved settings…",
+      updating: "Installing and loading the verified update…", restarting: "Reopening the app with your saved settings…",
       error: "The update could not complete. Review the details, then check again.",
       unavailable: typeof globalThis[UPDATE_SLOT]?.request === "function"
         ? "Automatic update checks are unavailable. Try a manual check or review the details."

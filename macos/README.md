@@ -1,6 +1,6 @@
 # macOS Apple Silicon: install for your user without sudo
 
-Release v1.5.67 moves recognized version-named installations to the fixed
+Release v1.5.68 moves recognized version-named installations to the fixed
 per-user root `~/Library/Application Support/CodexRemoteFeatures/ChatGPT-Remote-Enabler-macOS-arm64`
 and rewires the LaunchAgent and app shortcut to that root. Each successful
 update keeps only the immediately previous updater generation and removes
@@ -18,12 +18,13 @@ You need an Apple Silicon Mac (arm64), the ChatGPT/Codex desktop app installed a
 preceding installed build. v1.5.49 was then manually installed and its live
 renderer readiness was checked on the participating test devices. The next
 sign-in startup trigger and future desktop-app builds remain separate checks.
-v1.5.67 is a normal release. Installing it still requires a normal graceful
-quit of the desktop app and is not implied by release publication.
+v1.5.68 is a normal release. Publication is not installation. An older update
+coordinator uses its existing graceful quit for this first upgrade; once
+v1.5.68 is loaded, later compatible releases can update in place.
 
 ## 1. Download and extract
 
-1. Download **ChatGPT-Remote-Enabler-macOS-arm64-v1.5.67.zip** from [v1.5.67 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.67).
+1. Download **ChatGPT-Remote-Enabler-macOS-arm64-v1.5.68.zip** from [v1.5.68 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.68).
 2. Double-click the ZIP in Finder. In Finder choose **Go > Go to Folder** and enter `~/Library/Application Support/CodexRemoteFeatures`. Create **ChatGPT-Remote-Enabler-macOS-arm64** there and move the extracted package contents into it.
 3. `MobileProjectView-macOS-arm64.sh` must be directly inside that fixed folder. Keep the complete package together there; future updates replace it in place.
 
@@ -179,10 +180,13 @@ requires a known managed archive path and an exclusive cross-window lock.
 
 The launcher checks asynchronously on every start and every 30 minutes while
 open. **Update available Â· vX.Y.Z** appears beside the view controls in both
-views. Click to download and verify that exact release, wait for active work
-to finish, quit ChatGPT normally, install, and relaunch with the saved options.
-Unknown activity keeps the request queued; **Cancel** remains available until
-shutdown begins. A refused quit aborts the update without force-killing the app.
+views. Click to download and verify that exact release and wait for active work
+to finish. If the protected publisher is unchanged, the helper validates the
+prepared renderer in the current session, applies it transactionally, and
+proves the exact ChatGPT process stayed alive. A publisher change uses the
+existing normal quit and relaunch path with the saved options. Unknown activity
+keeps the request queued; **Cancel** remains available until installation
+begins. A refused quit aborts the update without force-killing the app.
 
 The detached helper runs from per-user application-support storage, outside
 the installation folder. It uses the existing debugger connection and creates
@@ -255,4 +259,4 @@ Settings now provides per-device connection findings, next steps, explicit evide
 
 ## Version or update icon missing
 
-Fully quit the app when your work is safe and launch through Remote Enabler. The updater migrates recognized historical version folders and rewires existing startup and app entry points to the fixed root. Open Settings to see the loaded helper version and update controls; a missing updater has recovery instructions. v1.5.67 is a normal release available to the existing updater.
+Fully quit the app when your work is safe and launch through Remote Enabler. The updater migrates recognized historical version folders and rewires existing startup and app entry points to the fixed root. Open Settings to see the loaded helper version and update controls; a missing updater has recovery instructions. v1.5.68 is a normal release available to the existing updater.

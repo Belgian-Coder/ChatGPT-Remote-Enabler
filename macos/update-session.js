@@ -47,6 +47,53 @@ function sha256File(file) {
   return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
 }
 
+function readReleaseManifest(root) {
+  const manifestPath = path.join(root, "RELEASE-MANIFEST.sha256");
+  const entries = new Map();
+  for (const rawLine of fs.readFileSync(manifestPath, "utf8").split(/\r?\n/u)) {
+    if (!rawLine) continue;
+    const match = /^([0-9a-f]{64}) \*(.+)$/iu.exec(rawLine);
+    if (!match || path.isAbsolute(match[2]) || match[2].split(/[\\/]/u).includes("..")) {
+      throw new Error("The release manifest contains an unsafe entry.");
+    }
+    const relative = match[2].replace(/\\/gu, "/");
+    if (entries.has(relative)) throw new Error("The release manifest contains a duplicate entry.");
+    entries.set(relative, match[1].toLowerCase());
+  }
+  if (entries.size === 0) throw new Error("The release manifest is empty.");
+  return entries;
+}
+
+function hotReloadCompatibility(config, preparedDirectory) {
+  const candidate = readReleaseManifest(preparedDirectory);
+  const cold = config.platform === "win32"
+    ? (relative) => relative === "CodexRemoteSimple/CodexRemoteSimple.ps1"
+        || (relative.startsWith("CodexRemoteSimple/runtime/") && !relative.endsWith(".cs"))
+        || relative === "CodexRemoteMobileProject/publisher-heartbeat.js"
+    : (relative) => relative === "publisher-heartbeat.js";
+  const coldEntries = [...candidate].filter(([relative]) => cold(relative));
+  if (coldEntries.length === 0) return { compatible: false, reason: "The release has no protected runtime inventory." };
+  let installedManifest = null;
+  try { installedManifest = readReleaseManifest(config.installRoot); } catch {}
+  if (installedManifest) {
+    const installedCold = [...installedManifest].filter(([relative]) => cold(relative));
+    if (installedCold.length !== coldEntries.length || installedCold.some(([relative, hash]) => candidate.get(relative) !== hash)) {
+      return { compatible: false, reason: "The release changes the protected runtime inventory." };
+    }
+  }
+  for (const [relative, expected] of coldEntries) {
+    const installedPath = path.resolve(config.installRoot, ...relative.split("/"));
+    const installPrefix = path.resolve(config.installRoot) + path.sep;
+    const left = config.platform === "win32" ? installedPath.toLowerCase() : installedPath;
+    const right = config.platform === "win32" ? installPrefix.toLowerCase() : installPrefix;
+    if (!left.startsWith(right) || !fs.existsSync(installedPath) || fs.lstatSync(installedPath).isSymbolicLink() ||
+        sha256File(installedPath) !== expected) {
+      return { compatible: false, reason: `The running runtime changes in ${relative}.` };
+    }
+  }
+  return { compatible: true, reason: "Only live-reloadable helper files change." };
+}
+
 function parseLastJson(stdout) {
   const complete = String(stdout ?? "").trim();
   if (complete) {
@@ -328,6 +375,46 @@ class PlatformAdapter {
     return true;
   }
 
+  async hotReload(release, sourceRoot = this.config.installRoot) {
+    if (await this.probe() !== true) throw new Error("The exact ChatGPT process changed before live reload.");
+    sourceRoot = path.resolve(sourceRoot);
+    const installRoot = path.resolve(this.config.installRoot);
+    const preparedRoot = path.resolve(this.config.sessionDirectory, "prepared") + path.sep;
+    const normalize = (value) => this.config.platform === "win32" ? value.toLowerCase() : value;
+    if (normalize(sourceRoot) !== normalize(installRoot) && !normalize(sourceRoot).startsWith(normalize(preparedRoot))) {
+      throw new Error("The live-reload source is outside the installed or prepared package root.");
+    }
+    const relative = this.config.platform === "win32" ? ["CodexRemoteMobileProject", "inject.js"] : ["inject.js"];
+    const injector = path.resolve(sourceRoot, ...relative);
+    const sourcePrefix = sourceRoot + path.sep;
+    if (!normalize(injector).startsWith(normalize(sourcePrefix)) || !fs.existsSync(injector) || fs.lstatSync(injector).isSymbolicLink()) {
+      throw new Error("The installed live-reload injector is unavailable.");
+    }
+    const installedVersion = fs.readFileSync(path.join(sourceRoot, "VERSION"), "utf8").trim();
+    if (installedVersion !== release.version) throw new Error("The installed version changed before live reload.");
+    const localName = this.config.platform === "win32"
+      ? (process.env.COMPUTERNAME || "Local")
+      : (this.config.relaunch?.environment?.CODEX_REMOTE_PEER_NAME || "Local");
+    const invoke = async (action) => {
+      const result = await this.run(process.execPath, ["--no-warnings", injector,
+        "--action", action, "--port", String(this.config.rendererPort), "--local-name", localName,
+        "--target-wait-ms", "10000"], { cwd: sourceRoot, timeoutMs: 30_000 });
+      return parseLastJson(result.stdout);
+    };
+    let result = await invoke("enable");
+    if (result?.ok !== true || result?.report?.active !== true || !Number.isInteger(result.report.version)) {
+      throw new Error("The updated renderer did not return valid live-reload proof.");
+    }
+    const deadline = Date.now() + 45_000;
+    while (result.report.ready !== true && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      result = await invoke("probe");
+    }
+    if (result?.report?.ready !== true) throw new Error("The updated renderer did not become ready after live reload.");
+    if (await this.probe() !== true) throw new Error("The exact ChatGPT process changed during live reload.");
+    return { loaded: true, helperVersion: installedVersion, rendererVersion: result.report.version, ready: true };
+  }
+
   async relaunch() {
     const entry = path.join(this.config.installRoot, this.config.relaunch.entryPointRelative);
     const handoffPath = path.join(this.config.sessionDirectory, "relaunch-handoff.json");
@@ -497,6 +584,7 @@ class UpdateSessionController {
     this.sleep = dependencies.sleep ?? sleep;
     this.removePrepared = dependencies.removePrepared ?? ((directory) => safeRemovePrepared(config, directory));
     this.isWritable = dependencies.isWritable ?? (() => testWritable(config.installRoot));
+    this.canHotReload = dependencies.canHotReload ?? ((directory) => hotReloadCompatibility(config, directory));
     this.status = canonicalStatus({ state: "unavailable", message: "Update status is starting." });
     this.release = null;
     this.installedVersion = null;
@@ -634,7 +722,10 @@ class UpdateSessionController {
 
   async #runQueuedUpdate(generation, release, preparedDirectory) {
     let appClosed = false;
+    let applyAttempted = false;
     let applied = false;
+    let hotReloadPrepared = false;
+    const priorInstalledVersion = this.installedVersion;
     let recovered = false;
     let relaunchAttempted = false;
     let retainPrepared = false;
@@ -699,6 +790,36 @@ class UpdateSessionController {
         });
         return;
       }
+      const hotReload = this.canHotReload(retainedDirectory);
+      if (hotReload?.compatible === true) {
+        await this.setStatus({ state: "updating", version: release.version, message: "Validating the update inside this ChatGPT session…" });
+        const loaded = await this.platform.hotReload(release, retainedDirectory);
+        if (loaded?.loaded !== true || loaded.helperVersion !== release.version || loaded.ready !== true ||
+            !Number.isInteger(loaded.rendererVersion)) {
+          throw new Error("The prepared helper did not return complete live-reload proof.");
+        }
+        hotReloadPrepared = true;
+        await this.setStatus({ state: "updating", version: release.version, message: "Installing the live-validated update without closing ChatGPT…" });
+        this.config.log?.("hot-reload-apply-start", { version: release.version, archiveSha256: release.archiveSha256 });
+        applyAttempted = true;
+        const result = await this.updater.applyPrepared(release, retainedDirectory);
+        if (result?.updated !== true || result.version !== release.version ||
+            String(result.archiveSha256).toLowerCase() !== release.archiveSha256) {
+          throw new Error("The updater did not confirm the pinned release was installed.");
+        }
+        applied = true;
+        const recovery = await this.updater.recover();
+        if (recovery?.integrityValid !== true) throw new Error("Post-update integrity verification failed; live reload was blocked.");
+        recovered = true;
+        this.installedVersion = release.version;
+        if (await this.platform.probe() !== true) throw new Error("The exact ChatGPT process changed after live update.");
+        this.config.log?.("hot-reload-confirmed", { version: release.version, rendererVersion: loaded.rendererVersion });
+        this.release = null;
+        this.recordHistory("hot-reload-confirmed", release.version);
+        await this.setStatus({ state: "current", version: release.version, message: `Updated to ${release.version} and loaded without restarting ChatGPT.` });
+        return;
+      }
+      this.config.log?.("hot-reload-unavailable", { version: release.version, reason: cleanMessage(hotReload?.reason) });
       await this.setStatus({ state: "closing", version: release.version, message: "Closing ChatGPT to install the verified update…" });
       this.closingInitiated = true;
       this.transport.setClosingExpected?.(true);
@@ -708,6 +829,7 @@ class UpdateSessionController {
       this.config.log?.("app-closed", { version: release.version, method: this.platform.lastCloseMethod ?? null });
       await this.setStatus({ state: "updating", version: release.version, message: "Installing the verified update…" });
       this.config.log?.("apply-start", { version: release.version, archiveSha256: release.archiveSha256 });
+      applyAttempted = true;
       const result = await this.updater.applyPrepared(release, retainedDirectory);
       if (result?.updated !== true || result.version !== release.version ||
           String(result.archiveSha256).toLowerCase() !== release.archiveSha256) {
@@ -732,9 +854,9 @@ class UpdateSessionController {
         this.closingInitiated = false;
         this.transport.setClosingExpected?.(false);
       }
-      if (appClosed && !recovered && error?.commandTreeTerminationUnverified === true) {
+      if ((appClosed || applyAttempted) && !recovered && error?.commandTreeTerminationUnverified === true) {
         retainPrepared = true;
-      } else if (appClosed && !recovered) {
+      } else if ((appClosed || applyAttempted) && !recovered) {
         try {
           const recovery = await this.updater.recover();
           if (recovery?.integrityValid !== true) throw new Error("Recovery did not prove installed-file integrity.");
@@ -742,6 +864,14 @@ class UpdateSessionController {
         } catch (recoveryError) {
           retainPrepared = true;
           error = new Error(`${cleanMessage(error?.message, "Update failed")} Recovery failed: ${cleanMessage(recoveryError?.message, "unknown error")}`);
+        }
+      }
+      if (!appClosed && hotReloadPrepared && recovered && validVersion(priorInstalledVersion)) {
+        try {
+          await this.platform.hotReload({ version: priorInstalledVersion });
+          this.config.log?.("hot-reload-restored", { version: priorInstalledVersion });
+        } catch (restoreError) {
+          error = new Error(`${cleanMessage(error?.message, "Update failed")} The prior renderer could not be restored: ${cleanMessage(restoreError?.message, "unknown error")}`);
         }
       }
       if (appClosed && recovered && !relaunchAttempted) {
@@ -753,7 +883,7 @@ class UpdateSessionController {
         }
       }
       this.config.log?.("terminal-update-failure", {
-        appClosed, applied, recovered, relaunchAttempted, retainedPrepared: retainPrepared,
+        appClosed, applied, applyAttempted, recovered, relaunchAttempted, retainedPrepared: retainPrepared,
         error: cleanMessage(error?.message),
       });
       if (appClosed) {
@@ -988,6 +1118,7 @@ module.exports = {
   readUpdateHistory,
   appendUpdateHistory,
   ensureConfig,
+  hotReloadCompatibility,
   parseLastJson,
   runCommand,
   safeRemovePrepared,

@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.5.80 — 2026-09-14
+
+- Detect when Codex React independently removes the mobile project panel, then
+  remount it directly before the still-connected native sidebar list. This
+  prevents a successful launch from showing a false readiness timeout.
+- Validate the final release-response URI through both Windows PowerShell and
+  PowerShell 7 response shapes, retaining the HTTPS redirect boundary.
+
 ## v1.5.79 — 2026-09-14
 
 - Prune the content-addressed Git release archive cache automatically after

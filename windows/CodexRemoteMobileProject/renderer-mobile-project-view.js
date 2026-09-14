@@ -73,7 +73,7 @@
     "unknown",
   ]);
   const PUBLISHER_VERSION = 53;
-  const VERSION = 86;
+  const VERSION = 87;
   // Keep outstanding writes locked across renderer reinjection until the underlying RPC settles.
   const peerWriteLocks = globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ instanceof Map
     ? globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ : (globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ = new Map());
@@ -7097,7 +7097,12 @@
       if (state.nativeContainer?.isConnected) state.nativeContainer.style.display = state.originalDisplay;
       state.nativeContainer = nextNative;
       state.originalDisplay = nextNative.style.display;
-      nextNative.parentElement?.insertBefore(state.panel, nextNative);
+    }
+    const nativeParent = nextNative.parentElement;
+    const siblings = nativeParent ? [...nativeParent.children] : [];
+    if (nativeParent && (!state.panel?.isConnected || state.panel.parentElement !== nativeParent
+      || siblings.indexOf(state.panel) !== siblings.indexOf(nextNative) - 1)) {
+      nativeParent.insertBefore(state.panel, nextNative);
     }
     observeSidebarMutations(nextNative.closest?.("nav,aside") ?? nextNative.parentElement ?? document.body);
 
@@ -7582,7 +7587,7 @@
     }
     if (!state.mountObserver) {
       state.mountObserver = new MutationObserver((mutations) => {
-        if (!state.observerTarget?.isConnected || !state.nativeContainer?.isConnected) schedule(mutations);
+        if (!state.observerTarget?.isConnected || !state.nativeContainer?.isConnected || !state.panel?.isConnected) schedule(mutations);
       });
       state.mountObserver.observe(document.body, { childList: true, subtree: true });
     }

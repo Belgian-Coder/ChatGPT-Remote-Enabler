@@ -348,6 +348,11 @@ layout.useModel({ rows: [nativeRecentRow], nativeProjectItems: [opened, closed],
 layout.install();
 assert.equal(layout.state.nativeContainer, nativeContainer, "render must include native project items as well as task rows when choosing its mount");
 assert.equal(layout.state.panel.parentElement, nav, "mode controls must mount beside the common Projects/Recents container");
+layout.state.panel.remove();
+assert.equal(layout.state.nativeContainer, nativeContainer, "the native sibling remains mounted in the React replacement regression");
+layout.render();
+assert.equal(layout.state.panel.parentElement, nav, "render must remount a panel removed independently by React");
+assert.equal(nav.children.indexOf(layout.state.panel), nav.children.indexOf(nativeContainer) - 1, "the recovered panel must be directly before the native list");
 assert.equal(layout.state.panel.querySelector(".crmp-update-status").textContent, "Automatic update checks");
 assert.match(layout.state.panel.querySelector(".crmp-version").textContent, /v1\.5\.32/u, "loaded version remains visible outside Settings");
 updateStatus = { state: "available", version: "v1.5.33", message: "Ready", canCancel: false, canQueue: true };

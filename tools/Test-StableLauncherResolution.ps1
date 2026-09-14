@@ -33,7 +33,7 @@ $packagedSource = Join-Path $fixtureRoot 'packaged-source'
 $recoveryStableRoot = Join-Path $fixtureRoot 'canonical-recovery'
 $recoveryStateRoot = Join-Path $fixtureRoot 'updater-recovery-state'
 $legacyRoot = Join-Path (Join-Path $fixtureRoot 'releases') 'ChatGPT-Remote-Enabler-Windows-x64-v1.5.23'
-$newerLegacyRoot = Join-Path (Join-Path $fixtureRoot 'releases') 'ChatGPT-Remote-Enabler-Windows-x64-v1.5.72'
+$newerLegacyRoot = Join-Path (Join-Path $fixtureRoot 'releases') 'ChatGPT-Remote-Enabler-Windows-x64-v1.5.73'
 $reparseLegacyRoot = Join-Path (Join-Path $fixtureRoot 'releases') 'ChatGPT-Remote-Enabler-Windows-x64-v1.5.22'
 $processFailureLegacyRoot = Join-Path (Join-Path $fixtureRoot 'releases') 'ChatGPT-Remote-Enabler-Windows-x64-v1.5.21'
 $migrationFailureLegacyRoot = Join-Path (Join-Path $fixtureRoot 'releases') 'ChatGPT-Remote-Enabler-Windows-x64-v1.5.20'
@@ -48,7 +48,7 @@ try {
     Assert-Condition (Test-StableLegacyRoot -Path (Get-StableMachineInstallRoot)) 'The former machine-wide stable root is not recognized as a legacy migration source.'
     New-Item -ItemType Directory -Path $stableRoot,$packagedSource,$legacyRoot,$newerLegacyRoot,$processFailureLegacyRoot,$migrationFailureLegacyRoot,$sessionLegacyRoot,$desktopPath,$startMenuPath,$startupPath -Force | Out-Null
     Copy-StablePackageContents -SourceRoot (Join-Path $repositoryRoot 'windows') -DestinationRoot $stableRoot
-    Write-Version -Root $stableRoot -Version 'v1.5.72'
+    Write-Version -Root $stableRoot -Version 'v1.5.73'
     New-ReleaseManifest -Root $stableRoot
     Assert-Condition (Test-StablePackage -Root $stableRoot -RequireManifest) 'The canonical fixture failed manifest, VERSION, and ProductVersion validation.'
     $noncanonicalCleanup = @(Invoke-StableLegacyCleanup -StableRoot $stableRoot -UpdaterStateRoot $stateRoot -MigrateEntryPoints)
@@ -56,7 +56,7 @@ try {
     $noncanonicalTask = @(Invoke-StableTaskMigration -StableRoot $stableRoot)
     Assert-Condition ($noncanonicalTask.Count -eq 1 -and $noncanonicalTask[0].reason -eq 'noncanonical-stable-root') 'A noncanonical fixture root was allowed to migrate the durable logon task.'
     Copy-StablePackageContents -SourceRoot (Join-Path $repositoryRoot 'windows') -DestinationRoot $packagedSource
-    Write-Version -Root $packagedSource -Version 'v1.5.72'
+    Write-Version -Root $packagedSource -Version 'v1.5.73'
     New-ReleaseManifest -Root $packagedSource
     Assert-Condition (Test-StablePackage -Root $packagedSource -RequireManifest) 'The packaged update fixture failed validation.'
 

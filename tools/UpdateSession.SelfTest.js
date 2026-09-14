@@ -532,6 +532,12 @@ function testCoordinatorHandoffConfigBoundary() {
   assert.equal(handoffHelper.exactChildConfig({ ...value }, configPath).launcherPath, launcherPath);
   assert.throws(() => handoffHelper.exactChildConfig({ ...value, resultPath: path.join(tempRoot, "outside.json") }, configPath), /outside its session/u);
   assert.throws(() => handoffHelper.exactChildConfig({ ...value, launcherPath: path.join(tempRoot, "other.ps1") }, configPath), /launcher is unavailable/u);
+  const modulePath = handoffHelper.windowsPowerShellModulePath({
+    USERPROFILE: "C:\\Users\\fixture", ProgramFiles: "C:\\Program Files", SystemRoot: "C:\\Windows",
+    PSModulePath: "C:\\Program Files\\PowerShell\\7\\Modules",
+  });
+  assert.match(modulePath, /WindowsPowerShell\\Modules/u);
+  assert.doesNotMatch(modulePath, /PowerShell\\7/u);
 }
 
 async function testExactMacRelaunchArguments() {

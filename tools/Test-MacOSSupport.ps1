@@ -81,6 +81,9 @@ foreach ($contract in @('NSWindow', 'NSProgressIndicator', 'NSRunLoop.currentRun
 foreach ($contract in @('resolve_app_bundle() {', 'resolve_app_executable() {', '"$app_executable" "${launch_arguments[@]}"', 'chatgpt-launch.log', 'timeout_seconds=35', '[[ "$requested_action" == probe ]] && timeout_seconds=12', 'return 124')) {
     if (-not $launcher.Contains($contract)) { throw "macOS permission-free application launch contract is missing: $contract" }
 }
+if (-not (Get-Content -LiteralPath (Join-Path $root 'macos\inject.js') -Raw).Contains('() => process.exit(0)')) {
+    throw 'The macOS injector CLI does not force a clean exit after closing CDP.'
+}
 if ($launcher.Contains('/usr/bin/open "${open_arguments[@]}"') -or $launcher.Contains('path to application')) {
     throw 'The application launch path still depends on TCC-sensitive LaunchServices or Apple Events.'
 }

@@ -53,6 +53,8 @@ for launch_contract in 'resolve_app_bundle() {' 'resolve_app_executable() {' '"$
   /usr/bin/grep -F "$launch_contract" "$root/macos/MobileProjectView-macOS-arm64.sh" >/dev/null \
     || { print -u2 "The permission-free application launch contract is missing: $launch_contract"; exit 1; }
 done
+/usr/bin/grep -F '() => process.exit(0)' "$root/macos/inject.js" >/dev/null \
+  || { print -u2 'The macOS injector CLI does not force a clean exit after closing CDP.'; exit 1; }
 if /usr/bin/grep -F '/usr/bin/open "${open_arguments[@]}"' "$root/macos/MobileProjectView-macOS-arm64.sh" >/dev/null \
   || /usr/bin/grep -F 'path to application' "$root/macos/MobileProjectView-macOS-arm64.sh" >/dev/null; then
   print -u2 'The application launch path still depends on TCC-sensitive LaunchServices or Apple Events.'

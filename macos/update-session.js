@@ -16,7 +16,10 @@ const STATUS_STATES = new Set([
   "updating", "restarting", "error", "unavailable",
 ]);
 const REQUEST_ACTIONS = new Set(["check", "queue", "cancel", "history"]);
-const CLOSE_METHODS = new Set(["native-renderer-quit", "WM_CLOSE", "concurrent-graceful-exit", "NSRunningApplicationTerminate"]);
+const CLOSE_METHODS = Object.freeze({
+  win32: new Set(["native-renderer-quit", "WM_CLOSE", "concurrent-graceful-exit"]),
+  darwin: new Set(["native-renderer-quit", "POSIX_SIGTERM", "concurrent-graceful-exit"]),
+});
 
 function cleanMessage(value, fallback = null) {
   if (typeof value !== "string") return fallback;
@@ -371,7 +374,9 @@ class PlatformAdapter {
       ], { timeoutMs: 45_000 });
       return parseLastJson(result.stdout);
     }
-    const result = await this.run("/bin/zsh", [this.config.platformHelperPath, action, this.config.configPath], { timeoutMs: 45_000 });
+    const argumentsValue = [this.config.platformHelperPath, action, this.config.configPath];
+    if (this.config.platform === "darwin") argumentsValue.push(process.execPath);
+    const result = await this.run("/bin/zsh", argumentsValue, { timeoutMs: 45_000 });
     return parseLastJson(result.stdout);
   }
 
@@ -391,8 +396,9 @@ class PlatformAdapter {
 
   async closeGracefully() {
     const result = await this.#platform("Close");
-    if (result.closed !== true) return false;
-    this.lastCloseMethod = CLOSE_METHODS.has(result.method) ? result.method : null;
+    const acceptedMethods = CLOSE_METHODS[this.config.platform];
+    if (result.closed !== true || !acceptedMethods?.has(result.method)) return false;
+    this.lastCloseMethod = result.method;
     return true;
   }
 

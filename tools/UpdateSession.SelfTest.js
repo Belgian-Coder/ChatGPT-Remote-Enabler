@@ -790,6 +790,47 @@ async function testExactMacRelaunchArguments() {
   assert.equal(invocation.options.windowsHide, true);
 }
 
+async function testMacCloseMethodWhitelist() {
+  const cfg = config({
+    platform: "darwin",
+    updaterPath: path.join(bundleRoot, "Update-ChatGPTRemote.sh"),
+    platformHelperPath: path.join(bundleRoot, "UpdateSessionPlatform.sh"),
+    app: { pid: 4321, startToken: "Sat Sep  5 12:00:00 2026", executablePath: "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT", appPath: "/Applications/ChatGPT.app", bundleId: "com.example.ChatGPT" },
+  });
+  cfg.configPath = path.join(sessionDirectory, "session.json");
+  let method = "unknown";
+  let invocation = null;
+  const adapter = new session.PlatformAdapter(cfg, {
+    runCommand: async (command, args) => {
+      invocation = { command, args };
+      return { stdout: JSON.stringify({ closed: true, method }) + "\n", stderr: "" };
+    },
+  });
+  assert.equal(await adapter.closeGracefully(), false, "an unrecognized close method must fail closed");
+  assert.equal(adapter.lastCloseMethod, null);
+  assert.equal(invocation.command, "/bin/zsh");
+  assert.equal(invocation.args.at(-1), process.execPath, "macOS close must pass the verified Node runtime for CDP validation");
+  method = "POSIX_SIGTERM";
+  assert.equal(await adapter.closeGracefully(), true);
+  assert.equal(adapter.lastCloseMethod, "POSIX_SIGTERM");
+  method = "NSRunningApplicationTerminate";
+  assert.equal(await adapter.closeGracefully(), false, "the TCC-sensitive AppKit close method must not be accepted");
+
+  const windowsConfig = config({
+    platform: "win32",
+    updaterPath: path.join(bundleRoot, "Update-ChatGPTRemote.ps1"),
+    platformHelperPath: path.join(bundleRoot, "UpdateSessionPlatform.ps1"),
+    app: { pid: 4321, startToken: "134000000000000000", executablePath: "C:\\Program Files\\ChatGPT\\ChatGPT.exe", appPath: "C:\\Program Files\\ChatGPT", bundleId: "com.example.ChatGPT" },
+  });
+  windowsConfig.configPath = path.join(sessionDirectory, "windows-session.json");
+  method = "WM_CLOSE";
+  const windowsAdapter = new session.PlatformAdapter(windowsConfig, {
+    runCommand: async () => ({ stdout: JSON.stringify({ closed: true, method }) + "\n", stderr: "" }),
+  });
+  assert.equal(await windowsAdapter.closeGracefully(), true, "the existing Windows WM_CLOSE method must remain accepted");
+  assert.equal(windowsAdapter.lastCloseMethod, "WM_CLOSE");
+}
+
 async function testUpdaterMappingsAndPrettyJson() {
   const cfg = config({ platform: "darwin", updaterPath: path.join(bundleRoot, "Update-ChatGPTRemote.sh"), platformHelperPath: path.join(bundleRoot, "UpdateSessionPlatform.sh"),
     app: { pid: 4321, startToken: "Sat Sep  5 12:00:00 2026", executablePath: "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT", appPath: "/Applications/ChatGPT.app", bundleId: "com.example.ChatGPT" },
@@ -935,12 +976,13 @@ async function testActualWindowsCheck() {
     await testCoordinatorHandoffFailureReclaimsLock();
     testCoordinatorHandoffConfigBoundary();
     await testExactMacRelaunchArguments();
+    await testMacCloseMethodWhitelist();
     await testUpdaterMappingsAndPrettyJson();
     await testProductionRendererReadinessContract();
     await testMacHotReloadIdentityArguments();
     testMacLauncherCaptureIdentity();
     await testActualWindowsCheck();
-    process.stdout.write(`${JSON.stringify({ ok: true, persistentHistory: true, controllerFlows: 13, monitorSingleflight: true, malformedLockFailClosed: true, concurrentLockReclaim: true, timeoutTreeContained: true, exactRelaunch: true, exactMacRelaunchSkipsPrelaunch: true, prettyJson: true, actualWindowsCheck: process.platform === "win32" && !process.argv.includes("--skip-actual-updater") })}\n`);
+    process.stdout.write(`${JSON.stringify({ ok: true, persistentHistory: true, controllerFlows: 13, monitorSingleflight: true, malformedLockFailClosed: true, concurrentLockReclaim: true, timeoutTreeContained: true, exactRelaunch: true, exactMacRelaunchSkipsPrelaunch: true, macCloseMethodWhitelist: true, prettyJson: true, actualWindowsCheck: process.platform === "win32" && !process.argv.includes("--skip-actual-updater") })}\n`);
   } finally {
     fs.rmSync(tempRoot, { force: true, recursive: true });
   }

@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.5.86 — 2026-09-15
+
+- Add a native AppKit startup-progress window to the macOS Dock shortcut. It
+  opens before update recovery and reports update recovery/check, maintenance,
+  launch, renderer readiness, and completion; failures remain visible with a
+  clean corrective message and the window closes only after readiness proof.
+- Replace macOS TCC-sensitive `NSRunningApplication` termination with an exact
+  PID/start-token/executable/bundle/UID guard, an exact renderer `quit-app`
+  request, and one permission-free POSIX `SIGTERM` fallback. The close path
+  never force-kills and rejects changed or ambiguous identities.
+- Keep Windows `native-renderer-quit`, `WM_CLOSE`, and concurrent-exit behavior
+  unchanged while method-whitelisting both platform adapters; suppress only the
+  expected ad-hoc codesign replacement diagnostic from macOS shortcut setup.
+- Add focused AppKit/progress, close-identity, TCC-avoidance, Windows-parity,
+  archive, privacy, and source-regression coverage.
+
 ## v1.5.85 — 2026-09-15
 
 - Detect running ChatGPT, Codex, and the configured macOS application by exact

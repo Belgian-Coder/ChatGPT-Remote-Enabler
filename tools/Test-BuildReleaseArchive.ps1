@@ -20,6 +20,7 @@ try {
         'Update-ChatGPTRemote.sh',
         'UpdateSessionPlatform.sh'
     )
+    $macSupportEntries = @('StartupProgress.js')
     foreach ($archiveFile in $archives) {
         $archive = [IO.Compression.ZipFile]::OpenRead($archiveFile.FullName)
         try {
@@ -36,6 +37,13 @@ try {
                     $externalAttributes = [BitConverter]::ToUInt32([BitConverter]::GetBytes([int]$entry.ExternalAttributes), 0)
                     $mode = ($externalAttributes -shr 16) -band 0xffff
                     if ($mode -ne 0x81ed) { throw "$($archiveFile.Name) stores $name with Unix mode 0x$($mode.ToString('x4')); expected 0x81ed." }
+                }
+                foreach ($name in $macSupportEntries) {
+                    $entry = $archive.GetEntry("$($topLevels[0])/$name")
+                    if (-not $entry) { throw "$($archiveFile.Name) is missing support entry $name." }
+                    $externalAttributes = [BitConverter]::ToUInt32([BitConverter]::GetBytes([int]$entry.ExternalAttributes), 0)
+                    $mode = ($externalAttributes -shr 16) -band 0xffff
+                    if ($mode -ne 0x81a4) { throw "$($archiveFile.Name) stores $name with Unix mode 0x$($mode.ToString('x4')); expected 0x81a4." }
                 }
                 $ordinaryEntry = $archive.GetEntry("$($topLevels[0])/VERSION")
                 $ordinaryAttributes = [BitConverter]::ToUInt32([BitConverter]::GetBytes([int]$ordinaryEntry.ExternalAttributes), 0)

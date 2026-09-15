@@ -1,6 +1,6 @@
 # Feature guide
 
-This guide describes the Windows and macOS v1.5.85 source, including reliable
+This guide describes the Windows and macOS v1.5.86 source, including reliable
 background inventory publication, loaded search, compact Settings, guarded navigation, and stale-Steer recovery. Historical v1.5.49 packages and
 screenshots do not include those changes. Both packages share the Device
 projects renderer and the feature behavior below; the
@@ -15,6 +15,14 @@ the exact ChatGPT identity. The predecessor releases its renderer binding and
 owned lock only for the prepared successor, then retires after the new
 coordinator publishes an active heartbeat. A failed successor is stopped and
 the predecessor restores its lock, binding, and status. ChatGPT remains open.
+
+The macOS Dock shortcut shows native AppKit startup progress through update
+recovery/check, maintenance, launch, renderer readiness, and completion. The
+window reads a private per-user state file and closes only after readiness proof;
+an error stays visible with a corrective message. Windows keeps its existing
+startup progress worker and graceful `native-renderer-quit`/`WM_CLOSE` behavior.
+Both update coordinators accept only their platform's explicitly whitelisted
+close methods.
 
 On Windows, each shortcut or sign-in launch verifies Remote Enabler recovery,
 completes the official signed desktop MSIX update, completes the required

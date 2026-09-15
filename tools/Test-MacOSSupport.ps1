@@ -7,6 +7,7 @@ $updater = Get-Content -LiteralPath (Join-Path $root 'macos\Update-ChatGPTRemote
 $launcher = Get-Content -LiteralPath (Join-Path $root 'macos\MobileProjectView-macOS-arm64.sh') -Raw
 $shortcut = Get-Content -LiteralPath (Join-Path $root 'macos\MacOSShortcut.sh') -Raw
 $processGuard = Get-Content -LiteralPath (Join-Path $root 'macos\AppProcessGuard.sh') -Raw
+$startupProgress = Get-Content -LiteralPath (Join-Path $root 'macos\StartupProgress.js') -Raw
 $setup = Get-Content -LiteralPath (Join-Path $root 'macos\Setup.command') -Raw
 $zshSemanticTest = Get-Content -LiteralPath (Join-Path $root 'tools\Test-MacOSSupport.zsh') -Raw
 $updateSession = Get-Content -LiteralPath (Join-Path $root 'macos\update-session.js') -Raw
@@ -67,6 +68,31 @@ if (-not $updateSessionPlatform.Contains('/usr/bin/awk ''{$1=$1; print}''')) {
 }
 foreach ($contract in @('startup_proxy=0', 'startup_arguments+=(--proxy)', 'shortcut_proxy=0', 'shortcut_arguments+=(--proxy)')) {
     if (-not $updater.Contains($contract)) { throw "macOS migration proxy-preservation contract is missing: $contract" }
+}
+foreach ($contract in @('progress_start()', 'progress_write update-recovery', 'progress_write update-check', 'progress_write maintenance', 'progress_write launch', 'progress_write renderer-readiness', 'progress_complete', 'CODEX_REMOTE_PROGRESS_STATE')) {
+    if (-not $launcher.Contains($contract)) { throw "macOS startup progress lifecycle contract is missing: $contract" }
+}
+foreach ($contract in @('NSWindow', 'NSProgressIndicator', 'NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock', 'update-recovery', 'update-check', 'renderer-readiness', 'complete', 'Action required', 'private per-user')) {
+    if (-not $startupProgress.Contains($contract)) { throw "macOS native startup progress helper contract is missing: $contract" }
+}
+foreach ($contract in @('StartupProgress.js', 'progressRequested', 'CODEX_REMOTE_PROGRESS_ENABLED=1')) {
+    if (-not $shortcut.Contains($contract)) { throw "macOS Dock shortcut progress contract is missing: $contract" }
+}
+foreach ($contract in @('codesign_quiet() {', 'replacing existing signature', '/usr/bin/sed ''/replacing existing signature/d''')) {
+    if (-not $shortcut.Contains($contract)) { throw "macOS codesign diagnostic suppression contract is missing: $contract" }
+}
+foreach ($contract in @('native_renderer_quit()', 'SystemInfo.getProcessInfo', 'bridge.sendMessageFromView({ type: "quit-app" })', '/bin/kill -TERM "$pid_value"', 'POSIX_SIGTERM', 'expected_uid', '0=SAME, 1=GONE, 2=ERROR, 3=CHANGED')) {
+    if (-not $updateSessionPlatform.Contains($contract)) { throw "macOS permission-free close contract is missing: $contract" }
+}
+if ($updateSessionPlatform.Contains('NSRunningApplication') -or $updateSessionPlatform.Contains('terminate()') -or
+    $updateSessionPlatform.Contains('do shell script') -or $updateSessionPlatform.Contains('kill -9') -or
+    $updateSessionPlatform.Contains('killall') -or $updateSessionPlatform.Contains('pkill')) {
+    throw 'macOS graceful close still uses the TCC-sensitive AppKit/Apple Events path or a force-kill fallback.'
+}
+if (-not $updateSession.Contains('CLOSE_METHODS[this.config.platform]') -or
+    -not $updateSession.Contains('WM_CLOSE') -or -not $updateSession.Contains('POSIX_SIGTERM') -or
+    -not $updateSession.Contains('argumentsValue.push(process.execPath)')) {
+    throw 'macOS update-session close results are not method-whitelisted and Node-bound.'
 }
 foreach ($contract in @('match-stdin', '/bin/ps -axo pid=,command=', 'command == path', 'index(command, path " ") == 1', 'process_list="$(/bin/ps -axo pid=,command=)" || return 2', 'first="$(enumerate_processes)" || exit 2')) {
     if (-not $processGuard.Contains($contract)) { throw "macOS exact executable process-guard contract is missing: $contract" }
@@ -171,7 +197,7 @@ if (([regex]::Matches($shortcut, 'escape_applescript_string "\$launcher"')).Coun
 foreach ($contract in @('app_is_running || guard_status=$?', 'elif (( guard_status != 1 ))', 'refusing to risk a second instance')) {
     if (-not $launcher.Contains($contract)) { throw "macOS process-guard failure does not fail closed: $contract" }
 }
-foreach ($contract in @('ExactExecutableProcessGuard', 'LegacyNameProbeMissCovered', 'NoHelperOrUnrelatedMatches', 'CustomAppNamePath', 'EnumerationFailureFailClosed', 'LegacyShortcutMigrated')) {
+foreach ($contract in @('ExactExecutableProcessGuard', 'LegacyNameProbeMissCovered', 'NoHelperOrUnrelatedMatches', 'CustomAppNamePath', 'EnumerationFailureFailClosed', 'LegacyShortcutMigrated', 'MacOSNativeStartupProgress', 'MacOSPermissionFreeGracefulClose')) {
     if (-not $zshSemanticTest.Contains($contract)) { throw "The real-zsh process-guard regression is not wired: $contract" }
 }
 
@@ -204,5 +230,7 @@ $global:LASTEXITCODE = 0
     ShortcutRollbackCleanup = $true
     ExactExecutableProcessGuard = $true
     LegacyShortcutMigrated = $true
+    MacOSNativeStartupProgress = $true
+    MacOSPermissionFreeGracefulClose = $true
     RealZshSemanticTestPresent = $true
 } | ConvertTo-Json -Compress

@@ -5,10 +5,29 @@ zmodload zsh/datetime
 root="${0:A:h:h}"
 shortcut="$root/macos/MacOSShortcut.sh"
 process_guard="$root/macos/AppProcessGuard.sh"
+startup_progress="$root/macos/StartupProgress.js"
+update_platform="$root/macos/UpdateSessionPlatform.sh"
 temporary="$(mktemp -d "${TMPDIR:-/tmp}/chatgpt-remote-macos-support.XXXXXX")"
 temporary="${temporary:A}"
-cleanup() { rm -rf -- "$temporary"; }
+fixture_pids=()
+cleanup() {
+  local fixture_pid
+  for fixture_pid in "${fixture_pids[@]}"; do
+    kill -TERM "$fixture_pid" 2>/dev/null || true
+    wait "$fixture_pid" 2>/dev/null || true
+  done
+  rm -rf -- "$temporary"
+}
 trap cleanup EXIT INT TERM
+
+[[ -f "$startup_progress" ]] || { print -u2 'The native startup progress helper is missing.'; exit 1; }
+for progress_contract in NSWindow NSProgressIndicator NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock update-recovery update-check renderer-readiness; do
+  /usr/bin/grep -F "$progress_contract" "$startup_progress" >/dev/null || { print -u2 "Native startup progress contract is missing: $progress_contract"; exit 1; }
+done
+if /usr/bin/grep -E 'NSRunningApplication|terminate\(\)|do shell script|kill -9|killall|pkill' "$update_platform" >/dev/null; then
+  print -u2 'The macOS close path still contains a TCC-sensitive or force-kill operation.'
+  exit 1
+fi
 
 sed -n '/^escape_applescript_string() {$/,/^}$/p' "$shortcut" > "$temporary/escape.zsh"
 source "$temporary/escape.zsh"
@@ -265,4 +284,59 @@ handoff_output="$(continue_with_updated_launcher)"
 [[ "$handoff_output" == *'"sourceCheckoutInterpreterHandoff":true'* && "$handoff_output" == *'"recoveryContinuation":true'* ]] \
   || { print -u2 "The updated source-checkout launcher was not handed off through zsh."; exit 1; }
 
-print -r -- '{"AppleScriptEscapeSemantic":true,"SharedEscapeHelper":true,"ExactExecutableProcessGuard":true,"LegacyNameProbeMissCovered":true,"NoHelperOrUnrelatedMatches":true,"CustomAppNamePath":true,"EnumerationFailureFailClosed":true,"ShortcutAtomicInstall":true,"LegacyShortcutMigrated":true,"MacOSShellSyntax":true,"RelativeInvocation":true,"TransactionApply":true,"PrelaunchCurrentProof":true,"RecoveredCurrentHandoff":true,"RepeatedRecoveryRejected":true,"PrelaunchVerifiedUpdate":true,"PrelaunchMethodRejected":true,"PrelaunchStrictFinalJsonProof":true,"PrelaunchCurrentMethodRequired":true,"PrelaunchRecoveryFailClosed":true,"InheritedLaunchGuard":true,"SourceCheckoutInterpreterHandoff":true}'
+# Exercise the permission-free close path against a copied harmless executable,
+# never against ChatGPT or Codex.  The first case proves one exact identity can
+# receive a single graceful TERM fallback; the second proves a changed start
+# token is rejected and receives no signal.
+fake_app="$temporary/Fake ChatGPT.app"
+fake_executable="$fake_app/Contents/MacOS/ChatGPT"
+mkdir -p "$fake_app/Contents/MacOS"
+cp -p -- /bin/sleep "$fake_executable"
+cat > "$fake_app/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleExecutable</key><string>ChatGPT</string>
+<key>CFBundleIdentifier</key><string>com.example.fixture-chatgpt</string>
+</dict></plist>
+PLIST
+"$fake_executable" 120 &
+fixture_pid=$!
+fixture_pids+=("$fixture_pid")
+sleep 0.2
+fixture_start="$(/bin/ps -p "$fixture_pid" -o lstart= | /usr/bin/awk '{$1=$1; print}')"
+fixture_uid="$(/usr/bin/id -u)"
+fixture_config="$temporary/close-fixture.json"
+cat > "$fixture_config" <<EOF
+{"schemaVersion":1,"platform":"darwin","app":{"pid":$fixture_pid,"startToken":"$fixture_start","executablePath":"$fake_executable","appPath":"$fake_app","bundleId":"com.example.fixture-chatgpt"},"rendererPort":9229}
+EOF
+close_fixture_output="$(/bin/zsh "$update_platform" close "$fixture_config" /bin/false)"
+[[ "$close_fixture_output" == *'"closed":true'* && "$close_fixture_output" == *'"method":"POSIX_SIGTERM"'* ]] \
+  || { print -u2 "Exact fixture graceful close did not use one POSIX TERM fallback: $close_fixture_output"; exit 1; }
+if /bin/kill -0 "$fixture_pid" 2>/dev/null; then
+  print -u2 'The exact fixture process survived its graceful TERM request.'
+  exit 1
+fi
+fixture_pids=()
+
+"$fake_executable" 120 &
+fixture_pid=$!
+fixture_pids+=("$fixture_pid")
+sleep 0.2
+fixture_start="$(/bin/ps -p "$fixture_pid" -o lstart= | /usr/bin/awk '{$1=$1; print}')"
+cat > "$fixture_config" <<EOF
+{"schemaVersion":1,"platform":"darwin","app":{"pid":$fixture_pid,"startToken":"$fixture_start-mismatch","executablePath":"$fake_executable","appPath":"$fake_app","bundleId":"com.example.fixture-chatgpt"},"rendererPort":9229}
+EOF
+if /bin/zsh "$update_platform" close "$fixture_config" /bin/false >/dev/null 2>&1; then
+  print -u2 'A changed fixture start token was accepted for graceful close.'
+  exit 1
+fi
+if ! /bin/kill -0 "$fixture_pid" 2>/dev/null; then
+  print -u2 'A mismatched fixture identity was signaled.'
+  exit 1
+fi
+kill -TERM "$fixture_pid" 2>/dev/null || true
+wait "$fixture_pid" 2>/dev/null || true
+fixture_pids=()
+
+print -r -- '{"AppleScriptEscapeSemantic":true,"SharedEscapeHelper":true,"ExactExecutableProcessGuard":true,"LegacyNameProbeMissCovered":true,"NoHelperOrUnrelatedMatches":true,"CustomAppNamePath":true,"EnumerationFailureFailClosed":true,"ShortcutAtomicInstall":true,"LegacyShortcutMigrated":true,"MacOSShellSyntax":true,"RelativeInvocation":true,"TransactionApply":true,"PrelaunchCurrentProof":true,"RecoveredCurrentHandoff":true,"RepeatedRecoveryRejected":true,"PrelaunchVerifiedUpdate":true,"PrelaunchMethodRejected":true,"PrelaunchStrictFinalJsonProof":true,"PrelaunchCurrentMethodRequired":true,"PrelaunchRecoveryFailClosed":true,"InheritedLaunchGuard":true,"SourceCheckoutInterpreterHandoff":true,"MacOSNativeStartupProgress":true,"MacOSPermissionFreeGracefulClose":true,"MacOSCloseFixtureExactIdentity":true,"MacOSCloseFixtureMismatchRejected":true}'

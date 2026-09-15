@@ -46,6 +46,10 @@ prune_startup_rollbacks() {
 port="${CODEX_REMOTE_DEBUG_PORT:-9229}"
 app_name="${CODEX_APP_NAME:-ChatGPT}"
 process_guard="${script_path:h}/AppProcessGuard.sh"
+progress_helper="${script_path:h}/StartupProgress.js"
+progress_state_path="${CODEX_REMOTE_PROGRESS_STATE:-}"
+progress_enabled=0
+progress_started=0
 peer_name="${CODEX_REMOTE_PEER_NAME:-}"
 startup_delay_seconds="${CODEX_STARTUP_DELAY_SECONDS:-60}"
 startup_required_path="${CODEX_STARTUP_REQUIRED_PATH:-}"
@@ -64,6 +68,48 @@ launch_guard_owned=0
 prelaunch_updated=0
 recovery_changed=0
 proxy_server=""
+
+progress_state_is_safe() {
+  local root="${HOME}/Library/Application Support/CodexRemoteFeatures/startup-progress/"
+  [[ -n "$progress_state_path" && "$progress_state_path" == "$root"*.status &&
+     "$progress_state_path" != *$'\n'* && "$progress_state_path" != *$'\r'* && "$progress_state_path" != *$'\0'* &&
+     "$progress_state_path" != *..* ]]
+}
+
+progress_write() {
+  (( progress_enabled )) || return 0
+  local kind="$1" message="${2:-}" temporary
+  message="${message//$'\r'/ }"
+  message="${message//$'\n'/ }"
+  message="${message//$'\t'/ }"
+  temporary="${progress_state_path}.$$.$RANDOM.tmp"
+  print -r -- "$kind"$'\t'"$message" > "$temporary" || return 1
+  mv -f -- "$temporary" "$progress_state_path" || { rm -f -- "$temporary"; return 1; }
+}
+
+progress_start() {
+  [[ "${CODEX_REMOTE_PROGRESS_ENABLED:-0}" == 1 && -n "$progress_state_path" ]] || return 0
+  progress_state_is_safe || { print -u2 'The startup progress state path is outside the private per-user directory.'; return 1; }
+  [[ -f "$progress_helper" && ! -L "$progress_helper" ]] || { print -u2 "Startup progress helper is missing: $progress_helper"; return 1; }
+  mkdir -m 700 -p "${progress_state_path:h}"
+  progress_enabled=1
+  progress_write starting 'Starting ChatGPT Remote Enabler…'
+  if [[ "${CODEX_REMOTE_PROGRESS_STARTED:-0}" != 1 ]]; then
+    /usr/bin/osascript -l JavaScript "$progress_helper" --state "$progress_state_path" --owner "$$" >/dev/null 2>&1 &!
+    progress_started=1
+    export CODEX_REMOTE_PROGRESS_STARTED=1
+  fi
+}
+
+progress_error() {
+  (( progress_enabled )) || return 0
+  progress_write error "${1:-Startup could not complete. Review the launcher log and retry.}" || true
+}
+
+progress_complete() {
+  (( progress_enabled )) || return 0
+  progress_write complete 'ChatGPT Remote is ready.' || true
+}
 
 configure_proxy_environment() {
   (( use_proxy )) || return 0
@@ -84,7 +130,17 @@ release_launch_guard() {
   launch_guard_owned=0
 }
 
-trap release_launch_guard EXIT INT TERM
+launcher_exit() {
+  local status=$?
+  if (( status != 0 )); then
+    progress_error 'Startup could not complete. Review the launcher log, correct the issue, and retry.'
+  fi
+  release_launch_guard
+  return "$status"
+}
+
+trap launcher_exit EXIT
+trap 'progress_error "Startup was interrupted before readiness."; release_launch_guard; exit 130' INT TERM
 
 acquire_launch_guard() {
   local deadline=$(( EPOCHSECONDS + 120 )) owner owner_pid modified
@@ -321,6 +377,7 @@ continue_with_updated_launcher() {
     "CODEX_REMOTE_SKIP_PRELAUNCH_UPDATE_ONCE=1"
     "CODEX_REMOTE_SKIP_UPDATE_CHECK_ONCE=1"
   )
+  [[ -n "${progress_state_path:-}" ]] && environment+=("CODEX_REMOTE_PROGRESS_ENABLED=1" "CODEX_REMOTE_PROGRESS_STATE=${progress_state_path}" "CODEX_REMOTE_PROGRESS_STARTED=1")
   (( use_proxy )) && environment+=("CODEX_REMOTE_USE_PROXY=1")
   (( recovery_changed )) && environment+=("CODEX_REMOTE_RECOVERY_CONTINUATION=1")
   if [[ "$action" == startup ]]; then environment+=("CODEX_REMOTE_SKIP_STARTUP_DELAY_ONCE=1"); fi
@@ -496,11 +553,14 @@ write_relaunch_handoff() {
 }
 
 enable_view() {
+  progress_start
+  progress_write update-recovery 'Recovering any interrupted update…'
   acquire_launch_guard
   local node_bin
   node_bin="$(resolve_node)"
   configure_proxy_environment
   recover_update "$node_bin"
+  progress_write update-check 'Checking and updating Remote Enabler…'
   prelaunch_update "$node_bin"
   continue_with_updated_launcher
   if ! debug_endpoint_ready "$node_bin"; then
@@ -513,9 +573,11 @@ enable_view() {
       print -u2 "The exact application process check failed; refusing to risk a second instance."
       return 1
     fi
+    progress_write maintenance 'Preparing local maintenance…'
     local maintenance_started=$EPOCHREALTIME
     "$node_bin" --no-warnings "$maintenance_helper" --best-effort
     print "stage=maintenance durationMs=$(( (EPOCHREALTIME - maintenance_started) * 1000 ))"
+    progress_write launch 'Launching ChatGPT with Remote enabled…'
     local -a launch_arguments=(--remote-debugging-address=127.0.0.1 --remote-debugging-port="$port")
     if (( use_proxy )); then
       launch_arguments+=("--proxy-server=$proxy_server" '--proxy-bypass-list=localhost;127.0.0.1;[::1]')
@@ -534,6 +596,7 @@ enable_view() {
     done
   fi
   debug_endpoint_ready "$node_bin" || { print -u2 "The loopback Codex renderer endpoint did not become ready."; return 1; }
+  progress_write renderer-readiness 'Waiting for renderer readiness…'
   verify_running_proxy_mode
   local mobile_started=$EPOCHREALTIME output summary readiness_exit deadline
   output="$(run_injector "$node_bin" enable)"
@@ -556,6 +619,7 @@ enable_view() {
   done
   (( readiness_exit == 0 )) || { print -u2 "The mobile project view readiness probe failed."; return 1; }
   print "stage=mobile-readiness durationMs=$(( (EPOCHREALTIME - mobile_started) * 1000 )) proof=$summary"
+  progress_complete
   local identity
   identity="$(capture_app_identity)" || { print -u2 "Update status is unavailable because the exact application identity could not be captured."; return 0; }
   start_publisher_heartbeat "$node_bin" "$identity" || print -u2 "Publisher heartbeat is unavailable for this session."

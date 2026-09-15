@@ -27,6 +27,7 @@ $javascript = @(
     'macos\inject.js'
     'windows\CodexRemoteMobileProject\maintenance.js'
     'macos\maintenance.js'
+    'macos\StartupProgress.js'
 )
 foreach ($relative in $javascript) {
     & $node --check (Join-Path $root $relative)

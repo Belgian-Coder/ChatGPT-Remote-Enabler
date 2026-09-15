@@ -10,6 +10,7 @@ use_proxy=0
 script_path="${0:A}"
 launcher="${script_path:h}/MobileProjectView-macOS-arm64.sh"
 process_guard="${script_path:h}/AppProcessGuard.sh"
+progress_helper="${script_path:h}/StartupProgress.js"
 source_root="$HOME/Library/Application Support/CodexRemoteFeatures/launchers"
 source_file="$source_root/ChatGPT Remote Enabler.applescript"
 app_root="$HOME/Applications"
@@ -35,14 +36,28 @@ escape_applescript_string() {
   print -r -- "$escaped"
 }
 
+codesign_quiet() {
+  local diagnostics status=0
+  diagnostics="$(mktemp "${TMPDIR:-/tmp}/chatgpt-remote-codesign.XXXXXX")"
+  /usr/bin/codesign "$@" 2>"$diagnostics" || status=$?
+  # codesign emits this informational line when an ad-hoc signature replaces
+  # the candidate's existing ad-hoc signature. Keep real diagnostics visible.
+  if [[ -s "$diagnostics" ]]; then
+    /usr/bin/sed '/replacing existing signature/d' "$diagnostics" >&2
+  fi
+  rm -f -- "$diagnostics"
+  return "$status"
+}
+
 probe_shortcut() {
   local checked_app="${1:-$app_path}"
   local checked_source="${2:-$source_file}"
   [[ -f "$launcher" ]] || { print -u2 "Installed launcher is missing: $launcher"; return 1; }
   [[ -f "$process_guard" && ! -L "$process_guard" ]] || { print -u2 "Installed process guard is missing: $process_guard"; return 1; }
+  [[ -f "$progress_helper" && ! -L "$progress_helper" ]] || { print -u2 "Installed startup progress helper is missing: $progress_helper"; return 1; }
   [[ -f "$checked_source" ]] || { print -u2 "AppleScript source is missing: $checked_source"; return 1; }
   [[ -d "$checked_app" ]] || { print -u2 "Application wrapper is missing: $checked_app"; return 1; }
-  /usr/bin/codesign --verify --deep --strict "$checked_app"
+  codesign_quiet --verify --deep --strict "$checked_app"
   local escaped_launcher="$(escape_applescript_string "$launcher")"
   local escaped_process_guard="$(escape_applescript_string "$process_guard")"
   /usr/bin/osadecompile "$checked_app" | /usr/bin/grep -F "set launcherPath to \"$escaped_launcher\"" >/dev/null
@@ -56,6 +71,7 @@ probe_shortcut() {
 install_shortcut() {
   [[ -f "$launcher" ]] || { print -u2 "Installed launcher is missing: $launcher"; return 1; }
   [[ -f "$process_guard" && ! -L "$process_guard" ]] || { print -u2 "Installed process guard is missing: $process_guard"; return 1; }
+  [[ -f "$progress_helper" && ! -L "$progress_helper" ]] || { print -u2 "Installed startup progress helper is missing: $progress_helper"; return 1; }
   local shortcut_name="${1:-ChatGPT Remote Enabler}"
   local installed_source="${2:-$source_file}"
   local installed_app="${3:-$app_path}"
@@ -75,20 +91,26 @@ on run
     set launcherPath to "$escaped_launcher"
     set processGuardPath to "$escaped_process_guard"
     set guardedAppName to "$escaped_app_name"
+    set progressRequested to false
     try
         set runningState to do shell script "/bin/zsh " & quoted form of processGuardPath & " running --app-name " & quoted form of guardedAppName & " >/dev/null 2>&1; status=\$?; if [ \$status -eq 0 ]; then echo running; elif [ \$status -eq 1 ]; then echo stopped; else exit \$status; fi"
         if runningState is "running" then
             display alert "ChatGPT is already running" message "Quit ChatGPT with Command-Q when no task is active, then click ChatGPT Remote Enabler again. The launcher will not terminate it automatically." as warning
             return
         end if
-        do shell script "/bin/zsh " & quoted form of launcherPath & " enable$proxy_suffix"
+        set progressRequested to true
+        set progressRoot to (POSIX path of (path to home folder)) & "Library/Application Support/CodexRemoteFeatures/startup-progress"
+        set progressStatePath to progressRoot & "/dock-" & (do shell script "/usr/bin/uuidgen") & ".status"
+        do shell script "export CODEX_REMOTE_PROGRESS_ENABLED=1; export CODEX_REMOTE_PROGRESS_STATE=" & quoted form of progressStatePath & "; /bin/zsh " & quoted form of launcherPath & " enable$proxy_suffix"
     on error errorMessage number errorNumber
-        display alert "ChatGPT Remote Enabler failed to start" message (errorMessage & " (error " & (errorNumber as text) & ")") as critical
+        if not progressRequested then
+            display alert "ChatGPT Remote Enabler failed to start" message (errorMessage & " (error " & (errorNumber as text) & ")") as critical
+        end if
     end try
 end run
 APPLESCRIPT
   if ! /usr/bin/osacompile -o "$candidate_app" "$candidate_source" \
-    || ! /usr/bin/codesign --force --deep --sign - "$candidate_app" \
+    || ! codesign_quiet --force --deep --sign - "$candidate_app" \
     || ! probe_shortcut "$candidate_app" "$candidate_source"; then
     rm -rf -- "$candidate_source" "$candidate_app"
     print -u2 "Shortcut candidate failed validation; the installed shortcut was left unchanged."

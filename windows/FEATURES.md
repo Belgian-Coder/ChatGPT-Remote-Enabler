@@ -1,6 +1,6 @@
 # Feature guide
 
-This guide describes the Windows and macOS v1.5.85 source, including reliable
+This guide describes the Windows and macOS v1.5.86 source, including reliable
 background inventory publication, loaded search, compact Settings, guarded navigation, and stale-Steer recovery. Historical v1.5.49 packages and
 screenshots do not include those changes. Both packages share the Device
 projects renderer and the feature behavior below; the
@@ -15,6 +15,12 @@ the exact ChatGPT identity. The predecessor releases its renderer binding and
 owned lock only for the prepared successor, then retires after the new
 coordinator publishes an active heartbeat. A failed successor is stopped and
 the predecessor restores its lock, binding, and status. ChatGPT remains open.
+
+Windows startup keeps its existing visible progress worker and graceful
+`native-renderer-quit`/`WM_CLOSE` behavior. The update coordinator now
+whitelists those methods explicitly, alongside the macOS renderer/`SIGTERM`
+methods, so a fabricated or unknown close result cannot authorize file
+replacement.
 
 On Windows, each shortcut or sign-in launch verifies Remote Enabler recovery,
 completes the official signed desktop MSIX update, completes the required

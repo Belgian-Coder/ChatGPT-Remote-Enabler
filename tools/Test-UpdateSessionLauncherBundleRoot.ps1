@@ -37,6 +37,7 @@ try {
         'update-transaction.js' = 'update-transaction.js'
         'git-release.js' = 'git-release.js'
         'git-checkout-update.js' = 'git-checkout-update.js'
+        'ProxyConfiguration.psm1' = 'CodexRemoteMobileProject\ProxyConfiguration.psm1'
     }
     foreach ($entry in $mobileSources.GetEnumerator()) {
         Write-FixtureFile -Path (Join-Path $candidateMobileRoot $entry.Key) -Value $entry.Value

@@ -287,7 +287,7 @@ function releaseWriterLock(lock) {
   syncDirectory(path.dirname(lock.lockPath));
 }
 
-function parseManifest(root, verifyFiles = true) {
+function parseManifest(root, verifyFiles = true, allowPreparedMetadata = false) {
   assertRealDirectory(root, "Manifest root");
   const manifestPath = path.join(root, "RELEASE-MANIFEST.sha256");
   const manifestDetails = fs.lstatSync(manifestPath);
@@ -314,6 +314,26 @@ function parseManifest(root, verifyFiles = true) {
     entries.push({ relative, hash, source });
   }
   if (entries.length === 0) throw new Error("Release manifest is empty.");
+  const allowedMetadata = new Set(["RELEASE-MANIFEST.sha256"]);
+  if (allowPreparedMetadata) {
+    allowedMetadata.add(PREPARED_METADATA);
+    allowedMetadata.add(".chatgpt-remote-release.zip");
+  }
+  const visit = (directory, prefix = "") => {
+    for (const name of fs.readdirSync(directory)) {
+      const absolute = path.join(directory, name);
+      const relative = prefix ? `${prefix}/${name}` : name;
+      const details = fs.lstatSync(absolute);
+      if (details.isSymbolicLink()) throw new Error(`Release payload contains a linked entry: ${relative}`);
+      if (details.isDirectory()) { visit(absolute, relative); continue; }
+      if (!details.isFile()) throw new Error(`Release payload contains an unsupported entry: ${relative}`);
+      const key = process.platform === "win32" ? relative.toLowerCase() : relative;
+      const listed = entries.some((entry) => (process.platform === "win32" ? entry.relative.toLowerCase() : entry.relative) === key);
+      const metadata = [...allowedMetadata].some((item) => (process.platform === "win32" ? item.toLowerCase() : item) === key);
+      if (!listed && !metadata) throw new Error(`Release payload contains an unlisted file: ${relative}`);
+    }
+  };
+  visit(root);
   return { entries, manifestPath, manifestHash: sha256File(manifestPath) };
 }
 
@@ -326,7 +346,7 @@ function sealPrepared(values) {
   const platform = required(values, "platform");
   const version = validateVersion(required(values, "version"));
   const archiveSha256 = validateArchiveHash(required(values, "archive-sha256"));
-  const manifest = parseManifest(preparedRoot, true);
+  const manifest = parseManifest(preparedRoot, true, true);
   const retainedArchive = path.join(preparedRoot, PREPARED_ARCHIVE);
   const archiveDetails = fs.lstatSync(retainedArchive);
   if (!archiveDetails.isFile() || archiveDetails.isSymbolicLink() || sha256File(retainedArchive) !== archiveSha256) {
@@ -359,7 +379,7 @@ function validatePrepared(values) {
       !/^[0-9a-f]{64}$/u.test(metadata.manifestSha256 || "")) {
     throw new Error("Prepared update metadata does not match the pinned release.");
   }
-  const manifest = parseManifest(preparedRoot, true);
+  const manifest = parseManifest(preparedRoot, true, true);
   const retainedArchive = path.join(preparedRoot, PREPARED_ARCHIVE);
   const archiveDetails = fs.lstatSync(retainedArchive);
   if (!archiveDetails.isFile() || archiveDetails.isSymbolicLink() || sha256File(retainedArchive) !== expectedArchiveHash) {

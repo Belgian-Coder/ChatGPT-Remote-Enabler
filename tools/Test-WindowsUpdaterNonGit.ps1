@@ -306,19 +306,16 @@ $wrongLeafPreserved = [IO.File]::Exists($refusalSentinel) -and [IO.File]::ReadAl
     }
 
     $redirectGuardCommand = @'
-function Invoke-WebRequest {
-    param([string]$Uri, [hashtable]$Headers, [switch]$UseBasicParsing, [int]$MaximumRedirection, [int]$TimeoutSec)
-    [pscustomobject]@{
-        BaseResponse = [pscustomobject]@{ ResponseUri = [Uri]'http://example.invalid/final-release.json' }
-        RawContentStream = [IO.MemoryStream]::new([Text.Encoding]::UTF8.GetBytes('{}'))
-    }
-}
 . __UPDATER__ -Action Probe -InstallRoot __INSTALL__ | Out-Null
 $blocked = $false
-try { Invoke-SafeWebRequest -Uri 'https://source.example.invalid/release.json' -TimeoutSec 1 | Out-Null } catch {
+try { Assert-SafeHttpsUrl 'http://example.invalid/final-release.json' } catch {
     $blocked = $_.Exception.Message -match 'Update URL must use HTTPS'
 }
 if (-not $blocked) { throw 'The updater accepted a redirected HTTP final URI.' }
+[string]$source = Get-Content -LiteralPath __UPDATER__ -Raw
+if (-not $source.Contains('Assert-SafeHttpsUrl $next.AbsoluteUri') -or $source.Contains('MaximumRedirection = 3')) {
+    throw 'The updater does not validate each redirect before the next request.'
+}
 [pscustomobject]@{ FinalRedirectSchemeRejected = $blocked } | ConvertTo-Json -Compress
 '@
     $redirectGuardCommand = $redirectGuardCommand.Replace('__UPDATER__', $quotedUpdater).Replace('__INSTALL__', $quotedFixture)

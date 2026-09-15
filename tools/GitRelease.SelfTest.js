@@ -16,6 +16,24 @@ const macosHelper = require(macosHelperPath);
 assert.deepEqual(Object.keys(windowsHelper).sort(), Object.keys(macosHelper).sort(), "platform Git helpers must expose the same API");
 assert.equal(fs.readFileSync(windowsHelperPath, "utf8"), fs.readFileSync(macosHelperPath, "utf8"), "platform Git helpers must remain mirrored");
 
+const canonicalProxyRemote = "https://github.com/fixture/project.git";
+const selectedProxy = "http://127.0.0.1:8181";
+const proxyEnvironment = { CHATGPT_REMOTE_REQUIRE_HTTPS_PROXY: "1", CHATGPT_REMOTE_PROXY_URL: selectedProxy };
+const protectedProxyArgs = windowsHelper.protectedProxyArguments(canonicalProxyRemote, proxyEnvironment);
+assert.deepEqual(protectedProxyArgs, macosHelper.protectedProxyArguments(canonicalProxyRemote, proxyEnvironment));
+for (const hostileValue of ["http://bypass.invalid:9", ""]) {
+  const hostileConfigRoot = fs.mkdtempSync(path.join(os.tmpdir(), "git-proxy-precedence-"));
+  try {
+    const hostileConfig = path.join(hostileConfigRoot, "config");
+    fs.writeFileSync(hostileConfig, `[http "https://github.com/"]\n\tproxy = ${hostileValue}\n`);
+    const result = childProcess.spawnSync("git", [...protectedProxyArgs, "config", "--get-urlmatch", "http.proxy", canonicalProxyRemote], {
+      encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: hostileConfig, GIT_CONFIG_NOSYSTEM: "1" }, windowsHide: true,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), selectedProxy, "canonical command-scoped proxy must override hostile URL-specific Git config");
+  } finally { fs.rmSync(hostileConfigRoot, { recursive: true, force: true }); }
+}
+
 function git(cwd, args, input) {
   const result = childProcess.spawnSync("git", args, {
     cwd,
@@ -172,7 +190,7 @@ try {
   } finally {
     childProcess.spawnSync = originalSpawnSync;
   }
-  assert.ok(gitLaunches <= 8, `materialization must use one bounded Git batch (got ${gitLaunches} Git launches)`);
+  assert.ok(gitLaunches <= 9, `materialization must use one bounded Git batch plus its canonical-remote check (got ${gitLaunches} Git launches)`);
   const secondWindows = resolve(windowsHelper, windowsOptions, repo);
   assert.deepEqual(secondWindows, firstWindows, "repeated Git release generation must be deterministic");
   assert.equal(fs.readFileSync(firstWindows.archivePath).equals(fs.readFileSync(secondWindows.archivePath)), true);

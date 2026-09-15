@@ -1,6 +1,6 @@
 # Windows 11: install for your user without administrator access
 
-Release v1.5.81 keeps the permanent helper in the current user's unversioned
+Release v1.5.82 keeps the permanent helper in the current user's unversioned
 LocalAppData root and migrates the v1.5.60 ProgramData root as legacy. Automatic
 updates therefore replace files owned by the same limited user that owns the
 shortcuts and updater state. Successful updates retain only the immediate prior
@@ -8,7 +8,7 @@ rollback generation and remove all legacy-recovery, shortcut, startup-task, and
 package-local rollback copies unless an active recovery journal or live process
 still requires one. Compatible releases load into the current renderer, then a
 detached helper waits for the old coordinator and lock to exit before starting
-the coordinator from the newly installed package. It retains renderer v79 and the ordered
+the coordinator from the newly installed package. It retains renderer v88 and the ordered
 desktop MSIX, Remote Enabler update, and launch gates. Installation and live
 multi-device acceptance remain separate checks.
 
@@ -16,7 +16,7 @@ You need Windows 11 x64, the ChatGPT/Codex desktop app signed in with Remote ava
 
 ## 1. Download and extract
 
-1. Download **ChatGPT-Remote-Enabler-Windows-x64-v1.5.81.zip** from [v1.5.81 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.81). Read the verification limitations.
+1. Download **ChatGPT-Remote-Enabler-Windows-x64-v1.5.82.zip** from [v1.5.82 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.82). Read the verification limitations.
 2. Right-click the ZIP in File Explorer, choose **Properties**, select **Unblock** if offered, and click **OK**. Then choose **Extract All**.
 3. Enter `%LOCALAPPDATA%\Programs` in File Explorer's address bar. Create a **ChatGPTRemoteEnabler** folder and copy the extracted package contents into it.
 4. **ChatGPT Remote Enabler.exe**, **README.md**, and **CodexRemoteMobileProject** must be directly inside that folder. Keep the whole package together.
@@ -215,10 +215,13 @@ uses only the loopback renderer bridge, avoiding a debugger-target timeout.
 Older audited builds retain the legacy main-process shim. On a native-key
 build, `-UseProxy` prepares a version- and hash-matched private runtime under
 `%LOCALAPPDATA%\ChatGPTRemoteEnabler\patched-chatgpt`, starts it inside the
-installed package context, and redirects only the Remote-control WebSocket to
-a temporary localhost bridge. Signed enrollment and all ordinary APIs retain
-the canonical `https://chatgpt.com` origin. The installed WindowsApps package
-is never modified. Direct networking remains fully supported.
+installed package context, and routes its external Chromium, Electron/Node,
+app-server, Remote-control, Git, and updater connections through the selected
+fixed proxy. A temporary localhost bridge carries the native Remote-control
+WebSocket; debugger and bridge loopback traffic bypass the proxy. Signed
+enrollment and ordinary APIs retain the canonical `https://chatgpt.com`
+origin. The installed WindowsApps package is never modified. Direct networking
+remains fully supported.
 
 The launcher checks for an update asynchronously on every start and every
 30 minutes while open. **Update available Â· vX.Y.Z** appears beside the view
@@ -244,6 +247,7 @@ manual administration. Explicit command-line updates remain available:
 .\Update-ChatGPTRemote.ps1 -Action DisableAutoUpdate
 .\Update-ChatGPTRemote.ps1 -Action EnableAutoUpdate
 .\Update-ChatGPTRemote.ps1 -Action Update
+.\Update-ChatGPTRemote.ps1 -Action Update -UseProxy
 ```
 
 Updates now use Git by default, even for extracted installations. Install Git and ensure its HTTPS access to the repository works. The updater lists stable tags, shallow-fetches the pinned commit, and builds/verifies a local package without downloading GitHub ZIPs or calling the GitHub API. Corporate Git proxy and certificate settings are honored. A clean source checkout on `main` fast-forwards to that verified tag; dirty work, other branches, or unexpected origins are preserved and refused.
@@ -272,21 +276,22 @@ existing User-scope proxy into DPAPI-protected local storage:
 ```
 
 The import copies the proxy into protected storage; it never removes or changes
-User- or Machine-scope environment variables needed by other software. Older
-audited ChatGPT builds clear only the launcher's process-local inherited proxy
-variables and use an HTTP CONNECT tunnel only for the Remote-control WebSocket.
-Native-key builds instead use a random per-launch localhost WebSocket bridge
-because ChatGPT's bundled Node WebSocket client does not honor HTTP proxy
-environment variables. The launcher makes a private copy of the currently
+User- or Machine-scope environment variables needed by other software. Proxy
+mode replaces inherited bypass lists with loopback-only entries in child
+processes and passes the same selected endpoint explicitly to Git and both
+updaters. Native-key builds use a random per-launch localhost WebSocket bridge.
+The launcher makes a private copy of the currently
 installed ChatGPT runtime, verifies exact source signatures, changes only its
 Remote-control WebSocket URL selection, and disables embedded-ASAR integrity
 checking only in that private copy so Electron can load it. The signed package,
 canonical API base, enrollment challenge, and all other applications remain
 unchanged. The bridge and background supervisor exit with ChatGPT, and stopped
 older private runtimes are cleaned up automatically. TLS verification stays
-enabled and includes certificates trusted by Windows. Proxy URLs containing
-credentials are rejected, and probe output never exposes the proxy host. An
-environment-variable fallback remains for older installations. Without
+enabled and includes certificates trusted by Windows. The supported proxy is
+one fixed credential-free HTTP or HTTPS proxy; proxy URLs containing
+credentials, PAC scripts, and proxy authentication are rejected. Protected
+configuration, fixed Windows system-proxy settings, and an environment-variable
+fallback are resolved without exposing the proxy host in probe output. Without
 `-UseProxy`, the shortcut uses direct networking. If preparation, launch, or
 injection fails, the launcher restores ordinary ChatGPT startup without the
 targeted proxy shim.
@@ -404,7 +409,7 @@ Check the target of **ChatGPT Custom** in the Start menu (open its file location
 
 Fully quit the app when your work is safe, then use **ChatGPT Remote Enabler.exe** in the newly extracted folder, or the new **ChatGPT Remote Enabler** shortcut created by that folder's setup assistant. Open Settings to see the loaded helper version and update controls in either view. A missing update service shows recovery instructions there.
 
-v1.5.81 is a normal release and is discoverable by the existing automatic updater. The first Windows upgrade from v1.5.31 attaches the new update helper even through the legacy launcher.
+v1.5.82 is a normal release and is discoverable by the existing automatic updater. The first Windows upgrade from v1.5.31 attaches the new update helper even through the legacy launcher.
 
 
 ### Existing enrollment keys after a Codex update

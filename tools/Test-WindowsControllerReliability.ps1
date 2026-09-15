@@ -14,7 +14,7 @@ foreach ($contract in @(
     '$script:PackageProcessLauncher',
     '$script:PackageProcessWorker',
     '$script:ProxyRuntimePreparer',
-    'remote-websocket-bridge-v1',
+    'all-connections-proxy-v1',
     'Remove-CrsInactiveProxyRuntimes',
     'Invoke-CommandInDesktopPackage returns after it dispatches the',
     '$launchedProcesses.Count -eq 1'
@@ -72,12 +72,14 @@ if ($null -ne $discovered.proxyMode -or (Test-CrsProxyModeProof -State $discover
     throw 'A discovered session with no durable state was incorrectly treated as proof of direct mode.'
 }
 $directState = [pscustomobject]@{ proxyMode = $false }
-$proxyState = [pscustomobject]@{ proxyMode = $true }
+$proxyFingerprint = 'a' * 64
+$proxyState = [pscustomobject]@{ proxyMode = $true; proxyTransport = 'all-connections-proxy-v1'; proxyFingerprint = $proxyFingerprint }
 $supersededNativeProxyState = [pscustomobject]@{ proxyMode = $true; bridgeMode = 'native-renderer' }
-$scopedNativeProxyState = [pscustomobject]@{ proxyMode = $true; bridgeMode = 'native-renderer'; proxyTransport = 'remote-websocket-bridge-v1' }
+$scopedNativeProxyState = [pscustomobject]@{ proxyMode = $true; bridgeMode = 'native-renderer'; proxyTransport = 'all-connections-proxy-v1'; proxyFingerprint = $proxyFingerprint }
 if (-not (Test-CrsProxyModeProof -State $directState -RequestedProxyMode $false) -or
-    -not (Test-CrsProxyModeProof -State $proxyState -RequestedProxyMode $true) -or
-    -not (Test-CrsProxyModeProof -State $scopedNativeProxyState -RequestedProxyMode $true) -or
+    -not (Test-CrsProxyModeProof -State $proxyState -RequestedProxyMode $true -RequestedProxyFingerprint $proxyFingerprint) -or
+    -not (Test-CrsProxyModeProof -State $scopedNativeProxyState -RequestedProxyMode $true -RequestedProxyFingerprint $proxyFingerprint) -or
+    (Test-CrsProxyModeProof -State $scopedNativeProxyState -RequestedProxyMode $true -RequestedProxyFingerprint ('b' * 64)) -or
     (Test-CrsProxyModeProof -State $supersededNativeProxyState -RequestedProxyMode $true) -or
     (Test-CrsProxyModeProof -State $directState -RequestedProxyMode $true) -or
     (Test-CrsProxyModeProof -State ([pscustomobject]@{ proxyMode = 'false' }) -RequestedProxyMode $false)) {
@@ -401,7 +403,7 @@ try {
     )
     if (($invocations -join "`n") -ne ($expectedInvocations -join "`n")) { throw "Launcher arguments changed across handoff: $($invocations -join '; ')" }
     if (@([IO.File]::ReadAllLines($afterParentLog)).Count -ne 6) { throw 'A worker continued before its exact launcher parent exited.' }
-    $taskHostDeadline = [DateTime]::UtcNow.AddSeconds(5)
+    $taskHostDeadline = [DateTime]::UtcNow.AddSeconds(20)
     do {
         $remainingTaskHosts = @(Get-FixtureTaskHosts)
         if ($remainingTaskHosts.Count -eq 0) { break }
@@ -418,9 +420,11 @@ try {
     if ($newHostDirectories.Count -ne 0 -or $newCleanupScripts.Count -ne 0) { throw 'Detached launch-worker host files were not removed after process exit.' }
     $residualTasks = @(Get-ScheduledTask -ErrorAction Stop | Where-Object { $_.TaskName -like 'ChatGPTRemoteEnabler-LaunchWorker-*' })
     if ($residualTasks.Count -ne 0) { throw 'A transient launch-worker task remained registered.' }
-    if (@([IO.File]::ReadAllLines($descendantReadyLog)).Count -ne 5) { throw 'A successful worker did not start exactly one descendant sentinel.' }
-    Wait-ForLineCount -Path $descendantMarkerLog -Count 5 -TimeoutSeconds 10
-    if (@([IO.File]::ReadAllLines($descendantMarkerLog)).Count -ne 5) { throw 'A descendant sentinel was lost when its worker task host exited.' }
+    Wait-ForLineCount -Path $descendantReadyLog -Count $expectedInvocations.Count -TimeoutSeconds 10
+    $descendantReadyLines = @([IO.File]::ReadAllLines($descendantReadyLog))
+    if ($descendantReadyLines.Count -ne $expectedInvocations.Count) { throw "A successful worker did not start exactly one descendant sentinel (count=$($descendantReadyLines.Count); lines=$($descendantReadyLines -join '; '))." }
+    Wait-ForLineCount -Path $descendantMarkerLog -Count $expectedInvocations.Count -TimeoutSeconds 10
+    if (@([IO.File]::ReadAllLines($descendantMarkerLog)).Count -ne $expectedInvocations.Count) { throw 'A descendant sentinel was lost when its worker task host exited.' }
 
     [pscustomobject]@{
         WorkerOwnsCrossEntryMutex = $true

@@ -5,13 +5,16 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
-const { runAction } = require("../windows/git-checkout-update.js");
+const { protectedProxyArguments, runAction } = require("../windows/git-checkout-update.js");
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "git-checkout-update-test-"));
 const origin = path.join(temporary, "origin");
 const git = (cwd, args) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "pipe"] }).trim();
 const write = (file, value) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, value); };
 let counter = 0;
 try {
+  assert.deepEqual(protectedProxyArguments("https://github.com/fixture/project.git", {
+    CHATGPT_REMOTE_REQUIRE_HTTPS_PROXY: "1", CHATGPT_REMOTE_PROXY_URL: "http://127.0.0.1:8181",
+  }), ["-c", "http.proxy=http://127.0.0.1:8181", "-c", "http.https://github.com/fixture/project.git.proxy=http://127.0.0.1:8181", "-c", "remote.origin.proxy=http://127.0.0.1:8181"]);
   fs.mkdirSync(origin);
   git(origin, ["init", "--initial-branch=main"]);
   git(origin, ["config", "user.name", "Fixture"]);

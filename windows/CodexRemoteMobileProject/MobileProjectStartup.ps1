@@ -307,7 +307,7 @@ function Assert-DesktopAppNotRunning {
 }
 
 function Invoke-DesktopAppPrelaunchUpdate {
-    param([string]$UpdaterPath, [scriptblock]$ProcessEnumerator)
+    param([string]$UpdaterPath, [scriptblock]$ProcessEnumerator, [switch]$UseProxy)
 
     if (-not (Test-Path -LiteralPath $UpdaterPath -PathType Leaf)) {
         throw "The signed ChatGPT desktop updater is missing: $UpdaterPath"
@@ -321,7 +321,9 @@ function Invoke-DesktopAppPrelaunchUpdate {
     $previousErrorActionPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Continue'
-        $output = @(& $powerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $UpdaterPath -Action Update 2>&1)
+        $arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $UpdaterPath, '-Action', 'Update')
+        if ($UseProxy) { $arguments += '-UseProxy' }
+        $output = @(& $powerShell @arguments 2>&1)
         $exitCode = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $previousErrorActionPreference
@@ -415,7 +417,7 @@ function Invoke-UpdateRecovery {
 }
 
 function Invoke-PrelaunchUpdate {
-    param([string]$UpdaterPath, [string]$InstallRoot)
+    param([string]$UpdaterPath, [string]$InstallRoot, [switch]$UseProxy)
 
     if (-not (Test-Path -LiteralPath $UpdaterPath -PathType Leaf)) {
         throw "The Remote Enabler updater is missing: $UpdaterPath"
@@ -428,7 +430,7 @@ function Invoke-PrelaunchUpdate {
     try {
         [Environment]::SetEnvironmentVariable('CHATGPT_REMOTE_LAUNCH_GUARD_HELD', '1', 'Process')
         $LASTEXITCODE = 0
-        $output = @(& $UpdaterPath -Action Update -Transport Git -InstallRoot $InstallRoot -LaunchLockHeld 2>&1)
+        $output = @(& $UpdaterPath -Action Update -Transport Git -InstallRoot $InstallRoot -LaunchLockHeld -UseProxy:$UseProxy 2>&1)
         $exitCode = $LASTEXITCODE
     } catch {
         $exitCode = 1
@@ -613,10 +615,18 @@ switch ($Action) {
                     Write-StartupLog "$(Get-Date -Format o) [$computerName] rollback recovery restored an older compatible entry point; current coordinator will complete the ordered update gates"
                 }
 
+                $proxyServer = $null
+                if ($UseProxy) {
+                    Set-StartupProgress -Message 'Loading the protected proxy configuration...'
+                    Import-Module $proxyModule -Force
+                    $proxyServer = Get-ChatGPTRemoteProxy -AllowEnvironmentFallback
+                    Write-StartupLog "$(Get-Date -Format o) [$computerName] protected all-connections proxy configuration loaded"
+                }
+
                 $desktopUpdateExecuted = $false
                 if (-not $SkipDesktopAppUpdateOnce -and -not $UpdateResume) {
                     Set-StartupProgress -Message 'Checking the installed ChatGPT app...'
-                    [void](Invoke-DesktopAppPrelaunchUpdate -UpdaterPath $desktopAppUpdater)
+                    [void](Invoke-DesktopAppPrelaunchUpdate -UpdaterPath $desktopAppUpdater -UseProxy:$UseProxy)
                     $desktopUpdateExecuted = $true
                 }
 
@@ -627,7 +637,7 @@ switch ($Action) {
                 }
                 if (-not $SkipUpdateCheckOnce -and -not $UpdateResume -and -not $skipRemotePrelaunch) {
                     Set-StartupProgress -Message 'Checking and updating Remote Enabler...'
-                    $prelaunchUpdate = Invoke-PrelaunchUpdate -UpdaterPath $updateController -InstallRoot $bundleParent
+                    $prelaunchUpdate = Invoke-PrelaunchUpdate -UpdaterPath $updateController -InstallRoot $bundleParent -UseProxy:$UseProxy
                     if ($prelaunchUpdate.updated) {
                         $reloadArguments = @('-Action', 'Run', '-SkipDesktopAppUpdateOnce', '-SkipPrelaunchUpdateOnce')
                         if ($handshakeReady) { $reloadArguments += '-ContinuationAfterAcceptedHandshake' }
@@ -644,16 +654,7 @@ switch ($Action) {
                 }
                 Assert-Controllers
                 $node = Resolve-NodePath
-                $proxyServer = $null
-                if ($UseProxy) {
-                    Set-StartupProgress -Message 'Preparing the protected proxy bridge...'
-                    Import-Module $proxyModule -Force
-                    $proxyServer = Get-ChatGPTRemoteProxy -AllowEnvironmentFallback
-                    foreach ($name in @('HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy')) {
-                        [Environment]::SetEnvironmentVariable($name, $null, 'Process')
-                    }
-                    Write-StartupLog "$(Get-Date -Format o) [$computerName] protected Remote-only proxy configuration loaded"
-                }
+                if ($UseProxy) { Set-StartupProgress -Message 'Preparing the protected all-connections proxy bridge...' }
                 $maintenanceTimer = [Diagnostics.Stopwatch]::StartNew()
                 Set-StartupProgress -Message 'Preparing the local ChatGPT session...'
                 Write-CommandOutput @(& $node --no-warnings $maintenanceHelper --best-effort 2>&1)
@@ -727,8 +728,16 @@ switch ($Action) {
                     if ($heartbeatPort -lt 1 -or $heartbeatPort -gt 65535 -or $heartbeatParent -lt 1) {
                         throw 'The stable session did not report a valid heartbeat target.'
                     }
+                    $heartbeatProcess = [Diagnostics.Process]::GetProcessById($heartbeatParent)
+                    try {
+                        $heartbeatStartToken = $heartbeatProcess.StartTime.ToUniversalTime().ToFileTimeUtc().ToString([Globalization.CultureInfo]::InvariantCulture)
+                        $heartbeatExecutable = [IO.Path]::GetFullPath($heartbeatProcess.MainModule.FileName)
+                    } finally { $heartbeatProcess.Dispose() }
+                    if (-not [string]::Equals($heartbeatExecutable, [IO.Path]::GetFullPath([string]$stableState.executablePath), [StringComparison]::OrdinalIgnoreCase)) {
+                        throw 'The stable session heartbeat process identity changed.'
+                    }
                     $heartbeatLock = Join-Path $logRoot "publisher-heartbeat-$heartbeatPort.lock"
-                    $heartbeatArguments = '--no-warnings "{0}" --port {1} --parent-pid {2} --lock-path "{3}"' -f $publisherHeartbeatHelper, $heartbeatPort, $heartbeatParent, $heartbeatLock
+                    $heartbeatArguments = '--no-warnings "{0}" --port {1} --parent-pid {2} --parent-start-token "{3}" --lock-path "{4}"' -f $publisherHeartbeatHelper, $heartbeatPort, $heartbeatParent, $heartbeatStartToken, $heartbeatLock
                     Start-Process -FilePath $node -ArgumentList $heartbeatArguments -WindowStyle Hidden | Out-Null
                     Write-StartupLog "$(Get-Date -Format o) [$computerName] publisher heartbeat started for the exact renderer session"
                 } catch {

@@ -97,6 +97,7 @@ function Copy-ImmutableUpdateSessionBundle {
         'update-transaction.js' = Join-Path $BundleRoot 'update-transaction.js'
         'git-release.js' = Join-Path $BundleRoot 'git-release.js'
         'git-checkout-update.js' = Join-Path $BundleRoot 'git-checkout-update.js'
+        'ProxyConfiguration.psm1' = Join-Path $BundleRoot 'CodexRemoteMobileProject\ProxyConfiguration.psm1'
     }
     foreach ($source in $sources.Values) {
         if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Update-session dependency is missing: $source" }

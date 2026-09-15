@@ -107,8 +107,7 @@ internal static class PackageProcessLauncher
     private static string EnsureLoopbackBypass(string upper, string lower)
     {
         const string loopback = "localhost,127.0.0.1,::1";
-        string current = string.IsNullOrWhiteSpace(lower) ? upper : lower;
-        return string.IsNullOrWhiteSpace(current) ? loopback : current + "," + loopback;
+        return loopback;
     }
 
     private static string RequireFile(string value, string label)
@@ -180,8 +179,18 @@ internal static class PackageProcessLauncher
             Uri target = ValidateTarget(args[4]);
             string targetUrl = target.GetLeftPart(UriPartial.Authority);
             string codexCliPath = RequireFile(args[5], "The original Codex CLI runtime");
-            var launchArguments = new string[Math.Max(0, args.Length - 6)];
-            if (launchArguments.Length > 0) Array.Copy(args, 6, launchArguments, 0, launchArguments.Length);
+            var launchArguments = new string[Math.Max(0, args.Length - 4)];
+            for (int index = 6; index < args.Length; index++)
+            {
+                if (args[index].StartsWith("--proxy-server", StringComparison.OrdinalIgnoreCase) ||
+                    args[index].StartsWith("--proxy-bypass-list", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new ArgumentException("The packaged launch already contains a proxy routing argument.");
+                }
+                launchArguments[index - 6] = args[index];
+            }
+            launchArguments[launchArguments.Length - 2] = "--proxy-server=" + proxyUrl;
+            launchArguments[launchArguments.Length - 1] = "--proxy-bypass-list=localhost;127.0.0.1;[::1]";
             string token = Guid.NewGuid().ToString("N");
 
             using (BridgeSession bridge = StartBridge(nodePath, bridgePath, proxyUrl, targetUrl, token))
@@ -198,15 +207,16 @@ internal static class PackageProcessLauncher
                     "http_proxy", "https_proxy", "all_proxy",
                     "NODE_USE_ENV_PROXY", "CODEX_API_BASE_URL"
                 }) start.EnvironmentVariables.Remove(inheritedProxyVariable);
-                // The renderer uses the path-scoped WebSocket bridge below.
-                // The Rust Codex app-server is a child of ChatGPT and separately
-                // needs HTTP(S)_PROXY for its server-token refresh and server
-                // WebSocket. Keep NODE_USE_ENV_PROXY absent so Electron/Node UI
-                // traffic is not globally redirected through the company proxy.
+                // Chromium receives explicit proxy switches, Node opts into its
+                // environment proxy support, and the Rust app-server inherits the
+                // standard aliases. Loopback CDP and bridge traffic stay local.
                 start.EnvironmentVariables["HTTP_PROXY"] = proxyUrl;
                 start.EnvironmentVariables["HTTPS_PROXY"] = proxyUrl;
+                start.EnvironmentVariables["ALL_PROXY"] = proxyUrl;
                 start.EnvironmentVariables["http_proxy"] = proxyUrl;
                 start.EnvironmentVariables["https_proxy"] = proxyUrl;
+                start.EnvironmentVariables["all_proxy"] = proxyUrl;
+                start.EnvironmentVariables["NODE_USE_ENV_PROXY"] = "1";
                 string noProxy = EnsureLoopbackBypass(
                     start.EnvironmentVariables["NO_PROXY"],
                     start.EnvironmentVariables["no_proxy"]);

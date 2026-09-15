@@ -504,13 +504,14 @@ class PlatformAdapter {
     } else {
       command = "/bin/zsh";
       args = [entry, this.config.relaunch.startupMode === true ? "startup" : "enable"];
+      if (this.config.relaunch.useProxy === true) args.push("--proxy");
       env.CODEX_REMOTE_SKIP_UPDATE_CHECK_ONCE = "1";
       env.CODEX_REMOTE_SKIP_PRELAUNCH_UPDATE_ONCE = "1";
       env.CODEX_REMOTE_SKIP_STARTUP_DELAY_ONCE = "1";
       env.CODEX_REMOTE_RELAUNCH_HANDOFF_PATH = handoffPath;
       env.CODEX_REMOTE_DEBUG_PORT = String(this.config.rendererPort);
       for (const [name, value] of Object.entries(this.config.relaunch.environment ?? {})) {
-        if (["CODEX_APP_NAME", "CODEX_REMOTE_PEER_NAME", "CODEX_STARTUP_REQUIRED_PATH"].includes(name) && typeof value === "string") {
+        if (["CODEX_APP_NAME", "CODEX_REMOTE_PEER_NAME", "CODEX_STARTUP_REQUIRED_PATH", "CODEX_REMOTE_USE_PROXY"].includes(name) && typeof value === "string") {
           env[name] = value;
         }
       }
@@ -578,12 +579,14 @@ class UpdaterAdapter {
       command = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
       args = ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", this.config.updaterPath,
         "-Action", action, "-InstallRoot", this.config.installRoot, "-LockTimeoutSeconds", "15"];
+      if (this.config.relaunch.useProxy === true) args.push("-UseProxy");
       if (process.env.CHATGPT_REMOTE_UPDATE_ALLOW_INSECURE === "1") args.push("-AllowInsecureTransport");
       if (release) args.push("-TargetVersion", release.version, "-ExpectedArchiveSha256", release.archiveSha256, "-PreparedDirectory", preparedDirectory);
     } else {
       command = "/bin/zsh";
       const macAction = { Check: "check", Prepare: "prepare", ApplyPrepared: "apply-prepared", Recover: "recover" }[action];
       args = [this.config.updaterPath, macAction, "--lock-timeout-seconds", "15"];
+      if (this.config.relaunch.useProxy === true) args.push("--proxy");
       if (release) args.push("--target-version", release.version, "--expected-archive-sha256", release.archiveSha256, "--prepared-directory", preparedDirectory);
       env.CHATGPT_REMOTE_UPDATE_INSTALL_ROOT = this.config.installRoot;
     }
@@ -662,6 +665,64 @@ function appendUpdateHistory(config, entry) {
     if (descriptor != null) fs.closeSync(descriptor);
     try { fs.unlinkSync(temporary); } catch {}
   }
+}
+
+function safeOwnedTree(root, directory) {
+  const resolvedRoot = path.resolve(root);
+  const resolved = path.resolve(directory);
+  if (path.dirname(resolved) !== resolvedRoot || fs.lstatSync(resolved).isSymbolicLink()) return false;
+  const visit = (current) => fs.readdirSync(current, { withFileTypes: true }).every((entry) => {
+    if (entry.isSymbolicLink()) return false;
+    return !entry.isDirectory() || visit(path.join(current, entry.name));
+  });
+  return visit(resolved);
+}
+
+function processAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+function pruneUpdateSessionState(config, sessionLimit = 20, bundleLimit = 2) {
+  const sessionsRoot = path.resolve(config.stateRoot, "sessions");
+  const bundlesRoot = path.resolve(config.stateRoot, "bundles");
+  const retainedBundles = new Set();
+  const sessions = [];
+  try {
+    if (fs.lstatSync(sessionsRoot).isSymbolicLink()) return;
+    for (const entry of fs.readdirSync(sessionsRoot, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.isSymbolicLink() || !/^[a-f0-9-]{32,36}$/iu.test(entry.name)) continue;
+      const directory = path.join(sessionsRoot, entry.name);
+      let live = false;
+      let bundle = null;
+      try {
+        const value = JSON.parse(fs.readFileSync(path.join(directory, "session.json"), "utf8"));
+        live = processAlive(value?.app?.pid);
+        const candidate = path.dirname(path.resolve(String(value?.updaterPath ?? "")));
+        if (path.dirname(candidate) === bundlesRoot) bundle = candidate;
+      } catch {}
+      sessions.push({ directory, live, bundle, time: fs.statSync(directory).mtimeMs });
+    }
+    sessions.sort((a, b) => b.time - a.time);
+    sessions.forEach((entry, index) => {
+      if (entry.live || index < sessionLimit || entry.directory === path.resolve(config.sessionDirectory)) {
+        if (entry.bundle && (entry.live || entry.directory === path.resolve(config.sessionDirectory))) retainedBundles.add(entry.bundle);
+        return;
+      }
+      try { if (safeOwnedTree(sessionsRoot, entry.directory)) fs.rmSync(entry.directory, { recursive: true, force: true }); } catch {}
+    });
+  } catch {}
+  try {
+    if (fs.lstatSync(bundlesRoot).isSymbolicLink()) return;
+    const bundles = fs.readdirSync(bundlesRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink() && /^[a-f0-9]{64}$/u.test(entry.name))
+      .map((entry) => ({ directory: path.join(bundlesRoot, entry.name), time: fs.statSync(path.join(bundlesRoot, entry.name)).mtimeMs }))
+      .sort((a, b) => b.time - a.time);
+    bundles.forEach((entry, index) => {
+      if (retainedBundles.has(entry.directory) || index < bundleLimit) return;
+      try { if (safeOwnedTree(bundlesRoot, entry.directory)) fs.rmSync(entry.directory, { recursive: true, force: true }); } catch {}
+    });
+  } catch {}
 }
 
 class UpdateSessionController {
@@ -846,20 +907,24 @@ class UpdateSessionController {
         return;
       }
       await this.setStatus({ state: "queued", version: release.version, message: "Update verified. Waiting for tasks to become idle…", canCancel: true });
+      let activityRetryDelay = this.config.activityPollMs ?? 2000;
       while (generation === this.generation && !this.stopping) {
         let activity;
         try { activity = await this.transport.queryActivity(); }
         catch (error) { activity = { known: false, busy: false, reason: cleanMessage(error?.message) }; }
         if (activity.known !== true) {
           await this.setStatus({ state: "queued", version: release.version, message: cleanMessage(activity.reason, "Waiting for authoritative task activity…"), canCancel: true });
-          await this.sleep(this.config.activityPollMs ?? 2000);
+          await this.sleep(activityRetryDelay);
+          activityRetryDelay = Math.min(30_000, Math.max(1000, activityRetryDelay * 2));
           continue;
         }
         if (activity.busy) {
           await this.setStatus({ state: "queued", version: release.version, message: cleanMessage(activity.reason, "Waiting for active tasks to finish…"), canCancel: true });
-          await this.sleep(this.config.activityPollMs ?? 2000);
+          await this.sleep(activityRetryDelay);
+          activityRetryDelay = Math.min(30_000, Math.max(1000, activityRetryDelay * 2));
           continue;
         }
+        activityRetryDelay = this.config.activityPollMs ?? 2000;
         await this.sleep(this.config.idleRecheckMs ?? 1000);
         const confirmed = await this.transport.queryActivity().catch((error) => ({ known: false, busy: false, reason: cleanMessage(error?.message) }));
         if (confirmed.known === true && confirmed.busy === false) break;
@@ -908,10 +973,6 @@ class UpdateSessionController {
         this.config.log?.("hot-reload-confirmed", { version: release.version, rendererVersion: loaded.rendererVersion });
         this.release = null;
         this.recordHistory("hot-reload-confirmed", release.version);
-        // Keep this proven coordinator attached for the lifetime of the
-        // existing ChatGPT process. A detached replacement cannot prove its
-        // takeover before this coordinator releases its lock, so the next
-        // normal launch starts the installed coordinator instead.
         await this.setStatus({ state: "current", version: release.version, message: `Updated to ${release.version} and loaded without restarting ChatGPT.` });
         return;
       }
@@ -1144,6 +1205,7 @@ async function main() {
   const lock = acquireLock(config);
   if (!lock.acquired) return;
   config.coordinatorLockPath = lock.lockPath;
+  pruneUpdateSessionState(config);
   let transport;
   let monitorTimer;
   let checkTimer;
@@ -1217,6 +1279,7 @@ module.exports = {
   ensureConfig,
   hotReloadCompatibility,
   parseLastJson,
+  pruneUpdateSessionState,
   runCommand,
   safeRemovePrepared,
   testWritable,

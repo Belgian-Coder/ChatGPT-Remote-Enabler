@@ -14,6 +14,8 @@ $compiler = $compilerCandidates | Where-Object { Test-Path -LiteralPath $_ -Path
 if (-not $compiler) { throw 'The .NET Framework C# compiler was not found.' }
 
 $temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) ('chatgpt-package-process-launcher-test-' + [guid]::NewGuid().ToString('N'))
+$previousNoProxy = $env:NO_PROXY
+$previousNoProxyLower = $env:no_proxy
 try {
     New-Item -ItemType Directory -Path $temporaryRoot | Out-Null
     $launcher = Join-Path $temporaryRoot 'PackageProcessLauncher.exe'
@@ -45,6 +47,8 @@ internal static class EnvironmentProbe
             Environment.GetEnvironmentVariable("HTTPS_PROXY") ?? "",
             Environment.GetEnvironmentVariable("http_proxy") ?? "",
             Environment.GetEnvironmentVariable("https_proxy") ?? "",
+            Environment.GetEnvironmentVariable("ALL_PROXY") ?? "",
+            Environment.GetEnvironmentVariable("all_proxy") ?? "",
             Environment.GetEnvironmentVariable("NODE_USE_ENV_PROXY") ?? "",
             Environment.GetEnvironmentVariable("CODEX_API_BASE_URL") ?? "",
             remoteWebSocketUrl,
@@ -52,7 +56,9 @@ internal static class EnvironmentProbe
             bridgeBoundary,
             Environment.GetEnvironmentVariable("NO_PROXY") ?? "",
             Environment.GetEnvironmentVariable("no_proxy") ?? "",
-            Environment.GetEnvironmentVariable("CRWU") ?? ""
+            Environment.GetEnvironmentVariable("CRWU") ?? "",
+            args.Length > 1 ? args[1] : "",
+            args.Length > 2 ? args[2] : ""
         });
         return 0;
     }
@@ -69,6 +75,8 @@ internal static class EnvironmentProbe
     if ($LASTEXITCODE -ne 0) { throw 'Environment probe compilation failed.' }
 
     $proxy = 'http://proxy.example.invalid:8080'
+    $env:NO_PROXY = '*'
+    $env:no_proxy = 'chatgpt.com,github.com'
     & $launcher $probe $proxy $node $bridge 'https://chatgpt.com' $node $output | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'The package process launcher rejected a valid proxy.' }
     $deadline = [DateTime]::UtcNow.AddSeconds(5)
@@ -79,14 +87,16 @@ internal static class EnvironmentProbe
         throw 'The scoped child process did not produce its environment report.'
     }
     $values = @([IO.File]::ReadAllLines($output))
-    if ($values.Count -ne 12 -or ($values[0..3] | Where-Object { $_ -cne $proxy }).Count -ne 0 -or
-        ($values[4..5] | Where-Object { $_ -cne '' }).Count -ne 0 -or
-        $values[6] -cnotmatch '^ws://127\.0\.0\.1:\d+/[a-f0-9]{32}/backend-api/codex/remote/control/client$' -or
-        $values[7] -cne $node -or
-        $values[8] -cne 'LOCAL_BRIDGE_404' -or
-        ($values[9..10] | Where-Object { $_ -notmatch '(?:^|,)localhost,127\.0\.0\.1,::1$' }).Count -ne 0 -or
-        $values[11] -cne 'wss://chatgpt.com/backend-api/codex/remote/control/client') {
-        throw 'The child process did not receive the scoped proxy and WebSocket bridge environment.'
+    if ($values.Count -ne 16 -or ($values[0..5] | Where-Object { $_ -cne $proxy }).Count -ne 0 -or
+        $values[6] -cne '1' -or $values[7] -cne '' -or
+        $values[8] -cnotmatch '^ws://127\.0\.0\.1:\d+/[a-f0-9]{32}/backend-api/codex/remote/control/client$' -or
+        $values[9] -cne $node -or
+        $values[10] -cne 'LOCAL_BRIDGE_404' -or
+        ($values[11..12] | Where-Object { $_ -cne 'localhost,127.0.0.1,::1' }).Count -ne 0 -or
+        $values[13] -cne 'wss://chatgpt.com/backend-api/codex/remote/control/client' -or
+        $values[14] -cne "--proxy-server=$proxy" -or
+        $values[15] -cne '--proxy-bypass-list=localhost;127.0.0.1;[::1]') {
+        throw 'The child process did not receive complete all-connections proxy routing.'
     }
 
     $previousErrorActionPreference = $ErrorActionPreference
@@ -101,10 +111,11 @@ internal static class EnvironmentProbe
     $global:LASTEXITCODE = 0
 
     [pscustomobject]@{
-        ChildHttpProxyScoped = $true
+        ChildAllProtocolProxyScoped = $true
+        ChromiumProxyEnabled = $true
+        ElectronNodeProxyEnabled = $true
         RemoteWebSocketBridgeScoped = $true
         CanonicalApiBasePreserved = $true
-        ElectronNodeProxyDisabled = $true
         LoopbackBypassPreserved = $true
         PublicChallengeTargetPreserved = $true
         ApiBridgeBoundary = $true
@@ -112,6 +123,8 @@ internal static class EnvironmentProbe
         BackgroundLauncher = $true
     } | ConvertTo-Json
 } finally {
+    $env:NO_PROXY = $previousNoProxy
+    $env:no_proxy = $previousNoProxyLower
     $resolved = [IO.Path]::GetFullPath($temporaryRoot)
     $temporary = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
     if ((Test-Path -LiteralPath $resolved) -and

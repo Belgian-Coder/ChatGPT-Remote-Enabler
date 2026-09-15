@@ -99,6 +99,16 @@ function Test-StablePackage {
             foreach ($relative in @($required + 'VERSION')) {
                 if (-not $manifestPaths.Contains($relative)) { return $false }
             }
+            $allowedMetadata = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+            foreach ($relative in @('RELEASE-MANIFEST.sha256')) {
+                [void]$allowedMetadata.Add($relative)
+            }
+            foreach ($item in Get-ChildItem -LiteralPath $Root -Force -Recurse -ErrorAction Stop) {
+                if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { return $false }
+                if ($item.PSIsContainer) { continue }
+                $relative = $item.FullName.Substring($Root.Length + 1)
+                if (-not $manifestPaths.Contains($relative) -and -not $allowedMetadata.Contains($relative)) { return $false }
+            }
         }
         $expectedFileVersion = $version.TrimStart('v') + '.0'
         foreach ($relative in @('ChatGPT Remote Enabler.exe', 'CodexRemoteMobileProject\ChatGPT Custom.exe')) {
@@ -114,6 +124,19 @@ function Test-StablePackage {
 
 function Copy-StablePackageContents {
     param([Parameter(Mandatory)][string]$SourceRoot, [Parameter(Mandatory)][string]$DestinationRoot)
+    $manifestPath = Join-Path $SourceRoot 'RELEASE-MANIFEST.sha256'
+    if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
+        foreach ($line in Get-Content -LiteralPath $manifestPath -ErrorAction Stop) {
+            if ($line -notmatch '^[0-9a-fA-F]{64} \*(.+)$') { throw "Malformed release manifest line: $line" }
+            $relative = $matches[1].Replace('/', [IO.Path]::DirectorySeparatorChar)
+            $source = Join-Path $SourceRoot $relative
+            $destination = Join-Path $DestinationRoot $relative
+            New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
+            Copy-Item -LiteralPath $source -Destination $destination -Force
+        }
+        Copy-Item -LiteralPath $manifestPath -Destination (Join-Path $DestinationRoot 'RELEASE-MANIFEST.sha256') -Force
+        return
+    }
     foreach ($item in Get-ChildItem -LiteralPath $SourceRoot -Force) {
         if ($item.Name -in @('rollback', '.git', '.chatgpt-remote-release.zip', '.chatgpt-remote-prepared.json')) { continue }
         $destination = Join-Path $DestinationRoot $item.Name
@@ -248,6 +271,7 @@ function Ensure-StableInstallRoot {
                 [void](Invoke-StableTransactionHelper -NodePath $nodePath -HelperPath $helper -Operation 'seal-prepared' -Arguments @('--prepared-root', $temporary, '--platform', 'Windows-x64', '--version', (Get-StableVersion -Root $SourceRoot), '--archive-sha256', $archiveHash))
                 [void](Invoke-StableTransactionHelper -NodePath $nodePath -HelperPath $helper -Operation 'apply' -Arguments @('--install-root', $StableRoot, '--prepared-root', $temporary, '--journal-path', $journalPath, '--backup-root', $backup, '--platform', 'Windows-x64', '--version', (Get-StableVersion -Root $SourceRoot), '--archive-sha256', $archiveHash))
                 if (-not (Test-StablePackage -Root $StableRoot -RequireManifest)) { throw 'The stable update failed post-transaction verification.' }
+                [void](Invoke-StableRollbackRetention -UpdaterStateRoot $UpdaterStateRoot -RollbackRetainCount 1 -LegacyRecoveryRetainCount 0)
                 return $StableRoot
             } finally {
                 if (-not (Test-Path -LiteralPath $journalPath -PathType Leaf) -and (Test-Path -LiteralPath $temporary -PathType Container)) {

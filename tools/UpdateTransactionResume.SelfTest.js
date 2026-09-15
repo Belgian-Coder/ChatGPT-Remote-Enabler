@@ -50,6 +50,13 @@ function invoke(arguments_, environment = {}) {
   return JSON.parse(result.stdout);
 }
 
+function invokeFailure(arguments_) {
+  const result = spawnSync(process.execPath, [helper, ...arguments_], { encoding: "utf8", env: process.env, timeout: 30_000, windowsHide: true });
+  assert.equal(result.error, undefined, result.error?.message);
+  assert.notEqual(result.status, 0, "unsafe transaction input unexpectedly succeeded");
+  return result.stderr || result.stdout;
+}
+
 function createFixture(name) {
   const root = path.join(temporaryRoot, name);
   const install = path.join(root, "install");
@@ -164,6 +171,13 @@ childProcess.spawnSync = function() {
 
 (async () => {
   try {
+    const extraFile = createFixture("unlisted-file");
+    writeFile(path.join(extraFile.prepared, "nested", "unlisted.txt"), "must be rejected\n");
+    assert.match(invokeFailure([
+      "validate-prepared", "--prepared-root", extraFile.prepared, "--platform", "Windows-x64",
+      "--version", "v2.0.0", "--archive-sha256", extraFile.archiveHash,
+    ]), /unlisted file/u);
+
     const renameRoot = path.join(temporaryRoot, "native-rename");
     fs.mkdirSync(renameRoot);
     const renameSource = path.join(renameRoot, "source.txt");

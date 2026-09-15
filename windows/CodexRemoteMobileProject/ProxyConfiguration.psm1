@@ -52,9 +52,19 @@ function Get-ChatGPTRemoteProxy {
                 }
             }
         }
+        try {
+            $destination = [Uri]'https://chatgpt.com/'
+            $systemProxy = [Net.WebRequest]::GetSystemWebProxy().GetProxy($destination)
+            if ($null -ne $systemProxy -and $systemProxy.IsAbsoluteUri -and $systemProxy.AbsoluteUri -cne $destination.AbsoluteUri) {
+                return Test-ChatGPTRemoteProxyUrl -ProxyUrl $systemProxy.AbsoluteUri
+            }
+        } catch {
+            # A PAC or unavailable system proxy is not a fixed endpoint that the
+            # protected CONNECT bridge can safely reuse for every destination.
+        }
     }
 
-    throw 'Proxy mode was requested, but no protected Remote proxy configuration exists.'
+    throw 'Proxy mode was requested, but no protected, environment, or fixed Windows system proxy exists.'
 }
 
 function Set-ChatGPTRemoteProxy {

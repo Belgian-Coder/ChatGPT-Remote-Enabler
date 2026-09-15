@@ -1,19 +1,19 @@
 # Feature guide
 
-This guide describes the Windows and macOS v1.5.81 source, including reliable
+This guide describes the Windows and macOS v1.5.82 source, including reliable
 background inventory publication, loaded search, compact Settings, guarded navigation, and stale-Steer recovery. Historical v1.5.49 packages and
 screenshots do not include those changes. Both packages share the Device
 projects renderer and the feature behavior below; the
 platform guides document their different launchers, setup assistants, proxy
 options, and shortcut/startup commands.
 
-Renderer v83 filters the current machine from the refreshed native device catalogue; renderer v82 adds automatic native device-catalogue recovery; renderer v81 added verified in-process update loading; renderer v79 makes native offline state authoritative while retaining cached rows and runtime evidence; renderer v78 adds a parent-bound heartbeat for fully frozen hidden renderers; renderer v77 adds the background inventory reliability correction; renderer
+Renderer v88 adds collision-resistant peer caches, serialized remote reads, and complete update-activity scans; renderer v83 filters the current machine from the refreshed native device catalogue; renderer v82 adds automatic native device-catalogue recovery; renderer v81 added verified in-process update loading; renderer v79 makes native offline state authoritative while retaining cached rows and runtime evidence; renderer v78 adds a parent-bound heartbeat for fully frozen hidden renderers; renderer v77 adds the background inventory reliability correction; renderer
 v76 added the search and Settings improvements described below.
 
-After a compatible live update succeeds, a detached handoff waits for the old
-immutable update coordinator and its exact lock to exit, then starts the
-coordinator from the installed package. A scheduling failure leaves the old
-coordinator attached; it never closes ChatGPT merely to refresh itself.
+After a compatible live update succeeds, the already proven immutable update
+coordinator remains attached to the current ChatGPT process. The coordinator
+from the installed package starts on the next normal launch; ChatGPT is not
+closed merely to refresh the coordinator.
 
 On Windows, each shortcut or sign-in launch verifies Remote Enabler recovery,
 completes the official signed desktop MSIX update, completes the required

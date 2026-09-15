@@ -231,7 +231,7 @@ function Assert-DesktopAppNotRunning {
 }
 
 function Invoke-DesktopAppPrelaunchUpdate {
-    param([string]$UpdaterPath, [scriptblock]$ProcessEnumerator)
+    param([string]$UpdaterPath, [scriptblock]$ProcessEnumerator, [switch]$UseProxy)
 
     if (-not (Test-Path -LiteralPath $UpdaterPath -PathType Leaf)) {
         throw "The signed ChatGPT desktop updater is missing: $UpdaterPath"
@@ -245,7 +245,9 @@ function Invoke-DesktopAppPrelaunchUpdate {
     $previousErrorActionPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Continue'
-        $output = @(& $powerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $UpdaterPath -Action Update 2>&1)
+        $arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $UpdaterPath, '-Action', 'Update')
+        if ($UseProxy) { $arguments += '-UseProxy' }
+        $output = @(& $powerShell @arguments 2>&1)
         $exitCode = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $previousErrorActionPreference
@@ -339,7 +341,7 @@ function Invoke-UpdateRecovery {
 }
 
 function Invoke-PrelaunchUpdate {
-    param([string]$UpdaterPath, [string]$InstallRoot)
+    param([string]$UpdaterPath, [string]$InstallRoot, [switch]$UseProxy)
 
     if (-not (Test-Path -LiteralPath $UpdaterPath -PathType Leaf)) {
         throw "The Remote Enabler updater is missing: $UpdaterPath"
@@ -352,7 +354,7 @@ function Invoke-PrelaunchUpdate {
     try {
         [Environment]::SetEnvironmentVariable('CHATGPT_REMOTE_LAUNCH_GUARD_HELD', '1', 'Process')
         $LASTEXITCODE = 0
-        $output = @(& $UpdaterPath -Action Update -Transport Git -InstallRoot $InstallRoot -LaunchLockHeld 2>&1)
+        $output = @(& $UpdaterPath -Action Update -Transport Git -InstallRoot $InstallRoot -LaunchLockHeld -UseProxy:$UseProxy 2>&1)
         $exitCode = $LASTEXITCODE
     } catch {
         $exitCode = 1
@@ -530,10 +532,19 @@ try {
         Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] rollback recovery restored an older compatible entry point; current coordinator will complete the ordered update gates"
     }
 
+    $proxyServer = $null
+    if ($UseProxy) {
+        Set-StartupProgress -Message 'Loading the protected proxy configuration...'
+        if (-not (Test-Path -LiteralPath $proxyModule -PathType Leaf)) { throw "Proxy configuration helper is missing: $proxyModule" }
+        Import-Module $proxyModule -Force
+        $proxyServer = Get-ChatGPTRemoteProxy -AllowEnvironmentFallback
+        Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] protected all-connections proxy configuration loaded"
+    }
+
     $desktopUpdateExecuted = $false
     if (-not $SkipDesktopAppUpdateOnce -and -not $UpdateResume) {
         Set-StartupProgress -Message 'Checking the installed ChatGPT app...'
-        [void](Invoke-DesktopAppPrelaunchUpdate -UpdaterPath $desktopAppUpdater)
+        [void](Invoke-DesktopAppPrelaunchUpdate -UpdaterPath $desktopAppUpdater -UseProxy:$UseProxy)
         $desktopUpdateExecuted = $true
     }
 
@@ -544,7 +555,7 @@ try {
     }
     if (-not $SkipUpdate -and -not $SkipUpdateCheckOnce -and -not $UpdateResume -and -not $skipRemotePrelaunch) {
         Set-StartupProgress -Message 'Checking and updating Remote Enabler...'
-        $prelaunchUpdate = Invoke-PrelaunchUpdate -UpdaterPath $updater -InstallRoot $runtimeRoot
+        $prelaunchUpdate = Invoke-PrelaunchUpdate -UpdaterPath $updater -InstallRoot $runtimeRoot -UseProxy:$UseProxy
         if ($prelaunchUpdate.updated) {
             $reloadArguments = @('-SkipDesktopAppUpdateOnce', '-SkipPrelaunchUpdateOnce')
             if ($handshakeReady) { $reloadArguments += '-ContinuationAfterAcceptedHandshake' }
@@ -562,17 +573,7 @@ try {
     if ($UpdateResume -and @(Get-CimInstance Win32_Process -Filter "Name='ChatGPT.exe'" -ErrorAction SilentlyContinue).Count -gt 0) {
         throw 'Another ChatGPT/Codex process appeared during the update. The verified relaunch was aborted without closing or replacing it.'
     }
-    $proxyServer = $null
-    if ($UseProxy) {
-        Set-StartupProgress -Message 'Preparing the protected proxy bridge...'
-        if (-not (Test-Path -LiteralPath $proxyModule -PathType Leaf)) { throw "Proxy configuration helper is missing: $proxyModule" }
-        Import-Module $proxyModule -Force
-        $proxyServer = Get-ChatGPTRemoteProxy -AllowEnvironmentFallback
-        foreach ($name in @('HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy')) {
-            [Environment]::SetEnvironmentVariable($name, $null, 'Process')
-        }
-        Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] protected Remote-only proxy configuration loaded"
-    }
+    if ($UseProxy) { Set-StartupProgress -Message 'Preparing the protected all-connections proxy bridge...' }
     $stableTimer = [Diagnostics.Stopwatch]::StartNew()
     Set-StartupProgress -Message 'Launching ChatGPT with Remote enabled...'
     $stableArguments = @{

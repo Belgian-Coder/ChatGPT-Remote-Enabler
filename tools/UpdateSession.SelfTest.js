@@ -203,10 +203,10 @@ async function testPinnedHotReloadFlow() {
   assert.equal(h.calls.apply, 1);
   assert.equal(h.calls.recover, 1);
   assert.equal(h.calls.hotReload, 1);
-  assert.equal(h.calls.handoff, 0, "a compatible update must keep the proven coordinator attached");
+  assert.equal(h.calls.handoff, 0, "a compatible update must keep the proven coordinator alive");
   assert.equal(h.calls.close, 0, "a compatible update must not close ChatGPT");
   assert.equal(h.calls.relaunch, 0, "a compatible update must not relaunch ChatGPT");
-  assert.equal(h.controller.stopping, false, "the old coordinator must remain attached when no takeover proof exists");
+  assert.equal(h.controller.stopping, false, "the proven coordinator must remain active after live reload");
   assert.equal(h.controller.status.state, "current");
   assert.equal(h.controller.status.details.installedVersion, h.release.version);
   assert.match(h.controller.status.message, /without restarting ChatGPT/u);
@@ -677,7 +677,7 @@ async function testActualWindowsCheck() {
   process.env.CHATGPT_REMOTE_UPDATE_LATEST_URL = `http://127.0.0.1:${server.address().port}/release.json`;
   process.env.CHATGPT_REMOTE_UPDATE_ALLOW_INSECURE = "1";
   try {
-    const cfg = config({ updaterPath: path.join(root, "windows", "Update-ChatGPTRemote.ps1") });
+    const cfg = config({ updaterPath: path.join(root, "windows", "Update-ChatGPTRemote.ps1"), relaunch: { ...config().relaunch, useProxy: false } });
     const adapter = new session.UpdaterAdapter(cfg);
     const result = await adapter.check();
     assert.equal(result.available, true);

@@ -113,7 +113,7 @@ process.stdout.write(`${JSON.stringify(helper.resolveRelease(parse(process.argv.
 '@.Replace('__CANONICAL_HELPER__', $canonicalLiteral)
     Write-Utf8NoBom (Join-Path $fixtureRoot 'git-release.js') $wrapper
 
-    $installFiles = @('Update-ChatGPTRemote.ps1', 'StableInstall.ps1', 'update-transaction.js', 'VERSION')
+    $installFiles = @('Update-ChatGPTRemote.ps1', 'StableInstall.ps1', 'update-transaction.js', 'git-release.js', 'VERSION')
     Copy-Item -LiteralPath (Join-Path $fixturePlatformRoot 'Update-ChatGPTRemote.ps1') -Destination (Join-Path $fixtureRoot 'Update-ChatGPTRemote.ps1') -Force
     Copy-Item -LiteralPath (Join-Path $fixturePlatformRoot 'StableInstall.ps1') -Destination (Join-Path $fixtureRoot 'StableInstall.ps1') -Force
     Copy-Item -LiteralPath (Join-Path $fixturePlatformRoot 'update-transaction.js') -Destination (Join-Path $fixtureRoot 'update-transaction.js') -Force

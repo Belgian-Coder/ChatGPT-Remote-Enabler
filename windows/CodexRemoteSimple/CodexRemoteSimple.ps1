@@ -642,7 +642,7 @@ function Read-CrsState {
 }
 
 function Write-CrsState {
-    param($Package, [int]$RendererPort, $MainPort, $Probe, $Launch, [bool]$ProxyMode, [string]$BridgeMode, [bool]$LegacyDeviceKeyCompatibility = $false)
+    param($Package, [int]$RendererPort, $MainPort, $Probe, $Launch, [bool]$ProxyMode, [string]$BridgeMode, [string]$ProxyFingerprint, [bool]$LegacyDeviceKeyCompatibility = $false)
 
     $state = [pscustomobject][ordered]@{
         schemaVersion = 2
@@ -655,8 +655,9 @@ function Write-CrsState {
         launchMethod = [string]$Launch.Method
         launchProcessId = $Launch.ProcessId
         proxyMode = $ProxyMode
+        proxyFingerprint = if ($ProxyMode) { $ProxyFingerprint } else { $null }
         legacyDeviceKeyCompatibility = $LegacyDeviceKeyCompatibility
-        proxyTransport = if ($ProxyMode -and $BridgeMode -ceq 'native-renderer') { 'remote-websocket-bridge-v1' } else { $null }
+        proxyTransport = if ($ProxyMode) { 'all-connections-proxy-v1' } else { $null }
         appAsarSha256 = [string]$Probe.appAsarSha256
         startedAtUtc = [DateTime]::UtcNow.ToString('o')
     }
@@ -744,22 +745,35 @@ function Invoke-CrsProbeExisting {
 }
 
 function Test-CrsProxyModeProof {
-    param($State, [bool]$RequestedProxyMode)
+    param($State, [bool]$RequestedProxyMode, [string]$RequestedProxyFingerprint)
 
     if ($null -eq $State -or $null -eq $State.PSObject.Properties['proxyMode']) { return $false }
     if ($State.proxyMode -isnot [bool]) { return $false }
     if ([bool]$State.proxyMode -ne $RequestedProxyMode) { return $false }
     $proxyTransport = if ($null -eq $State.PSObject.Properties['proxyTransport']) { '' } else { [string]$State.proxyTransport }
-    if (-not [string]::IsNullOrEmpty($proxyTransport) -and $proxyTransport -cne 'remote-websocket-bridge-v1') {
+    if (-not [string]::IsNullOrEmpty($proxyTransport) -and $proxyTransport -cne 'all-connections-proxy-v1') {
         return $false
     }
     if (-not $RequestedProxyMode) {
-        return [string]::IsNullOrEmpty($proxyTransport)
+        return [string]::IsNullOrEmpty($proxyTransport) -and
+            ($null -eq $State.PSObject.Properties['proxyFingerprint'] -or [string]::IsNullOrEmpty([string]$State.proxyFingerprint))
     }
-    if ($RequestedProxyMode -and [string]$State.bridgeMode -ceq 'native-renderer') {
-        return $proxyTransport -ceq 'remote-websocket-bridge-v1'
+    if ($RequestedProxyFingerprint -notmatch '^[a-f0-9]{64}$' -or
+        $null -eq $State.PSObject.Properties['proxyFingerprint']) { return $false }
+    return $proxyTransport -ceq 'all-connections-proxy-v1' -and
+        [string]$State.proxyFingerprint -ceq $RequestedProxyFingerprint
+}
+
+function Get-CrsProxyFingerprint {
+    param([Parameter(Mandatory)][string]$ProxyServer)
+
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [Text.Encoding]::UTF8.GetBytes($ProxyServer)
+        return ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $sha.Dispose()
     }
-    return [string]::IsNullOrEmpty($proxyTransport)
 }
 
 function Remove-CrsInactiveProxyRuntimes {
@@ -842,15 +856,17 @@ switch ($Action) {
         break
     }
     'Enable' {
+        $resolvedProxyServer = if ($UseProxy) { Resolve-CrsProxyServer -RequestedProxy $ProxyServer } else { $null }
+        $requestedProxyFingerprint = if ($UseProxy) { Get-CrsProxyFingerprint -ProxyServer $resolvedProxyServer } else { $null }
         $existing = Invoke-CrsProbeExisting -Node $node -State $state
         if ($null -eq $existing -or -not $existing.ok -or -not $existing.renderer.probe.proof) {
             $discovered = Get-CrsDiscoverableSession -Package $package -BridgeMode $bridgeMode
             if ($null -ne $discovered) {
                 $discoveredProbe = Invoke-CrsProbeExisting -Node $node -State $discovered
                 if ($null -ne $discoveredProbe -and $discoveredProbe.ok -and $discoveredProbe.renderer.probe.proof -and
-                    (Test-CrsProxyModeProof -State $discovered -RequestedProxyMode ([bool]$UseProxy)) -and
+                    (Test-CrsProxyModeProof -State $discovered -RequestedProxyMode ([bool]$UseProxy) -RequestedProxyFingerprint $requestedProxyFingerprint) -and
                     (Test-CrsLegacyDeviceKeyModeProof -State $discovered -Required $legacyDeviceKeyCompatibilityNeeded)) {
-                    Write-CrsState -Package $package -RendererPort $discovered.rendererPort -MainPort $discovered.mainPort -Probe $compatibility -Launch ([pscustomobject]@{ Method = 'adopted-existing-session'; ProcessId = $discovered.launchProcessId }) -ProxyMode ([bool]$discovered.proxyMode) -BridgeMode $bridgeMode
+                    Write-CrsState -Package $package -RendererPort $discovered.rendererPort -MainPort $discovered.mainPort -Probe $compatibility -Launch ([pscustomobject]@{ Method = 'adopted-existing-session'; ProcessId = $discovered.launchProcessId }) -ProxyMode ([bool]$discovered.proxyMode) -BridgeMode $bridgeMode -ProxyFingerprint $requestedProxyFingerprint
                     $state = Read-CrsState
                     $existing = $discoveredProbe
                     Write-Host 'Adopted the existing audited loopback session without relaunching ChatGPT.' -ForegroundColor Green
@@ -858,7 +874,7 @@ switch ($Action) {
             }
         }
         if ($null -ne $existing -and $existing.ok -and $existing.renderer.probe.proof) {
-            if ((Test-CrsProxyModeProof -State $state -RequestedProxyMode ([bool]$UseProxy)) -and
+            if ((Test-CrsProxyModeProof -State $state -RequestedProxyMode ([bool]$UseProxy) -RequestedProxyFingerprint $requestedProxyFingerprint) -and
                 (Test-CrsLegacyDeviceKeyModeProof -State $state -Required $legacyDeviceKeyCompatibilityNeeded)) {
                 Write-Host 'The local Control other devices bridge is already active in the requested proxy mode.' -ForegroundColor Green
                 break
@@ -877,17 +893,13 @@ switch ($Action) {
         $launchPackage = $package
         $sessionStopped = $false
         try {
-            $resolvedProxyServer = $null
             if ($UseProxy) {
-                $resolvedProxyServer = Resolve-CrsProxyServer -RequestedProxy $ProxyServer
-                if ($bridgeMode -cne 'native-renderer') {
-                    Write-Host 'Experimental proxy mode is enabled only for the Remote-control WebSocket.' -ForegroundColor Yellow
-                }
+                Write-Host 'Protected proxy mode is enabled for all external ChatGPT and helper connections.' -ForegroundColor Yellow
             }
             if ($bridgeMode -ceq 'native-renderer' -and ($UseProxy -or $legacyDeviceKeyCompatibilityNeeded)) {
                 Write-Host 'Preparing the version-matched private ChatGPT compatibility runtime.' -ForegroundColor Yellow
                 $launchPackage = New-CrsProxyRuntimePackage -Package $package -Node $node -ProxyEnabled ([bool]$UseProxy) -LegacyDeviceKeys $legacyDeviceKeyCompatibilityNeeded
-                if ($UseProxy) { Write-Host 'Proxy mode is scoped to the Remote-control WebSocket; signed enrollment remains on the canonical ChatGPT URL.' -ForegroundColor Yellow }
+                if ($UseProxy) { Write-Host 'Signed enrollment retains the canonical ChatGPT URL while all external traffic uses the protected proxy.' -ForegroundColor Yellow }
                 if ($legacyDeviceKeyCompatibilityNeeded) { Write-Host 'Existing protected enrollment keys remain available; new keys use the native Windows provider.' -ForegroundColor Yellow }
             }
             Assert-CrsNoExistingAppForReplacement -Package $package -LaunchPackage $launchPackage -Enabled:$RefuseExistingApp
@@ -910,13 +922,13 @@ switch ($Action) {
                 ArgumentList = $arguments
                 ExpectedPort = $rendererPort
             }
-            if ($UseProxy -and $bridgeMode -ceq 'native-renderer') {
+            if ($UseProxy) {
                 $launchArguments.EnvironmentProxyServer = $resolvedProxyServer
                 $launchArguments.NodePath = $node.Path
             }
             $launch = Start-CrsPackagedCodex @launchArguments
             $bridge = Invoke-CrsBridge -Node $node -RendererPort $rendererPort -MainPort $mainPort -ProxyServer $(if ($UseProxy) { $resolvedProxyServer } else { $null }) -BridgeMode $bridgeMode
-            Write-CrsState -Package $launchPackage -RendererPort $rendererPort -MainPort $mainPort -Probe $compatibility -Launch $launch -ProxyMode ([bool]$UseProxy) -BridgeMode $bridgeMode -LegacyDeviceKeyCompatibility $legacyDeviceKeyCompatibilityNeeded
+            Write-CrsState -Package $launchPackage -RendererPort $rendererPort -MainPort $mainPort -Probe $compatibility -Launch $launch -ProxyMode ([bool]$UseProxy) -BridgeMode $bridgeMode -ProxyFingerprint $requestedProxyFingerprint -LegacyDeviceKeyCompatibility $legacyDeviceKeyCompatibilityNeeded
             Write-Host 'Control other devices and macOS-style connection grouping are active for this Codex session.' -ForegroundColor Green
             Write-Host 'Open Settings > Connections > Control other devices.'
             Write-Host 'In the sidebar, open Project sidebar options and choose By connection when desired.'

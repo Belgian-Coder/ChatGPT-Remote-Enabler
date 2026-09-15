@@ -362,6 +362,28 @@ assert.match(originalSource, /threadScopeGeneratedAt/);
   assert.equal(bounded.threads.length, 200);
 
   pageCalls = 0;
+  const deepBusy = await visibility.listAllRuntimeThreads(
+    changingCursorClient, false, Number.POSITIVE_INFINITY, false, null, "activity fixture", 201,
+    (thread) => thread.status === "running",
+  );
+  assert.equal(pageCalls, 201, "a stop predicate must be allowed to scan beyond the maintenance page cap");
+  assert.equal(deepBusy.truncated, true);
+
+  pageCalls = 0;
+  const lateBusyClient = {
+    async sendRequest() {
+      pageCalls += 1;
+      return { data: [{ id: `late-${pageCalls}`, status: pageCalls === 201 ? "running" : "idle" }], nextCursor: `late-cursor-${pageCalls}` };
+    },
+  };
+  const lateBusy = await visibility.listAllRuntimeThreads(
+    lateBusyClient, false, Number.POSITIVE_INFINITY, true, null, "activity fixture", 10000,
+    (thread) => thread.status === "running",
+  );
+  assert.equal(pageCalls, 201);
+  assert.equal(lateBusy.stoppedEarly, true, "activity scan must stop as soon as a busy task is proven after page 200");
+
+  pageCalls = 0;
   await assert.rejects(
     visibility.listAllRuntimeThreads(changingCursorClient, false, Number.POSITIVE_INFINITY, true),
     /bounded page limit/,

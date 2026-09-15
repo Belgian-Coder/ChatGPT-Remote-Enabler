@@ -9,6 +9,7 @@ expected_archive_sha256=""
 prepared_directory=""
 lock_timeout_seconds=120
 launch_lock_held=0
+use_proxy=0
 while (( $# > 0 )); do
   case "$1" in
     --target-version) (( $# >= 2 )) || { print -u2 'Missing --target-version value.'; exit 2; }; target_version="$2"; shift 2 ;;
@@ -16,6 +17,7 @@ while (( $# > 0 )); do
     --prepared-directory) (( $# >= 2 )) || { print -u2 'Missing --prepared-directory value.'; exit 2; }; prepared_directory="$2"; shift 2 ;;
     --lock-timeout-seconds) (( $# >= 2 )) || { print -u2 'Missing --lock-timeout-seconds value.'; exit 2; }; lock_timeout_seconds="$2"; shift 2 ;;
     --launch-lock-held) launch_lock_held=1; shift ;;
+    --proxy) use_proxy=1; shift ;;
     *) print -u2 "Unknown updater argument: $1"; exit 2 ;;
   esac
 done
@@ -52,6 +54,16 @@ launch_lock_acquired=0
 temporary_root=""
 temporary_staging=""
 stable_migration_pending=0
+
+if (( use_proxy )); then
+  proxy_helper="${script_path:h}/ProxyConfiguration.sh"
+  [[ -f "$proxy_helper" && ! -L "$proxy_helper" ]] || { print -u2 'Proxy mode was requested, but the proxy configuration helper is missing.'; exit 1; }
+  proxy_server="$(/bin/zsh "$proxy_helper" resolve)"
+  export HTTP_PROXY="$proxy_server" HTTPS_PROXY="$proxy_server" ALL_PROXY="$proxy_server"
+  export http_proxy="$proxy_server" https_proxy="$proxy_server" all_proxy="$proxy_server"
+  export NO_PROXY='localhost,127.0.0.1,::1' no_proxy='localhost,127.0.0.1,::1'
+  export CHATGPT_REMOTE_REQUIRE_HTTPS_PROXY=1 CHATGPT_REMOTE_PROXY_URL="$proxy_server"
+fi
 
 is_owned_prepared_directory() {
   local requested="$1" resolved="${1:A}" prepared_root="${state_root}/prepared" resolved_root
@@ -296,7 +308,12 @@ download_release_metadata() {
   local url="$(release_url "$requested_tag")"
   local -a protocol_args=(--proto '=https' --proto-redir '=https')
   [[ "$url" == http://127.0.0.1:* ]] && protocol_args=(--proto '=http' --proto-redir '=http')
-  /usr/bin/curl "${protocol_args[@]}" --fail --location --silent --show-error --max-time 20 \
+  local -a proxy_args=()
+  if [[ "${CHATGPT_REMOTE_REQUIRE_HTTPS_PROXY:-0}" == 1 ]]; then
+    [[ -n "${CHATGPT_REMOTE_PROXY_URL:-}" ]] || { print -u2 'Proxy mode requires a resolved proxy URL.'; return 1; }
+    proxy_args=(--proxy "$CHATGPT_REMOTE_PROXY_URL" --noproxy 'localhost,127.0.0.1,::1')
+  fi
+  /usr/bin/curl "${protocol_args[@]}" "${proxy_args[@]}" --fail --location --silent --show-error --max-time 20 \
     -H 'Accept: application/vnd.github+json' -H 'User-Agent: ChatGPT-Remote-Enabler-Updater' \
     "$url" -o "$metadata_path"
   "$node_bin" -e '
@@ -320,7 +337,12 @@ download_file() {
   local url="$1" destination="$2" maximum_seconds="$3"
   local -a protocol_args=(--proto '=https' --proto-redir '=https')
   [[ "$url" == http://127.0.0.1:* && "${CHATGPT_REMOTE_UPDATE_ALLOW_INSECURE:-0}" == 1 ]] && protocol_args=(--proto '=http' --proto-redir '=http')
-  /usr/bin/curl "${protocol_args[@]}" --fail --location --silent --show-error --max-time "$maximum_seconds" "$url" -o "$destination"
+  local -a proxy_args=()
+  if [[ "${CHATGPT_REMOTE_REQUIRE_HTTPS_PROXY:-0}" == 1 ]]; then
+    [[ -n "${CHATGPT_REMOTE_PROXY_URL:-}" ]] || { print -u2 'Proxy mode requires a resolved proxy URL.'; return 1; }
+    proxy_args=(--proxy "$CHATGPT_REMOTE_PROXY_URL" --noproxy 'localhost,127.0.0.1,::1')
+  fi
+  /usr/bin/curl "${protocol_args[@]}" "${proxy_args[@]}" --fail --location --silent --show-error --max-time "$maximum_seconds" "$url" -o "$destination"
 }
 
 published_archive_hash() {
@@ -555,13 +577,20 @@ finalize_stable_install_root() {
     local shortcut="$install_root/MacOSShortcut.sh"
     local plist="$HOME/Library/LaunchAgents/com.local.codex-mobile-project-view.plist"
     if [[ -f "$plist" ]]; then
-      local delay required
+      local delay required startup_proxy=0
       delay="$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:CODEX_STARTUP_DELAY_SECONDS' "$plist" 2>/dev/null || print 60)"
       required="$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:CODEX_STARTUP_REQUIRED_PATH' "$plist" 2>/dev/null || true)"
-      CODEX_STARTUP_DELAY_SECONDS="$delay" CODEX_STARTUP_REQUIRED_PATH="$required" /bin/zsh "$launcher" install-startup >/dev/null
+      [[ "$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:CODEX_REMOTE_USE_PROXY' "$plist" 2>/dev/null || true)" == 1 ]] && startup_proxy=1
+      local -a startup_arguments=(install-startup)
+      (( startup_proxy )) && startup_arguments+=(--proxy)
+      CODEX_STARTUP_DELAY_SECONDS="$delay" CODEX_STARTUP_REQUIRED_PATH="$required" /bin/zsh "$launcher" "${startup_arguments[@]}" >/dev/null
     fi
     if [[ -d "$HOME/Applications/ChatGPT Remote Enabler.app" || -f "$HOME/Library/Application Support/CodexRemoteFeatures/launchers/ChatGPT Remote Enabler.applescript" ]]; then
-      /bin/zsh "$shortcut" install >/dev/null
+      local shortcut_proxy=0 shortcut_source="$HOME/Library/Application Support/CodexRemoteFeatures/launchers/ChatGPT Remote Enabler.applescript"
+      [[ -f "$shortcut_source" ]] && /usr/bin/grep -F 'quoted form of launcherPath & " enable --proxy"' "$shortcut_source" >/dev/null 2>&1 && shortcut_proxy=1
+      local -a shortcut_arguments=(install)
+      (( shortcut_proxy )) && shortcut_arguments+=(--proxy)
+      /bin/zsh "$shortcut" "${shortcut_arguments[@]}" >/dev/null
     fi
   fi
   cleanup_rollback_history

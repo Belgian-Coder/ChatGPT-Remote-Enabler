@@ -2,7 +2,8 @@
 
 const assert = require("node:assert/strict");
 const net = require("node:net");
-const { createConnectAgent, stripPrivatePrefix } = require("../runtime/api-proxy-bridge.js");
+const { createConnectAgent, sanitizeHeaders, stripPrivatePrefix } = require("../runtime/api-proxy-bridge.js");
+const { isRemoteControlRequest } = require("../runtime/main-payload.js");
 
 function listen(server) {
   return new Promise((resolve, reject) => {
@@ -49,6 +50,12 @@ async function main() {
   const token = "0123456789abcdef0123456789abcdef";
   assert.equal(stripPrivatePrefix(`/${token}/backend-api/test?q=1`, token), "/backend-api/test?q=1");
   assert.equal(stripPrivatePrefix(`/wrong/backend-api/test`, token), null);
+  assert.deepEqual(sanitizeHeaders({ connection: "keep-alive, X-Private", "keep-alive": "timeout=5", "x-private": "secret", upgrade: "websocket", ok: "yes" }, false), { ok: "yes" });
+  assert.deepEqual(sanitizeHeaders({ connection: "keep-alive", upgrade: "websocket", ok: "yes" }, true), { connection: "Upgrade", upgrade: "websocket", ok: "yes" });
+  assert.equal(isRemoteControlRequest("https://chatgpt.com/backend-api/test"), true);
+  assert.equal(isRemoteControlRequest(new URL("https://localhost:443/backend-api/test")), false);
+  assert.equal(isRemoteControlRequest({ host: "127.0.0.1:443", path: "/backend-api/test" }), false);
+  assert.equal(isRemoteControlRequest({ host: "[::1]:443", path: "/backend-api/test" }), false);
   await testTlsHandshakeDeadline();
   process.stdout.write(`${JSON.stringify({ pathBoundary: true, tlsHandshakeDeadline: true })}\n`);
 }

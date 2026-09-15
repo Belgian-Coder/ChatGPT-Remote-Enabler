@@ -77,10 +77,11 @@ async function main(argv = process.argv.slice(2)) {
   } else {
     command = "/bin/zsh";
     args = [config.launcherPath, "handoff-update-session"];
+    if (config.useProxy === true) args.push("--proxy");
     env.CODEX_REMOTE_DEBUG_PORT = String(config.rendererPort);
     env.CODEX_REMOTE_SKIP_UPDATE_CHECK_ONCE = "1";
     for (const [name, value] of Object.entries(config.environment ?? {})) {
-      if (["CODEX_APP_NAME", "CODEX_REMOTE_PEER_NAME", "CODEX_STARTUP_REQUIRED_PATH"].includes(name) && typeof value === "string") env[name] = value;
+      if (["CODEX_APP_NAME", "CODEX_REMOTE_PEER_NAME", "CODEX_STARTUP_REQUIRED_PATH", "CODEX_REMOTE_USE_PROXY"].includes(name) && typeof value === "string") env[name] = value;
     }
   }
   const child = spawnSync(command, args, { cwd: config.installRoot, env, encoding: "utf8", timeout: 45_000, windowsHide: true });

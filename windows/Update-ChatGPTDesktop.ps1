@@ -4,11 +4,13 @@ param(
     [string]$Action = 'Probe',
     [string]$PackageUri = 'https://persistent.oaistatic.com/codex-app-prod/ChatGPT-x64.msix',
     [string]$PackagePath,
+    [switch]$UseProxy,
     [switch]$NoExecute
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Net.Http
 
 # These are package identities, not file extensions. The direct OpenAI package
 # currently uses OpenAI.Codex; older Store/AppX installations used the legacy
@@ -18,6 +20,16 @@ $script:ChatGptPackageNames = @('OpenAI.Codex', 'OpenAI.ChatGPT-Desktop')
 $script:ExpectedPublisher = 'CN=50BDFD77-8903-4850-9FFE-6E8522F64D5B'
 $script:ExpectedArchitecture = 'X64'
 $script:DefaultPackageUri = 'https://persistent.oaistatic.com/codex-app-prod/ChatGPT-x64.msix'
+$script:DesktopUpdateProxyServer = $null
+
+if ($UseProxy) {
+    $proxyModule = Join-Path $PSScriptRoot 'CodexRemoteMobileProject\ProxyConfiguration.psm1'
+    if (-not (Test-Path -LiteralPath $proxyModule -PathType Leaf)) {
+        throw 'Proxy mode was requested, but the proxy configuration helper is missing.'
+    }
+    Import-Module $proxyModule -Force
+    $script:DesktopUpdateProxyServer = Get-ChatGPTRemoteProxy -AllowEnvironmentFallback
+}
 
 function Assert-Condition {
     param([bool]$Condition, [string]$Message)
@@ -52,6 +64,51 @@ function Assert-OfficialPackageUri {
     Assert-Condition ($parsed.AbsolutePath -ceq '/codex-app-prod/ChatGPT-x64.msix') 'The package URI must be the official stable x64 ChatGPT MSIX path.'
     Assert-Condition ([string]::IsNullOrEmpty($parsed.Query) -and [string]::IsNullOrEmpty($parsed.Fragment)) 'The package URI must not contain query or fragment data.'
     return $parsed.AbsoluteUri
+}
+
+function Invoke-OfficialPackageRequest {
+    param(
+        [Parameter(Mandatory)][string]$Uri,
+        [ValidateSet('Head','Get')][string]$Method,
+        [int]$TimeoutSec,
+        [string]$OutFile
+    )
+    $current = [Uri](Assert-OfficialPackageUri $Uri)
+    for ($redirect = 0; $redirect -le 3; $redirect++) {
+        $handler = [Net.Http.HttpClientHandler]::new()
+        $handler.AllowAutoRedirect = $false
+        if ($script:DesktopUpdateProxyServer) {
+            $handler.UseProxy = $true
+            $handler.Proxy = [Net.WebProxy]::new($script:DesktopUpdateProxyServer, $true)
+        }
+        $client = [Net.Http.HttpClient]::new($handler)
+        $client.Timeout = [TimeSpan]::FromSeconds($TimeoutSec)
+        $response = $null
+        try {
+            $httpMethod = if ($Method -eq 'Head') { [Net.Http.HttpMethod]::Head } else { [Net.Http.HttpMethod]::Get }
+            $request = [Net.Http.HttpRequestMessage]::new($httpMethod, $current)
+            try {
+                $response = $client.SendAsync($request, [Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+                if ([int]$response.StatusCode -in 301,302,303,307,308) {
+                    if ($redirect -ge 3 -or $null -eq $response.Headers.Location) { throw 'The package endpoint exceeded the safe redirect limit.' }
+                    $next = if ($response.Headers.Location.IsAbsoluteUri) { $response.Headers.Location } else { [Uri]::new($current, $response.Headers.Location) }
+                    $current = [Uri](Assert-OfficialPackageUri $next.AbsoluteUri)
+                    continue
+                }
+                $response.EnsureSuccessStatusCode() | Out-Null
+                $headers = @{}
+                foreach ($header in $response.Headers) { $headers[$header.Key] = @($header.Value) }
+                foreach ($header in $response.Content.Headers) { $headers[$header.Key] = @($header.Value) }
+                if ($Method -eq 'Get') {
+                    $stream = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+                    $output = [IO.File]::Open($OutFile, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::None)
+                    try { $stream.CopyTo($output) } finally { $output.Dispose(); $stream.Dispose() }
+                }
+                return [pscustomobject]@{ Headers = $headers; FinalUri = $current.AbsoluteUri }
+            } finally { $request.Dispose(); if ($response) { $response.Dispose() } }
+        } finally { $client.Dispose(); $handler.Dispose() }
+    }
+    throw 'The package endpoint exceeded the safe redirect limit.'
 }
 
 function Get-CurrentUserChatGptPackages {
@@ -302,7 +359,7 @@ function Get-HeadPackageMetadata {
                 $originalProtocol = [Net.ServicePointManager]::SecurityProtocol
                 try {
                     [Net.ServicePointManager]::SecurityProtocol = $originalProtocol -bor [Net.SecurityProtocolType]::Tls12
-                    Invoke-WebRequest -Uri $officialUri -Method Head -UseBasicParsing -MaximumRedirection 3 -TimeoutSec 60
+                    Invoke-OfficialPackageRequest -Uri $officialUri -Method Head -TimeoutSec 60
                 } finally {
                     [Net.ServicePointManager]::SecurityProtocol = $originalProtocol
                 }
@@ -360,7 +417,7 @@ function Save-MsixToPerUserTemp {
     $originalProtocol = [Net.ServicePointManager]::SecurityProtocol
     try {
         [Net.ServicePointManager]::SecurityProtocol = $originalProtocol -bor [Net.SecurityProtocolType]::Tls12
-        Invoke-WebRequest -Uri (Assert-OfficialPackageUri $Uri) -OutFile $destination -UseBasicParsing -MaximumRedirection 3 -TimeoutSec 900
+        [void](Invoke-OfficialPackageRequest -Uri $Uri -Method Get -TimeoutSec 900 -OutFile $destination)
     } finally {
         [Net.ServicePointManager]::SecurityProtocol = $originalProtocol
     }

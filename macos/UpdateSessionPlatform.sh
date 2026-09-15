@@ -37,7 +37,7 @@ fi
 exact_process_running() {
   /bin/kill -0 "$pid_value" 2>/dev/null || return 1
   local actual_start actual_executable actual_bundle
-  actual_start="$(/bin/ps -p "$pid_value" -o lstart= 2>/dev/null | /usr/bin/sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  actual_start="$(/bin/ps -p "$pid_value" -o lstart= 2>/dev/null | /usr/bin/awk '{$1=$1; print}')"
   actual_executable="$(/bin/ps -p "$pid_value" -o comm= 2>/dev/null | /usr/bin/sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
   actual_bundle="$(/usr/bin/defaults read "$app_path/Contents/Info" CFBundleIdentifier 2>/dev/null)"
   [[ "$actual_start" == "$expected_start" && "$actual_executable" == "$expected_executable" && "$actual_bundle" == "$bundle_id" ]]

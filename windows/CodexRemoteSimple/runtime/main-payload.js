@@ -187,9 +187,11 @@
     agent.createConnection = function createProxyTunnel(options, callback) {
       let settled = false;
       let proxySocket;
+      let absoluteTimer;
       const done = (error, socket) => {
         if (settled) return;
         settled = true;
+        clearTimeout(absoluteTimer);
         callback(error, socket);
       };
       const targetHost = String(options.servername ?? options.hostname ?? options.host ?? "").replace(/^\[|\]$/gu, "");
@@ -213,6 +215,7 @@
         proxySocket?.destroy();
         done(bridgeError(code, message));
       };
+      absoluteTimer = setTimeout(() => fail("PROXY_DEADLINE_EXCEEDED", "Proxy tunnel setup timed out"), 10_000);
       const onProxyError = () => fail("PROXY_CONNECT_FAILED", "Proxy connection failed");
       proxySocket.once("error", onProxyError);
       proxySocket.setTimeout(10_000, () => fail("PROXY_CONNECT_TIMEOUT", "Proxy CONNECT timed out"));
@@ -311,27 +314,64 @@
   }
 
   function isRemoteControlRequest(options) {
-    if (options == null || typeof options !== "object" || options instanceof URL) return false;
-    const hostname = String(options.hostname ?? options.host ?? "").replace(/^\[|\]$/gu, "").toLowerCase();
-    const pathValue = String(options.path ?? options.pathname ?? "");
-    return hostname === "chatgpt.com" && REMOTE_CONTROL_PATH_PREFIXES.some((prefix) => pathValue.startsWith(prefix));
+    let hostname;
+    let pathValue;
+    if (typeof options === "string" || options instanceof URL) {
+      let parsed;
+      try { parsed = new URL(options); } catch { return false; }
+      hostname = parsed.hostname.toLowerCase();
+      pathValue = parsed.pathname;
+    } else if (options != null && typeof options === "object") {
+      const authority = String(options.hostname ?? options.host ?? "");
+      try {
+        hostname = new URL(`https://${authority}`).hostname.replace(/^\[|\]$/gu, "").toLowerCase();
+      } catch {
+        hostname = authority.replace(/^\[|\]$/gu, "").replace(/:\d+$/u, "").toLowerCase();
+      }
+      pathValue = String(options.path ?? options.pathname ?? "");
+    } else {
+      return false;
+    }
+    return hostname !== "" && !["localhost", "127.0.0.1", "::1"].includes(hostname);
   }
 
   function installRemoteControlProxyShim(proxyUrl) {
+    const fingerprint = crypto.createHash("sha256").update(proxyUrl).digest("hex");
     if (globalThis[PROXY_STATE_SYMBOL]) {
-      return { installed: true, reused: true, scope: "chatgpt-remote-control" };
+      if (globalThis[PROXY_STATE_SYMBOL].fingerprint !== fingerprint) {
+        throw bridgeError("PROXY_CONFIGURATION_CHANGED", "The active proxy transport does not match the requested proxy");
+      }
+      return { installed: true, reused: true, scope: "all-external-https" };
     }
     const agent = createHttpConnectAgent(proxyUrl);
     const originalRequest = https.request;
+    const originalGet = https.get;
     https.request = function cleanroomRemoteControlProxyRequest(options) {
       const args = Array.from(arguments);
       if (isRemoteControlRequest(options)) {
-        args[0] = { ...options, agent };
+        if (typeof options === "string" || options instanceof URL) {
+          if (args[1] != null && typeof args[1] === "object") args[1] = { ...args[1], agent };
+          else args.splice(1, 0, { agent });
+        } else {
+          args[0] = { ...options, agent };
+        }
       }
       return Reflect.apply(originalRequest, this, args);
     };
-    globalThis[PROXY_STATE_SYMBOL] = { agent, originalRequest };
-    return { installed: true, reused: false, scope: "chatgpt-remote-control" };
+    https.get = function cleanroomAllConnectionsProxyGet(options) {
+      const args = Array.from(arguments);
+      if (isRemoteControlRequest(options)) {
+        if (typeof options === "string" || options instanceof URL) {
+          if (args[1] != null && typeof args[1] === "object") args[1] = { ...args[1], agent };
+          else args.splice(1, 0, { agent });
+        } else {
+          args[0] = { ...options, agent };
+        }
+      }
+      return Reflect.apply(originalGet, this, args);
+    };
+    globalThis[PROXY_STATE_SYMBOL] = { agent, fingerprint, originalGet, originalRequest };
+    return { installed: true, reused: false, scope: "all-external-https" };
   }
 
   function isPlainObject(value) {

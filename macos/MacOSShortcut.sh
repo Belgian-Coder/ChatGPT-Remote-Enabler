@@ -3,6 +3,10 @@ set -euo pipefail
 
 action="${1:-probe}"
 action="${action:l}"
+use_proxy=0
+[[ "${2:-}" == --proxy ]] && use_proxy=1
+[[ $# -le 2 ]] || { print -u2 'Too many shortcut arguments.'; exit 2; }
+[[ $# -lt 2 || "${2:-}" == --proxy ]] || { print -u2 'Unsupported shortcut argument.'; exit 2; }
 script_path="${0:A}"
 launcher="${script_path:h}/MobileProjectView-macOS-arm64.sh"
 source_root="$HOME/Library/Application Support/CodexRemoteFeatures/launchers"
@@ -36,6 +40,9 @@ probe_shortcut() {
   /usr/bin/codesign --verify --deep --strict "$checked_app"
   local escaped_launcher="$(escape_applescript_string "$launcher")"
   /usr/bin/osadecompile "$checked_app" | /usr/bin/grep -F "set launcherPath to \"$escaped_launcher\"" >/dev/null
+  local expected_suffix=""
+  (( use_proxy )) && expected_suffix=' --proxy'
+  /usr/bin/osadecompile "$checked_app" | /usr/bin/grep -F "quoted form of launcherPath & \" enable$expected_suffix\"" >/dev/null
   print "Shortcut is valid: $checked_app"
 }
 
@@ -48,6 +55,8 @@ install_shortcut() {
   local candidate_app="$app_root/.ChatGPT Remote Enabler.tmp.$$.$RANDOM.app"
   rm -rf -- "$candidate_source" "$candidate_app"
   local escaped_launcher="$(escape_applescript_string "$launcher")"
+  local proxy_suffix=""
+  (( use_proxy )) && proxy_suffix=' --proxy'
   /bin/cat > "$candidate_source" <<APPLESCRIPT
 on run
     set launcherPath to "$escaped_launcher"
@@ -57,7 +66,7 @@ on run
             display alert "ChatGPT is already running" message "Quit ChatGPT with Command-Q when no task is active, then click ChatGPT Remote Enabler again. The launcher will not terminate it automatically." as warning
             return
         end if
-        do shell script "/bin/zsh " & quoted form of launcherPath & " enable"
+        do shell script "/bin/zsh " & quoted form of launcherPath & " enable$proxy_suffix"
     on error errorMessage number errorNumber
         display alert "ChatGPT Remote Enabler failed to start" message (errorMessage & " (error " & (errorNumber as text) & ")") as critical
     end try
@@ -146,5 +155,5 @@ case "$action" in
   probe) probe_shortcut ;;
   remove) remove_shortcut ;;
   reveal) probe_shortcut; /usr/bin/open -R "$app_path" ;;
-  *) print -u2 "Usage: $0 {install|probe|reveal|remove}"; exit 2 ;;
+  *) print -u2 "Usage: $0 {install|probe|reveal|remove} [--proxy]"; exit 2 ;;
 esac

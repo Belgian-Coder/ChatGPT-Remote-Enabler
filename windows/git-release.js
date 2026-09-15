@@ -163,8 +163,17 @@ function commandEnvironment() {
   };
 }
 
+function protectedProxyArguments(canonicalRemote, environment = process.env) {
+  if (environment.CHATGPT_REMOTE_REQUIRE_HTTPS_PROXY !== "1") return [];
+  const proxyUrl = environment.CHATGPT_REMOTE_PROXY_URL || environment.HTTPS_PROXY || "";
+  const args = ["-c", `http.proxy=${proxyUrl}`];
+  if (/^https:\/\//u.test(canonicalRemote || "")) args.push("-c", `http.${canonicalRemote}.proxy=${proxyUrl}`);
+  args.push("-c", `remote.origin.proxy=${proxyUrl}`);
+  return args;
+}
+
 function gitCandidates() {
-  const candidates = ["git", process.env.CHATGPT_REMOTE_GIT, process.env.BUNDLED_CODEX_GIT];
+  const candidates = [process.env.CHATGPT_REMOTE_GIT, process.env.BUNDLED_CODEX_GIT, "git"];
   if (process.platform === "win32") {
     const programFiles = process.env.ProgramW6432 || process.env.ProgramFiles;
     const localAppData = process.env.LOCALAPPDATA;
@@ -182,7 +191,8 @@ function runGit(context, args, cwd, { maxBuffer = MAX_COMMAND_OUTPUT, input } = 
   if (remaining <= 0) throw new Error("Git release operation exceeded its total timeout.");
   let result;
   for (const executable of [context.gitExecutable, ...gitCandidates()].filter((candidate, index, all) => candidate && all.indexOf(candidate) === index)) {
-    const safeArgs = ["-c", `core.hooksPath=${path.join(cwd, ".disabled-hooks")}`, ...args];
+    const proxyArgs = protectedProxyArguments(context.proxyRemote);
+    const safeArgs = ["-c", `core.hooksPath=${path.join(cwd, ".disabled-hooks")}`, ...proxyArgs, ...args];
     result = childProcess.spawnSync(executable, safeArgs, {
       cwd,
       env: commandEnvironment(),
@@ -528,7 +538,12 @@ function resolveRelease(options, dependencies = {}) {
     } else {
       remote = githubRemote(repository);
     }
+    context.proxyRemote = remote;
     scratch = fs.mkdtempSync(path.join(cacheRoot, ".git-release-"));
+    const effectiveRemote = runGit(context, ["ls-remote", "--get-url", remote], scratch).toString("utf8").trim();
+    if (process.env.CHATGPT_REMOTE_REQUIRE_HTTPS_PROXY === "1" && effectiveRemote !== remote) {
+      throw new Error("Proxy mode refuses Git URL rewriting away from the canonical HTTPS remote.");
+    }
     const advertisement = runGit(context, ["ls-remote", "--tags", remote], scratch);
     const selected = chooseTag(parseAdvertisement(advertisement), requestedTag);
     const bareRoot = path.join(scratch, "objects.git");
@@ -588,6 +603,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  protectedProxyArguments,
   resolveRelease,
   validateRepository,
   validatePlatform,

@@ -1,12 +1,17 @@
 [CmdletBinding()]
 param(
-    [string]$OutputDirectory = (Join-Path $PSScriptRoot '..\dist'),
-    [string[]]$ForbiddenPattern = @()
+    [string]$OutputDirectory,
+    [string[]]$ForbiddenPattern = @(),
+    [switch]$RequireCommittedSource
 )
 
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
+    $OutputDirectory = Join-Path $PSScriptRoot '..\dist'
+}
 
 function New-PortableReleaseArchive {
     param(
@@ -107,6 +112,12 @@ if ($LASTEXITCODE -ne 0 -or $gitWorkTree.Count -ne 1 -or
     [IO.Path]::GetFullPath($gitWorkTree[0]) -ne $repositoryRoot.TrimEnd([IO.Path]::DirectorySeparatorChar)) {
     throw 'Build-Release.ps1 must run from the ChatGPT-Remote-Enabler Git checkout.'
 }
+if ($RequireCommittedSource) {
+    $dirtyReleaseFiles = @(& git -C $repositoryRoot status --porcelain=v1 --untracked-files=all -- windows macos tools/Build-Release.ps1)
+    if ($LASTEXITCODE -ne 0 -or $dirtyReleaseFiles.Count) {
+        throw 'Release packages may only be built from committed, clean platform sources and release-builder code.'
+    }
+}
 
 $versions = @($platforms | ForEach-Object {
     (Get-Content -LiteralPath (Join-Path $repositoryRoot "$($_.Source)\VERSION") -Raw).Trim()
@@ -149,11 +160,12 @@ try {
               'CodexRemoteMobileProject/publisher-heartbeat.js',
               'CodexRemoteMobileProject/update-session-cdp.js', 'CodexRemoteMobileProject/UpdateSessionLauncher.ps1',
               'CodexRemoteMobileProject/coordinator-handoff.js',
+              'CodexRemoteMobileProject/ProxyConfiguration.psm1',
               'CodexRemoteMobileProject/UpdateSessionSurvivorLauncher.ps1', 'CodexRemoteMobileProject/UpdateSessionTaskHost.exe',
               'CodexRemoteMobileProject/UpdateSessionPlatform.ps1', 'CodexRemoteSimple/runtime/lib/cdp.js')
         } else {
             @('Update-ChatGPTRemote.sh', 'update-transaction.js', 'git-release.js', 'git-checkout-update.js', 'update-session.js', 'update-session-cdp.js', 'coordinator-handoff.js',
-              'publisher-heartbeat.js', 'UpdateSessionPlatform.sh', 'runtime/lib/cdp.js')
+              'publisher-heartbeat.js', 'UpdateSessionPlatform.sh', 'runtime/lib/cdp.js', 'ProxyConfiguration.sh')
         }
         foreach ($required in $requiredUpdateFiles) {
             if (-not (Test-Path -LiteralPath (Join-Path $stageRoot $required) -PathType Leaf)) {
@@ -191,6 +203,26 @@ try {
             if (-not @($zip.Entries.FullName | Where-Object { $_ -eq "$($topLevels[0])/RELEASE-MANIFEST.sha256" }).Count) { throw "$($archive.Name) has no internal manifest." }
         } finally {
             $zip.Dispose()
+        }
+    }
+
+    $canonicalOutput = [IO.Path]::GetFullPath((Join-Path $repositoryRoot 'dist')).TrimEnd([IO.Path]::DirectorySeparatorChar)
+    if ($OutputDirectory.TrimEnd([IO.Path]::DirectorySeparatorChar) -eq $canonicalOutput) {
+        $recognized = @(Get-ChildItem -LiteralPath $OutputDirectory -File -ErrorAction SilentlyContinue | Where-Object {
+            $_.Name -match '^(?:ChatGPT-Remote-Enabler-(?:Windows-x64|macOS-arm64)-|SHA256SUMS-)(v\d+\.\d+\.\d+)(?:\.zip|\.txt)$'
+        })
+        $currentVersion = [version]$version.Substring(1)
+        $previousVersion = @($recognized | ForEach-Object {
+            if ($_.Name -match '(v\d+\.\d+\.\d+)') {
+                $candidate = [version]$Matches[1].Substring(1)
+                if ($candidate -lt $currentVersion) { $candidate }
+            }
+        } | Sort-Object -Descending | Select-Object -First 1)
+        foreach ($file in $recognized) {
+            $fileVersion = [version]([regex]::Match($file.Name, 'v\d+\.\d+\.\d+').Value.Substring(1))
+            if ($fileVersion -lt $currentVersion -and ($previousVersion.Count -eq 0 -or $fileVersion -ne $previousVersion[0])) {
+                Remove-Item -LiteralPath $file.FullName -Force
+            }
         }
     }
 

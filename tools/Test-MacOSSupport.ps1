@@ -6,8 +6,10 @@ $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $updater = Get-Content -LiteralPath (Join-Path $root 'macos\Update-ChatGPTRemote.sh') -Raw
 $launcher = Get-Content -LiteralPath (Join-Path $root 'macos\MobileProjectView-macOS-arm64.sh') -Raw
 $shortcut = Get-Content -LiteralPath (Join-Path $root 'macos\MacOSShortcut.sh') -Raw
+$setup = Get-Content -LiteralPath (Join-Path $root 'macos\Setup.command') -Raw
 $zshSemanticTest = Get-Content -LiteralPath (Join-Path $root 'tools\Test-MacOSSupport.zsh') -Raw
 $updateSession = Get-Content -LiteralPath (Join-Path $root 'macos\update-session.js') -Raw
+$updateSessionPlatform = Get-Content -LiteralPath (Join-Path $root 'macos\UpdateSessionPlatform.sh') -Raw
 
 foreach ($contract in @(
     'cd -- "$HOME"',
@@ -52,9 +54,18 @@ foreach ($contract in @(
     'install_root="$canonical_install_root"',
     'stable_migration_pending=1',
     'if (( ! read_only_action )) && [[ ! -f "$transaction_journal" && ! -f "$git_transaction_journal" ]]; then',
-    'CODEX_STARTUP_REQUIRED_PATH="$required" /bin/zsh "$launcher" install-startup'
+    'CODEX_STARTUP_REQUIRED_PATH="$required" /bin/zsh "$launcher" "${startup_arguments[@]}"'
 )) {
     if (-not $updater.Contains($contract)) { throw "macOS updater stable-root/prepared-cleanup contract is missing: $contract" }
+}
+foreach ($contract in @('requested_proxy=0', 'shortcut_uses_proxy() {', 'startup_uses_proxy() {', 'shortcut_arguments+=(--proxy)', 'startup_arguments+=(--proxy)')) {
+    if (-not $setup.Contains($contract)) { throw "macOS setup proxy-preservation contract is missing: $contract" }
+}
+if (-not $updateSessionPlatform.Contains('/usr/bin/awk ''{$1=$1; print}''')) {
+    throw 'macOS coordinator probe does not normalize process start tokens like the launcher.'
+}
+foreach ($contract in @('startup_proxy=0', 'startup_arguments+=(--proxy)', 'shortcut_proxy=0', 'shortcut_arguments+=(--proxy)')) {
+    if (-not $updater.Contains($contract)) { throw "macOS migration proxy-preservation contract is missing: $contract" }
 }
 if ($updater.Contains('"${install_root:h}" != "${legacy_release_root:A}"')) {
     throw 'macOS stable-root migration is still restricted to one legacy parent path.'
@@ -82,21 +93,22 @@ foreach ($contract in @(
     'typeof value.recovered !== "boolean"',
     '["complete-forward", "rollback", "unchanged"].includes(value.recoveryMode)',
     'continue_with_updated_launcher',
-    'exec /usr/bin/env "${environment[@]}" /bin/zsh "$script_path" "$action"',
+    'exec /usr/bin/env "${environment[@]}" /bin/zsh "${updated_arguments[@]}"',
     'if ! validation="$("$node_bin" -e',
     'The updater final output record was not valid JSON proof.',
     'The updater returned more than one JSON proof record.',
     '(!value.updated && value.method !== "verified-git")',
     'New LaunchAgent failed to load; the previous definition was restored.',
     'cp -p -- "$previous_plist" "$plist"'
+    '/usr/bin/awk ''{$1=$1; print}'''
 )) {
     if (-not $launcher.Contains($contract)) { throw "macOS launcher reliability contract is missing: $contract" }
 }
 foreach ($contract in @(
     'git_release_source="$bundle_root/git-release.js"',
     'git_checkout_update_source="$bundle_root/git-checkout-update.js"',
-    'update-transaction.js git-release.js git-checkout-update.js)',
-    '"$update_transaction_source" "$git_release_source" "$git_checkout_update_source")'
+    'update-transaction.js git-release.js git-checkout-update.js ProxyConfiguration.sh)',
+    '"$update_transaction_source" "$git_release_source" "$git_checkout_update_source" "$proxy_configuration")'
 )) {
     if (-not $launcher.Contains($contract)) { throw "macOS detached updater helper is missing from its immutable bundle: $contract" }
 }

@@ -4,6 +4,13 @@ zmodload zsh/datetime
 
 action="${1:-probe}"
 action="${action:l}"
+shift || true
+use_proxy=0
+for argument in "$@"; do
+  [[ "$argument" == --proxy ]] || { print -u2 "Unsupported argument: $argument"; exit 2; }
+  use_proxy=1
+done
+[[ "${CODEX_REMOTE_USE_PROXY:-0}" == 1 ]] && use_proxy=1
 script_path="${0:A}"
 bundle_root="${script_path:h}"
 injector="$bundle_root/inject.js"
@@ -18,6 +25,7 @@ update_transaction_source="$bundle_root/update-transaction.js"
 git_release_source="$bundle_root/git-release.js"
 git_checkout_update_source="$bundle_root/git-checkout-update.js"
 cdp_source="$bundle_root/runtime/lib/cdp.js"
+proxy_configuration="$bundle_root/ProxyConfiguration.sh"
 label="com.local.codex-mobile-project-view"
 launch_agents="$HOME/Library/LaunchAgents"
 plist="$launch_agents/$label.plist"
@@ -25,6 +33,16 @@ rollback_root="$bundle_root/rollback"
 log_root="$HOME/Library/Logs/CodexRemoteFeatures"
 stdout_log="$log_root/mobile-project-view.log"
 stderr_log="$log_root/mobile-project-view-error.log"
+
+prune_startup_rollbacks() {
+  [[ -d "$rollback_root" && ! -L "$rollback_root" ]] || return 0
+  local -a entries
+  entries=("$rollback_root"/*.plist(N.om))
+  local index
+  for (( index=2; index<=${#entries[@]}; index++ )); do
+    [[ "${entries[$index]:h}" == "$rollback_root" && ! -L "${entries[$index]}" ]] && rm -f -- "${entries[$index]}"
+  done
+}
 port="${CODEX_REMOTE_DEBUG_PORT:-9229}"
 app_name="${CODEX_APP_NAME:-ChatGPT}"
 peer_name="${CODEX_REMOTE_PEER_NAME:-}"
@@ -44,6 +62,17 @@ fi
 launch_guard_owned=0
 prelaunch_updated=0
 recovery_changed=0
+proxy_server=""
+
+configure_proxy_environment() {
+  (( use_proxy )) || return 0
+  [[ -x "$proxy_configuration" ]] || chmod 755 "$proxy_configuration" 2>/dev/null || true
+  proxy_server="$(/bin/zsh "$proxy_configuration" resolve)"
+  export HTTP_PROXY="$proxy_server" HTTPS_PROXY="$proxy_server" ALL_PROXY="$proxy_server"
+  export http_proxy="$proxy_server" https_proxy="$proxy_server" all_proxy="$proxy_server"
+  export NO_PROXY='localhost,127.0.0.1,::1' no_proxy='localhost,127.0.0.1,::1'
+  export CHATGPT_REMOTE_REQUIRE_HTTPS_PROXY=1 CODEX_REMOTE_USE_PROXY=1 CHATGPT_REMOTE_PROXY_URL="$proxy_server"
+}
 
 release_launch_guard() {
   (( launch_guard_owned )) || return 0
@@ -290,10 +319,13 @@ continue_with_updated_launcher() {
     "CODEX_REMOTE_SKIP_PRELAUNCH_UPDATE_ONCE=1"
     "CODEX_REMOTE_SKIP_UPDATE_CHECK_ONCE=1"
   )
+  (( use_proxy )) && environment+=("CODEX_REMOTE_USE_PROXY=1")
   (( recovery_changed )) && environment+=("CODEX_REMOTE_RECOVERY_CONTINUATION=1")
   if [[ "$action" == startup ]]; then environment+=("CODEX_REMOTE_SKIP_STARTUP_DELAY_ONCE=1"); fi
+  local -a updated_arguments=("$script_path" "$action")
+  (( use_proxy )) && updated_arguments+=(--proxy)
   print "stage=prelaunch-update handoff=updated-entry-point action=$action"
-  exec /usr/bin/env "${environment[@]}" /bin/zsh "$script_path" "$action"
+  exec /usr/bin/env "${environment[@]}" /bin/zsh "${updated_arguments[@]}"
 }
 
 run_injector() {
@@ -345,10 +377,37 @@ APPLESCRIPT
   done
   (( ${#candidates[@]} == 1 )) || { print -u2 "Expected one exact application process for renderer port $port; found ${#candidates[@]}."; return 1; }
   pid_value="${candidates[1]}"
-  start_token="$(/bin/ps -p "$pid_value" -o lstart= | /usr/bin/sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  start_token="$(/bin/ps -p "$pid_value" -o lstart= | /usr/bin/awk '{$1=$1; print}')"
   local actual_executable="$(/bin/ps -p "$pid_value" -o comm= | /usr/bin/sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
   [[ -n "$start_token" && "$actual_executable" == "$executable_path" ]] || { print -u2 "The exact application process changed during capture."; return 1; }
   print -r -- "$pid_value"$'\t'"$start_token"$'\t'"$executable_path"$'\t'"$app_path"$'\t'"$bundle_id"
+}
+
+verify_running_proxy_mode() {
+  local exact_app_path executable_name candidate command_line="" matches=0
+  exact_app_path="$(/usr/bin/osascript - "$app_name" <<'APPLESCRIPT'
+on run argv
+  return POSIX path of (path to application (item 1 of argv))
+end run
+APPLESCRIPT
+)"
+  exact_app_path="${exact_app_path%/}"
+  [[ "$exact_app_path" == /* && -d "$exact_app_path" ]] || { print -u2 'The exact ChatGPT application bundle could not be resolved for proxy verification.'; return 1; }
+  executable_name="$(/usr/bin/defaults read "$exact_app_path/Contents/Info" CFBundleExecutable 2>/dev/null || print -r -- "$app_name")"
+  for candidate in $(/usr/bin/pgrep -x "$executable_name" 2>/dev/null || true); do
+    command_line="$(/bin/ps -p "$candidate" -o command= 2>/dev/null || true)"
+    [[ "$command_line" == *"--type="* ]] && continue
+    [[ "$command_line" == *"--remote-debugging-port=$port"* || "$command_line" == *"--remote-debugging-port $port"* ]] || continue
+    (( matches += 1 ))
+  done
+  (( matches == 1 )) || { print -u2 'The exact ChatGPT process for proxy-mode validation is ambiguous.'; return 1; }
+  if (( use_proxy )); then
+    [[ "$command_line" == *"--proxy-server=$proxy_server"* && "$command_line" == *'--proxy-bypass-list=localhost;127.0.0.1;[::1]'* ]] \
+      || { print -u2 'The running ChatGPT session does not match the requested protected proxy.'; return 1; }
+  else
+    [[ "$command_line" != *'--proxy-server='* ]] \
+      || { print -u2 'The running ChatGPT session uses proxy mode while direct mode was requested.'; return 1; }
+  fi
 }
 
 start_update_session() {
@@ -356,8 +415,8 @@ start_update_session() {
   local state_root="$HOME/Library/Application Support/ChatGPTRemoteEnabler/update-sessions"
   local source name fingerprint="" bundle_hash bundle session_directory config_path local_name
   local_name="$(computer_name)"
-  local -a names=(update-session.js update-session-cdp.js coordinator-handoff.js UpdateSessionPlatform.sh cdp.js Update-ChatGPTRemote.sh update-transaction.js git-release.js git-checkout-update.js)
-  local -a sources=("$update_session_source" "$update_session_cdp_source" "$coordinator_handoff_source" "$update_session_platform_source" "$cdp_source" "$updater" "$update_transaction_source" "$git_release_source" "$git_checkout_update_source")
+  local -a names=(update-session.js update-session-cdp.js coordinator-handoff.js UpdateSessionPlatform.sh cdp.js Update-ChatGPTRemote.sh update-transaction.js git-release.js git-checkout-update.js ProxyConfiguration.sh)
+  local -a sources=("$update_session_source" "$update_session_cdp_source" "$coordinator_handoff_source" "$update_session_platform_source" "$cdp_source" "$updater" "$update_transaction_source" "$git_release_source" "$git_checkout_update_source" "$proxy_configuration")
   for source in "${sources[@]}"; do [[ -f "$source" && ! -L "$source" ]] || { print -u2 "Update-session dependency is missing: $source"; return 1; }; done
   local index
   for (( index=1; index<=${#sources[@]}; index++ )); do
@@ -387,15 +446,15 @@ start_update_session() {
   [[ -f "$HOME/Library/Application Support/ChatGPTRemoteEnabler/update/auto-update-disabled" ]] && automatic=false
   "$node_bin" -e '
     const fs = require("node:fs");
-    const [file, installRoot, stateRoot, sessionDirectory, updaterPath, platformHelperPath, port, automatic, skip, pid, startToken, executablePath, appPath, bundleId, appName, localName, peerName, requiredPath, startupMode] = process.argv.slice(1);
+    const [file, installRoot, stateRoot, sessionDirectory, updaterPath, platformHelperPath, port, automatic, skip, pid, startToken, executablePath, appPath, bundleId, appName, localName, peerName, requiredPath, startupMode, useProxy] = process.argv.slice(1);
     const value = { schemaVersion:1, platform:"darwin", installRoot, stateRoot, sessionDirectory, updaterPath, platformHelperPath,
       rendererPort:Number(port), autoCheckEnabled:automatic === "true", skipInitialCheck:skip === "1", logPath:sessionDirectory + "/update-session.log",
       app:{ pid:Number(pid), startToken, executablePath, appPath, bundleId },
-      relaunch:{ entryPointRelative:"MobileProjectView-macOS-arm64.sh", startupMode:startupMode === "true", environment:{ CODEX_APP_NAME:appName, CODEX_REMOTE_LOCAL_NAME:localName, CODEX_REMOTE_PEER_NAME:peerName, CODEX_STARTUP_REQUIRED_PATH:requiredPath } } };
+      relaunch:{ entryPointRelative:"MobileProjectView-macOS-arm64.sh", startupMode:startupMode === "true", useProxy:useProxy === "true", environment:{ CODEX_APP_NAME:appName, CODEX_REMOTE_LOCAL_NAME:localName, CODEX_REMOTE_PEER_NAME:peerName, CODEX_STARTUP_REQUIRED_PATH:requiredPath, CODEX_REMOTE_USE_PROXY:useProxy === "true" ? "1" : "0" } } };
     const temporary = file + ".tmp";
     fs.writeFileSync(temporary, JSON.stringify(value, null, 2) + "\n", { encoding:"utf8", mode:0o600 });
     fs.renameSync(temporary, file);
-  ' "$config_path" "$bundle_root" "$state_root" "$session_directory" "$bundle/Update-ChatGPTRemote.sh" "$bundle/UpdateSessionPlatform.sh" "$port" "$automatic" "$skip_update_check_once" "$pid_value" "$start_token" "$executable_path" "$app_path" "$bundle_id" "$app_name" "$local_name" "$peer_name" "$startup_required_path" "$([[ "$action" == startup ]] && print true || print false)"
+  ' "$config_path" "$bundle_root" "$state_root" "$session_directory" "$bundle/Update-ChatGPTRemote.sh" "$bundle/UpdateSessionPlatform.sh" "$port" "$automatic" "$skip_update_check_once" "$pid_value" "$start_token" "$executable_path" "$app_path" "$bundle_id" "$app_name" "$local_name" "$peer_name" "$startup_required_path" "$([[ "$action" == startup ]] && print true || print false)" "$([[ "$use_proxy" == 1 ]] && print true || print false)"
   "$node_bin" --no-warnings "$bundle/update-session.js" --config "$config_path" --best-effort </dev/null >>"$session_directory/helper.log" 2>&1 &!
   print "Update session started for exact application process $pid_value."
 }
@@ -406,7 +465,9 @@ start_publisher_heartbeat() {
   local heartbeat_root="$HOME/Library/Application Support/ChatGPTRemoteEnabler/publisher-heartbeats"
   mkdir -m 700 -p "$heartbeat_root"
   [[ -f "$publisher_heartbeat_source" && ! -L "$publisher_heartbeat_source" ]] || { print -u2 "Publisher heartbeat helper is missing."; return 1; }
-  "$node_bin" --no-warnings "$publisher_heartbeat_source" --port "$port" --parent-pid "$pid_value" --lock-path "$heartbeat_root/renderer-$port.lock" </dev/null >>"$heartbeat_root/helper.log" 2>&1 &!
+  local identity_tail="${identity#*$'\t'}"
+  local start_token="${identity_tail%%$'\t'*}"
+  "$node_bin" --no-warnings "$publisher_heartbeat_source" --port "$port" --parent-pid "$pid_value" --parent-start-token "$start_token" --lock-path "$heartbeat_root/renderer-$port.lock" </dev/null >>"$heartbeat_root/helper.log" 2>&1 &!
 }
 
 handoff_update_session() {
@@ -434,6 +495,7 @@ enable_view() {
   acquire_launch_guard
   local node_bin
   node_bin="$(resolve_node)"
+  configure_proxy_environment
   recover_update "$node_bin"
   prelaunch_update "$node_bin"
   continue_with_updated_launcher
@@ -445,7 +507,17 @@ enable_view() {
     local maintenance_started=$EPOCHREALTIME
     "$node_bin" --no-warnings "$maintenance_helper" --best-effort
     print "stage=maintenance durationMs=$(( (EPOCHREALTIME - maintenance_started) * 1000 ))"
-    /usr/bin/open -na "$app_name" --args --remote-debugging-address=127.0.0.1 --remote-debugging-port="$port"
+    local -a launch_arguments=(--remote-debugging-address=127.0.0.1 --remote-debugging-port="$port")
+    if (( use_proxy )); then
+      launch_arguments+=("--proxy-server=$proxy_server" '--proxy-bypass-list=localhost;127.0.0.1;[::1]')
+    fi
+    local -a open_arguments=(-na "$app_name")
+    if (( use_proxy )); then
+      open_arguments+=(--env "HTTP_PROXY=$proxy_server" --env "HTTPS_PROXY=$proxy_server" --env "ALL_PROXY=$proxy_server"
+        --env "http_proxy=$proxy_server" --env "https_proxy=$proxy_server" --env "all_proxy=$proxy_server"
+        --env 'NO_PROXY=localhost,127.0.0.1,::1' --env 'no_proxy=localhost,127.0.0.1,::1' --env 'NODE_USE_ENV_PROXY=1')
+    fi
+    /usr/bin/open "${open_arguments[@]}" --args "${launch_arguments[@]}"
     local attempt
     for attempt in {1..60}; do
       debug_endpoint_ready "$node_bin" && break
@@ -453,6 +525,7 @@ enable_view() {
     done
   fi
   debug_endpoint_ready "$node_bin" || { print -u2 "The loopback Codex renderer endpoint did not become ready."; return 1; }
+  verify_running_proxy_mode
   local mobile_started=$EPOCHREALTIME output summary readiness_exit deadline
   output="$(run_injector "$node_bin" enable)"
   print -r -- "$output"
@@ -518,6 +591,9 @@ install_startup() {
   /usr/libexec/PlistBuddy -c "Add :ProgramArguments:1 string startup" "$temporary_plist"
   /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables dict" "$temporary_plist"
   /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:CODEX_STARTUP_DELAY_SECONDS string $startup_delay_seconds" "$temporary_plist"
+  if (( use_proxy )); then
+    /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:CODEX_REMOTE_USE_PROXY string 1" "$temporary_plist"
+  fi
   if [[ -n "$startup_required_path" ]]; then
     /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:CODEX_STARTUP_REQUIRED_PATH string $startup_required_path" "$temporary_plist"
   fi
@@ -547,6 +623,7 @@ install_startup() {
     fi
     return 1
   fi
+  prune_startup_rollbacks
   print "Installed and loaded $plist"
 }
 
@@ -555,6 +632,7 @@ remove_startup() {
   /bin/launchctl bootout "gui/$UID" "$plist" 2>/dev/null || true
   if [[ -e "$plist" ]]; then
     mv "$plist" "$rollback_root/$label-removed-$(date +%Y%m%d-%H%M%S)-$$.plist"
+    prune_startup_rollbacks
   fi
   print "Removed $label; the previous plist was preserved in $rollback_root"
 }
@@ -605,5 +683,5 @@ case "$action" in
   remove-auto-registrations) run_injector "$(resolve_node)" auto-remove ;;
   install-startup) install_startup ;;
   remove-startup) remove_startup ;;
-  *) print -u2 "Usage: $0 {enable|startup|handoff-update-session|disable|probe|enable-auto-registration|disable-auto-registration|enable-auto-maintenance|disable-auto-maintenance|preview-auto-maintenance|run-auto-maintenance|reconcile-auto-registrations|remove-auto-registrations|install-startup|remove-startup}"; exit 2 ;;
+  *) print -u2 "Usage: $0 {enable|startup|handoff-update-session|disable|probe|enable-auto-registration|disable-auto-registration|enable-auto-maintenance|disable-auto-maintenance|preview-auto-maintenance|run-auto-maintenance|reconcile-auto-registrations|remove-auto-registrations|install-startup|remove-startup} [--proxy]"; exit 2 ;;
 esac

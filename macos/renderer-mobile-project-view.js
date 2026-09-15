@@ -5,6 +5,7 @@
   const CARD_ID = "codex-remote-mobile-project-card";
   const CONFIG_SLOT = "__CODEX_REMOTE_MOBILE_CONFIG__";
   const THREAD_LIST_REGISTRY_SLOT = "__CODEX_REMOTE_MOBILE_THREAD_LIST_REGISTRY__";
+  const UNSETTLED_READS_SLOT = "__CODEX_REMOTE_UNSETTLED_READS__";
   const CONTEXT_ID = "codex-remote-mobile-project-context";
   const PANEL_ID = "codex-remote-mobile-project-panel";
   const STYLE_ID = "codex-remote-mobile-project-style";
@@ -73,7 +74,7 @@
     "unknown",
   ]);
   const PUBLISHER_VERSION = 53;
-  const VERSION = 87;
+  const VERSION = 88;
   // Keep outstanding writes locked across renderer reinjection until the underlying RPC settles.
   const peerWriteLocks = globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ instanceof Map
     ? globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ : (globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ = new Map());
@@ -695,9 +696,29 @@
     });
   }
 
+  const unsettledReads = globalThis[UNSETTLED_READS_SLOT] instanceof WeakMap
+    ? globalThis[UNSETTLED_READS_SLOT]
+    : new WeakMap();
+  if (!(globalThis[UNSETTLED_READS_SLOT] instanceof WeakMap)) {
+    Object.defineProperty(globalThis, UNSETTLED_READS_SLOT, { configurable: false, enumerable: false, value: unsettledReads, writable: false });
+  }
+
   function sendRequestWithTimeout(requestClient, method, params, timeoutMilliseconds = REQUEST_TIMEOUT_MS) {
     if (typeof requestClient?.sendRequest !== "function") return Promise.reject(new Error("App-server bridge is unavailable"));
-    return withTimeout(Promise.resolve().then(() => requestClient.sendRequest(method, params)), method, timeoutMilliseconds);
+    if (method !== "config/read" && method !== "fs/readFile") {
+      return withTimeout(Promise.resolve().then(() => requestClient.sendRequest(method, params)), method, timeoutMilliseconds);
+    }
+    let pending = unsettledReads.get(requestClient);
+    if (!pending) { pending = new Map(); unsettledReads.set(requestClient, pending); }
+    const key = `${method}:${JSON.stringify(params ?? null)}`;
+    let raw = pending.get(key);
+    if (!raw) {
+      raw = Promise.resolve().then(() => requestClient.sendRequest(method, params));
+      pending.set(key, raw);
+      const release = () => { if (pending.get(key) === raw) pending.delete(key); };
+      void raw.then(release, release);
+    }
+    return withTimeout(raw, method, timeoutMilliseconds);
   }
 
   function fetchFromHostWithTimeout(fetchFromHost, action, payload, timeoutMilliseconds = REQUEST_TIMEOUT_MS) {
@@ -1794,7 +1815,21 @@
     return String(name || "device").normalize("NFKD").replace(/[^a-z0-9]+/giu, "").toLocaleLowerCase() || "device";
   }
 
+  function peerInventoryIdentityHash(value) {
+    let hash = 0x811c9dc5;
+    for (const character of String(value || "device").normalize("NFKC").toLocaleLowerCase()) {
+      hash ^= character.codePointAt(0);
+      hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
+    return hash.toString(16).padStart(8, "0");
+  }
+
   function peerInventoryPath(codexHome, name) {
+    const separator = codexHome.includes("\\") ? "\\" : "/";
+    return `${codexHome.replace(/[\\/]+$/u, "")}${separator}remote-project-peer-${peerInventorySlug(name)}-${peerInventoryIdentityHash(name)}-v1.json`;
+  }
+
+  function legacyPeerInventoryPath(codexHome, name) {
     const separator = codexHome.includes("\\") ? "\\" : "/";
     return `${codexHome.replace(/[\\/]+$/u, "")}${separator}remote-project-peer-${peerInventorySlug(name)}-v1.json`;
   }
@@ -2374,7 +2409,7 @@
       // Another renderer may have started a write while config/read was pending.
       if (peerWriteLocks.has(hostId)) { if (!transfer.latest) transfer.latest = job; return; }
       const raw = Promise.resolve().then(() => job.runtime.requestClient.sendRequest("fs/writeFile", {
-        dataBase64: job.dataBase64, path: peerInventoryPath(home, config.localDisplayName || "Local"),
+        dataBase64: job.dataBase64, path: peerInventoryPath(home, job.publisherIdentity),
       }));
       peerWriteLocks.set(hostId, raw);
       const release = () => { if (peerWriteLocks.get(hostId) === raw) peerWriteLocks.delete(hostId); };
@@ -2407,7 +2442,7 @@
       state.peerTransfers.set(hostId, transfer);
     }
     // A slow or offline peer retains only the newest complete snapshot, never an unbounded queue.
-    transfer.latest = { runtime, generatedAt: Date.parse(payload.generatedAt), dataBase64: encodeText(peerTransferText(payload, hostId)) };
+    transfer.latest = { runtime, generatedAt: Date.parse(payload.generatedAt), publisherIdentity: payload.publisherHostId || config.localDisplayName || "Local", dataBase64: encodeText(peerTransferText(payload, hostId)) };
     if (pausePeerTransfer(hostId, transfer)) return;
     void drainPeerTransfer(hostId, transfer);
   }
@@ -2454,7 +2489,9 @@
       const cache = state.peerCacheStates.get(host.id) ?? {};
       if (cache.pending || cache.fetchedAt && now - cache.fetchedAt < REMOTE_INVENTORY_IDLE_MS) continue;
       state.peerCacheStates.set(host.id, { ...cache, pending: true });
-      sendRequestWithTimeout(runtime.requestClient, "fs/readFile", { path: peerInventoryPath(state.localCodexHome, host.name) }).then((result) => {
+      sendRequestWithTimeout(runtime.requestClient, "fs/readFile", { path: peerInventoryPath(state.localCodexHome, host.id) })
+        .catch(() => sendRequestWithTimeout(runtime.requestClient, "fs/readFile", { path: peerInventoryPath(state.localCodexHome, host.name) }))
+        .catch(() => sendRequestWithTimeout(runtime.requestClient, "fs/readFile", { path: legacyPeerInventoryPath(state.localCodexHome, host.name) })).then((result) => {
         if (state.disposed) return;
         const parsed = parseRemoteProjectInventory(result);
         if (!peerCacheIdentityMatches(host, parsed, displayNameCounts.get(peerCacheDisplayName(host.name)) ?? 0)) {
@@ -5862,13 +5899,15 @@
     });
   }
 
-  async function listAllRuntimeThreads(requestClient, archived = false, deadline = Number.POSITIVE_INFINITY, includeInternalSources = false, requestThreadList = null, phase = "thread inventory") {
+  async function listAllRuntimeThreads(requestClient, archived = false, deadline = Number.POSITIVE_INFINITY, includeInternalSources = false, requestThreadList = null, phase = "thread inventory", maximumPages = MAX_THREAD_LIST_PAGES, stopWhen = null) {
     if (typeof requestClient?.sendRequest !== "function") throw new Error("App-server bridge is unavailable");
     const threads = [];
     const threadIds = new Set();
     const cursors = new Set();
     let cursor = null;
-    for (let page = 0; page < MAX_THREAD_LIST_PAGES; page += 1) {
+    if (!Number.isInteger(maximumPages) || maximumPages < 1 || maximumPages > 10000) throw new Error("Invalid thread inventory page limit");
+    if (stopWhen !== null && typeof stopWhen !== "function") throw new Error("Invalid thread inventory stop predicate");
+    for (let page = 0; page < maximumPages; page += 1) {
       if (Date.now() >= deadline) throw maintenanceDeadlineError(phase);
       const params = {
         archived: archived === true,
@@ -5898,6 +5937,7 @@
         if (threadIds.has(threadId)) continue;
         threadIds.add(threadId);
         threads.push(thread);
+        if (stopWhen?.(thread) === true) return { pages: page + 1, stoppedEarly: true, threads };
       }
       const nextCursor = result.nextCursor;
       if (!nextCursor) return { pages: page + 1, threads };
@@ -5906,7 +5946,7 @@
       cursor = nextCursor;
     }
     if (includeInternalSources) throw new Error("thread/list exceeded the bounded page limit");
-    return { pages: MAX_THREAD_LIST_PAGES, threads, truncated: true };
+    return { pages: maximumPages, threads, truncated: true };
   }
 
   async function listAllLocalThreadInventory(requestClient, archived = false, deadline = Number.POSITIVE_INFINITY, includeInternalSources = true, phase = "local thread listing", runtimeGeneration = state.localRuntimeGeneration) {
@@ -5952,11 +5992,21 @@
     }
     try {
       const deadline = Date.now() + 30000;
-      const result = await listAllLocalThreadInventory(requestClient, false, deadline, true, "update activity snapshot", runtimeGeneration);
+      const busyThread = (thread) => {
+        const statusObject = thread?.status && typeof thread.status === "object" ? thread.status : null;
+        const flags = statusObject?.activeFlags;
+        if (Array.isArray(flags) && flags.some((flag) => flag === "waitingOnApproval" || flag === "waitingOnUserInput")) return true;
+        const rawStatus = typeof thread?.status === "string" ? thread.status : statusObject?.type;
+        return ACTIVITY_BUSY_STATUSES.has(typeof rawStatus === "string" ? rawStatus.replace(/[_-]/gu, "").toLowerCase() : "");
+      };
+      const result = await enqueueLocalThreadList(requestClient, runtimeGeneration, deadline, "update activity snapshot", async (requestThreadList) => (
+        listAllRuntimeThreads(requestClient, false, deadline, true, requestThreadList, "update activity snapshot", 10000, busyThread)
+      ));
       if (state.disposed || state.localRuntime?.requestClient !== requestClient || state.localRuntimeGeneration !== runtimeGeneration) {
         return { busy: false, known: false, reason: "Local app-server runtime changed during activity scan" };
       }
       if (result.truncated === true) return { busy: false, known: false, reason: "Authoritative activity inventory is incomplete" };
+      if (result.stoppedEarly === true) return { busy: true, known: true };
       let busy = false;
       for (const thread of result.threads) {
         const statusObject = thread?.status && typeof thread.status === "object" ? thread.status : null;

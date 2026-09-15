@@ -154,13 +154,16 @@ function createConnectAgent(proxy, connectTimeoutMs = CONNECT_TIMEOUT_MS) {
 
 function sanitizeHeaders(headers, keepUpgrade) {
   const result = { ...headers };
-  for (const name of ["proxy-authorization", "proxy-connection", "keep-alive", "transfer-encoding"]) {
+  const connectionTokens = String(result.connection ?? "").split(",").map((value) => value.trim().toLowerCase()).filter(Boolean);
+  for (const name of connectionTokens) delete result[name];
+  for (const name of ["proxy-authenticate", "proxy-authorization", "proxy-connection", "keep-alive", "te", "trailer", "transfer-encoding"]) {
     delete result[name];
   }
-  if (!keepUpgrade) {
-    delete result.connection;
-    delete result.upgrade;
-  }
+  delete result.connection;
+  if (keepUpgrade && typeof headers?.upgrade === "string" && headers.upgrade) {
+    result.connection = "Upgrade";
+    result.upgrade = headers.upgrade;
+  } else delete result.upgrade;
   return result;
 }
 
@@ -173,9 +176,15 @@ function stripPrivatePrefix(url, token) {
 
 function writeUpgradeResponse(socket, response) {
   const lines = [`HTTP/${response.httpVersion} ${response.statusCode} ${response.statusMessage}`];
+  const headers = sanitizeHeaders(response.headers, response.statusCode === 101);
+  const blocked = new Set(Object.keys(response.headers ?? {}).filter((name) => !(name.toLowerCase() in headers)).map((name) => name.toLowerCase()));
   for (let index = 0; index < response.rawHeaders.length; index += 2) {
-    lines.push(`${response.rawHeaders[index]}: ${response.rawHeaders[index + 1]}`);
+    const name = response.rawHeaders[index];
+    const lower = name.toLowerCase();
+    if (blocked.has(lower) || lower === "connection" || lower === "upgrade") continue;
+    lines.push(`${name}: ${response.rawHeaders[index + 1]}`);
   }
+  if (headers.upgrade) lines.push(`Upgrade: ${headers.upgrade}`, "Connection: Upgrade");
   socket.write(`${lines.join("\r\n")}\r\n\r\n`);
 }
 

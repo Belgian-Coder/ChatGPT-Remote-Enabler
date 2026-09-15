@@ -10,6 +10,12 @@ const SOURCE = ".chatgpt-remote-git-source.json";
 const oid = value => typeof value === "string" && /^[a-f0-9]{40,64}$/u.test(value);
 const samePath = (a, b) => process.platform === "win32" ? path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase() : path.resolve(a) === path.resolve(b);
 
+function protectedProxyArguments(canonicalRemote, environment = process.env) {
+  if (environment.CHATGPT_REMOTE_REQUIRE_HTTPS_PROXY !== "1") return [];
+  const proxyUrl = environment.CHATGPT_REMOTE_PROXY_URL || environment.HTTPS_PROXY || "";
+  return ["-c", `http.proxy=${proxyUrl}`, "-c", `http.${canonicalRemote}.proxy=${proxyUrl}`, "-c", `remote.origin.proxy=${proxyUrl}`];
+}
+
 function realDirectory(directory) {
   const full = path.resolve(directory);
   const details = fs.lstatSync(full);
@@ -38,6 +44,7 @@ function atomicJson(file, value) {
 function originMatches(actual, repository, expectedOrigin) {
   if (expectedOrigin !== undefined) return actual === expectedOrigin;
   const normalized = actual.replace(/\/$/u, "").replace(/\.git$/u, "");
+  if (process.env.CHATGPT_REMOTE_REQUIRE_HTTPS_PROXY === "1") return normalized === `https://github.com/${repository}`;
   return normalized === `https://github.com/${repository}` || normalized === `git@github.com:${repository}`;
 }
 
@@ -47,10 +54,12 @@ function context(values, dependencies) {
   const platformDirectory = values.platform === "Windows-x64" ? "windows" : values.platform === "macOS-arm64" ? "macos" : null;
   if (!platformDirectory || !samePath(path.join(checkoutRoot, platformDirectory), installRoot)) throw new Error("Not a recognized platform source checkout.");
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(values.repository || "")) throw new Error("Invalid Git update repository.");
+  const canonicalRemote = `https://github.com/${values.repository}.git`;
   const git = values.git || "git";
   const run = (args, allowed = [0]) => {
     try {
-      return execFileSync(git, ["-C", checkoutRoot, ...args], {
+      const proxyArgs = protectedProxyArguments(canonicalRemote);
+      return execFileSync(git, ["-C", checkoutRoot, ...proxyArgs, ...args], {
         encoding: "utf8", timeout: 45000, maxBuffer: 4 * 1024 * 1024, windowsHide: true,
         env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "never", GIT_ASKPASS: "", SSH_ASKPASS: "" },
         stdio: ["ignore", "pipe", "pipe"],
@@ -143,7 +152,7 @@ function main(argv) {
   process.stdout.write(JSON.stringify(runAction(action, values)) + "\n");
 }
 
-module.exports = { runAction };
+module.exports = { protectedProxyArguments, runAction };
 if (require.main === module) {
   try { main(process.argv.slice(2)); }
   catch (error) { process.stderr.write(`${error.message}\n`); process.exitCode = 1; }

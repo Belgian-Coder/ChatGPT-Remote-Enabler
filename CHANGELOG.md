@@ -1,5 +1,35 @@
 # Changelog
 
+## v1.5.82 — 2026-09-15
+
+- Route every helper-controlled external connection through the selected fixed,
+  credential-free HTTP(S) proxy on Windows and macOS. This includes the
+  ChatGPT Chromium and Node runtimes, Remote transport, desktop-app metadata
+  and downloads, Git release checks, checkout fetches, and update handoffs;
+  loopback debugger and bridge traffic remains direct.
+- Resolve protected proxy mode before mandatory prelaunch updates, preserve it
+  through shortcuts, startup registration, hot updates, and relaunches, and
+  reject SSH or rewritten Git origins that could bypass an HTTP proxy.
+- Bind Windows live-session reuse to a SHA-256 proxy-endpoint fingerprint and
+  route URL, string, options-object, and `https.get` calls through the legacy
+  main-process proxy shim with an absolute CONNECT/TLS deadline.
+- Validate every updater redirect before the next request, constrain ChatGPT
+  MSIX downloads to the official stable endpoint, and scope Git's proxy on the
+  command line so user configuration cannot override explicit proxy mode.
+- Reject unlisted files and linked entries in release payloads, copy only
+  manifest-listed package files, and require clean committed platform sources
+  when building release archives.
+- Load renderer v88, transfer offline peer caches through collision-resistant
+  device identities, serialize unsettled remote reads, scan beyond 200 pages
+  when checking update activity, and keep the proven coordinator active after
+  a compatible hot update without closing ChatGPT.
+- Retain one stable rollback, no legacy recovery generations, one macOS startup
+  rollback, two immutable coordinator bundles, and twenty bounded session
+  histories. Release output retains only the current and previous version.
+- Make publisher-heartbeat locks session-specific, recheck the exact parent
+  process start identity, and stop a retiring helper when a successor owns the
+  lock.
+
 ## v1.5.81 — 2026-09-15
 
 - Treat an already-exited prelaunch updater parent as a completed continuation

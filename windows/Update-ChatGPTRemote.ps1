@@ -16,10 +16,12 @@ param(
     [ValidateRange(1, 600)]
     [int]$LockTimeoutSeconds = 120,
     [switch]$LaunchLockHeld,
+    [switch]$UseProxy,
     [switch]$AllowInsecureTransport
 )
 
 $ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Net.Http
 $installRootWasExplicit = -not [string]::IsNullOrWhiteSpace($InstallRoot)
 if ([string]::IsNullOrWhiteSpace($InstallRoot)) { $InstallRoot = $PSScriptRoot }
 $platformName = 'Windows-x64'
@@ -48,6 +50,26 @@ if (-not [string]::Equals($InstallRoot, $stableRoot, [StringComparison]::Ordinal
 }
 $helperRoot = if (Test-Path -LiteralPath (Join-Path $InstallRoot 'update-transaction.js') -PathType Leaf) { $InstallRoot } else { $PSScriptRoot }
 $transactionHelper = Join-Path $helperRoot 'update-transaction.js'
+$script:UpdateProxyServer = $null
+
+if ($UseProxy) {
+    $proxyModule = @(
+        (Join-Path $helperRoot 'ProxyConfiguration.psm1'),
+        (Join-Path $InstallRoot 'CodexRemoteMobileProject\ProxyConfiguration.psm1'),
+        (Join-Path $PSScriptRoot 'CodexRemoteMobileProject\ProxyConfiguration.psm1')
+    ) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+    if (-not $proxyModule) { throw 'Proxy mode was requested, but the proxy configuration helper is missing.' }
+    Import-Module $proxyModule -Force
+    $script:UpdateProxyServer = Get-ChatGPTRemoteProxy -AllowEnvironmentFallback
+    foreach ($name in @('HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'ALL_PROXY', 'all_proxy')) {
+        [Environment]::SetEnvironmentVariable($name, $script:UpdateProxyServer, 'Process')
+    }
+    foreach ($name in @('NO_PROXY', 'no_proxy')) {
+        [Environment]::SetEnvironmentVariable($name, 'localhost,127.0.0.1,::1', 'Process')
+    }
+    [Environment]::SetEnvironmentVariable('CHATGPT_REMOTE_REQUIRE_HTTPS_PROXY', '1', 'Process')
+    [Environment]::SetEnvironmentVariable('CHATGPT_REMOTE_PROXY_URL', $script:UpdateProxyServer, 'Process')
+}
 
 function Assert-SafeHttpsUrl {
     param([string]$Url)
@@ -136,13 +158,49 @@ function Invoke-SafeWebRequest {
         [hashtable]$Headers,
         [Parameter(Mandatory)][int]$TimeoutSec
     )
-    $response = Invoke-WebRequest -Uri $Uri -Headers $Headers -UseBasicParsing -MaximumRedirection 3 -TimeoutSec $TimeoutSec
-    Assert-SafeResponseUri $response
-    return $response
+    Assert-SafeHttpsUrl $Uri
+    $current = [Uri]$Uri
+    for ($redirect = 0; $redirect -le 3; $redirect++) {
+        $handler = [Net.Http.HttpClientHandler]::new()
+        $handler.AllowAutoRedirect = $false
+        if ($script:UpdateProxyServer) {
+            $handler.UseProxy = $true
+            $handler.Proxy = [Net.WebProxy]::new($script:UpdateProxyServer, $true)
+        }
+        $client = [Net.Http.HttpClient]::new($handler)
+        $client.Timeout = [TimeSpan]::FromSeconds($TimeoutSec)
+        $response = $null
+        try {
+            $request = [Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::Get, $current)
+            try {
+                if ($Headers) {
+                    foreach ($name in @($Headers.Keys)) { [void]$request.Headers.TryAddWithoutValidation($name, [string]$Headers[$name]) }
+                }
+                $response = $client.SendAsync($request, [Net.Http.HttpCompletionOption]::ResponseContentRead).GetAwaiter().GetResult()
+                if ([int]$response.StatusCode -in 301,302,303,307,308) {
+                    if ($redirect -ge 3 -or $null -eq $response.Headers.Location) { throw 'The update response exceeded the safe redirect limit.' }
+                    $next = if ($response.Headers.Location.IsAbsoluteUri) { $response.Headers.Location } else { [Uri]::new($current, $response.Headers.Location) }
+                    Assert-SafeHttpsUrl $next.AbsoluteUri
+                    $current = $next
+                    continue
+                }
+                $response.EnsureSuccessStatusCode() | Out-Null
+                $bytes = $response.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult()
+                return [pscustomobject]@{
+                    Bytes = $bytes
+                    Content = [Text.Encoding]::UTF8.GetString($bytes)
+                    Headers = $response.Headers
+                    BaseResponse = [pscustomobject]@{ ResponseUri = $current }
+                }
+            } finally { $request.Dispose(); if ($response) { $response.Dispose() } }
+        } finally { $client.Dispose(); $handler.Dispose() }
+    }
+    throw 'The update response exceeded the safe redirect limit.'
 }
 
 function Get-WebResponseBytes {
     param($Response)
+    if ($Response.PSObject.Properties['Bytes'] -and $Response.Bytes -is [byte[]]) { return ,([byte[]]$Response.Bytes) }
     if ($Response.RawContentStream) {
         $stream = $Response.RawContentStream
         if ($stream.CanSeek) { $stream.Position = 0 }
@@ -676,7 +734,24 @@ function Get-SourceCheckout {
 function Get-SourceRemoteState {
     param($Checkout)
 
-    & $Checkout.git -C $Checkout.root fetch --quiet origin 'refs/heads/main:refs/remotes/origin/main'
+    if ($UseProxy) {
+        $remoteUrl = (@(& $Checkout.git -C $Checkout.root remote get-url origin 2>$null)[0]).TrimEnd('/')
+        $expectedUrl = "https://github.com/$Repository.git"
+        if ($remoteUrl -cne $expectedUrl -and $remoteUrl -cne $expectedUrl.Substring(0, $expectedUrl.Length - 4)) {
+            throw 'Proxy mode requires an HTTPS GitHub origin without URL rewriting.'
+        }
+    }
+    $fetchArguments = @('-C', $Checkout.root)
+    if ($script:UpdateProxyServer) {
+        $canonicalRemote = "https://github.com/$Repository.git"
+        $fetchArguments += @(
+            '-c', "http.proxy=$script:UpdateProxyServer",
+            '-c', "http.$canonicalRemote.proxy=$script:UpdateProxyServer",
+            '-c', "remote.origin.proxy=$script:UpdateProxyServer"
+        )
+    }
+    $fetchArguments += @('fetch', '--quiet', 'origin', 'refs/heads/main:refs/remotes/origin/main')
+    & $Checkout.git @fetchArguments
     if ($LASTEXITCODE -ne 0) { throw 'Git could not fetch origin/main.' }
     $head = (@(& $Checkout.git -C $Checkout.root rev-parse HEAD 2>$null)[0]).Trim()
     $target = (@(& $Checkout.git -C $Checkout.root rev-parse refs/remotes/origin/main 2>$null)[0]).Trim()

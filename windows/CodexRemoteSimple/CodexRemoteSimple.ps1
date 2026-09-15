@@ -469,14 +469,25 @@ function Start-CrsPackagedCodex {
             if (-not $portReady) { throw "The package-context proxy launch completed, but loopback port $ExpectedPort did not open." }
             $launchProcessId = [uint32]$proxyWorker.Id
             if ($ExpectedPort -gt 0) {
-                $launchedProcesses = @(
-                    Get-CimInstance Win32_Process -Filter "Name='ChatGPT.exe'" -ErrorAction SilentlyContinue |
-                        Where-Object {
-                            [string]::Equals([string]$_.ExecutablePath, [string]$Package.ExecutablePath, [StringComparison]::OrdinalIgnoreCase) -and
-                            [string]$_.CommandLine -match "(?:^|\s)--remote-debugging-port(?:=|\s+)$ExpectedPort(?:\s|$)"
-                        }
-                )
-                if ($launchedProcesses.Count -eq 1) { $launchProcessId = [uint32]$launchedProcesses[0].ProcessId }
+                $identityDeadline = $null
+                $identityAttempts = 0
+                do {
+                    $identityAttempts += 1
+                    $launchedProcesses = @(
+                        Get-CimInstance Win32_Process -Filter "Name='ChatGPT.exe'" -ErrorAction SilentlyContinue |
+                            Where-Object {
+                                [string]::Equals([string]$_.ExecutablePath, [string]$Package.ExecutablePath, [StringComparison]::OrdinalIgnoreCase) -and
+                                [string]$_.CommandLine -notmatch '(?:^|\s)--type=' -and
+                                [string]$_.CommandLine -match "(?:^|\s)--remote-debugging-port(?:=|\s+)$ExpectedPort(?:\s|$)"
+                            }
+                    )
+                    if ($null -eq $identityDeadline) { $identityDeadline = [DateTime]::UtcNow.AddSeconds(5) }
+                    if ($launchedProcesses.Count -eq 1) { break }
+                    if ($launchedProcesses.Count -gt 1) { throw 'The package-context proxy launch produced multiple matching ChatGPT processes.' }
+                    Start-Sleep -Milliseconds 100
+                } while ($identityAttempts -lt 3 -or [DateTime]::UtcNow -lt $identityDeadline)
+                if ($launchedProcesses.Count -ne 1) { throw 'The package-context proxy launch could not resolve the exact ChatGPT process identity.' }
+                $launchProcessId = [uint32]$launchedProcesses[0].ProcessId
             }
             Write-CrsLaunchDiagnostic -Method 'PackageContextEnvironmentProxy' -Succeeded $true -PrimaryError '' -FallbackError ''
             return [pscustomobject][ordered]@{

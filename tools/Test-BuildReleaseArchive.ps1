@@ -7,7 +7,7 @@ $temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) ('chatgpt-remote-archive-t
 
 try {
     New-Item -ItemType Directory -Path $temporaryRoot | Out-Null
-    & (Join-Path $PSScriptRoot 'Build-Release.ps1') -OutputDirectory $temporaryRoot | Out-Null
+    & (Join-Path $PSScriptRoot 'Build-Release.ps1') -OutputDirectory $temporaryRoot -AllowDirtySource | Out-Null
     $archives = @(Get-ChildItem -LiteralPath $temporaryRoot -Filter '*.zip' -File)
     if ($archives.Count -ne 2) { throw 'Release builder did not produce both platform archives.' }
 

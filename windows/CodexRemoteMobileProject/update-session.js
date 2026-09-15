@@ -452,12 +452,16 @@ class PlatformAdapter {
       schemaVersion: 1,
       platform: this.config.platform,
       previousPid: process.pid,
+      appPid: this.config.app.pid,
       installRoot: this.config.installRoot,
+      stateRoot: this.config.stateRoot,
+      previousSessionDirectory: this.config.sessionDirectory,
       lockPath,
       resultPath,
       nodePath: process.execPath,
       launcherPath,
       rendererPort: this.config.rendererPort,
+      expectedVersion: fs.readFileSync(path.join(this.config.installRoot, "VERSION"), "utf8").trim(),
       entryPointRelative: this.config.relaunch.entryPointRelative,
       useProxy: this.config.relaunch.useProxy === true,
       replaceRunningApp: this.config.relaunch.replaceRunningApp === true,
@@ -683,7 +687,24 @@ function processAlive(pid) {
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
-function pruneUpdateSessionState(config, sessionLimit = 20, bundleLimit = 2) {
+function coordinatorStateFile(directory) { return path.join(directory, "coordinator-state.json"); }
+
+function writeCoordinatorState(config, phase) {
+  const file = coordinatorStateFile(config.sessionDirectory);
+  const temporary = `${file}.${process.pid}.tmp`;
+  const value = {
+    schemaVersion: 1,
+    sessionId: path.basename(config.sessionDirectory),
+    bundleHash: path.basename(path.dirname(config.updaterPath)),
+    coordinatorPid: process.pid,
+    phase,
+    heartbeatAtUnixMs: Date.now(),
+  };
+  fs.writeFileSync(temporary, `${JSON.stringify(value)}\n`, { encoding: "utf8", mode: 0o600 });
+  fs.renameSync(temporary, file);
+}
+
+function pruneUpdateSessionState(config, sessionLimit = 2, bundleLimit = 2) {
   const sessionsRoot = path.resolve(config.stateRoot, "sessions");
   const bundlesRoot = path.resolve(config.stateRoot, "bundles");
   const retainedBundles = new Set();
@@ -697,7 +718,10 @@ function pruneUpdateSessionState(config, sessionLimit = 20, bundleLimit = 2) {
       let bundle = null;
       try {
         const value = JSON.parse(fs.readFileSync(path.join(directory, "session.json"), "utf8"));
-        live = processAlive(value?.app?.pid);
+        const coordinator = JSON.parse(fs.readFileSync(coordinatorStateFile(directory), "utf8"));
+        live = ["starting", "active"].includes(coordinator?.phase) &&
+          Number.isSafeInteger(coordinator?.heartbeatAtUnixMs) && Date.now() - coordinator.heartbeatAtUnixMs <= 10_000 &&
+          processAlive(coordinator?.coordinatorPid);
         const candidate = path.dirname(path.resolve(String(value?.updaterPath ?? "")));
         if (path.dirname(candidate) === bundlesRoot) bundle = candidate;
       } catch {}
@@ -718,8 +742,10 @@ function pruneUpdateSessionState(config, sessionLimit = 20, bundleLimit = 2) {
       .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink() && /^[a-f0-9]{64}$/u.test(entry.name))
       .map((entry) => ({ directory: path.join(bundlesRoot, entry.name), time: fs.statSync(path.join(bundlesRoot, entry.name)).mtimeMs }))
       .sort((a, b) => b.time - a.time);
-    bundles.forEach((entry, index) => {
-      if (retainedBundles.has(entry.directory) || index < bundleLimit) return;
+    let retainedCount = retainedBundles.size;
+    bundles.forEach((entry) => {
+      if (retainedBundles.has(entry.directory)) return;
+      if (retainedCount < bundleLimit) { retainedBundles.add(entry.directory); retainedCount += 1; return; }
       try { if (safeOwnedTree(bundlesRoot, entry.directory)) fs.rmSync(entry.directory, { recursive: true, force: true }); } catch {}
     });
   } catch {}
@@ -974,6 +1000,17 @@ class UpdateSessionController {
         this.release = null;
         this.recordHistory("hot-reload-confirmed", release.version);
         await this.setStatus({ state: "current", version: release.version, message: `Updated to ${release.version} and loaded without restarting ChatGPT.` });
+        let activation = null;
+        let activationError = null;
+        for (let attempt = 1; attempt <= 3 && activation?.scheduled !== true; attempt += 1) {
+          try { activation = await this.platform.handoffCoordinator(); }
+          catch (error) { activationError = error; if (attempt < 3) await this.sleep(1000 * attempt); }
+        }
+        if (activation?.scheduled === true) this.stopping = true;
+        else {
+          this.config.log?.("coordinator-handoff-deferred", { error: cleanMessage(activationError?.message) });
+          await this.setStatus({ state: "current", version: release.version, message: `Updated to ${release.version}; the current coordinator remains active because replacement startup was deferred.` });
+        }
         return;
       }
       this.config.log?.("hot-reload-unavailable", { version: release.version, reason: cleanMessage(hotReload?.reason) });
@@ -1207,23 +1244,28 @@ async function main() {
   config.coordinatorLockPath = lock.lockPath;
   pruneUpdateSessionState(config);
   let transport;
+  let controller;
   let monitorTimer;
   let checkTimer;
+  let coordinatorHeartbeatTimer;
   try {
     const running = await new PlatformAdapter(config).probe();
     if (!running) throw new Error("The exact ChatGPT process no longer exists.");
-    writeLaunchReceipt(config, configSha256);
-    config.log("coordinator-ready", { pid: process.pid });
+    writeCoordinatorState(config, "starting");
     const cdp = require(path.join(path.dirname(__filename), "cdp.js"));
     const nonce = crypto.randomBytes(32).toString("hex");
     transport = new CdpTransport(config, nonce, cdp);
     const updater = new UpdaterAdapter(config);
     const platform = new PlatformAdapter(config);
-    const controller = new UpdateSessionController(config, { transport, updater, platform });
+    controller = new UpdateSessionController(config, { transport, updater, platform });
     controller.lastStrictProbeAt = Date.now();
     transport.onRequest((action, id) => controller.request(action, id));
     await transport.attach();
     await transport.publish(controller.status);
+    writeLaunchReceipt(config, configSha256);
+    writeCoordinatorState(config, "active");
+    coordinatorHeartbeatTimer = setInterval(() => { try { writeCoordinatorState(config, "active"); } catch {} }, config.processPollMs ?? 1000);
+    config.log("coordinator-ready", { pid: process.pid });
     if (config.autoCheckEnabled === true && config.skipInitialCheck !== true) {
       controller.check(false).catch(() => {});
     } else if (config.autoCheckEnabled === true) {
@@ -1257,7 +1299,9 @@ async function main() {
   } finally {
     clearInterval(monitorTimer);
     clearInterval(checkTimer);
+    clearInterval(coordinatorHeartbeatTimer);
     await transport?.close();
+    try { writeCoordinatorState(config, "stopped"); } catch {}
     try { fs.rmSync(lock.lockPath, { force: true }); } catch {}
   }
 }

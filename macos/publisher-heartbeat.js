@@ -57,7 +57,9 @@ function processStartToken(pid) {
 }
 
 function processMatches(pid, expectedStartToken) {
-  return processExists(pid) && processStartToken(pid) === expectedStartToken;
+  if (!processExists(pid)) return false;
+  const actualStartToken = processStartToken(pid);
+  return actualStartToken === null ? null : actualStartToken === expectedStartToken;
 }
 
 function resolveCdp() {
@@ -133,7 +135,18 @@ async function run(options, dependencies = {}) {
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
   try {
-    while (!stopping && releaseLock.owns() && matches(options.parentPid, options.parentStartToken)) {
+    let consecutiveIdentityFailures = 0;
+    while (!stopping && releaseLock.owns()) {
+      const identityMatch = matches(options.parentPid, options.parentStartToken);
+      if (identityMatch === false) break;
+      if (identityMatch === null) {
+        consecutiveIdentityFailures += 1;
+        if (consecutiveIdentityFailures >= 6) break;
+        await sleep(options.intervalMs);
+        continue;
+      } else {
+        consecutiveIdentityFailures = 0;
+      }
       try { await pulse(options.port, cdp); } catch {}
       await sleep(options.intervalMs);
     }

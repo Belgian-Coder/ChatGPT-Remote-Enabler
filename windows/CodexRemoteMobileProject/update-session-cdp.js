@@ -518,6 +518,7 @@ class CdpTransport {
       session.client.close();
     }
   }
+
 }
 
 module.exports = {

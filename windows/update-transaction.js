@@ -314,11 +314,15 @@ function parseManifest(root, verifyFiles = true, allowPreparedMetadata = false) 
     entries.push({ relative, hash, source });
   }
   if (entries.length === 0) throw new Error("Release manifest is empty.");
-  const allowedMetadata = new Set(["RELEASE-MANIFEST.sha256"]);
-  if (allowPreparedMetadata) {
-    allowedMetadata.add(PREPARED_METADATA);
-    allowedMetadata.add(".chatgpt-remote-release.zip");
-  }
+  const allowedMetadata = new Set(["RELEASE-MANIFEST.sha256", PREPARED_METADATA, ".chatgpt-remote-release.zip"]);
+  const normalizedListed = new Set(entries.map((entry) => process.platform === "win32" ? entry.relative.toLowerCase() : entry.relative));
+  const normalize = (value) => process.platform === "win32" ? value.toLowerCase() : value;
+  const isInstalledRuntimeMetadata = (relative) => {
+    const normalized = relative.replace(/\\/gu, "/");
+    if (process.platform === "darwin") return normalized === ".DS_Store" || normalized.endsWith("/.DS_Store") ||
+      /^rollback\/com\.local\.codex-mobile-project-view-(?:failed-|removed-)?\d{8}-\d{6}-\d+\.plist$/u.test(normalized);
+    return /^CodexRemoteMobileProject\/rollback\/(?:startup-task-[^/]+-\d{8}-\d{6}\.xml|(?:desktop|startmenu|legacydesktop|legacystartmenu|legacystartmenuproxytest|legacystartmenuproxy)-shortcut-[^/]+-\d{8}-\d{6}-\d{3}\.lnk|(?:startup-shortcut|legacy-disabled-startup-shortcut)-[^/]+-\d{8}-\d{6}-\d{3}\.lnk)$/iu.test(normalized);
+  };
   const visit = (directory, prefix = "") => {
     for (const name of fs.readdirSync(directory)) {
       const absolute = path.join(directory, name);
@@ -327,10 +331,11 @@ function parseManifest(root, verifyFiles = true, allowPreparedMetadata = false) 
       if (details.isSymbolicLink()) throw new Error(`Release payload contains a linked entry: ${relative}`);
       if (details.isDirectory()) { visit(absolute, relative); continue; }
       if (!details.isFile()) throw new Error(`Release payload contains an unsupported entry: ${relative}`);
-      const key = process.platform === "win32" ? relative.toLowerCase() : relative;
-      const listed = entries.some((entry) => (process.platform === "win32" ? entry.relative.toLowerCase() : entry.relative) === key);
-      const metadata = [...allowedMetadata].some((item) => (process.platform === "win32" ? item.toLowerCase() : item) === key);
-      if (!listed && !metadata) throw new Error(`Release payload contains an unlisted file: ${relative}`);
+      const listed = normalizedListed.has(normalize(relative));
+      const metadata = normalize(relative) === normalize("RELEASE-MANIFEST.sha256") ||
+        (allowPreparedMetadata && [...allowedMetadata].some((item) => normalize(item) === normalize(relative)));
+      const installedRuntime = !allowPreparedMetadata && isInstalledRuntimeMetadata(relative);
+      if (!listed && !metadata && !installedRuntime) throw new Error(`Release payload contains an unlisted file: ${relative}`);
     }
   };
   visit(root);

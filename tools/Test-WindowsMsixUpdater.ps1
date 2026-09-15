@@ -9,6 +9,10 @@ $tokens = $null
 $parseErrors = $null
 [Management.Automation.Language.Parser]::ParseFile($updater, [ref]$tokens, [ref]$parseErrors) | Out-Null
 if ($parseErrors.Count) { throw "MSIX updater does not parse: $($parseErrors[0].Message)" }
+$updaterSource = Get-Content -LiteralPath $updater -Raw
+foreach ($contract in @('Invoke-OfficialPackageCurlRequest', "`$PSVersionTable.PSEdition -eq 'Desktop'", "`$curl = Join-Path `$env:SystemRoot 'System32\curl.exe'", "@('--disable','--silent','--show-error','--ssl-revoke-best-effort'", "@('CURL_CA_BUNDLE','SSL_CERT_FILE','SSL_CERT_DIR')", "'--speed-limit','1','--speed-time'", "`$client.Timeout = [Threading.Timeout]::InfiniteTimeSpan", '[ChatGPTRemoteProgressStreamCopier]::CopyToWithInactivityTimeout($stream, $output, 81920, ($TimeoutSec * 1000))')) {
+    if (-not $updaterSource.Contains($contract)) { throw "MSIX updater cross-PowerShell proxy/deadline contract is missing: $contract" }
+}
 
 # Load only the helper functions. No network request or AppX mutation is made
 # by this test; the package, signature, AppX reader and installer are fixtures.
@@ -28,6 +32,15 @@ function Assert-Throws {
     }
     if (-not $thrown) { throw "Expected failure matching '$Pattern'." }
 }
+
+$previousDesktopProxy = $script:DesktopUpdateProxyServer
+try {
+    $script:DesktopUpdateProxyServer = 'https://192.0.2.1:81'
+    $curlFailure = $null
+    try { [void](Invoke-OfficialPackageCurlRequest -Uri ([Uri]'https://persistent.oaistatic.com/codex-app-prod/ChatGPT-x64.msix') -Method Head -TimeoutSec 1) }
+    catch { $curlFailure = $_ }
+    Assert-Condition ($null -ne $curlFailure -and (Test-TransientPackageMetadataFailure -ErrorRecord $curlFailure)) 'The Windows PowerShell HTTPS-proxy curl failure was not classified as transient.'
+} finally { $script:DesktopUpdateProxyServer = $previousDesktopProxy }
 
 function New-FixturePackage {
     param(
@@ -122,6 +135,14 @@ try {
     } -RetryDelaySeconds 1 -Sleeper { param($seconds) $retryState.Delays += $seconds }
     Assert-Condition ($retryState.Count -eq 3 -and ($retryState.Delays -join ',') -ceq '1,2') 'Transient metadata failures were not retried with bounded backoff.'
     Assert-Condition ($retriedMetadata.VersionText -ceq '26.903.9999.0') 'The metadata retry did not return the eventual verified response.'
+    $canceledState = @{ Count = 0 }
+    $canceledMetadata = Get-HeadPackageMetadata -Uri 'https://persistent.oaistatic.com/codex-app-prod/ChatGPT-x64.msix' -HeadRequester {
+        param($uri)
+        $canceledState.Count++
+        if ($canceledState.Count -eq 1) { throw [Threading.Tasks.TaskCanceledException]::new('A task was canceled.') }
+        return $metadata
+    } -RetryDelaySeconds 0
+    Assert-Condition ($canceledState.Count -eq 2 -and $canceledMetadata.VersionText -ceq '26.903.9999.0') 'HttpClient timeout cancellation was not retried.'
     $permanentState = @{ Count = 0 }
     Assert-Throws {
         Get-HeadPackageMetadata -Uri 'https://persistent.oaistatic.com/codex-app-prod/ChatGPT-x64.msix' -HeadRequester {
@@ -183,3 +204,4 @@ try {
 } finally {
     if (Test-Path -LiteralPath $fixtureRoot -PathType Container) { Remove-Item -LiteralPath $fixtureRoot -Recurse -Force -ErrorAction SilentlyContinue }
 }
+$global:LASTEXITCODE = 0

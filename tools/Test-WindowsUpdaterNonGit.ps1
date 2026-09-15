@@ -4,6 +4,10 @@ param()
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $updaterPath = Join-Path $repositoryRoot 'windows\Update-ChatGPTRemote.ps1'
+$updaterSource = Get-Content -LiteralPath $updaterPath -Raw
+foreach ($contract in @('Invoke-SafeCurlWebRequest', "`$PSVersionTable.PSEdition -eq 'Desktop'", "`$curl = Join-Path `$env:SystemRoot 'System32\curl.exe'", "@('--disable','--silent','--show-error','--ssl-revoke-best-effort'", "@('CURL_CA_BUNDLE','SSL_CERT_FILE','SSL_CERT_DIR')", "'--max-time'", "'--max-redirs','0'")) {
+    if (-not $updaterSource.Contains($contract)) { throw "Remote updater cross-PowerShell HTTPS-proxy contract is missing: $contract" }
+}
 $windowsPowerShell = if ($env:SystemRoot) { Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe' } else { $null }
 if (-not $windowsPowerShell -or -not (Test-Path -LiteralPath $windowsPowerShell -PathType Leaf)) {
     [pscustomobject]@{ WindowsPowerShell51 = $false; Skipped = $true } | ConvertTo-Json

@@ -2,7 +2,7 @@
 param(
     [string]$OutputDirectory,
     [string[]]$ForbiddenPattern = @(),
-    [switch]$RequireCommittedSource
+    [switch]$AllowDirtySource
 )
 
 $ErrorActionPreference = 'Stop'
@@ -112,7 +112,7 @@ if ($LASTEXITCODE -ne 0 -or $gitWorkTree.Count -ne 1 -or
     [IO.Path]::GetFullPath($gitWorkTree[0]) -ne $repositoryRoot.TrimEnd([IO.Path]::DirectorySeparatorChar)) {
     throw 'Build-Release.ps1 must run from the ChatGPT-Remote-Enabler Git checkout.'
 }
-if ($RequireCommittedSource) {
+if (-not $AllowDirtySource) {
     $dirtyReleaseFiles = @(& git -C $repositoryRoot status --porcelain=v1 --untracked-files=all -- windows macos tools/Build-Release.ps1)
     if ($LASTEXITCODE -ne 0 -or $dirtyReleaseFiles.Count) {
         throw 'Release packages may only be built from committed, clean platform sources and release-builder code.'

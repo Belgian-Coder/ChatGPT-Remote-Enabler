@@ -1,6 +1,6 @@
 # macOS Apple Silicon: install for your user without sudo
 
-Release v1.5.82 moves recognized version-named installations to the fixed
+Release v1.5.83 moves recognized version-named installations to the fixed
 per-user root `~/Library/Application Support/CodexRemoteFeatures/ChatGPT-Remote-Enabler-macOS-arm64`
 and rewires the LaunchAgent and app shortcut to that root. Each successful
 update keeps only the immediately previous updater generation and removes
@@ -8,8 +8,8 @@ package-created launcher, shortcut, and legacy-install copies. It retains the ve
 before compatibility probing or injection, verifies recovery and installed
 integrity, and safely hands updated launches to the replaced script without
 repeating the prelaunch check or startup delay. Compatible live updates also
-replace the immutable coordinator after its prior exact process and lock exit,
-without reinjecting or duplicating the publisher heartbeat. It also ships renderer v88 with
+start and heartbeat-verify the newly installed coordinator without relaunching
+ChatGPT or duplicating the publisher heartbeat. It also ships renderer v88 with
 explicit offline request suppression, cached-row retention and runtime-cache
 preservation. Installation and live multi-device acceptance remain separate
 checks.
@@ -20,13 +20,13 @@ You need an Apple Silicon Mac (arm64), the ChatGPT/Codex desktop app installed a
 preceding installed build. v1.5.49 was then manually installed and its live
 renderer readiness was checked on the participating test devices. The next
 sign-in startup trigger and future desktop-app builds remain separate checks.
-v1.5.82 is a normal release. Publication is not installation. An older update
+v1.5.83 is a normal release. Publication is not installation. An older update
 coordinator uses its existing graceful quit for this first upgrade; once
-v1.5.82 is loaded, later compatible releases can update in place.
+v1.5.83 is loaded, later compatible releases can update in place.
 
 ## 1. Download and extract
 
-1. Download **ChatGPT-Remote-Enabler-macOS-arm64-v1.5.82.zip** from [v1.5.82 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.82).
+1. Download **ChatGPT-Remote-Enabler-macOS-arm64-v1.5.83.zip** from [v1.5.83 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.83).
 2. Double-click the ZIP in Finder. In Finder choose **Go > Go to Folder** and enter `~/Library/Application Support/CodexRemoteFeatures`. Create **ChatGPT-Remote-Enabler-macOS-arm64** there and move the extracted package contents into it.
 3. `MobileProjectView-macOS-arm64.sh` must be directly inside that fixed folder. Keep the complete package together there; future updates replace it in place.
 
@@ -262,4 +262,4 @@ Settings now provides per-device connection findings, next steps, explicit evide
 
 ## Version or update icon missing
 
-Fully quit the app when your work is safe and launch through Remote Enabler. The updater migrates recognized historical version folders and rewires existing startup and app entry points to the fixed root. Open Settings to see the loaded helper version and update controls; a missing updater has recovery instructions. v1.5.82 is a normal release available to the existing updater.
+Fully quit the app when your work is safe and launch through Remote Enabler. The updater migrates recognized historical version folders and rewires existing startup and app entry points to the fixed root. Open Settings to see the loaded helper version and update controls; a missing updater has recovery instructions. v1.5.83 is a normal release available to the existing updater.

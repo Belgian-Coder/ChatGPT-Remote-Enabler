@@ -28,16 +28,21 @@ function windowsPowerShellModulePath(env) {
 
 function exactChildConfig(config, configPath) {
   if (!config || !["win32", "darwin"].includes(config.platform) ||
-      !Number.isSafeInteger(config.previousPid) || config.previousPid <= 0) {
+      !Number.isSafeInteger(config.previousPid) || config.previousPid <= 0 || !Number.isSafeInteger(config.appPid) || config.appPid <= 0) {
     throw new Error("The coordinator handoff identity is invalid.");
   }
-  for (const key of ["installRoot", "lockPath", "resultPath", "nodePath", "launcherPath"]) {
+  for (const key of ["installRoot", "stateRoot", "previousSessionDirectory", "lockPath", "resultPath", "nodePath", "launcherPath"]) {
     if (typeof config[key] !== "string" || !path.isAbsolute(config[key])) throw new Error(`The coordinator handoff ${key} is invalid.`);
     config[key] = path.resolve(config[key]);
   }
   const sessionDirectory = path.dirname(configPath);
   if (path.dirname(config.resultPath) !== sessionDirectory || path.basename(config.resultPath) !== "coordinator-handoff-result.json") {
     throw new Error("The coordinator handoff result path is outside its session.");
+  }
+  if (path.resolve(config.previousSessionDirectory) !== sessionDirectory ||
+      path.dirname(sessionDirectory) !== path.join(config.stateRoot, "sessions") ||
+      typeof config.expectedVersion !== "string" || !/^v\d+\.\d+\.\d+$/u.test(config.expectedVersion)) {
+    throw new Error("The coordinator handoff session or version binding is invalid.");
   }
   const expectedLauncher = config.platform === "win32"
     ? path.join(config.installRoot, "CodexRemoteMobileProject", "UpdateSessionLauncher.ps1")
@@ -63,6 +68,7 @@ async function main(argv = process.argv.slice(2)) {
     atomicResult(config.resultPath, { started: false, reason: "previous-coordinator-did-not-release" });
     throw new Error("The previous coordinator did not release its session lock.");
   }
+  const sessionsRoot = path.join(config.stateRoot, "sessions");
   let command;
   let args;
   const env = { ...process.env };
@@ -84,11 +90,34 @@ async function main(argv = process.argv.slice(2)) {
       if (["CODEX_APP_NAME", "CODEX_REMOTE_PEER_NAME", "CODEX_STARTUP_REQUIRED_PATH", "CODEX_REMOTE_USE_PROXY"].includes(name) && typeof value === "string") env[name] = value;
     }
   }
-  const child = spawnSync(command, args, { cwd: config.installRoot, env, encoding: "utf8", timeout: 45_000, windowsHide: true });
-  const started = child.status === 0 && !child.error;
-  atomicResult(config.resultPath, { started, exitCode: child.status, error: child.error ? String(child.error.message || child.error).slice(0, 240) : null });
-  if (!started) throw new Error("The updated coordinator launcher failed.");
-  return { started: true };
+  while (processAlive(config.appPid)) {
+    const before = new Set(fs.existsSync(sessionsRoot) ? fs.readdirSync(sessionsRoot) : []);
+    const child = spawnSync(command, args, { cwd: config.installRoot, env, encoding: "utf8", timeout: 45_000, windowsHide: true });
+    let started = child.status === 0 && !child.error;
+    let readySession = null;
+    const readyDeadline = Date.now() + 35_000;
+    while (started && !readySession && Date.now() < readyDeadline) {
+      for (const name of fs.existsSync(sessionsRoot) ? fs.readdirSync(sessionsRoot) : []) {
+        if (before.has(name) || !/^[a-f0-9-]{32,36}$/iu.test(name)) continue;
+      const directory = path.join(sessionsRoot, name);
+      try {
+        const session = JSON.parse(fs.readFileSync(path.join(directory, "session.json"), "utf8"));
+        const state = JSON.parse(fs.readFileSync(path.join(directory, "coordinator-state.json"), "utf8"));
+        if (path.resolve(session.installRoot) === config.installRoot && session.rendererPort === config.rendererPort &&
+            state.phase === "active" && Date.now() - state.heartbeatAtUnixMs <= 10_000 && processAlive(state.coordinatorPid)) {
+          readySession = directory;
+          break;
+        }
+      } catch {}
+      }
+      if (!readySession) await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    started = started && readySession !== null && fs.readFileSync(path.join(config.installRoot, "VERSION"), "utf8").trim() === config.expectedVersion;
+    atomicResult(config.resultPath, { started, readySession, exitCode: child.status, error: child.error ? String(child.error.message || child.error).slice(0, 240) : null });
+    if (started) return { started: true };
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+  }
+  throw new Error("The ChatGPT process exited before the updated coordinator became ready.");
 }
 
 module.exports = { exactChildConfig, main, processAlive, windowsPowerShellModulePath };

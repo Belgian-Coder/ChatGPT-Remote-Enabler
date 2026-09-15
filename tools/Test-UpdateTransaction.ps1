@@ -345,6 +345,12 @@ try {
     }
     $integrity = Invoke-Helper -Arguments @('integrity', '--install-root', $install)
     if ($integrity.integrityValid -ne $true -or $integrity.version -ne 'v2.0.0') { throw 'Installed integrity validation failed.' }
+    Write-Utf8File (Join-Path $install 'unlisted-runtime.js') 'throw new Error("must not load");'
+    $integrityWithUnlistedCode = Invoke-HelperProcess -Arguments @('integrity', '--install-root', $install)
+    if ($integrityWithUnlistedCode.ExitCode -eq 0 -or ($integrityWithUnlistedCode.StandardOutput + ' ' + $integrityWithUnlistedCode.StandardError) -notmatch 'unlisted file') {
+        throw 'Installed integrity accepted arbitrary unlisted code.'
+    }
+    Remove-Item -LiteralPath (Join-Path $install 'unlisted-runtime.js') -Force
 
     # Preload instrumentation blocks immediately after the first journal count is durably renamed.
     $hook = Join-Path $temporaryRoot 'pause-after-journal.js'

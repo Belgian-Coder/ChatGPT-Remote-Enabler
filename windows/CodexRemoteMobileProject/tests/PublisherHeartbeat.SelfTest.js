@@ -66,6 +66,23 @@ const { TARGET_URL, acquireLock, parseArgs, processMatches, processStartToken, p
     async sleep() {},
   });
   assert.equal(pulseCount, 0, "a reused or replaced parent process must stop the heartbeat before another pulse");
+  let transientChecks = 0;
+  pulseCount = 0;
+  await run({ intervalMs: 1000, lockPath: null, parentPid: 42, parentStartToken: "original", port: 1234 }, {
+    cdp: { async discoverTargets() { pulseCount += 1; return []; } },
+    processMatches() { transientChecks += 1; return transientChecks < 3 ? null : false; },
+    async sleep() {},
+  });
+  assert.equal(pulseCount, 0, "heartbeat must pause while the exact parent identity is temporarily unverified");
+  transientChecks = 0;
+  pulseCount = 0;
+  await run({ intervalMs: 1000, lockPath: null, parentPid: 42, parentStartToken: "original", port: 1234 }, {
+    cdp: { async discoverTargets() { pulseCount += 1; return []; } },
+    processMatches() { transientChecks += 1; return null; },
+    async sleep() {},
+  });
+  assert.equal(transientChecks, 6);
+  assert.equal(pulseCount, 0, "persistent identity lookup failure must never publish under an unverified process identity");
   console.log("Publisher heartbeat self-test passed.");
 })().catch((error) => {
   console.error(error);

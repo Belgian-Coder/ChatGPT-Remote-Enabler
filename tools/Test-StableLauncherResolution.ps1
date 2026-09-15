@@ -52,6 +52,16 @@ try {
     Write-Version -Root $stableRoot -Version $currentVersion
     New-ReleaseManifest -Root $stableRoot
     Assert-Condition (Test-StablePackage -Root $stableRoot -RequireManifest) 'The canonical fixture failed manifest, VERSION, and ProductVersion validation.'
+    [IO.File]::WriteAllText((Join-Path $stableRoot 'unlisted-runtime.ps1'), 'throw "must not load"', [Text.UTF8Encoding]::new($false))
+    Assert-Condition (-not (Test-StablePackage -Root $stableRoot -RequireManifest)) 'Installed-package validation accepted arbitrary unlisted code.'
+    Remove-Item -LiteralPath (Join-Path $stableRoot 'unlisted-runtime.ps1') -Force
+    $mobileDirectory = Join-Path $stableRoot 'CodexRemoteMobileProject'
+    $externalMobileDirectory = Join-Path $fixtureRoot 'external-mobile-project'
+    Move-Item -LiteralPath $mobileDirectory -Destination $externalMobileDirectory
+    New-Item -ItemType Junction -Path $mobileDirectory -Target $externalMobileDirectory | Out-Null
+    Assert-Condition (-not (Test-StablePackage -Root $stableRoot -RequireManifest)) 'Installed-package validation accepted manifest files through an internal junction.'
+    [IO.Directory]::Delete($mobileDirectory)
+    Move-Item -LiteralPath $externalMobileDirectory -Destination $mobileDirectory
     $noncanonicalCleanup = @(Invoke-StableLegacyCleanup -StableRoot $stableRoot -UpdaterStateRoot $stateRoot -MigrateEntryPoints)
     Assert-Condition ($noncanonicalCleanup.Count -eq 1 -and $noncanonicalCleanup[0].reason -eq 'noncanonical-stable-root') 'A noncanonical fixture root was allowed to scan or migrate live entry points.'
     $noncanonicalTask = @(Invoke-StableTaskMigration -StableRoot $stableRoot)

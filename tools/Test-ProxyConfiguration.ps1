@@ -16,13 +16,24 @@ try {
     if ($controllerSource -match 'SetEnvironmentVariable\s*\([^\)]*[''"]User[''"]') {
         throw 'The proxy controller must not mutate shared User-scope environment variables.'
     }
-    Import-Module $modulePath -Force
+    $proxyModule = Import-Module $modulePath -Force -PassThru
     $example = 'http://proxy.example.test:8080'
     Set-ChatGPTRemoteProxy -ProxyUrl $example -ConfigPath $configPath -Confirm:$false
     $cipherText = Get-Content -LiteralPath $configPath -Raw
     if ($cipherText.Contains('proxy.example.test')) { throw 'The protected proxy file contains plaintext proxy data.' }
     $resolved = Get-ChatGPTRemoteProxy -ConfigPath $configPath
     if ($resolved -ne $example) { throw 'The protected proxy configuration did not round-trip.' }
+    $fixedFlags = [byte[]]::new(9); $fixedFlags[8] = 3
+    $automaticFlags = [byte[]]::new(9); $automaticFlags[8] = 9
+    $manualAndAutomaticFlags = [byte[]]::new(9); $manualAndAutomaticFlags[8] = 11
+    $fixedSystem = & $proxyModule { param($settings) Get-ChatGPTRemoteFixedSystemProxy -InternetSettings $settings } ([pscustomobject]@{ ProxyEnable = 1; ProxyServer = 'http=proxy-http.example.test:8080;https=proxy-https.example.test:8443'; AutoDetect = 0; AutoConfigURL = ''; DefaultConnectionSettings = $fixedFlags })
+    if ($fixedSystem -ne 'http://proxy-https.example.test:8443') { throw 'The fixed Windows HTTPS proxy was not resolved.' }
+    $pacSystem = & $proxyModule { param($settings) Get-ChatGPTRemoteFixedSystemProxy -InternetSettings $settings } ([pscustomobject]@{ ProxyEnable = 1; ProxyServer = 'proxy.example.test:8080'; AutoDetect = 0; AutoConfigURL = 'https://proxy.example.test/proxy.pac'; DefaultConnectionSettings = $fixedFlags })
+    if ($null -ne $pacSystem) { throw 'A PAC-based Windows proxy was accepted as one fixed endpoint.' }
+    $wpadSystem = & $proxyModule { param($settings) Get-ChatGPTRemoteFixedSystemProxy -InternetSettings $settings } ([pscustomobject]@{ ProxyEnable = 1; ProxyServer = 'proxy.example.test:8080'; AutoDetect = 0; AutoConfigURL = ''; DefaultConnectionSettings = $automaticFlags })
+    if ($null -ne $wpadSystem) { throw 'A WPAD-based Windows proxy was accepted as one fixed endpoint.' }
+    $manualWithWpad = & $proxyModule { param($settings) Get-ChatGPTRemoteFixedSystemProxy -InternetSettings $settings } ([pscustomobject]@{ ProxyEnable = 1; ProxyServer = 'proxy.example.test:8080'; AutoDetect = 1; AutoConfigURL = ''; DefaultConnectionSettings = $manualAndAutomaticFlags })
+    if ($manualWithWpad -ne 'http://proxy.example.test:8080') { throw 'A fixed manual proxy was rejected merely because Windows auto-detect is also enabled.' }
     $credentialRejected = $false
     try { [void](Test-ChatGPTRemoteProxyUrl 'http://user:password@proxy.example.test:8080') }
     catch { $credentialRejected = $true }

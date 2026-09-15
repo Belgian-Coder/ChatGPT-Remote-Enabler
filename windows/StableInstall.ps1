@@ -57,7 +57,8 @@ function Get-StableVersion {
 function Test-StablePackage {
     param(
         [Parameter(Mandatory)][string]$Root,
-        [switch]$RequireManifest
+        [switch]$RequireManifest,
+        [switch]$RequireExactInventory
     )
     try {
         $Root = [IO.Path]::GetFullPath($Root).TrimEnd('\')
@@ -107,7 +108,9 @@ function Test-StablePackage {
                 if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { return $false }
                 if ($item.PSIsContainer) { continue }
                 $relative = $item.FullName.Substring($Root.Length + 1)
-                if (-not $manifestPaths.Contains($relative) -and -not $allowedMetadata.Contains($relative)) { return $false }
+                $normalized = $relative.Replace('/', '\')
+                $runtimeMetadata = -not $RequireExactInventory -and $normalized -match '^CodexRemoteMobileProject\\rollback\\(?:startup-task-[^\\]+-\d{8}-\d{6}\.xml|(?:desktop|startmenu|legacydesktop|legacystartmenu|legacystartmenuproxytest|legacystartmenuproxy)-shortcut-[^\\]+-\d{8}-\d{6}-\d{3}\.lnk|(?:startup-shortcut|legacy-disabled-startup-shortcut)-[^\\]+-\d{8}-\d{6}-\d{3}\.lnk)$'
+                if (-not $manifestPaths.Contains($relative) -and -not $allowedMetadata.Contains($relative) -and -not $runtimeMetadata) { return $false }
             }
         }
         $expectedFileVersion = $version.TrimStart('v') + '.0'
@@ -226,6 +229,9 @@ function Ensure-StableInstallRoot {
     $StableRoot = [IO.Path]::GetFullPath($StableRoot).TrimEnd('\')
     $UpdaterStateRoot = [IO.Path]::GetFullPath($UpdaterStateRoot).TrimEnd('\')
     $sourceIsPackaged = Test-Path -LiteralPath (Join-Path $SourceRoot 'RELEASE-MANIFEST.sha256') -PathType Leaf
+    # Installed and legacy roots may contain runtime rollback metadata. Validate
+    # their signed files here; every copied payload is checked for an exact
+    # inventory in the isolated staging directory before it can be activated.
     $sourceValid = Test-StablePackage -Root $SourceRoot -RequireManifest:$sourceIsPackaged
     if (-not $sourceValid) { throw "The source installation failed VERSION, launcher, or controller validation: $SourceRoot" }
     $lockStream = $null
@@ -263,7 +269,7 @@ function Ensure-StableInstallRoot {
             try {
                 New-Item -ItemType Directory -Path $temporary -Force | Out-Null
                 Copy-StablePackageContents -SourceRoot $SourceRoot -DestinationRoot $temporary
-                if (-not (Test-StablePackage -Root $temporary -RequireManifest)) { throw 'The staged stable update failed verification.' }
+                if (-not (Test-StablePackage -Root $temporary -RequireManifest -RequireExactInventory)) { throw 'The staged stable update failed verification.' }
                 $retainedArchive = Join-Path $temporary '.chatgpt-remote-release.zip'
                 Copy-Item -LiteralPath (Join-Path $temporary 'RELEASE-MANIFEST.sha256') -Destination $retainedArchive -Force
                 $archiveHash = (Get-FileHash -LiteralPath $retainedArchive -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -286,7 +292,7 @@ function Ensure-StableInstallRoot {
         try {
             New-Item -ItemType Directory -Path $temporary -Force | Out-Null
             Copy-StablePackageContents -SourceRoot $SourceRoot -DestinationRoot $temporary
-            if (-not (Test-StablePackage -Root $temporary -RequireManifest:$sourceIsPackaged)) { throw 'The migrated stable installation failed post-copy validation.' }
+            if (-not (Test-StablePackage -Root $temporary -RequireManifest:$sourceIsPackaged -RequireExactInventory:$sourceIsPackaged)) { throw 'The migrated stable installation failed post-copy validation.' }
             [IO.Directory]::Move($temporary, $StableRoot)
         } catch {
             if (Test-Path -LiteralPath $StableRoot -PathType Container) {

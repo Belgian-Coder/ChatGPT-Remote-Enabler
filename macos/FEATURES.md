@@ -1,6 +1,6 @@
 # Feature guide
 
-This guide describes the Windows and macOS v1.5.82 source, including reliable
+This guide describes the Windows and macOS v1.5.83 source, including reliable
 background inventory publication, loaded search, compact Settings, guarded navigation, and stale-Steer recovery. Historical v1.5.49 packages and
 screenshots do not include those changes. Both packages share the Device
 projects renderer and the feature behavior below; the
@@ -10,10 +10,9 @@ options, and shortcut/startup commands.
 Renderer v88 adds collision-resistant peer caches, serialized remote reads, and complete update-activity scans; renderer v83 filters the current machine from the refreshed native device catalogue; renderer v82 adds automatic native device-catalogue recovery; renderer v81 added verified in-process update loading; renderer v79 makes native offline state authoritative while retaining cached rows and runtime evidence; renderer v78 adds a parent-bound heartbeat for fully frozen hidden renderers; renderer v77 adds the background inventory reliability correction; renderer
 v76 added the search and Settings improvements described below.
 
-After a compatible live update succeeds, the already proven immutable update
-coordinator remains attached to the current ChatGPT process. The coordinator
-from the installed package starts on the next normal launch; ChatGPT is not
-closed merely to refresh the coordinator.
+After a compatible live update succeeds, a detached helper starts the newly
+installed coordinator and verifies its active heartbeat on the exact renderer
+port. ChatGPT remains open throughout.
 
 On Windows, each shortcut or sign-in launch verifies Remote Enabler recovery,
 completes the official signed desktop MSIX update, completes the required
@@ -211,7 +210,7 @@ it is never an automatic fallback. Corporate Git proxy and CA settings are honor
 
 **Update details and history** shows installed/available versions, the last
 successful check, release-note links, and durable stages. History retains up to
-100 events from the latest 20 sessions within 90 days and stores stage, version,
+100 events from the current and immediately previous sessions within 90 days and stores stage, version,
 and timestamp. Replacement alone is not success; live reload or relaunch
 confirmation is recorded only after readiness is acknowledged.
 

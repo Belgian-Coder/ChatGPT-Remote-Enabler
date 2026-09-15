@@ -203,14 +203,56 @@ async function testPinnedHotReloadFlow() {
   assert.equal(h.calls.apply, 1);
   assert.equal(h.calls.recover, 1);
   assert.equal(h.calls.hotReload, 1);
-  assert.equal(h.calls.handoff, 0, "a compatible update must keep the proven coordinator alive");
+  assert.equal(h.calls.handoff, 1, "a compatible update must schedule the installed coordinator replacement");
   assert.equal(h.calls.close, 0, "a compatible update must not close ChatGPT");
   assert.equal(h.calls.relaunch, 0, "a compatible update must not relaunch ChatGPT");
-  assert.equal(h.controller.stopping, false, "the proven coordinator must remain active after live reload");
+  assert.equal(h.controller.stopping, true, "the predecessor controller must retire after the installed coordinator is active");
   assert.equal(h.controller.status.state, "current");
   assert.equal(h.controller.status.details.installedVersion, h.release.version);
   assert.match(h.controller.status.message, /without restarting ChatGPT/u);
   assert.ok(h.controller.history.some(entry => entry.state === "hot-reload-confirmed" && entry.version === h.release.version));
+}
+
+async function testCoordinatorActivationFailureKeepsAppOpen() {
+  const h = harness({ hotCompatible: true, handoffError: new Error("simulated coordinator activation failure") });
+  await h.controller.check(true);
+  await h.controller.request("queue", "queue-activation-failure");
+  await waitOperation(h.controller);
+  assert.equal(h.calls.handoff, 3);
+  assert.equal(h.calls.close, 0, "coordinator activation failure must not close ChatGPT");
+  assert.equal(h.calls.relaunch, 0, "coordinator activation failure must not relaunch ChatGPT");
+  assert.equal(h.controller.stopping, false, "the predecessor must remain available when activation fails");
+  assert.equal(h.controller.status.state, "current");
+}
+
+function testCoordinatorAwareRetention() {
+  const retentionRoot = path.join(tempRoot, "retention-state");
+  const sessionsRoot = path.join(retentionRoot, "sessions");
+  const bundlesRoot = path.join(retentionRoot, "bundles");
+  fs.mkdirSync(sessionsRoot, { recursive: true });
+  fs.mkdirSync(bundlesRoot, { recursive: true });
+  const ids = Array.from({ length: 5 }, (_, index) => String(index + 1).repeat(32));
+  const hashes = Array.from({ length: 5 }, (_, index) => (index + 10).toString(16).repeat(64).slice(0, 64));
+  ids.forEach((id, index) => {
+    const directory = path.join(sessionsRoot, id);
+    const bundle = path.join(bundlesRoot, hashes[index]);
+    fs.mkdirSync(directory, { recursive: true });
+    fs.mkdirSync(bundle, { recursive: true });
+    fs.writeFileSync(path.join(bundle, "Update-ChatGPTRemote.ps1"), "fixture");
+    fs.writeFileSync(path.join(directory, "session.json"), JSON.stringify({ app: { pid: process.pid }, updaterPath: path.join(bundle, "Update-ChatGPTRemote.ps1") }));
+    fs.writeFileSync(path.join(directory, "coordinator-state.json"), JSON.stringify({
+      phase: index === 4 ? "active" : "stopped",
+      coordinatorPid: process.pid,
+      heartbeatAtUnixMs: Date.now(),
+    }));
+    const age = new Date(Date.now() - ((5 - index) * 1000));
+    fs.utimesSync(directory, age, age);
+    fs.utimesSync(bundle, age, age);
+  });
+  const currentDirectory = path.join(sessionsRoot, ids[4]);
+  session.pruneUpdateSessionState({ stateRoot: retentionRoot, sessionDirectory: currentDirectory }, 2, 2);
+  assert.deepEqual(fs.readdirSync(sessionsRoot).sort(), ids.slice(3).sort(), "retention must keep the active coordinator and one prior session");
+  assert.deepEqual(fs.readdirSync(bundlesRoot).sort(), hashes.slice(3).sort(), "retention must keep only the current and previous bundles");
 }
 
 async function testHotReloadFailureKeepsAppOpen() {
@@ -519,6 +561,8 @@ async function testCoordinatorHandoffSchedule() {
   const handoff = JSON.parse(fs.readFileSync(path.join(sessionDirectory, "coordinator-handoff.json"), "utf8"));
   assert.equal(handoff.previousPid, process.pid);
   assert.equal(handoff.lockPath, cfg.coordinatorLockPath);
+  assert.equal(handoff.stateRoot, cfg.stateRoot);
+  assert.equal(handoff.previousSessionDirectory, cfg.sessionDirectory);
   assert.equal(handoff.entryPointRelative, cfg.relaunch.entryPointRelative);
   assert.equal(handoff.useProxy, true);
   assert.equal(handoff.replaceRunningApp, true);
@@ -530,7 +574,8 @@ function testCoordinatorHandoffConfigBoundary() {
   fs.mkdirSync(path.dirname(launcherPath), { recursive: true });
   fs.writeFileSync(launcherPath, "fixture");
   const value = {
-    platform: "win32", previousPid: 4321, installRoot,
+    platform: "win32", previousPid: 4321, appPid: 7654, installRoot,
+    stateRoot, previousSessionDirectory: sessionDirectory, expectedVersion: "v1.5.83",
     lockPath: path.join(stateRoot, "active", "fixture.lock"),
     resultPath: path.join(sessionDirectory, "coordinator-handoff-result.json"),
     nodePath: process.execPath, launcherPath,
@@ -700,6 +745,8 @@ async function testActualWindowsCheck() {
     await testReadOnlyHistoryRefresh();
     await testPinnedIdleFlow();
     await testPinnedHotReloadFlow();
+    await testCoordinatorActivationFailureKeepsAppOpen();
+    testCoordinatorAwareRetention();
     await testHotReloadFailureKeepsAppOpen();
     await testHotApplyFailureRestoresPriorRenderer();
     testHotReloadCompatibility();

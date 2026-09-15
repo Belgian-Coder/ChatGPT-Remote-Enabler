@@ -11,6 +11,52 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Net.Http
+if (-not ('ChatGPTRemoteProgressStreamCopier' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Threading;
+public static class ChatGPTRemoteProgressStreamCopier
+{
+    public static CancellationTokenRegistration Register(CancellationToken token, Stream stream)
+    {
+        return token.Register(state => ((Stream)state).Dispose(), stream);
+    }
+
+    public static void CopyToWithInactivityTimeout(Stream source, Stream destination, int bufferSize, int inactivityTimeoutMilliseconds)
+    {
+        byte[] buffer = new byte[bufferSize];
+        while (true)
+        {
+            CancellationTokenSource cancellation = new CancellationTokenSource();
+            cancellation.CancelAfter(inactivityTimeoutMilliseconds);
+            CancellationTokenRegistration registration = Register(cancellation.Token, source);
+            try
+            {
+                int read;
+                try
+                {
+                    read = source.ReadAsync(buffer, 0, buffer.Length, cancellation.Token).GetAwaiter().GetResult();
+                }
+                catch (System.Exception exception)
+                {
+                    if (cancellation.IsCancellationRequested)
+                        throw new TimeoutException("The package download stopped making progress.", exception);
+                    throw;
+                }
+                if (read == 0) return;
+                destination.Write(buffer, 0, read);
+            }
+            finally
+            {
+                registration.Dispose();
+                cancellation.Dispose();
+            }
+        }
+    }
+}
+'@
+}
 
 # These are package identities, not file extensions. The direct OpenAI package
 # currently uses OpenAI.Codex; older Store/AppX installations used the legacy
@@ -66,6 +112,75 @@ function Assert-OfficialPackageUri {
     return $parsed.AbsoluteUri
 }
 
+function Read-CurlResponseHeaders {
+    param([Parameter(Mandatory)][string]$Path)
+    $lines = @(Get-Content -LiteralPath $Path -ErrorAction Stop)
+    $statusIndex = -1
+    $statusCode = 0
+    for ($index = 0; $index -lt $lines.Count; $index++) {
+        if ([string]$lines[$index] -match '^HTTP/\S+\s+(\d{3})\b') { $statusIndex = $index; $statusCode = [int]$matches[1] }
+    }
+    if ($statusIndex -lt 0) { throw 'curl did not return a parseable HTTP status.' }
+    $headers = @{}
+    for ($index = $statusIndex + 1; $index -lt $lines.Count -and -not [string]::IsNullOrWhiteSpace([string]$lines[$index]); $index++) {
+        $separator = ([string]$lines[$index]).IndexOf(':')
+        if ($separator -le 0) { continue }
+        $name = ([string]$lines[$index]).Substring(0, $separator).Trim()
+        $value = ([string]$lines[$index]).Substring($separator + 1).Trim()
+        if ($headers.ContainsKey($name)) { $headers[$name] = @($headers[$name]) + $value } else { $headers[$name] = @($value) }
+    }
+    return [pscustomobject]@{ StatusCode = $statusCode; Headers = $headers }
+}
+
+function Invoke-OfficialPackageCurlRequest {
+    param([Parameter(Mandatory)][Uri]$Uri, [ValidateSet('Head','Get')][string]$Method, [int]$TimeoutSec, [string]$OutFile)
+    $curl = Join-Path $env:SystemRoot 'System32\curl.exe'
+    if (-not (Test-Path -LiteralPath $curl -PathType Leaf)) { throw "The Windows HTTPS-proxy transport is unavailable: $curl" }
+    $headerPath = Join-Path ([IO.Path]::GetTempPath()) ('chatgpt-msix-headers-' + [guid]::NewGuid().ToString('N') + '.txt')
+    $discardPath = Join-Path ([IO.Path]::GetTempPath()) ('chatgpt-msix-discard-' + [guid]::NewGuid().ToString('N') + '.tmp')
+    try {
+        $outputPath = if ($Method -eq 'Get') { $OutFile } else { $discardPath }
+        $arguments = @('--disable','--silent','--show-error','--ssl-revoke-best-effort','--max-redirs','0','--connect-timeout',[string]([Math]::Min(20, $TimeoutSec)),'--proto','=https','--proto-redir','=https','--proxy',$script:DesktopUpdateProxyServer,'--noproxy','localhost,127.0.0.1,::1','--dump-header',$headerPath,'--output',$outputPath)
+        if ($Method -eq 'Get') {
+            $arguments += @('--speed-limit','1','--speed-time',[string]$TimeoutSec)
+        } else {
+            $arguments += @('--max-time',[string]$TimeoutSec)
+        }
+        if ($Method -eq 'Head') { $arguments += '--head' }
+        $arguments += $Uri.AbsoluteUri
+        $curlEnvironmentNames = @('CURL_CA_BUNDLE','SSL_CERT_FILE','SSL_CERT_DIR')
+        $savedCurlEnvironment = @{}
+        try {
+            foreach ($name in $curlEnvironmentNames) {
+                $savedCurlEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+                [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+            }
+            & $curl @arguments | Out-Null
+            $curlExitCode = $LASTEXITCODE
+        } finally {
+            foreach ($name in $curlEnvironmentNames) { [Environment]::SetEnvironmentVariable($name, $savedCurlEnvironment[$name], 'Process') }
+        }
+        if ($curlExitCode -ne 0) {
+            $status = switch ($curlExitCode) {
+                5 { [Net.WebExceptionStatus]::ProxyNameResolutionFailure }
+                6 { [Net.WebExceptionStatus]::NameResolutionFailure }
+                7 { [Net.WebExceptionStatus]::ConnectFailure }
+                18 { [Net.WebExceptionStatus]::ReceiveFailure }
+                28 { [Net.WebExceptionStatus]::Timeout }
+                52 { [Net.WebExceptionStatus]::ReceiveFailure }
+                55 { [Net.WebExceptionStatus]::SendFailure }
+                56 { [Net.WebExceptionStatus]::ReceiveFailure }
+                default { $null }
+            }
+            if ($null -ne $status) { throw [Net.WebException]::new("curl package request failed with exit code $curlExitCode.", $status) }
+            throw "curl package request failed with exit code $curlExitCode."
+        }
+        return Read-CurlResponseHeaders -Path $headerPath
+    } finally {
+        Remove-Item -LiteralPath $headerPath,$discardPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Invoke-OfficialPackageRequest {
     param(
         [Parameter(Mandatory)][string]$Uri,
@@ -75,6 +190,18 @@ function Invoke-OfficialPackageRequest {
     )
     $current = [Uri](Assert-OfficialPackageUri $Uri)
     for ($redirect = 0; $redirect -le 3; $redirect++) {
+        if ($script:DesktopUpdateProxyServer -and $PSVersionTable.PSEdition -eq 'Desktop' -and ([Uri]$script:DesktopUpdateProxyServer).Scheme -eq 'https') {
+            $curlResponse = Invoke-OfficialPackageCurlRequest -Uri $current -Method $Method -TimeoutSec $TimeoutSec -OutFile $OutFile
+            if ($curlResponse.StatusCode -in 301,302,303,307,308) {
+                $locations = @($curlResponse.Headers['Location'])
+                if ($redirect -ge 3 -or $locations.Count -ne 1) { throw 'The package endpoint exceeded the safe redirect limit.' }
+                $next = [Uri]::new($current, [string]$locations[0])
+                $current = [Uri](Assert-OfficialPackageUri $next.AbsoluteUri)
+                continue
+            }
+            if ($curlResponse.StatusCode -lt 200 -or $curlResponse.StatusCode -ge 300) { throw "The package endpoint returned HTTP $($curlResponse.StatusCode)." }
+            return [pscustomobject]@{ Headers = $curlResponse.Headers; FinalUri = $current.AbsoluteUri }
+        }
         $handler = [Net.Http.HttpClientHandler]::new()
         $handler.AllowAutoRedirect = $false
         if ($script:DesktopUpdateProxyServer) {
@@ -82,13 +209,15 @@ function Invoke-OfficialPackageRequest {
             $handler.Proxy = [Net.WebProxy]::new($script:DesktopUpdateProxyServer, $true)
         }
         $client = [Net.Http.HttpClient]::new($handler)
-        $client.Timeout = [TimeSpan]::FromSeconds($TimeoutSec)
+        $client.Timeout = [Threading.Timeout]::InfiniteTimeSpan
         $response = $null
+        $headerCancellation = [Threading.CancellationTokenSource]::new()
+        $headerCancellation.CancelAfter([TimeSpan]::FromSeconds([Math]::Min(60, $TimeoutSec)))
         try {
             $httpMethod = if ($Method -eq 'Head') { [Net.Http.HttpMethod]::Head } else { [Net.Http.HttpMethod]::Get }
             $request = [Net.Http.HttpRequestMessage]::new($httpMethod, $current)
             try {
-                $response = $client.SendAsync($request, [Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+                $response = $client.SendAsync($request, [Net.Http.HttpCompletionOption]::ResponseHeadersRead, $headerCancellation.Token).GetAwaiter().GetResult()
                 if ([int]$response.StatusCode -in 301,302,303,307,308) {
                     if ($redirect -ge 3 -or $null -eq $response.Headers.Location) { throw 'The package endpoint exceeded the safe redirect limit.' }
                     $next = if ($response.Headers.Location.IsAbsoluteUri) { $response.Headers.Location } else { [Uri]::new($current, $response.Headers.Location) }
@@ -102,11 +231,11 @@ function Invoke-OfficialPackageRequest {
                 if ($Method -eq 'Get') {
                     $stream = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
                     $output = [IO.File]::Open($OutFile, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::None)
-                    try { $stream.CopyTo($output) } finally { $output.Dispose(); $stream.Dispose() }
+                    try { [ChatGPTRemoteProgressStreamCopier]::CopyToWithInactivityTimeout($stream, $output, 81920, ($TimeoutSec * 1000)) } finally { $output.Dispose(); $stream.Dispose() }
                 }
                 return [pscustomobject]@{ Headers = $headers; FinalUri = $current.AbsoluteUri }
             } finally { $request.Dispose(); if ($response) { $response.Dispose() } }
-        } finally { $client.Dispose(); $handler.Dispose() }
+        } finally { $headerCancellation.Dispose(); $client.Dispose(); $handler.Dispose() }
     }
     throw 'The package endpoint exceeded the safe redirect limit.'
 }
@@ -317,6 +446,7 @@ function Test-TransientPackageMetadataFailure {
 
     $exception = $ErrorRecord.Exception
     while ($null -ne $exception) {
+        if ($exception -is [OperationCanceledException] -or $exception -is [TimeoutException]) { return $true }
         $response = Get-PropertyValue $exception 'Response'
         $statusCode = Get-PropertyValue $response 'StatusCode'
         if ($null -ne $statusCode) {

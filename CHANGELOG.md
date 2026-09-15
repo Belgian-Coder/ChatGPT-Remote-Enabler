@@ -1,5 +1,29 @@
 # Changelog
 
+## v1.5.83 — 2026-09-15
+
+- Keep installed packages valid when runtime-owned rollback files or Finder
+  metadata coexist with the manifest, while retaining exact inventory checks
+  for downloaded and staged release payloads.
+- Tolerate bounded transient parent-process identity lookup failures so a busy
+  machine does not permanently stop the publisher heartbeat.
+- Verify the exact matched macOS ChatGPT process command line and preserve the
+  existing LaunchAgent proxy mode during stable-root migration.
+- Retry desktop package metadata requests canceled by an HttpClient timeout,
+  and resolve only static Windows proxy settings while rejecting PAC and WPAD.
+- Support HTTPS proxies in mandatory Windows PowerShell 5.1 prelaunch requests
+  through bounded curl transport while retaining native HttpClient behavior in
+  PowerShell 7, safe redirect checks, TLS validation, and body-read deadlines.
+- Resolve the exact ChatGPT process with bounded retries after package-context
+  proxy launch so the publisher heartbeat never receives the transient worker
+  process identity.
+- Start the newly installed coordinator through a detached handoff and verify
+  its active heartbeat on both platforms while ChatGPT stays open; retain only
+  the current and immediately previous coordinator sessions and bundles.
+- Reject arbitrary unmanifested installed files while allowing only exact
+  platform runtime metadata, and require clean committed release sources by
+  default. Use progress-based body timeouts so slow active downloads can finish.
+
 ## v1.5.82 — 2026-09-15
 
 - Route every helper-controlled external connection through the selected fixed,

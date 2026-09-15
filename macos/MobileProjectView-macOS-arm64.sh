@@ -384,7 +384,7 @@ APPLESCRIPT
 }
 
 verify_running_proxy_mode() {
-  local exact_app_path executable_name candidate command_line="" matches=0
+  local exact_app_path executable_name candidate command_line="" matched_line="" matches=0
   exact_app_path="$(/usr/bin/osascript - "$app_name" <<'APPLESCRIPT'
 on run argv
   return POSIX path of (path to application (item 1 of argv))
@@ -399,13 +399,14 @@ APPLESCRIPT
     [[ "$command_line" == *"--type="* ]] && continue
     [[ "$command_line" == *"--remote-debugging-port=$port"* || "$command_line" == *"--remote-debugging-port $port"* ]] || continue
     (( matches += 1 ))
+    matched_line="$command_line"
   done
   (( matches == 1 )) || { print -u2 'The exact ChatGPT process for proxy-mode validation is ambiguous.'; return 1; }
   if (( use_proxy )); then
-    [[ "$command_line" == *"--proxy-server=$proxy_server"* && "$command_line" == *'--proxy-bypass-list=localhost;127.0.0.1;[::1]'* ]] \
+    [[ "$matched_line" == *"--proxy-server=$proxy_server"* && "$matched_line" == *'--proxy-bypass-list=localhost;127.0.0.1;[::1]'* ]] \
       || { print -u2 'The running ChatGPT session does not match the requested protected proxy.'; return 1; }
   else
-    [[ "$command_line" != *'--proxy-server='* ]] \
+    [[ "$matched_line" != *'--proxy-server='* ]] \
       || { print -u2 'The running ChatGPT session uses proxy mode while direct mode was requested.'; return 1; }
   fi
 }

@@ -11,11 +11,8 @@ $nativeApplyTest = Get-Content -LiteralPath $nativeApplyTestPath -Raw
 if ($updater -match '(?m)^\s*local(?:\s+-[A-Za-z]+)?(?:\s+[A-Za-z_][A-Za-z0-9_]*(?:=[^\s]+)?)*\s+path(?:=|\s|$)') {
     throw "The macOS updater declares zsh's special path parameter locally and can clear PATH."
 }
-if (-not $updater.Contains('local manifest="$install_root/RELEASE-MANIFEST.sha256" line hash relative file_path actual count=0')) {
-    throw 'The macOS installed-integrity check does not use the safe file_path variable.'
-}
-if (-not $updater.Contains('/usr/bin/shasum -a 256 "$file_path" | /usr/bin/awk')) {
-    throw 'The macOS installed-integrity check does not use the absolute awk path.'
+if (-not $updater.Contains('invoke_transaction_helper integrity --install-root "$install_root"')) {
+    throw 'The macOS installed-integrity check does not use the exact transaction-helper inventory contract.'
 }
 if ($updater -match 'local\s+backup_base=[^\r\n]+backup_root="\$backup_base"') {
     throw 'The macOS updater initializes backup_root from an unset same-command local under nounset.'

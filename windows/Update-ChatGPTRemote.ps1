@@ -152,6 +152,59 @@ function Assert-SafeResponseUri {
     Assert-SafeHttpsUrl ([string]$finalUri.AbsoluteUri)
 }
 
+function Read-CurlUpdateResponse {
+    param([Parameter(Mandatory)][string]$HeaderPath, [Parameter(Mandatory)][string]$BodyPath, [Parameter(Mandatory)][Uri]$ResponseUri)
+    $lines = @(Get-Content -LiteralPath $HeaderPath -ErrorAction Stop)
+    $statusIndex = -1
+    $statusCode = 0
+    for ($index = 0; $index -lt $lines.Count; $index++) {
+        if ([string]$lines[$index] -match '^HTTP/\S+\s+(\d{3})\b') { $statusIndex = $index; $statusCode = [int]$matches[1] }
+    }
+    if ($statusIndex -lt 0) { throw 'curl did not return a parseable HTTP status.' }
+    $responseHeaders = @{}
+    for ($index = $statusIndex + 1; $index -lt $lines.Count -and -not [string]::IsNullOrWhiteSpace([string]$lines[$index]); $index++) {
+        $separator = ([string]$lines[$index]).IndexOf(':')
+        if ($separator -le 0) { continue }
+        $name = ([string]$lines[$index]).Substring(0, $separator).Trim()
+        $value = ([string]$lines[$index]).Substring($separator + 1).Trim()
+        if ($responseHeaders.ContainsKey($name)) { $responseHeaders[$name] = @($responseHeaders[$name]) + $value } else { $responseHeaders[$name] = @($value) }
+    }
+    $bytes = if (Test-Path -LiteralPath $BodyPath -PathType Leaf) { [IO.File]::ReadAllBytes($BodyPath) } else { [byte[]]@() }
+    return [pscustomobject]@{ StatusCode = $statusCode; Headers = $responseHeaders; Bytes = $bytes; Content = [Text.Encoding]::UTF8.GetString($bytes); BaseResponse = [pscustomobject]@{ ResponseUri = $ResponseUri } }
+}
+
+function Invoke-SafeCurlWebRequest {
+    param([Parameter(Mandatory)][Uri]$Uri, [hashtable]$Headers, [Parameter(Mandatory)][int]$TimeoutSec)
+    $curl = Join-Path $env:SystemRoot 'System32\curl.exe'
+    if (-not (Test-Path -LiteralPath $curl -PathType Leaf)) { throw "The Windows HTTPS-proxy transport is unavailable: $curl" }
+    $temporary = Join-Path ([IO.Path]::GetTempPath()) ('chatgpt-remote-curl-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $temporary -Force | Out-Null
+    $headerPath = Join-Path $temporary 'headers.txt'
+    $bodyPath = Join-Path $temporary 'body.bin'
+    try {
+        $protocols = if ($AllowInsecureTransport) { '=https,http' } else { '=https' }
+        $arguments = @('--disable','--silent','--show-error','--ssl-revoke-best-effort','--max-redirs','0','--max-time',[string]$TimeoutSec,'--connect-timeout',[string]([Math]::Min(20, $TimeoutSec)),'--proto',$protocols,'--proto-redir',$protocols,'--proxy',$script:UpdateProxyServer,'--noproxy','localhost,127.0.0.1,::1','--dump-header',$headerPath,'--output',$bodyPath)
+        if ($Headers) { foreach ($name in @($Headers.Keys)) { $arguments += @('--header', ($name + ': ' + [string]$Headers[$name])) } }
+        $arguments += $Uri.AbsoluteUri
+        $curlEnvironmentNames = @('CURL_CA_BUNDLE','SSL_CERT_FILE','SSL_CERT_DIR')
+        $savedCurlEnvironment = @{}
+        try {
+            foreach ($name in $curlEnvironmentNames) {
+                $savedCurlEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+                [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+            }
+            & $curl @arguments | Out-Null
+            $curlExitCode = $LASTEXITCODE
+        } finally {
+            foreach ($name in $curlEnvironmentNames) { [Environment]::SetEnvironmentVariable($name, $savedCurlEnvironment[$name], 'Process') }
+        }
+        if ($curlExitCode -ne 0) { throw "curl update request failed with exit code $curlExitCode." }
+        return Read-CurlUpdateResponse -HeaderPath $headerPath -BodyPath $bodyPath -ResponseUri $Uri
+    } finally {
+        Remove-Item -LiteralPath $temporary -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Invoke-SafeWebRequest {
     param(
         [Parameter(Mandatory)][string]$Uri,
@@ -161,6 +214,19 @@ function Invoke-SafeWebRequest {
     Assert-SafeHttpsUrl $Uri
     $current = [Uri]$Uri
     for ($redirect = 0; $redirect -le 3; $redirect++) {
+        if ($script:UpdateProxyServer -and $PSVersionTable.PSEdition -eq 'Desktop' -and ([Uri]$script:UpdateProxyServer).Scheme -eq 'https') {
+            $curlResponse = Invoke-SafeCurlWebRequest -Uri $current -Headers $Headers -TimeoutSec $TimeoutSec
+            if ($curlResponse.StatusCode -in 301,302,303,307,308) {
+                $locations = @($curlResponse.Headers['Location'])
+                if ($redirect -ge 3 -or $locations.Count -ne 1) { throw 'The update response exceeded the safe redirect limit.' }
+                $next = [Uri]::new($current, [string]$locations[0])
+                Assert-SafeHttpsUrl $next.AbsoluteUri
+                $current = $next
+                continue
+            }
+            if ($curlResponse.StatusCode -lt 200 -or $curlResponse.StatusCode -ge 300) { throw "The update endpoint returned HTTP $($curlResponse.StatusCode)." }
+            return $curlResponse
+        }
         $handler = [Net.Http.HttpClientHandler]::new()
         $handler.AllowAutoRedirect = $false
         if ($script:UpdateProxyServer) {
@@ -679,8 +745,8 @@ function Get-ManifestEntries {
 function Test-InstalledIntegrity {
     if (Get-SourceCheckout) { return $true }
     try {
-        [void](Get-ManifestEntries $InstallRoot)
-        return $true
+        $result = Invoke-TransactionHelper -Operation 'integrity' -Arguments @('--install-root', $InstallRoot)
+        return $result.integrityValid -eq $true
     } catch {
         return $false
     }

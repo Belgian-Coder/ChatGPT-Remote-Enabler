@@ -22,6 +22,50 @@ function Test-ChatGPTRemoteProxyUrl {
     return $uri.GetLeftPart([UriPartial]::Authority)
 }
 
+function Get-ChatGPTRemoteProxySettingValue {
+    param([Parameter(Mandatory)][object]$Settings, [Parameter(Mandatory)][string]$Name)
+    $property = $Settings.PSObject.Properties[$Name]
+    if ($null -eq $property) { return $null }
+    return $property.Value
+}
+
+function Get-ChatGPTRemoteFixedSystemProxy {
+    [CmdletBinding()]
+    param([object]$InternetSettings)
+
+    if ($null -eq $InternetSettings) {
+        $settingsHive = 'HKCU:'
+        $policy = Get-ItemProperty -LiteralPath 'HKLM:\Software\Policies\Microsoft\Windows\CurrentVersion\Internet Settings' -Name ProxySettingsPerUser -ErrorAction SilentlyContinue
+        if ($null -ne $policy -and [int]$policy.ProxySettingsPerUser -eq 0) { $settingsHive = 'HKLM:' }
+        $settingsPath = "$settingsHive\Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+        $InternetSettings = Get-ItemProperty -LiteralPath $settingsPath -ErrorAction Stop
+        $connections = Get-ItemProperty -LiteralPath "$settingsPath\Connections" -Name DefaultConnectionSettings -ErrorAction Stop
+        $InternetSettings | Add-Member -NotePropertyName DefaultConnectionSettings -NotePropertyValue ([byte[]]$connections.DefaultConnectionSettings) -Force
+    }
+    $autoConfigUrl = [string](Get-ChatGPTRemoteProxySettingValue -Settings $InternetSettings -Name 'AutoConfigURL')
+    $autoDetect = Get-ChatGPTRemoteProxySettingValue -Settings $InternetSettings -Name 'AutoDetect'
+    $defaultConnectionSettingsValue = @(Get-ChatGPTRemoteProxySettingValue -Settings $InternetSettings -Name 'DefaultConnectionSettings')
+    if ($defaultConnectionSettingsValue.Count -le 8) { return $null }
+    $defaultConnectionSettings = [byte[]]$defaultConnectionSettingsValue
+    $connectionFlags = [int]$defaultConnectionSettings[8]
+    if (-not [string]::IsNullOrWhiteSpace($autoConfigUrl) -or ($connectionFlags -band 0x04) -ne 0) { return $null }
+    $proxyEnabled = Get-ChatGPTRemoteProxySettingValue -Settings $InternetSettings -Name 'ProxyEnable'
+    if ($null -eq $proxyEnabled -or [int]$proxyEnabled -ne 1 -or ($connectionFlags -band 0x02) -eq 0) { return $null }
+    $proxyServer = [string](Get-ChatGPTRemoteProxySettingValue -Settings $InternetSettings -Name 'ProxyServer')
+    if ([string]::IsNullOrWhiteSpace($proxyServer)) { return $null }
+
+    $endpoints = @{}
+    foreach ($segment in $proxyServer.Split(';', [StringSplitOptions]::RemoveEmptyEntries)) {
+        $parts = $segment.Split('=', 2)
+        if ($parts.Count -eq 2) { $endpoints[$parts[0].Trim().ToLowerInvariant()] = $parts[1].Trim() }
+        elseif (-not $endpoints.ContainsKey('default')) { $endpoints.default = $segment.Trim() }
+    }
+    $endpoint = if ($endpoints.ContainsKey('https')) { $endpoints.https } elseif ($endpoints.ContainsKey('http')) { $endpoints.http } else { $endpoints.default }
+    if ([string]::IsNullOrWhiteSpace([string]$endpoint)) { return $null }
+    if ([string]$endpoint -notmatch '^[a-z][a-z0-9+.-]*://') { $endpoint = 'http://' + [string]$endpoint }
+    return Test-ChatGPTRemoteProxyUrl -ProxyUrl ([string]$endpoint)
+}
+
 function Get-ChatGPTRemoteProxy {
     [CmdletBinding()]
     param(
@@ -53,11 +97,8 @@ function Get-ChatGPTRemoteProxy {
             }
         }
         try {
-            $destination = [Uri]'https://chatgpt.com/'
-            $systemProxy = [Net.WebRequest]::GetSystemWebProxy().GetProxy($destination)
-            if ($null -ne $systemProxy -and $systemProxy.IsAbsoluteUri -and $systemProxy.AbsoluteUri -cne $destination.AbsoluteUri) {
-                return Test-ChatGPTRemoteProxyUrl -ProxyUrl $systemProxy.AbsoluteUri
-            }
+            $systemProxy = Get-ChatGPTRemoteFixedSystemProxy
+            if (-not [string]::IsNullOrWhiteSpace($systemProxy)) { return $systemProxy }
         } catch {
             # A PAC or unavailable system proxy is not a fixed endpoint that the
             # protected CONNECT bridge can safely reuse for every destination.

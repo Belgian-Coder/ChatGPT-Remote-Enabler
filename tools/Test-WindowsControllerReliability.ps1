@@ -17,7 +17,12 @@ foreach ($contract in @(
     'all-connections-proxy-v1',
     'Remove-CrsInactiveProxyRuntimes',
     'Invoke-CommandInDesktopPackage returns after it dispatches the',
-    '$launchedProcesses.Count -eq 1'
+    '$launchedProcesses.Count -eq 1',
+    '$identityDeadline = $null',
+    '$identityDeadline = [DateTime]::UtcNow.AddSeconds(5)',
+    '$identityAttempts -lt 3',
+    "-notmatch '(?:^|\s)--type='",
+    'could not resolve the exact ChatGPT process identity'
 )) {
     if (-not $stableSourceText.Contains($contract)) { throw "Native environment-proxy launch contract is missing: $contract" }
 }

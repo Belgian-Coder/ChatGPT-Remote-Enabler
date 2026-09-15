@@ -10,7 +10,7 @@ param(
     [ValidatePattern('^[0-9a-fA-F]{64}$')]
     [string]$ExpectedConfigSha256,
     [ValidateRange(1, 30)]
-    [int]$ReadyTimeoutSeconds = 15
+    [int]$ReadyTimeoutSeconds = 30
 )
 
 Set-StrictMode -Version Latest

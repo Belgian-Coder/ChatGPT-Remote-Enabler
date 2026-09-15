@@ -508,18 +508,7 @@ recover_pending_transaction() {
 
 installed_integrity_valid() {
   source_checkout && return 0
-  local manifest="$install_root/RELEASE-MANIFEST.sha256" line hash relative file_path actual count=0
-  [[ -f "$manifest" && ! -L "$manifest" ]] || return 1
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    line="${line%$'\r'}"; hash="${line%% *}"; relative="${line#* \*}"
-    [[ ${#hash} -eq 64 && "$hash" != *[^0-9a-fA-F]* && -n "$relative" && "$relative" != /* && "$relative" != *'../'* && "$relative" != '../'* && "$relative" != *'/..' ]] || return 1
-    file_path="$install_root/$relative"
-    [[ -f "$file_path" && ! -L "$file_path" ]] || return 1
-    actual="$(/usr/bin/shasum -a 256 "$file_path" | /usr/bin/awk '{print $1}')"
-    [[ "${actual:l}" == "${hash:l}" ]] || return 1
-    (( count += 1 ))
-  done < "$manifest"
-  (( count > 0 ))
+  invoke_transaction_helper integrity --install-root "$install_root" >/dev/null 2>&1
 }
 
 ensure_stable_install_root() {
@@ -583,7 +572,7 @@ finalize_stable_install_root() {
       [[ "$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:CODEX_REMOTE_USE_PROXY' "$plist" 2>/dev/null || true)" == 1 ]] && startup_proxy=1
       local -a startup_arguments=(install-startup)
       (( startup_proxy )) && startup_arguments+=(--proxy)
-      CODEX_STARTUP_DELAY_SECONDS="$delay" CODEX_STARTUP_REQUIRED_PATH="$required" /bin/zsh "$launcher" "${startup_arguments[@]}" >/dev/null
+      CODEX_REMOTE_USE_PROXY="$startup_proxy" CODEX_STARTUP_DELAY_SECONDS="$delay" CODEX_STARTUP_REQUIRED_PATH="$required" /bin/zsh "$launcher" "${startup_arguments[@]}" >/dev/null
     fi
     if [[ -d "$HOME/Applications/ChatGPT Remote Enabler.app" || -f "$HOME/Library/Application Support/CodexRemoteFeatures/launchers/ChatGPT Remote Enabler.applescript" ]]; then
       local shortcut_proxy=0 shortcut_source="$HOME/Library/Application Support/CodexRemoteFeatures/launchers/ChatGPT Remote Enabler.applescript"

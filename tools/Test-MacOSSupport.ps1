@@ -54,7 +54,7 @@ foreach ($contract in @(
     'install_root="$canonical_install_root"',
     'stable_migration_pending=1',
     'if (( ! read_only_action )) && [[ ! -f "$transaction_journal" && ! -f "$git_transaction_journal" ]]; then',
-    'CODEX_STARTUP_REQUIRED_PATH="$required" /bin/zsh "$launcher" "${startup_arguments[@]}"'
+    'CODEX_REMOTE_USE_PROXY="$startup_proxy" CODEX_STARTUP_DELAY_SECONDS="$delay" CODEX_STARTUP_REQUIRED_PATH="$required" /bin/zsh "$launcher" "${startup_arguments[@]}"'
 )) {
     if (-not $updater.Contains($contract)) { throw "macOS updater stable-root/prepared-cleanup contract is missing: $contract" }
 }
@@ -66,6 +66,9 @@ if (-not $updateSessionPlatform.Contains('/usr/bin/awk ''{$1=$1; print}''')) {
 }
 foreach ($contract in @('startup_proxy=0', 'startup_arguments+=(--proxy)', 'shortcut_proxy=0', 'shortcut_arguments+=(--proxy)')) {
     if (-not $updater.Contains($contract)) { throw "macOS migration proxy-preservation contract is missing: $contract" }
+}
+foreach ($contract in @('matched_line=""', 'matched_line="$command_line"', '[[ "$matched_line" == *"--proxy-server=$proxy_server"*', '[[ "$matched_line" != *''--proxy-server=''*')) {
+    if (-not $launcher.Contains($contract)) { throw "macOS running proxy-mode validation does not retain the exact matched process: $contract" }
 }
 if ($updater.Contains('"${install_root:h}" != "${legacy_release_root:A}"')) {
     throw 'macOS stable-root migration is still restricted to one legacy parent path.'

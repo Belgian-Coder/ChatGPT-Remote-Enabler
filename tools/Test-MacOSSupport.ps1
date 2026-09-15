@@ -78,7 +78,7 @@ foreach ($contract in @('progress_start()', 'progress_write update-recovery', 'p
 foreach ($contract in @('NSWindow', 'NSProgressIndicator', 'NSRunLoop.currentRunLoop', 'update-recovery', 'update-check', 'renderer-readiness', 'complete', 'Action required', 'private per-user')) {
     if (-not $startupProgress.Contains($contract)) { throw "macOS native startup progress helper contract is missing: $contract" }
 }
-foreach ($contract in @('resolve_app_bundle() {', 'resolve_app_executable() {', '"$app_executable" "${launch_arguments[@]}"', 'chatgpt-launch.log')) {
+foreach ($contract in @('resolve_app_bundle() {', 'resolve_app_executable() {', '"$app_executable" "${launch_arguments[@]}"', 'chatgpt-launch.log', 'timeout_seconds=35', '[[ "$requested_action" == probe ]] && timeout_seconds=12', 'return 124')) {
     if (-not $launcher.Contains($contract)) { throw "macOS permission-free application launch contract is missing: $contract" }
 }
 if ($launcher.Contains('/usr/bin/open "${open_arguments[@]}"') -or $launcher.Contains('path to application')) {

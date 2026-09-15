@@ -49,7 +49,7 @@ uses="$(grep -Fc 'escape_applescript_string "$launcher"' "$shortcut")"
 [[ "$uses" == 2 ]] || { print -u2 "Installer and probe do not share one escape helper."; exit 1; }
 
 for script in "$root"/macos/*.sh; do /bin/zsh -n "$script"; done
-for launch_contract in 'resolve_app_bundle() {' 'resolve_app_executable() {' '"$app_executable" "${launch_arguments[@]}"' 'chatgpt-launch.log'; do
+for launch_contract in 'resolve_app_bundle() {' 'resolve_app_executable() {' '"$app_executable" "${launch_arguments[@]}"' 'chatgpt-launch.log' 'timeout_seconds=35' '[[ "$requested_action" == probe ]] && timeout_seconds=12' 'return 124'; do
   /usr/bin/grep -F "$launch_contract" "$root/macos/MobileProjectView-macOS-arm64.sh" >/dev/null \
     || { print -u2 "The permission-free application launch contract is missing: $launch_contract"; exit 1; }
 done

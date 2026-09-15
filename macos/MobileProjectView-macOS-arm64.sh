@@ -431,9 +431,26 @@ continue_with_updated_launcher() {
 run_injector() {
   local node_bin="$1"
   local requested_action="$2"
+  local timeout_seconds=35 injector_pid deadline wait_status=0
+  [[ "$requested_action" == probe ]] && timeout_seconds=12
   local args=("$injector" --action "$requested_action" --port "$port" --local-name "$(computer_name)" --target-wait-ms 30000)
   if [[ -n "$peer_name" ]]; then args+=(--single-remote-name "$peer_name"); fi
-  "$node_bin" "${args[@]}"
+  "$node_bin" "${args[@]}" &
+  injector_pid=$!
+  deadline=$(( EPOCHSECONDS + timeout_seconds ))
+  while kill -0 "$injector_pid" 2>/dev/null; do
+    if (( EPOCHSECONDS >= deadline )); then
+      kill -TERM "$injector_pid" 2>/dev/null || true
+      sleep 0.2
+      kill -KILL "$injector_pid" 2>/dev/null || true
+      wait "$injector_pid" 2>/dev/null || true
+      print -u2 "The renderer $requested_action request exceeded its $timeout_seconds second safety timeout."
+      return 124
+    fi
+    sleep 0.1
+  done
+  wait "$injector_pid" || wait_status=$?
+  return "$wait_status"
 }
 
 readiness_state() {
@@ -621,27 +638,39 @@ enable_view() {
   debug_endpoint_ready "$node_bin" || { print -u2 "The loopback Codex renderer endpoint did not become ready."; return 1; }
   progress_write renderer-readiness 'Waiting for renderer readiness…'
   verify_running_proxy_mode
-  local mobile_started=$EPOCHREALTIME output summary readiness_exit deadline
-  output="$(run_injector "$node_bin" enable)"
-  print -r -- "$output"
+  local mobile_started=$EPOCHREALTIME output summary readiness_exit deadline injector_exit=0 requested_injector_action=enable
   set +e
-  summary="$(readiness_state "$node_bin" "$output")"
-  readiness_exit=$?
+  output="$(run_injector "$node_bin" "$requested_injector_action")"
+  injector_exit=$?
+  if (( injector_exit == 0 )); then
+    print -r -- "$output"
+    summary="$(readiness_state "$node_bin" "$output")"
+    readiness_exit=$?
+  else
+    summary="{\"error\":\"renderer $requested_injector_action request exited $injector_exit\"}"
+    readiness_exit=2
+  fi
   set -e
   deadline=$(( EPOCHSECONDS + mobile_ready_timeout_seconds ))
   while (( readiness_exit != 0 )); do
     (( EPOCHSECONDS < deadline )) || { print -u2 "The mobile project view did not become ready within $mobile_ready_timeout_seconds seconds. Last readiness proof: $summary"; return 1; }
     sleep 0.5
     if (( readiness_exit == 2 )); then
-      output="$(run_injector "$node_bin" enable)"
+      requested_injector_action=enable
     else
-      output="$(run_injector "$node_bin" probe)"
+      requested_injector_action=probe
     fi
     set +e
-    summary="$(readiness_state "$node_bin" "$output")"
-    readiness_exit=$?
+    output="$(run_injector "$node_bin" "$requested_injector_action")"
+    injector_exit=$?
+    if (( injector_exit == 0 )); then
+      summary="$(readiness_state "$node_bin" "$output")"
+      readiness_exit=$?
+    else
+      summary="{\"error\":\"renderer $requested_injector_action request exited $injector_exit\"}"
+      readiness_exit=2
+    fi
     set -e
-    (( readiness_exit == 2 )) && return 1
   done
   (( readiness_exit == 0 )) || { print -u2 "The mobile project view readiness probe failed."; return 1; }
   print "stage=mobile-readiness durationMs=$(( (EPOCHREALTIME - mobile_started) * 1000 )) proof=$summary"

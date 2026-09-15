@@ -16,13 +16,13 @@ owned lock only for the prepared successor, then retires after the new
 coordinator publishes an active heartbeat. A failed successor is stopped and
 the predecessor restores its lock, binding, and status. ChatGPT remains open.
 
-The Dock shortcut shows native AppKit startup progress through update
-recovery/check, maintenance, launch, renderer readiness, and completion. It
-observes only a private per-user state file and closes only after readiness
-proof; failures remain visible with a corrective message. Automatic restarts
-use exact renderer `quit-app` dispatch or one exact-PID POSIX `SIGTERM` after
-revalidating the process and bundle identity, never the TCC-sensitive Apple
-Events path or a force-kill.
+The macOS Dock shortcut shows native AppKit startup progress through update
+recovery/check, maintenance, launch, renderer readiness, and completion. The
+window reads a private per-user state file and closes only after readiness proof;
+an error stays visible with a corrective message. Windows keeps its existing
+startup progress worker and graceful `native-renderer-quit`/`WM_CLOSE` behavior.
+Both update coordinators accept only their platform's explicitly whitelisted
+close methods.
 
 On Windows, each shortcut or sign-in launch verifies Remote Enabler recovery,
 completes the official signed desktop MSIX update, completes the required

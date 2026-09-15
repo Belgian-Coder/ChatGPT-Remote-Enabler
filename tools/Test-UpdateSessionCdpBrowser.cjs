@@ -180,6 +180,18 @@ async function main() {
     const replyAfterReconnect = await page.evaluate(() => globalThis.__CHATGPT_REMOTE_UPDATE__.request("check"));
     assert.equal(replyAfterReconnect.state, "current");
 
+    transport.setClosingExpected(true);
+    await transport.close();
+    assert.equal(await page.evaluate(() => globalThis.__CHATGPT_REMOTE_UPDATE__), undefined);
+    transport.setClosingExpected(false);
+    await transport.attach();
+    await transport.publish({ state: "available", version: "v-real-restored", message: "restored", canQueue: true });
+    await waitFor(
+      async () => page.evaluate(() => globalThis.__CHATGPT_REMOTE_UPDATE__?.getStatus?.().version === "v-real-restored").catch(() => false),
+      "The predecessor transport did not restore after a simulated failed handoff.",
+    );
+    assert.equal((await page.evaluate(() => globalThis.__CHATGPT_REMOTE_UPDATE__.request("check"))).state, "current");
+
     const pending = page.evaluate(() => globalThis.__CHATGPT_REMOTE_UPDATE__.request("queue")
       .then(() => ({ resolved: true }), (error) => ({ resolved: false, error: error.message })));
     await waitFor(() => pendingRequestStarted, "The pending renderer request did not reach the host.");
@@ -200,6 +212,7 @@ async function main() {
       activityCoalesced: true,
       reloadConvergence: true,
       socketReattach: true,
+      handoffTransportRestore: true,
       disposeRejectedPending: true,
       persistentCleanup: true,
       bindingName: BINDING_NAME,

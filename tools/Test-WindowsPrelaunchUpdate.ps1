@@ -114,12 +114,12 @@ if (`$decision -eq 'Installed') { `$proof.Manifest = [ordered]@{Name='OpenAI.Cod
 
         $flowIndex = $sourceText.IndexOf('$recoverTimer = [Diagnostics.Stopwatch]::StartNew()', [StringComparison]::Ordinal)
         $recoveryIndex = $sourceText.IndexOf('$recovery = Invoke-UpdateRecovery -UpdaterPath', $flowIndex, [StringComparison]::Ordinal)
-        $desktopIndex = $sourceText.IndexOf('Invoke-DesktopAppPrelaunchUpdate -UpdaterPath', $recoveryIndex, [StringComparison]::Ordinal)
-        $prelaunchIndex = $sourceText.IndexOf('Invoke-PrelaunchUpdate -UpdaterPath', $desktopIndex, [StringComparison]::Ordinal)
+        $prelaunchIndex = $sourceText.IndexOf('Invoke-PrelaunchUpdate -UpdaterPath', $recoveryIndex, [StringComparison]::Ordinal)
+        $desktopIndex = $sourceText.IndexOf('Invoke-DesktopAppPrelaunchUpdate -UpdaterPath', $prelaunchIndex, [StringComparison]::Ordinal)
         $injectionIndex = $sourceText.IndexOf($case.Injection, $prelaunchIndex, [StringComparison]::Ordinal)
         $reloadIndex = $sourceText.IndexOf('Start-UpdatedEntryPoint -EntryPoint $PSCommandPath', $prelaunchIndex, [StringComparison]::Ordinal)
         $reloadArgumentIndex = $sourceText.IndexOf('$reloadArguments = @(', $prelaunchIndex, [StringComparison]::Ordinal)
-        Assert-Condition ($flowIndex -ge 0 -and $recoveryIndex -gt $flowIndex -and $desktopIndex -gt $recoveryIndex -and $prelaunchIndex -gt $desktopIndex -and $injectionIndex -gt $prelaunchIndex -and $reloadIndex -gt $prelaunchIndex) "$($case.Name) does not perform integrity recovery, desktop-app update, then Remote Enabler update before injection/reload."
+        Assert-Condition ($flowIndex -ge 0 -and $recoveryIndex -gt $flowIndex -and $prelaunchIndex -gt $recoveryIndex -and $desktopIndex -gt $prelaunchIndex -and $injectionIndex -gt $desktopIndex -and $reloadIndex -gt $prelaunchIndex) "$($case.Name) does not perform integrity recovery, Remote Enabler update, then desktop-app update before injection/reload."
         Assert-Condition ($sourceText.Contains('-Action Update -Transport Git') -and -not $sourceText.Contains('-Action Auto -Transport Git')) "$($case.Name) does not require a verified Git update."
         Assert-Condition ($sourceText.Contains("if (`$recovery.recovered -and [string]`$recovery.recoveryMode -cne 'rollback')") -and $sourceText.Contains('if ($RecoveryContinuation)') -and $sourceText.Contains('launch aborted to prevent a reload loop')) "$($case.Name) does not safely reload after forward recovery while retaining rollback compatibility."
         Assert-Condition ($sourceText.Contains('ContinuationParentProcessId') -and $sourceText.Contains('Wait-ForContinuationParent')) "$($case.Name) lacks the continuation handoff contract."
@@ -150,9 +150,8 @@ if (`$decision -eq 'Installed') { `$proof.Manifest = [ordered]@{Name='OpenAI.Cod
         foreach ($argument in @('-RelaunchHandoffPath', '-UpdateResume', '-ContinuationAfterAcceptedHandshake')) {
             Assert-Condition $sourceText.Contains($argument) "$($case.Name) does not preserve $argument during updated-entry-point handoff."
         }
-        Assert-Condition ($sourceText.Contains('legacy helper handoff detected; verifying Remote Enabler again after the desktop-app update')) "$($case.Name) does not repair the update order after an older helper hands off."
         $reloadBlock = $sourceText.Substring($reloadArgumentIndex, $reloadIndex - $reloadArgumentIndex)
-        Assert-Condition $reloadBlock.Contains('-SkipDesktopAppUpdateOnce') "$($case.Name) repeats the desktop-app update after a Remote Enabler handoff."
+        Assert-Condition (-not $reloadBlock.Contains('-SkipDesktopAppUpdateOnce')) "$($case.Name) incorrectly skips the desktop-app update after the Remote Enabler reloads."
         foreach ($consumedHandshakeArgument in @('-ParentProcessId', '-ParentProcessStartTimeFileTimeUtc', '-ReadyEventName', '-RejectedEventName')) {
             Assert-Condition (-not $reloadBlock.Contains($consumedHandshakeArgument)) "$($case.Name) carries consumed handshake argument $consumedHandshakeArgument into its updated continuation."
         }
@@ -285,12 +284,11 @@ if (`$decision -eq 'Installed') { `$proof.Manifest = [ordered]@{Name='OpenAI.Cod
     [pscustomobject]@{
         Controllers = $cases.Count
         IntegrityRecoveryBeforeDesktopApp = $true
-        DesktopAppUpdateBeforeGit = $true
+        GitUpdateBeforeDesktopApp = $true
         DesktopAppProofFailClosed = $true
         TransientDesktopEndpointFallback = $true
         StartupProgressPhases = $true
         RunningAppPreserved = $true
-        LegacyHandoffOrderRepaired = $true
         GitUpdateBeforeInjection = $true
         SuccessfulUpdateRecovery = $true
         RequiredUpdateFailureStops = $true

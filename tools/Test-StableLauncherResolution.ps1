@@ -52,6 +52,28 @@ try {
     Write-Version -Root $stableRoot -Version $currentVersion
     New-ReleaseManifest -Root $stableRoot
     Assert-Condition (Test-StablePackage -Root $stableRoot -RequireManifest) 'The canonical fixture failed manifest, VERSION, and ProductVersion validation.'
+    $runtimeRollback = Join-Path $stableRoot 'CodexRemoteMobileProject\rollback'
+    New-Item -ItemType Directory -Path $runtimeRollback -Force | Out-Null
+    $allowedRuntimeRollback = @(
+        'startup-task-fixture-20260915-120000.xml',
+        'desktop-shortcut-fixture-20260915-120000-001.lnk',
+        'startmenu-shortcut-fixture-20260915-120000-001.lnk',
+        'legacydesktop-shortcut-fixture-20260915-120000-001.lnk',
+        'legacystartmenu-shortcut-fixture-20260915-120000-001.lnk',
+        'legacystartmenuproxytest-shortcut-fixture-20260915-120000-001.lnk',
+        'legacystartmenuproxy-shortcut-fixture-20260915-120000-001.lnk',
+        'startup-shortcut-fixture-20260915-120000-001.lnk',
+        'legacy-disabled-startup-shortcut-fixture-20260915-120000-001.disabled',
+        'legacy-disabled-startup-shortcut-fixture-20260915-120000-002.lnk',
+        'legacy-startup-shortcut-fixture-20260915-120000-001.lnk'
+    )
+    foreach ($name in $allowedRuntimeRollback) {
+        [IO.File]::WriteAllText((Join-Path $runtimeRollback $name), 'fixture', [Text.UTF8Encoding]::new($false))
+    }
+    Assert-Condition (Test-StablePackage -Root $stableRoot -RequireManifest) 'Installed-package validation rejected a rollback filename produced by a supported launcher.'
+    [IO.File]::WriteAllText((Join-Path $runtimeRollback 'legacy-startup-shortcut-fixture-unsafe.lnk'), 'fixture', [Text.UTF8Encoding]::new($false))
+    Assert-Condition (-not (Test-StablePackage -Root $stableRoot -RequireManifest)) 'Installed-package validation accepted a malformed rollback filename.'
+    Remove-Item -LiteralPath $runtimeRollback -Recurse -Force
     [IO.File]::WriteAllText((Join-Path $stableRoot 'unlisted-runtime.ps1'), 'throw "must not load"', [Text.UTF8Encoding]::new($false))
     Assert-Condition (-not (Test-StablePackage -Root $stableRoot -RequireManifest)) 'Installed-package validation accepted arbitrary unlisted code.'
     Remove-Item -LiteralPath (Join-Path $stableRoot 'unlisted-runtime.ps1') -Force

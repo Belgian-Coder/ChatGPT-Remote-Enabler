@@ -541,23 +541,12 @@ try {
         Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] protected all-connections proxy configuration loaded"
     }
 
-    $desktopUpdateExecuted = $false
-    if (-not $SkipDesktopAppUpdateOnce -and -not $UpdateResume) {
-        Set-StartupProgress -Message 'Checking the installed ChatGPT app...'
-        [void](Invoke-DesktopAppPrelaunchUpdate -UpdaterPath $desktopAppUpdater -UseProxy:$UseProxy)
-        $desktopUpdateExecuted = $true
-    }
-
     $skipRemotePrelaunch = [bool]$SkipPrelaunchUpdateOnce
-    if ($desktopUpdateExecuted -and $ContinuationAfterAcceptedHandshake -and $SkipPrelaunchUpdateOnce -and -not $SkipDesktopAppUpdateOnce) {
-        $skipRemotePrelaunch = $false
-        Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] legacy helper handoff detected; verifying Remote Enabler again after the desktop-app update"
-    }
     if (-not $SkipUpdate -and -not $SkipUpdateCheckOnce -and -not $UpdateResume -and -not $skipRemotePrelaunch) {
         Set-StartupProgress -Message 'Checking and updating Remote Enabler...'
         $prelaunchUpdate = Invoke-PrelaunchUpdate -UpdaterPath $updater -InstallRoot $runtimeRoot -UseProxy:$UseProxy
         if ($prelaunchUpdate.updated) {
-            $reloadArguments = @('-SkipDesktopAppUpdateOnce', '-SkipPrelaunchUpdateOnce')
+            $reloadArguments = @('-SkipPrelaunchUpdateOnce')
             if ($handshakeReady) { $reloadArguments += '-ContinuationAfterAcceptedHandshake' }
             if ($UseProxy) { $reloadArguments += '-UseProxy' }
             if ($SkipMobileProjects) { $reloadArguments += '-SkipMobileProjects' }
@@ -568,6 +557,11 @@ try {
             Start-UpdatedEntryPoint -EntryPoint $PSCommandPath -Arguments $reloadArguments
             return
         }
+    }
+
+    if (-not $SkipDesktopAppUpdateOnce -and -not $UpdateResume) {
+        Set-StartupProgress -Message 'Checking the installed ChatGPT app...'
+        [void](Invoke-DesktopAppPrelaunchUpdate -UpdaterPath $desktopAppUpdater -UseProxy:$UseProxy)
     }
 
     if ($UpdateResume -and @(Get-CimInstance Win32_Process -Filter "Name='ChatGPT.exe'" -ErrorAction SilentlyContinue).Count -gt 0) {

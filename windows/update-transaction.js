@@ -321,7 +321,7 @@ function parseManifest(root, verifyFiles = true, allowPreparedMetadata = false) 
     const normalized = relative.replace(/\\/gu, "/");
     if (process.platform === "darwin") return normalized === ".DS_Store" || normalized.endsWith("/.DS_Store") ||
       /^rollback\/com\.local\.codex-mobile-project-view-(?:failed-|removed-)?\d{8}-\d{6}-\d+\.plist$/u.test(normalized);
-    return /^CodexRemoteMobileProject\/rollback\/(?:startup-task-[^/]+-\d{8}-\d{6}\.xml|(?:desktop|startmenu|legacydesktop|legacystartmenu|legacystartmenuproxytest|legacystartmenuproxy)-shortcut-[^/]+-\d{8}-\d{6}-\d{3}\.lnk|(?:startup-shortcut|legacy-disabled-startup-shortcut)-[^/]+-\d{8}-\d{6}-\d{3}\.lnk)$/iu.test(normalized);
+    return /^CodexRemoteMobileProject\/rollback\/(?:startup-task-[^/]+-\d{8}-\d{6}\.xml|(?:desktop|startmenu|legacydesktop|legacystartmenu|legacystartmenuproxytest|legacystartmenuproxy)-shortcut-[^/]+-\d{8}-\d{6}-\d{3}\.lnk|(?:startup-shortcut|legacy-startup-shortcut)-[^/]+-\d{8}-\d{6}-\d{3}\.lnk|legacy-disabled-startup-shortcut-[^/]+-\d{8}-\d{6}-\d{3}\.(?:lnk|disabled))$/iu.test(normalized);
   };
   const visit = (directory, prefix = "") => {
     for (const name of fs.readdirSync(directory)) {

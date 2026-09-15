@@ -99,7 +99,7 @@ function harness(options = {}) {
       if (options.hotReloadError && calls.hotReload === 1) throw options.hotReloadError;
       return { loaded: true, helperVersion: actual.version, rendererVersion: 82, ready: true };
     },
-    async handoffCoordinator() { calls.handoff += 1; if (options.handoffError) throw options.handoffError; return { scheduled: true }; },
+    async handoffCoordinator() { calls.handoff += 1; if (options.handoffError) throw options.handoffError; return { activated: true }; },
     async relaunch() { calls.relaunch += 1; if (options.relaunchError) throw options.relaunchError; return { ready: true }; },
     async notifyFailure() { calls.notify += 1; },
   };
@@ -225,6 +225,17 @@ async function testCoordinatorActivationFailureKeepsAppOpen() {
   assert.equal(h.controller.status.state, "current");
 }
 
+async function testIncompleteHandoffRecoveryStopsRetries() {
+  const failure = new Error("simulated predecessor recovery failure");
+  failure.handoffRecoveryIncomplete = true;
+  const h = harness({ hotCompatible: true, handoffError: failure });
+  await h.controller.check(true);
+  await h.controller.request("queue", "queue-incomplete-handoff-recovery");
+  await waitOperation(h.controller);
+  assert.equal(h.calls.handoff, 1, "an incomplete predecessor recovery must stop automatic handoff retries");
+  assert.equal(h.controller.stopping, true, "a predecessor without its lock or transport must retire instead of claiming it remains active");
+}
+
 function testCoordinatorAwareRetention() {
   const retentionRoot = path.join(tempRoot, "retention-state");
   const sessionsRoot = path.join(retentionRoot, "sessions");
@@ -249,6 +260,11 @@ function testCoordinatorAwareRetention() {
     fs.utimesSync(directory, age, age);
     fs.utimesSync(bundle, age, age);
   });
+  const orphanBundle = path.join(bundlesRoot, "f".repeat(64));
+  fs.mkdirSync(orphanBundle, { recursive: true });
+  fs.writeFileSync(path.join(orphanBundle, "Update-ChatGPTRemote.ps1"), "orphan fixture");
+  const newest = new Date(Date.now() + 1000);
+  fs.utimesSync(orphanBundle, newest, newest);
   const currentDirectory = path.join(sessionsRoot, ids[4]);
   session.pruneUpdateSessionState({ stateRoot: retentionRoot, sessionDirectory: currentDirectory }, 2, 2);
   assert.deepEqual(fs.readdirSync(sessionsRoot).sort(), ids.slice(3).sort(), "retention must keep the active coordinator and one prior session");
@@ -415,27 +431,78 @@ function testMalformedOwnerLockFailsClosed() {
   fs.rmSync(initial.lockPath, { force: true });
 }
 
+async function testDeadLegacyPidOnlyLockReclaimed() {
+  const cfg = config({ app: { pid: 987656, startTimeFileTimeUtc: "134000000000000003", executablePath: path.join(tempRoot, "ChatGPT.exe") } });
+  const initial = session.acquireLock(cfg);
+  assert.equal(initial.acquired, true);
+  fs.rmSync(initial.lockPath, { force: true });
+  const deadOwner = spawn(process.execPath, ["-e", "process.exit(0)"], { stdio: "ignore", windowsHide: true });
+  const deadPid = deadOwner.pid;
+  await events.once(deadOwner, "close");
+  fs.writeFileSync(initial.lockPath, `${JSON.stringify({ pid: deadPid })}\n`, { encoding: "utf8", mode: 0o600 });
+  delete cfg.coordinatorProcessIdentity;
+  const reclaimed = session.acquireLock(cfg);
+  assert.equal(reclaimed.acquired, true, "a dead v1.5.83 PID-only lock must be reclaimed automatically");
+  fs.rmSync(initial.lockPath, { force: true });
+}
+
+function testAtomicHandoffResultRetriesTransientRename() {
+  const resultPath = path.join(sessionDirectory, "atomic-handoff-result.json");
+  const originalRename = fs.renameSync;
+  let attempts = 0;
+  fs.renameSync = (source, destination) => {
+    if (destination === resultPath && attempts++ < 2) {
+      const error = new Error("transient scanner lock");
+      error.code = "EPERM";
+      throw error;
+    }
+    return originalRename(source, destination);
+  };
+  try {
+    handoffHelper.atomicResult(resultPath, { started: true });
+    assert.deepEqual(JSON.parse(fs.readFileSync(resultPath, "utf8")), { started: true });
+    assert.equal(attempts, 3);
+  } finally {
+    fs.renameSync = originalRename;
+    fs.rmSync(resultPath, { force: true });
+  }
+}
+
 async function testConcurrentStaleLockReclamation() {
   const cfg = config({ app: { pid: 987655, startTimeFileTimeUtc: "134000000000000002", executablePath: path.join(tempRoot, "ChatGPT.exe") } });
   const initial = session.acquireLock(cfg);
   assert.equal(initial.acquired, true);
   fs.rmSync(initial.lockPath, { force: true });
 
-  const deadOwner = spawn(process.execPath, ["-e", "process.exit(0)"], { stdio: "ignore", windowsHide: true });
+  const deadOwner = spawn(process.execPath, ["-e", "setTimeout(() => process.exit(0), 1500)"], { stdio: "ignore", windowsHide: true });
   const deadPid = deadOwner.pid;
+  const deadIdentity = session.queryCoordinatorProcessIdentity(deadPid, process.platform);
+  assert.ok(deadIdentity, "the stale fixture owner must have an exact process identity before exit");
   await events.once(deadOwner, "close");
-  fs.writeFileSync(initial.lockPath, `${JSON.stringify({ pid: deadPid })}\n`, { encoding: "utf8", mode: 0o600 });
+  fs.writeFileSync(initial.lockPath, `${JSON.stringify(deadIdentity)}\n`, { encoding: "utf8", mode: 0o600 });
 
   const childSource = `
-    const { acquireLock } = require(process.argv[1]);
+    const fs = require("node:fs");
+    const { acquireLock, queryCoordinatorProcessIdentity } = require(process.argv[1]);
     const config = JSON.parse(Buffer.from(process.argv[2], "base64url").toString("utf8"));
+    config.coordinatorProcessIdentity = queryCoordinatorProcessIdentity(process.pid, config.platform);
+    if (!config.coordinatorProcessIdentity) throw new Error("fixture identity unavailable");
+    fs.writeFileSync(process.argv[3] + "." + process.pid, "ready");
+    const goDeadline = Date.now() + 30_000;
+    while (!fs.existsSync(process.argv[3])) {
+      if (fs.existsSync(process.argv[3] + "-abort")) process.exit(0);
+      if (Date.now() >= goDeadline) throw new Error("fixture start signal not received");
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+    }
     const result = acquireLock(config);
     process.stdout.write(result.acquired ? "1" : "0");
-    setTimeout(() => process.exit(0), result.acquired ? 1500 : 0);
+    setTimeout(() => process.exit(0), result.acquired ? 5000 : 0);
   `;
+  delete cfg.coordinatorProcessIdentity;
   const encodedConfig = Buffer.from(JSON.stringify(cfg), "utf8").toString("base64url");
+  const goPath = path.join(tempRoot, `lock-contenders-go-${crypto.randomUUID()}`);
   const claims = Array.from({ length: 12 }, () => new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ["-e", childSource, windowsModulePath, encodedConfig], {
+    const child = spawn(process.execPath, ["-e", childSource, windowsModulePath, encodedConfig, goPath], {
       stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
     });
     let stdout = "";
@@ -448,7 +515,25 @@ async function testConcurrentStaleLockReclamation() {
       else resolve(stdout);
     });
   }));
-  const results = await Promise.all(claims);
+  const settledClaims = Promise.all(claims);
+  let contenderFailure = null;
+  settledClaims.catch((error) => { contenderFailure = error; });
+  let results;
+  try {
+    const readyDeadline = Date.now() + 20_000;
+    while (!contenderFailure && fs.readdirSync(tempRoot).filter((name) => name.startsWith(path.basename(goPath) + ".")).length < 12 && Date.now() < readyDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    if (contenderFailure) throw contenderFailure;
+    assert.equal(fs.readdirSync(tempRoot).filter((name) => name.startsWith(path.basename(goPath) + ".")).length, 12,
+      "all lock contenders must establish their own identity before the simultaneous claim");
+    fs.writeFileSync(goPath, "go");
+    results = await settledClaims;
+  } catch (error) {
+    try { fs.writeFileSync(`${goPath}-abort`, "abort"); } catch {}
+    await Promise.allSettled(claims);
+    throw error;
+  }
   assert.equal(results.filter((value) => value === "1").length, 1, "concurrent stale-lock reclaimers must produce exactly one helper owner");
   fs.rmSync(initial.lockPath, { force: true });
   fs.rmSync(`${initial.lockPath}.reclaim`, { force: true, recursive: true });
@@ -548,17 +633,39 @@ async function testCoordinatorHandoffSchedule() {
     const child = new events.EventEmitter();
     child.pid = 1001;
     child.unref = () => {};
-    setImmediate(() => child.emit("spawn"));
+    setImmediate(() => {
+      child.emit("spawn");
+      const handoff = JSON.parse(fs.readFileSync(args[2], "utf8"));
+      fs.writeFileSync(handoff.resultPath, JSON.stringify({ attemptId: handoff.attemptId, armed: true, started: false }));
+      const release = handoff.releasePath;
+      const poll = setInterval(() => {
+        if (!fs.existsSync(release)) return;
+        clearInterval(poll);
+        fs.writeFileSync(handoff.resultPath, JSON.stringify({ attemptId: handoff.attemptId, started: true, readySession: path.join(stateRoot, "sessions", "replacement") }));
+      }, 5);
+    });
     return child;
   };
-  const adapter = new session.PlatformAdapter(cfg, { spawn: fakeSpawn });
+  let released = false;
+  let quiesced = false;
+  const adapter = new session.PlatformAdapter(cfg, {
+    spawn: fakeSpawn,
+    quiesceCoordinatorTransport: async () => { quiesced = true; },
+    restoreCoordinatorTransport: async () => { quiesced = false; },
+    releaseCoordinatorLock: () => { released = true; },
+    reacquireCoordinatorLock: () => { released = false; },
+    coordinatorLockOwned: () => !released,
+  });
   const result = await adapter.handoffCoordinator();
-  assert.equal(result.scheduled, true);
+  assert.equal(result.activated, true);
+  assert.equal(released, true);
+  assert.equal(quiesced, true, "the predecessor transport must remain quiesced after the successor proves readiness");
   assert.equal(invocation.command, process.execPath);
   assert.equal(path.basename(invocation.args[1]), "coordinator-handoff.js");
   assert.equal(invocation.options.detached, true);
   assert.equal(invocation.options.windowsHide, true);
-  const handoff = JSON.parse(fs.readFileSync(path.join(sessionDirectory, "coordinator-handoff.json"), "utf8"));
+  const handoff = JSON.parse(fs.readFileSync(invocation.args[2], "utf8"));
+  assert.match(handoff.attemptId, /^[a-f0-9]{32}$/u);
   assert.equal(handoff.previousPid, process.pid);
   assert.equal(handoff.lockPath, cfg.coordinatorLockPath);
   assert.equal(handoff.stateRoot, cfg.stateRoot);
@@ -568,16 +675,63 @@ async function testCoordinatorHandoffSchedule() {
   assert.equal(handoff.replaceRunningApp, true);
 }
 
+async function testCoordinatorHandoffFailureReclaimsLock() {
+  const cfg = config();
+  cfg.configPath = path.join(sessionDirectory, "session.json");
+  cfg.coordinatorLockPath = path.join(stateRoot, "active", "fixture.lock");
+  const fakeSpawn = (_command, args) => {
+    const child = new events.EventEmitter();
+    child.pid = 1002;
+    child.unref = () => {};
+    setImmediate(() => {
+      child.emit("spawn");
+      const handoff = JSON.parse(fs.readFileSync(args[2], "utf8"));
+      fs.writeFileSync(handoff.resultPath, JSON.stringify({ attemptId: handoff.attemptId, armed: true, started: false }));
+      const release = handoff.releasePath;
+      const poll = setInterval(() => {
+        if (!fs.existsSync(release)) return;
+        clearInterval(poll);
+        fs.writeFileSync(handoff.resultPath, JSON.stringify({ attemptId: handoff.attemptId, started: false, reason: "fixture-replacement-failed" }));
+      }, 5);
+    });
+    return child;
+  };
+  let released = false;
+  let reacquired = false;
+  let quiesced = false;
+  let restored = false;
+  const adapter = new session.PlatformAdapter(cfg, {
+    spawn: fakeSpawn,
+    quiesceCoordinatorTransport: async () => { quiesced = true; },
+    restoreCoordinatorTransport: async () => { quiesced = false; restored = true; },
+    releaseCoordinatorLock: () => { released = true; },
+    reacquireCoordinatorLock: () => { reacquired = true; released = false; },
+    coordinatorLockOwned: () => !released,
+  });
+  await assert.rejects(adapter.handoffCoordinator(), /fixture-replacement-failed/u);
+  assert.equal(reacquired, true, "a failed successor must return lock ownership to the still-running predecessor");
+  assert.equal(released, false);
+  assert.equal(restored, true, "a failed successor must reattach and republish the predecessor transport");
+  assert.equal(quiesced, false);
+}
+
 function testCoordinatorHandoffConfigBoundary() {
-  const configPath = path.join(sessionDirectory, "coordinator-handoff.json");
+  const attemptId = "a".repeat(32);
+  const configPath = path.join(sessionDirectory, `coordinator-handoff-${attemptId}.json`);
   const launcherPath = path.join(installRoot, "CodexRemoteMobileProject", "UpdateSessionLauncher.ps1");
   fs.mkdirSync(path.dirname(launcherPath), { recursive: true });
   fs.writeFileSync(launcherPath, "fixture");
+  const priorConfig = config();
+  priorConfig.app = { pid: 7654, startTimeFileTimeUtc: "134000000000000000", executablePath: "C:\\Program Files\\ChatGPT\\ChatGPT.exe" };
+  fs.writeFileSync(path.join(sessionDirectory, "session.json"), JSON.stringify(priorConfig));
+  fs.writeFileSync(priorConfig.platformHelperPath, "fixture");
   const value = {
-    platform: "win32", previousPid: 4321, appPid: 7654, installRoot,
-    stateRoot, previousSessionDirectory: sessionDirectory, expectedVersion: "v1.5.83",
+    attemptId, platform: "win32", previousPid: 4321, appPid: 7654, app: priorConfig.app, installRoot,
+    stateRoot, previousSessionDirectory: sessionDirectory, expectedVersion: "v1.5.84",
+    configPath: path.join(sessionDirectory, "session.json"), platformHelperPath: priorConfig.platformHelperPath,
     lockPath: path.join(stateRoot, "active", "fixture.lock"),
-    resultPath: path.join(sessionDirectory, "coordinator-handoff-result.json"),
+    resultPath: path.join(sessionDirectory, `coordinator-handoff-result-${attemptId}.json`),
+    releasePath: path.join(sessionDirectory, `coordinator-handoff-release-${attemptId}.json`),
     nodePath: process.execPath, launcherPath,
   };
   assert.equal(handoffHelper.exactChildConfig({ ...value }, configPath).launcherPath, launcherPath);
@@ -589,6 +743,18 @@ function testCoordinatorHandoffConfigBoundary() {
   });
   assert.match(modulePath, /WindowsPowerShell\\Modules/u);
   assert.doesNotMatch(modulePath, /PowerShell\\7/u);
+  assert.equal(handoffHelper.sameAppIdentity(value.app, { ...value.app }, "win32"), true);
+  assert.equal(handoffHelper.sameAppIdentity(value.app, { ...value.app, startTimeFileTimeUtc: "134000000000000001" }, "win32"), false,
+    "PID reuse with a different creation time must terminate handoff");
+  const coordinatorIdentity = { pid: 1234, startToken: "134000000000000000", executablePath: process.execPath };
+  assert.equal(handoffHelper.sameCoordinatorProcessIdentity(coordinatorIdentity, { ...coordinatorIdentity }, "win32"), true);
+  assert.equal(handoffHelper.sameCoordinatorProcessIdentity(coordinatorIdentity,
+    { ...coordinatorIdentity, startToken: "134000000000000001" }, "win32"), false,
+  "PID reuse with a different coordinator creation time must never authorize candidate cleanup");
+  const macCoordinator = { pid: 1234, startToken: "Sat Sep 5 12:00:00 2026", executablePath: "/opt/homebrew/Cellar/node/22/bin/node" };
+  assert.equal(handoffHelper.sameCoordinatorProcessIdentity(macCoordinator,
+    { ...macCoordinator, executablePath: "/opt/homebrew/bin/node" }, "darwin"), true,
+  "macOS coordinator identity must tolerate a launcher symlink while retaining PID and start-token proof");
 }
 
 async function testExactMacRelaunchArguments() {
@@ -746,6 +912,7 @@ async function testActualWindowsCheck() {
     await testPinnedIdleFlow();
     await testPinnedHotReloadFlow();
     await testCoordinatorActivationFailureKeepsAppOpen();
+    await testIncompleteHandoffRecoveryStopsRetries();
     testCoordinatorAwareRetention();
     await testHotReloadFailureKeepsAppOpen();
     await testHotApplyFailureRestoresPriorRenderer();
@@ -759,10 +926,13 @@ async function testActualWindowsCheck() {
     await testSecondPreflightBlocksClose();
     await testMonitorSingleflightAndCadence();
     testMalformedOwnerLockFailsClosed();
+    await testDeadLegacyPidOnlyLockReclaimed();
+    testAtomicHandoffResultRetriesTransientRename();
     await testConcurrentStaleLockReclamation();
     await testTimedOutCommandTreeLeavesNoMutation();
     await testExactRelaunchArguments();
     await testCoordinatorHandoffSchedule();
+    await testCoordinatorHandoffFailureReclaimsLock();
     testCoordinatorHandoffConfigBoundary();
     await testExactMacRelaunchArguments();
     await testUpdaterMappingsAndPrettyJson();

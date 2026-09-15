@@ -351,6 +351,14 @@ try {
         throw 'Installed integrity accepted arbitrary unlisted code.'
     }
     Remove-Item -LiteralPath (Join-Path $install 'unlisted-runtime.js') -Force
+    $runtimeRollback = Join-Path $install 'CodexRemoteMobileProject\rollback'
+    New-Item -ItemType Directory -Path $runtimeRollback -Force | Out-Null
+    Write-Utf8File (Join-Path $runtimeRollback 'legacy-startup-shortcut-fixture-20260915-120000-001.lnk') 'fixture'
+    Write-Utf8File (Join-Path $runtimeRollback 'legacy-disabled-startup-shortcut-fixture-20260915-120000-002.disabled') 'fixture'
+    Write-Utf8File (Join-Path $runtimeRollback 'legacy-disabled-startup-shortcut-fixture-20260915-120000-003.lnk') 'fixture'
+    $integrityWithLegacyStartupRollback = Invoke-Helper -Arguments @('integrity', '--install-root', $install)
+    if ($integrityWithLegacyStartupRollback.integrityValid -ne $true) { throw 'Installed integrity rejected a rollback filename produced by StartupShortcut.ps1.' }
+    Remove-Item -LiteralPath $runtimeRollback -Recurse -Force
 
     # Preload instrumentation blocks immediately after the first journal count is durably renamed.
     $hook = Join-Path $temporaryRoot 'pause-after-journal.js'

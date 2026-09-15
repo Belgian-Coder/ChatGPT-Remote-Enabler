@@ -9,6 +9,7 @@ const crypto = require("node:crypto");
 const childProcess = require("node:child_process");
 
 const TARGET_URL = "app://-/index.html";
+const UPDATE_HANDOFF_PROTOCOL_VERSION = 2;
 
 function parseArgs(argv) {
   const values = {};
@@ -159,4 +160,4 @@ if (require.main === module) {
   run(parseArgs(process.argv.slice(2))).catch(() => { process.exitCode = 1; });
 }
 
-module.exports = { TARGET_URL, acquireLock, parseArgs, processExists, processMatches, processStartToken, pulse, run };
+module.exports = { TARGET_URL, UPDATE_HANDOFF_PROTOCOL_VERSION, acquireLock, parseArgs, processExists, processMatches, processStartToken, pulse, run };

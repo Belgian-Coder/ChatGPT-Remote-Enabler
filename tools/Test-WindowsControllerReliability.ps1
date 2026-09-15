@@ -185,11 +185,11 @@ foreach ($worker in @(
     $signal = $worker.Text.IndexOf('Signal-Handshake', $capture, [StringComparison]::Ordinal)
     $wait = $worker.Text.IndexOf('$parentProcess.WaitForExit(30000)', $capture, [StringComparison]::Ordinal)
     $recovery = $worker.Text.IndexOf('Invoke-UpdateRecovery -UpdaterPath', $wait, [StringComparison]::Ordinal)
-    $desktopUpdate = $worker.Text.IndexOf('Invoke-DesktopAppPrelaunchUpdate -UpdaterPath', $recovery, [StringComparison]::Ordinal)
-    $prelaunch = $worker.Text.IndexOf('Invoke-PrelaunchUpdate -UpdaterPath', $desktopUpdate, [StringComparison]::Ordinal)
-    $injection = $worker.Text.IndexOf($worker.Injection, $prelaunch, [StringComparison]::Ordinal)
+    $prelaunch = $worker.Text.IndexOf('Invoke-PrelaunchUpdate -UpdaterPath', $recovery, [StringComparison]::Ordinal)
+    $desktopUpdate = $worker.Text.IndexOf('Invoke-DesktopAppPrelaunchUpdate -UpdaterPath', $prelaunch, [StringComparison]::Ordinal)
+    $injection = $worker.Text.IndexOf($worker.Injection, $desktopUpdate, [StringComparison]::Ordinal)
     $reload = $worker.Text.IndexOf('Start-UpdatedEntryPoint -EntryPoint $PSCommandPath', $prelaunch, [StringComparison]::Ordinal)
-    if ($capture -lt 0 -or $signal -lt $capture -or $wait -lt $signal -or $recovery -lt $wait -or $desktopUpdate -lt $recovery -or $prelaunch -lt $desktopUpdate -or
+    if ($capture -lt 0 -or $signal -lt $capture -or $wait -lt $signal -or $recovery -lt $wait -or $prelaunch -lt $recovery -or $desktopUpdate -lt $prelaunch -or
         $injection -lt $prelaunch -or $reload -lt $prelaunch -or
         -not $worker.Text.Contains("Local\ChatGPTCustomInjectionLauncher") -or
         -not $worker.Text.Contains('if ($actual -ne $ParentProcessStartTimeFileTimeUtc)') -or

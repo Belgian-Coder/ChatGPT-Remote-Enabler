@@ -1,22 +1,24 @@
 # Windows 11: install for your user without administrator access
 
-Release v1.5.83 keeps the permanent helper in the current user's unversioned
+Release v1.5.84 keeps the permanent helper in the current user's unversioned
 LocalAppData root and migrates the v1.5.60 ProgramData root as legacy. Automatic
 updates therefore replace files owned by the same limited user that owns the
 shortcuts and updater state. Successful updates retain only the immediate prior
 rollback generation and remove all legacy-recovery, shortcut, startup-task, and
 package-local rollback copies unless an active recovery journal or live process
-still requires one. Compatible releases load into the current renderer, then a
-detached helper starts the newly installed coordinator and verifies its active
-heartbeat while ChatGPT stays open. It retains renderer v88 and the ordered
-desktop MSIX, Remote Enabler update, and launch gates. Installation and live
+still requires one. Compatible releases load into the current renderer, then an
+exact-identity two-phase handoff transfers the binding and owned lock, verifies
+the new coordinator heartbeat, and restores the predecessor on failure while
+ChatGPT stays open. The v1.5.83-to-v1.5.84 protocol migration performs one
+automatic graceful restart. It retains renderer v88 and the ordered Remote
+Enabler update, desktop MSIX, and launch gates. Installation and live
 multi-device acceptance remain separate checks.
 
 You need Windows 11 x64, the ChatGPT/Codex desktop app signed in with Remote available on your account, and Node.js 22 or newer. The special launcher can install or update the supported current-user desktop package from OpenAI's signed stable x64 MSIX while the app is closed; it does not unlock account features or bypass AppX policy.
 
 ## 1. Download and extract
 
-1. Download **ChatGPT-Remote-Enabler-Windows-x64-v1.5.83.zip** from [v1.5.83 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.83). Read the verification limitations.
+1. Download **ChatGPT-Remote-Enabler-Windows-x64-v1.5.84.zip** from [v1.5.84 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.84). Read the verification limitations.
 2. Right-click the ZIP in File Explorer, choose **Properties**, select **Unblock** if offered, and click **OK**. Then choose **Extract All**.
 3. Enter `%LOCALAPPDATA%\Programs` in File Explorer's address bar. Create a **ChatGPTRemoteEnabler** folder and copy the extracted package contents into it.
 4. **ChatGPT Remote Enabler.exe**, **README.md**, and **CodexRemoteMobileProject** must be directly inside that folder. Keep the whole package together.
@@ -409,7 +411,7 @@ Check the target of **ChatGPT Custom** in the Start menu (open its file location
 
 Fully quit the app when your work is safe, then use **ChatGPT Remote Enabler.exe** in the newly extracted folder, or the new **ChatGPT Remote Enabler** shortcut created by that folder's setup assistant. Open Settings to see the loaded helper version and update controls in either view. A missing update service shows recovery instructions there.
 
-v1.5.83 is a normal release and is discoverable by the existing automatic updater. The first Windows upgrade from v1.5.31 attaches the new update helper even through the legacy launcher.
+v1.5.84 is a normal release and is discoverable by the existing automatic updater. The first Windows upgrade from v1.5.31 attaches the new update helper even through the legacy launcher.
 
 
 ### Existing enrollment keys after a Codex update

@@ -135,6 +135,18 @@ try {
     } -RetryDelaySeconds 1 -Sleeper { param($seconds) $retryState.Delays += $seconds }
     Assert-Condition ($retryState.Count -eq 3 -and ($retryState.Delays -join ',') -ceq '1,2') 'Transient metadata failures were not retried with bounded backoff.'
     Assert-Condition ($retriedMetadata.VersionText -ceq '26.903.9999.0') 'The metadata retry did not return the eventual verified response.'
+    $proxyDnsFailure = $null
+    try { throw [Net.WebException]::new('curl package request failed with exit code 5.', [Net.WebExceptionStatus]::ProxyNameResolutionFailure) }
+    catch { $proxyDnsFailure = $_ }
+    Assert-Condition (Test-TransientPackageMetadataFailure -ErrorRecord $proxyDnsFailure) 'A temporary HTTPS proxy DNS failure was not classified as transient.'
+    $proxyDnsRetry = @{ Count = 0 }
+    $proxyDnsMetadata = Get-HeadPackageMetadata -Uri 'https://persistent.oaistatic.com/codex-app-prod/ChatGPT-x64.msix' -HeadRequester {
+        param($uri)
+        $proxyDnsRetry.Count++
+        if ($proxyDnsRetry.Count -eq 1) { throw [Net.WebException]::new('curl package request failed with exit code 5.', [Net.WebExceptionStatus]::ProxyNameResolutionFailure) }
+        return $metadata
+    } -RetryDelaySeconds 0
+    Assert-Condition ($proxyDnsRetry.Count -eq 2 -and $proxyDnsMetadata.VersionText -ceq '26.903.9999.0') 'A temporary HTTPS proxy DNS failure did not retry and recover.'
     $canceledState = @{ Count = 0 }
     $canceledMetadata = Get-HeadPackageMetadata -Uri 'https://persistent.oaistatic.com/codex-app-prod/ChatGPT-x64.msix' -HeadRequester {
         param($uri)

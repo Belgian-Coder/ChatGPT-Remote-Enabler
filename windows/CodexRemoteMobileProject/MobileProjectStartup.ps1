@@ -623,23 +623,12 @@ switch ($Action) {
                     Write-StartupLog "$(Get-Date -Format o) [$computerName] protected all-connections proxy configuration loaded"
                 }
 
-                $desktopUpdateExecuted = $false
-                if (-not $SkipDesktopAppUpdateOnce -and -not $UpdateResume) {
-                    Set-StartupProgress -Message 'Checking the installed ChatGPT app...'
-                    [void](Invoke-DesktopAppPrelaunchUpdate -UpdaterPath $desktopAppUpdater -UseProxy:$UseProxy)
-                    $desktopUpdateExecuted = $true
-                }
-
                 $skipRemotePrelaunch = [bool]$SkipPrelaunchUpdateOnce
-                if ($desktopUpdateExecuted -and $ContinuationAfterAcceptedHandshake -and $SkipPrelaunchUpdateOnce -and -not $SkipDesktopAppUpdateOnce) {
-                    $skipRemotePrelaunch = $false
-                    Write-StartupLog "$(Get-Date -Format o) [$computerName] legacy helper handoff detected; verifying Remote Enabler again after the desktop-app update"
-                }
                 if (-not $SkipUpdateCheckOnce -and -not $UpdateResume -and -not $skipRemotePrelaunch) {
                     Set-StartupProgress -Message 'Checking and updating Remote Enabler...'
                     $prelaunchUpdate = Invoke-PrelaunchUpdate -UpdaterPath $updateController -InstallRoot $bundleParent -UseProxy:$UseProxy
                     if ($prelaunchUpdate.updated) {
-                        $reloadArguments = @('-Action', 'Run', '-SkipDesktopAppUpdateOnce', '-SkipPrelaunchUpdateOnce')
+                        $reloadArguments = @('-Action', 'Run', '-SkipPrelaunchUpdateOnce')
                         if ($handshakeReady) { $reloadArguments += '-ContinuationAfterAcceptedHandshake' }
                         if ($UseProxy) { $reloadArguments += '-UseProxy' }
                         if ($ReplaceRunningApp) { $reloadArguments += '-ReplaceRunningApp' }
@@ -651,6 +640,10 @@ switch ($Action) {
                         Start-UpdatedEntryPoint -EntryPoint $PSCommandPath -Arguments $reloadArguments
                         return
                     }
+                }
+                if (-not $SkipDesktopAppUpdateOnce -and -not $UpdateResume) {
+                    Set-StartupProgress -Message 'Checking the installed ChatGPT app...'
+                    [void](Invoke-DesktopAppPrelaunchUpdate -UpdaterPath $desktopAppUpdater -UseProxy:$UseProxy)
                 }
                 Assert-Controllers
                 $node = Resolve-NodePath

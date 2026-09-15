@@ -1,6 +1,6 @@
 # Feature guide
 
-This guide describes the Windows and macOS v1.5.83 source, including reliable
+This guide describes the Windows and macOS v1.5.84 source, including reliable
 background inventory publication, loaded search, compact Settings, guarded navigation, and stale-Steer recovery. Historical v1.5.49 packages and
 screenshots do not include those changes. Both packages share the Device
 projects renderer and the feature behavior below; the
@@ -10,9 +10,11 @@ options, and shortcut/startup commands.
 Renderer v88 adds collision-resistant peer caches, serialized remote reads, and complete update-activity scans; renderer v83 filters the current machine from the refreshed native device catalogue; renderer v82 adds automatic native device-catalogue recovery; renderer v81 added verified in-process update loading; renderer v79 makes native offline state authoritative while retaining cached rows and runtime evidence; renderer v78 adds a parent-bound heartbeat for fully frozen hidden renderers; renderer v77 adds the background inventory reliability correction; renderer
 v76 added the search and Settings improvements described below.
 
-After a compatible live update succeeds, a detached helper starts the newly
-installed coordinator and verifies its active heartbeat on the exact renderer
-port. ChatGPT remains open throughout.
+After a compatible live update succeeds, a detached helper first arms against
+the exact ChatGPT identity. The predecessor releases its renderer binding and
+owned lock only for the prepared successor, then retires after the new
+coordinator publishes an active heartbeat. A failed successor is stopped and
+the predecessor restores its lock, binding, and status. ChatGPT remains open.
 
 On Windows, each shortcut or sign-in launch verifies Remote Enabler recovery,
 completes the official signed desktop MSIX update, completes the required
@@ -192,6 +194,11 @@ ChatGPT. A change to the protected runtime or publisher uses the existing
 graceful close and relaunch path with saved options. Unknown activity keeps it
 queued; **Cancel** is available until installation begins. A refused close is
 never force-killed.
+
+v1.5.84 intentionally changes the protected publisher hash to bootstrap the new
+two-phase handoff protocol. An installed v1.5.83 coordinator therefore performs
+one automatic graceful restart for this upgrade. Once v1.5.84 is active, later
+compatible releases transfer coordinators without closing ChatGPT.
 
 Interrupted package replacement uses a durable journal and verified recovery.
 Failed package updates restore the previous verified installation, and competing

@@ -7,7 +7,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { spawn } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 const { BINDING_NAME, CdpTransport, TARGET_URL, bootstrapSource, normalizeUpdateDetails } = require("./update-session-cdp.js");
 
 const UPDATE_INTERVAL_MS = 30 * 60 * 1000;
@@ -353,6 +353,11 @@ class PlatformAdapter {
     this.config = config;
     this.run = dependencies.runCommand ?? runCommand;
     this.spawn = dependencies.spawn ?? spawn;
+    this.releaseCoordinatorLock = dependencies.releaseCoordinatorLock;
+    this.reacquireCoordinatorLock = dependencies.reacquireCoordinatorLock;
+    this.quiesceCoordinatorTransport = dependencies.quiesceCoordinatorTransport;
+    this.restoreCoordinatorTransport = dependencies.restoreCoordinatorTransport;
+    this.coordinatorLockOwned = dependencies.coordinatorLockOwned;
     this.lastCloseMethod = null;
   }
 
@@ -443,21 +448,28 @@ class PlatformAdapter {
     if (!path.isAbsolute(this.config.coordinatorLockPath ?? "") || !fs.existsSync(helper) || fs.lstatSync(helper).isSymbolicLink()) {
       throw new Error("The immutable coordinator handoff helper is unavailable.");
     }
-    const resultPath = path.join(this.config.sessionDirectory, "coordinator-handoff-result.json");
-    const handoffPath = path.join(this.config.sessionDirectory, "coordinator-handoff.json");
+    const attemptId = crypto.randomBytes(16).toString("hex");
+    const resultPath = path.join(this.config.sessionDirectory, `coordinator-handoff-result-${attemptId}.json`);
+    const releasePath = path.join(this.config.sessionDirectory, `coordinator-handoff-release-${attemptId}.json`);
+    const handoffPath = path.join(this.config.sessionDirectory, `coordinator-handoff-${attemptId}.json`);
     const launcherPath = this.config.platform === "win32"
       ? path.join(this.config.installRoot, "CodexRemoteMobileProject", "UpdateSessionLauncher.ps1")
       : path.join(this.config.installRoot, "MobileProjectView-macOS-arm64.sh");
     const handoff = {
       schemaVersion: 1,
+      attemptId,
       platform: this.config.platform,
       previousPid: process.pid,
       appPid: this.config.app.pid,
+      app: this.config.app,
+      configPath: this.config.configPath,
+      platformHelperPath: this.config.platformHelperPath,
       installRoot: this.config.installRoot,
       stateRoot: this.config.stateRoot,
       previousSessionDirectory: this.config.sessionDirectory,
       lockPath,
       resultPath,
+      releasePath,
       nodePath: process.execPath,
       launcherPath,
       rendererPort: this.config.rendererPort,
@@ -468,6 +480,7 @@ class PlatformAdapter {
       environment: this.config.relaunch.environment ?? {},
     };
     try { fs.rmSync(resultPath, { force: true }); } catch {}
+    try { fs.rmSync(releasePath, { force: true }); } catch {}
     const temporary = `${handoffPath}.${process.pid}.tmp`;
     fs.writeFileSync(temporary, `${JSON.stringify(handoff, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
     fs.renameSync(temporary, handoffPath);
@@ -489,7 +502,58 @@ class PlatformAdapter {
       clearTimeout(timer);
     }
     child.unref?.();
-    return { scheduled: true, processId: child.pid, resultPath };
+    const readResult = () => {
+      try { return JSON.parse(fs.readFileSync(resultPath, "utf8")); }
+      catch { return null; }
+    };
+    const waitFor = async (predicate, timeoutMs) => {
+      const deadline = Date.now() + timeoutMs;
+      do {
+        const value = readResult();
+        if (predicate(value)) return value;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      } while (Date.now() < deadline);
+      return null;
+    };
+    const armed = await waitFor((value) => value?.attemptId === attemptId && (value?.armed === true || value?.started === false), 20_000);
+    if (armed?.armed !== true) throw new Error(armed?.reason || "The coordinator handoff helper did not arm safely.");
+    if (typeof this.releaseCoordinatorLock !== "function" || typeof this.reacquireCoordinatorLock !== "function" ||
+        typeof this.quiesceCoordinatorTransport !== "function" || typeof this.restoreCoordinatorTransport !== "function" ||
+        typeof this.coordinatorLockOwned !== "function") {
+      throw new Error("The coordinator transport and lock-transfer callbacks are unavailable.");
+    }
+    if (!this.coordinatorLockOwned()) throw new Error("The predecessor no longer owns the coordinator lock.");
+    let released = false;
+    let quiesced = false;
+    try {
+      await this.quiesceCoordinatorTransport();
+      quiesced = true;
+      this.releaseCoordinatorLock();
+      released = true;
+      const temporaryRelease = `${releasePath}.${process.pid}.tmp`;
+      fs.writeFileSync(temporaryRelease, `${JSON.stringify({ release: true, attemptId, previousPid: process.pid })}\n`, { encoding: "utf8", mode: 0o600 });
+      fs.renameSync(temporaryRelease, releasePath);
+      const activation = await waitFor((value) => value?.attemptId === attemptId &&
+        (value?.started === true || (value?.started === false && value?.armed !== true)), 180_000);
+      if (activation?.started !== true) throw new Error(activation?.reason || "The replacement coordinator did not become ready.");
+      return { activated: true, processId: child.pid, readySession: activation.readySession, resultPath };
+    } catch (error) {
+      let recoveryError = null;
+      if (released) {
+        try { this.reacquireCoordinatorLock(); }
+        catch (candidate) { recoveryError = candidate; }
+      }
+      if (quiesced && !recoveryError && this.coordinatorLockOwned()) {
+        try { await this.restoreCoordinatorTransport(); }
+        catch (candidate) { recoveryError ??= candidate; }
+      }
+      if (recoveryError) {
+        const incomplete = new AggregateError([error, recoveryError], "The replacement coordinator failed and predecessor recovery was incomplete.");
+        incomplete.handoffRecoveryIncomplete = true;
+        throw incomplete;
+      }
+      throw error;
+    }
   }
 
   async relaunch() {
@@ -684,7 +748,36 @@ function safeOwnedTree(root, directory) {
 
 function processAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
-  try { process.kill(pid, 0); return true; } catch { return false; }
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return error?.code === "EPERM"; }
+}
+
+function queryCoordinatorProcessIdentity(pid, platform = process.platform) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return null;
+  try {
+    if (platform === "win32") {
+      const shell = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+      const script = `$p=Get-Process -Id ${pid} -ErrorAction Stop; [pscustomobject]@{pid=$p.Id;startToken=$p.StartTime.ToUniversalTime().ToFileTimeUtc().ToString();executablePath=$p.Path}|ConvertTo-Json -Compress`;
+      const child = spawnSync(shell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+        { encoding: "utf8", timeout: 10_000, windowsHide: true });
+      const value = child.status === 0 && !child.error ? parseLastJson(child.stdout) : null;
+      return value && value.pid === pid && /^\d{16,20}$/u.test(value.startToken) && path.isAbsolute(value.executablePath) ? value : null;
+    }
+    if (platform === "darwin") {
+      const child = spawnSync("/bin/ps", ["-p", String(pid), "-o", "lstart="],
+        { encoding: "utf8", timeout: 5_000, env: { ...process.env, LC_ALL: "C", LANG: "C" } });
+      const startToken = child.status === 0 && !child.error ? String(child.stdout || "").trim().replace(/\s+/gu, " ") : "";
+      return startToken ? { pid, startToken, executablePath: path.resolve(process.execPath) } : null;
+    }
+  } catch {}
+  return null;
+}
+
+function sameCoordinatorProcessIdentity(left, right, platform = process.platform) {
+  if (!left || !right || left.pid !== right.pid || left.startToken !== right.startToken) return false;
+  return platform === "win32"
+    ? String(left.executablePath).toLowerCase() === String(right.executablePath).toLowerCase()
+    : true;
 }
 
 function coordinatorStateFile(directory) { return path.join(directory, "coordinator-state.json"); }
@@ -697,6 +790,7 @@ function writeCoordinatorState(config, phase) {
     sessionId: path.basename(config.sessionDirectory),
     bundleHash: path.basename(path.dirname(config.updaterPath)),
     coordinatorPid: process.pid,
+    coordinatorIdentity: config.coordinatorProcessIdentity,
     phase,
     heartbeatAtUnixMs: Date.now(),
   };
@@ -730,7 +824,7 @@ function pruneUpdateSessionState(config, sessionLimit = 2, bundleLimit = 2) {
     sessions.sort((a, b) => b.time - a.time);
     sessions.forEach((entry, index) => {
       if (entry.live || index < sessionLimit || entry.directory === path.resolve(config.sessionDirectory)) {
-        if (entry.bundle && (entry.live || entry.directory === path.resolve(config.sessionDirectory))) retainedBundles.add(entry.bundle);
+        if (entry.bundle) retainedBundles.add(entry.bundle);
         return;
       }
       try { if (safeOwnedTree(sessionsRoot, entry.directory)) fs.rmSync(entry.directory, { recursive: true, force: true }); } catch {}
@@ -1002,12 +1096,20 @@ class UpdateSessionController {
         await this.setStatus({ state: "current", version: release.version, message: `Updated to ${release.version} and loaded without restarting ChatGPT.` });
         let activation = null;
         let activationError = null;
-        for (let attempt = 1; attempt <= 3 && activation?.scheduled !== true; attempt += 1) {
+        for (let attempt = 1; attempt <= 3 && activation?.activated !== true; attempt += 1) {
           try { activation = await this.platform.handoffCoordinator(); }
-          catch (error) { activationError = error; if (attempt < 3) await this.sleep(1000 * attempt); }
+          catch (error) {
+            activationError = error;
+            if (error?.handoffRecoveryIncomplete === true) break;
+            if (attempt < 3) await this.sleep(1000 * attempt);
+          }
         }
-        if (activation?.scheduled === true) this.stopping = true;
-        else {
+        if (activation?.activated === true) this.stopping = true;
+        else if (activationError?.handoffRecoveryIncomplete === true) {
+          this.config.log?.("coordinator-handoff-predecessor-retired", { error: cleanMessage(activationError?.message) });
+          this.stopping = true;
+          return;
+        } else {
           this.config.log?.("coordinator-handoff-deferred", { error: cleanMessage(activationError?.message) });
           await this.setStatus({ state: "current", version: release.version, message: `Updated to ${release.version}; the current coordinator remains active because replacement startup was deferred.` });
         }
@@ -1171,6 +1273,9 @@ function writeLog(logPath, stage, detail = {}) {
 }
 
 function acquireLock(config) {
+  const currentIdentity = config.coordinatorProcessIdentity ?? queryCoordinatorProcessIdentity(process.pid, config.platform);
+  if (!currentIdentity) throw new Error("The coordinator process identity could not be established for lock ownership.");
+  config.coordinatorProcessIdentity = currentIdentity;
   const identity = `${config.platform}\0${config.app.pid}\0${config.app.startTimeFileTimeUtc ?? config.app.startToken}`;
   const lockRoot = path.join(config.stateRoot, "active");
   const lockPath = path.join(lockRoot, `${crypto.createHash("sha256").update(identity).digest("hex").slice(0, 24)}.lock`);
@@ -1178,7 +1283,7 @@ function acquireLock(config) {
   fs.mkdirSync(lockRoot, { recursive: true });
   const take = () => {
     const handle = fs.openSync(lockPath, "wx", 0o600);
-    fs.writeFileSync(handle, `${JSON.stringify({ pid: process.pid })}\n`, "utf8");
+    fs.writeFileSync(handle, `${JSON.stringify(currentIdentity)}\n`, "utf8");
     fs.closeSync(handle);
   };
   try { take(); }
@@ -1196,11 +1301,13 @@ function acquireLock(config) {
       let owner = null;
       try { owner = JSON.parse(fs.readFileSync(lockPath, "utf8")); } catch {}
       if (!Number.isInteger(owner?.pid) || owner.pid <= 0) return { acquired: false, lockPath };
-      try {
-        process.kill(owner.pid, 0);
-        return { acquired: false, lockPath };
-      } catch (probeError) {
-        if (probeError?.code !== "ESRCH") return { acquired: false, lockPath };
+      const legacyPidOnlyOwner = typeof owner?.startToken !== "string" || typeof owner?.executablePath !== "string";
+      if (legacyPidOnlyOwner && processAlive(owner.pid)) return { acquired: false, lockPath };
+      if (!legacyPidOnlyOwner && processAlive(owner.pid)) {
+        const liveOwner = queryCoordinatorProcessIdentity(owner.pid, config.platform);
+        if (!liveOwner || sameCoordinatorProcessIdentity(owner, liveOwner, config.platform) || liveOwner.startToken === owner.startToken) {
+          return { acquired: false, lockPath };
+        }
       }
       try {
         fs.rmSync(lockPath, { force: true });
@@ -1222,6 +1329,17 @@ function acquireLock(config) {
   return { acquired: true, lockPath };
 }
 
+function releaseLockIfOwned(lockPath, ownerPid = process.pid) {
+  try {
+    const owner = JSON.parse(fs.readFileSync(lockPath, "utf8"));
+    if (owner?.pid !== ownerPid) return false;
+    fs.rmSync(lockPath, { force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function main() {
   const configIndex = process.argv.indexOf("--config");
   if (configIndex < 0 || !process.argv[configIndex + 1] || !path.isAbsolute(process.argv[configIndex + 1])) {
@@ -1239,8 +1357,11 @@ async function main() {
   config.configPath = configPath;
   config.bestEffort = process.argv.includes("--best-effort");
   config.log = (stage, detail) => writeLog(config.logPath, stage, detail);
-  const lock = acquireLock(config);
+  config.coordinatorProcessIdentity = queryCoordinatorProcessIdentity(process.pid, config.platform);
+  if (!config.coordinatorProcessIdentity) throw new Error("The coordinator process identity could not be established.");
+  let lock = acquireLock(config);
   if (!lock.acquired) return;
+  let lockOwned = true;
   config.coordinatorLockPath = lock.lockPath;
   pruneUpdateSessionState(config);
   let transport;
@@ -1256,7 +1377,34 @@ async function main() {
     const nonce = crypto.randomBytes(32).toString("hex");
     transport = new CdpTransport(config, nonce, cdp);
     const updater = new UpdaterAdapter(config);
-    const platform = new PlatformAdapter(config);
+    const platform = new PlatformAdapter(config, {
+      quiesceCoordinatorTransport: async () => { await transport.close(); },
+      restoreCoordinatorTransport: async () => {
+        if (!lockOwned) throw new Error("The predecessor cannot restore transport without its coordinator lock.");
+        transport.setClosingExpected(false);
+        await transport.attach();
+        await transport.publish(controller.status);
+      },
+      releaseCoordinatorLock: () => {
+        if (!lockOwned || !releaseLockIfOwned(lock.lockPath)) throw new Error("The current coordinator could not release its owned lock.");
+        lockOwned = false;
+      },
+      coordinatorLockOwned: () => lockOwned,
+      reacquireCoordinatorLock: () => {
+        if (lockOwned) return;
+        const deadline = Date.now() + 10_000;
+        let reacquired;
+        do {
+          reacquired = acquireLock(config);
+          if (reacquired.acquired) break;
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+        } while (Date.now() < deadline);
+        if (!reacquired?.acquired) throw new Error("The current coordinator could not reclaim its lock after a failed handoff.");
+        lock = reacquired;
+        config.coordinatorLockPath = lock.lockPath;
+        lockOwned = true;
+      },
+    });
     controller = new UpdateSessionController(config, { transport, updater, platform });
     controller.lastStrictProbeAt = Date.now();
     transport.onRequest((action, id) => controller.request(action, id));
@@ -1302,7 +1450,7 @@ async function main() {
     clearInterval(coordinatorHeartbeatTimer);
     await transport?.close();
     try { writeCoordinatorState(config, "stopped"); } catch {}
-    try { fs.rmSync(lock.lockPath, { force: true }); } catch {}
+    if (lockOwned) releaseLockIfOwned(lock.lockPath);
   }
 }
 
@@ -1324,8 +1472,11 @@ module.exports = {
   hotReloadCompatibility,
   parseLastJson,
   pruneUpdateSessionState,
+  queryCoordinatorProcessIdentity,
+  releaseLockIfOwned,
   runCommand,
   safeRemovePrepared,
+  sameCoordinatorProcessIdentity,
   testWritable,
 };
 

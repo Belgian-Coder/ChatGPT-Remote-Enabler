@@ -462,7 +462,8 @@ function Test-TransientPackageMetadataFailure {
                 [Net.WebExceptionStatus]::KeepAliveFailure,
                 [Net.WebExceptionStatus]::ReceiveFailure,
                 [Net.WebExceptionStatus]::SendFailure,
-                [Net.WebExceptionStatus]::NameResolutionFailure
+                [Net.WebExceptionStatus]::NameResolutionFailure,
+                [Net.WebExceptionStatus]::ProxyNameResolutionFailure
             )) { return $true }
         }
         $exception = $exception.InnerException

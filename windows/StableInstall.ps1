@@ -109,7 +109,7 @@ function Test-StablePackage {
                 if ($item.PSIsContainer) { continue }
                 $relative = $item.FullName.Substring($Root.Length + 1)
                 $normalized = $relative.Replace('/', '\')
-                $runtimeMetadata = -not $RequireExactInventory -and $normalized -match '^CodexRemoteMobileProject\\rollback\\(?:startup-task-[^\\]+-\d{8}-\d{6}\.xml|(?:desktop|startmenu|legacydesktop|legacystartmenu|legacystartmenuproxytest|legacystartmenuproxy)-shortcut-[^\\]+-\d{8}-\d{6}-\d{3}\.lnk|(?:startup-shortcut|legacy-disabled-startup-shortcut)-[^\\]+-\d{8}-\d{6}-\d{3}\.lnk)$'
+                $runtimeMetadata = -not $RequireExactInventory -and $normalized -match '^CodexRemoteMobileProject\\rollback\\(?:startup-task-[^\\]+-\d{8}-\d{6}\.xml|(?:desktop|startmenu|legacydesktop|legacystartmenu|legacystartmenuproxytest|legacystartmenuproxy)-shortcut-[^\\]+-\d{8}-\d{6}-\d{3}\.lnk|(?:startup-shortcut|legacy-startup-shortcut)-[^\\]+-\d{8}-\d{6}-\d{3}\.lnk|legacy-disabled-startup-shortcut-[^\\]+-\d{8}-\d{6}-\d{3}\.(?:lnk|disabled))$'
                 if (-not $manifestPaths.Contains($relative) -and -not $allowedMetadata.Contains($relative) -and -not $runtimeMetadata) { return $false }
             }
         }

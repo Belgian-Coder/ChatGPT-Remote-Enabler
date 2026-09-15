@@ -1,5 +1,30 @@
 # Changelog
 
+## v1.5.84 — 2026-09-15
+
+- Use one automatic graceful ChatGPT restart for the v1.5.83-to-v1.5.84
+  handoff-protocol migration. Later compatible updates transfer the coordinator
+  dynamically without closing ChatGPT.
+- Run the signed Remote Enabler prelaunch update before the optional ChatGPT
+  desktop-app update, so a desktop-updater proxy DNS outage cannot prevent
+  installed self-repair logic from running on future releases.
+- Transfer compatible live updates through an armed, exact-identity coordinator
+  handoff. The predecessor removes its CDP binding before releasing its owned
+  lock, retires only after the successor publishes an active heartbeat, and
+  reclaims the lock, binding, and status if replacement startup fails.
+- Enforce the same ChatGPT PID, creation token, executable, renderer port, and
+  macOS application identity throughout handoff. Stop an unsuccessful candidate
+  automatically and keep the original ChatGPT process open.
+- Keep every retained coordinator session with its referenced immutable bundle,
+  so retention consistently preserves the current and one previous generation
+  instead of allowing a newer orphan bundle to displace rollback support.
+- Accept the exact legacy startup-shortcut rollback filename produced by the
+  Windows launcher in both stable-root and transaction integrity checks, while
+  continuing to reject malformed or arbitrary rollback files.
+- Treat temporary HTTPS proxy name-resolution failures as transient in the
+  PowerShell 5.1 curl path, matching PowerShell 7 retry and offline-startup
+  behavior.
+
 ## v1.5.83 — 2026-09-15
 
 - Keep installed packages valid when runtime-owned rollback files or Finder

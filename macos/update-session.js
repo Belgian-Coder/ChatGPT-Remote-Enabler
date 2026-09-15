@@ -607,6 +607,22 @@ class UpdaterAdapter {
 
 function historyFile(directory) { return path.join(directory, "update-history-v1.json"); }
 
+function replaceHistoryFile(source, destination) {
+  const retryable = new Set(["EACCES", "EBUSY", "EPERM"]);
+  const deadline = Date.now() + 15_000;
+  let attempt = 0;
+  for (;;) {
+    try {
+      fs.renameSync(source, destination);
+      return;
+    } catch (error) {
+      if (process.platform !== "win32" || !retryable.has(error?.code) || Date.now() >= deadline) throw error;
+      attempt += 1;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.min(100, 5 * attempt));
+    }
+  }
+}
+
 function safeHistoryEntries(file) {
   try {
     const stat = fs.lstatSync(file);
@@ -641,7 +657,7 @@ function appendUpdateHistory(config, entry) {
     fs.writeFileSync(descriptor, JSON.stringify(entries) + "\n");
     fs.fsyncSync(descriptor);
     fs.closeSync(descriptor); descriptor = null;
-    fs.renameSync(temporary, file);
+    replaceHistoryFile(temporary, file);
   } finally {
     if (descriptor != null) fs.closeSync(descriptor);
     try { fs.unlinkSync(temporary); } catch {}

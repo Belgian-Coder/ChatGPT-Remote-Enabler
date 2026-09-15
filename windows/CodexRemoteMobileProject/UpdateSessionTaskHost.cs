@@ -134,7 +134,8 @@ internal static class UpdateSessionTaskHost
         string pattern = string.Equals(Path.GetFileName(script), "MobileProjectStartup.ps1", StringComparison.Ordinal)
             ? "^-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File " + quotedScript +
               " -Action Run(?: -UseProxy)?(?: -ReplaceRunningApp)?" + eventSuffix + "$"
-            : "^-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File " + quotedScript + eventSuffix + "$";
+            : "^-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File " + quotedScript +
+              "(?: -UseProxy)?" + eventSuffix + "$";
         if (!System.Text.RegularExpressions.Regex.IsMatch(arguments, pattern, System.Text.RegularExpressions.RegexOptions.CultureInvariant)) return 22;
         var start = new ProcessStartInfo {
             FileName = powershell, Arguments = arguments, WorkingDirectory = Path.GetDirectoryName(script),

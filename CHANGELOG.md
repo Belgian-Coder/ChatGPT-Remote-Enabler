@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.5.81 — 2026-09-15
+
+- Treat an already-exited prelaunch updater parent as a completed continuation
+  handoff instead of failing after a successful verified update.
+- Preserve the desktop shortcut's protected proxy mode through the root GUI
+  launcher, update continuations, stable runtime launch, and later in-session
+  update relaunches.
+- Retry transient renderer-target replacement between debugger discovery and
+  WebSocket connection instead of failing an otherwise healthy startup.
+- Give cold renderer debugger discovery the full readiness window and close the
+  startup progress window before showing a modal launch failure.
+- Retry atomic update-journal replacement for up to 15 seconds when Windows
+  endpoint scanning temporarily holds the just-written journal file.
+- Accept the current signed ChatGPT desktop minifier signature in the audited,
+  length-preserving Remote-control proxy patch while retaining fail-closed
+  matching for unknown builds.
+
 ## v1.5.80 — 2026-09-14
 
 - Detect when Codex React independently removes the mobile project panel, then

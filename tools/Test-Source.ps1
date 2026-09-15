@@ -207,7 +207,7 @@ if (Test-Path -LiteralPath (Join-Path $root '.github\workflows')) {
 
 foreach ($relative in @('windows\CodexRemoteMobileProject\inject.js', 'macos\inject.js')) {
     $injector = Get-Content -LiteralPath (Join-Path $root $relative) -Raw
-    foreach ($contract in @('const PROBE_TIMEOUT_MS = 10000;', 'registration.version = report.version')) {
+    foreach ($contract in @('const PROBE_TIMEOUT_MS = 10000;', 'registration.version = report.version', 'connectRendererTargetWithRetry')) {
         if (-not $injector.Contains($contract)) { throw "Injector reliability contract is missing in ${relative}: $contract" }
     }
     if ($injector.Contains('version: 55') -or $injector -match 'probe\?\.\(\).*?, 5000\)') {

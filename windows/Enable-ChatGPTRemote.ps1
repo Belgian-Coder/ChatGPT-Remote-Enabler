@@ -1,5 +1,6 @@
 [CmdletBinding()]
 param(
+    [switch]$UseProxy,
     [switch]$SkipMobileProjects,
     [switch]$SkipUpdate,
     [switch]$SkipDesktopAppUpdateOnce,
@@ -47,6 +48,7 @@ $desktopAppUpdater = Join-Path $runtimeRoot 'Update-ChatGPTDesktop.ps1'
 $updater = Join-Path $runtimeRoot 'Update-ChatGPTRemote.ps1'
 $updateSessionLauncher = Join-Path $runtimeRoot 'CodexRemoteMobileProject\UpdateSessionLauncher.ps1'
 $startupProgressHelper = Join-Path $runtimeRoot 'CodexRemoteMobileProject\StartupProgress.ps1'
+$proxyModule = Join-Path $runtimeRoot 'CodexRemoteMobileProject\ProxyConfiguration.psm1'
 if (-not (Test-Path -LiteralPath $startupProgressHelper -PathType Leaf)) { throw "Startup progress helper is missing: $startupProgressHelper" }
 . $startupProgressHelper
 $logRoot = Join-Path $env:LOCALAPPDATA 'CodexRemoteFeatures'
@@ -452,8 +454,12 @@ function Wait-ForContinuationParent {
         throw 'The updated entry point continuation is missing the parent process start time.'
     }
     $process = $null
+    $process = Get-Process -Id $ContinuationParentProcessId -ErrorAction SilentlyContinue
+    if ($null -eq $process) {
+        Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] updated entry point continuation parent already exited; acquiring launch mutex"
+        return
+    }
     try {
-        $process = [Diagnostics.Process]::GetProcessById($ContinuationParentProcessId)
         $actual = $process.StartTime.ToUniversalTime().ToFileTimeUtc()
         if ($actual -ne $ContinuationParentProcessStartTimeFileTimeUtc) {
             throw "Continuation parent $ContinuationParentProcessId did not match the captured start time."
@@ -512,6 +518,7 @@ try {
         }
         $recoveryArguments = @('-RecoveryContinuation')
         if ($handshakeReady) { $recoveryArguments += '-ContinuationAfterAcceptedHandshake' }
+        if ($UseProxy) { $recoveryArguments += '-UseProxy' }
         if ($SkipMobileProjects) { $recoveryArguments += '-SkipMobileProjects' }
         if ($SkipUpdate) { $recoveryArguments += '-SkipUpdate' }
         if ($UpdateResume) { $recoveryArguments += @('-UpdateResume', '-SkipDesktopAppUpdateOnce', '-SkipUpdateCheckOnce') }
@@ -541,6 +548,7 @@ try {
         if ($prelaunchUpdate.updated) {
             $reloadArguments = @('-SkipDesktopAppUpdateOnce', '-SkipPrelaunchUpdateOnce')
             if ($handshakeReady) { $reloadArguments += '-ContinuationAfterAcceptedHandshake' }
+            if ($UseProxy) { $reloadArguments += '-UseProxy' }
             if ($SkipMobileProjects) { $reloadArguments += '-SkipMobileProjects' }
             if ($SkipUpdate) { $reloadArguments += '-SkipUpdate' }
             if ($SkipUpdateCheckOnce) { $reloadArguments += '-SkipUpdateCheckOnce' }
@@ -554,9 +562,28 @@ try {
     if ($UpdateResume -and @(Get-CimInstance Win32_Process -Filter "Name='ChatGPT.exe'" -ErrorAction SilentlyContinue).Count -gt 0) {
         throw 'Another ChatGPT/Codex process appeared during the update. The verified relaunch was aborted without closing or replacing it.'
     }
+    $proxyServer = $null
+    if ($UseProxy) {
+        Set-StartupProgress -Message 'Preparing the protected proxy bridge...'
+        if (-not (Test-Path -LiteralPath $proxyModule -PathType Leaf)) { throw "Proxy configuration helper is missing: $proxyModule" }
+        Import-Module $proxyModule -Force
+        $proxyServer = Get-ChatGPTRemoteProxy -AllowEnvironmentFallback
+        foreach ($name in @('HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy')) {
+            [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+        }
+        Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] protected Remote-only proxy configuration loaded"
+    }
     $stableTimer = [Diagnostics.Stopwatch]::StartNew()
     Set-StartupProgress -Message 'Launching ChatGPT with Remote enabled...'
-    & $stable -Action Enable -RefuseExistingApp:$UpdateResume -Confirm:$false
+    $stableArguments = @{
+        Action = 'Enable'
+        UseProxy = [bool]$UseProxy
+        RefuseExistingApp = [bool]$UpdateResume
+        TimeoutSeconds = 45
+        Confirm = $false
+    }
+    if ($UseProxy) { $stableArguments.ProxyServer = $proxyServer }
+    & $stable @stableArguments
     $stableTimer.Stop()
     Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] stage=stable-runtime durationMs=$($stableTimer.ElapsedMilliseconds)"
     if (-not $SkipMobileProjects) {
@@ -581,6 +608,7 @@ try {
             $sessionArguments = @{
                 InstallRoot = $runtimeRoot
                 EntryPointRelative = 'Enable-ChatGPTRemote.ps1'
+                UseProxy = [bool]$UseProxy
                 SkipInitialCheck = [bool]($SkipUpdate -or $SkipUpdateCheckOnce)
             }
             & $updateSessionLauncher @sessionArguments | ForEach-Object { Write-RemoteLauncherLog ([string]$_) }
@@ -600,6 +628,7 @@ try {
         Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] launcher handoff failed: $($_.Exception.Message)"
     } else {
         Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] launcher worker failed: $($_.Exception.Message)"
+        Stop-StartupProgress
         Show-RemoteLauncherFailure -Message $_.Exception.Message
     }
     throw

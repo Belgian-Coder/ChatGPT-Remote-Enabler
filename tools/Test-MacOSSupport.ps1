@@ -78,6 +78,12 @@ foreach ($contract in @('progress_start()', 'progress_write update-recovery', 'p
 foreach ($contract in @('NSWindow', 'NSProgressIndicator', 'NSRunLoop.currentRunLoop', 'update-recovery', 'update-check', 'renderer-readiness', 'complete', 'Action required', 'private per-user')) {
     if (-not $startupProgress.Contains($contract)) { throw "macOS native startup progress helper contract is missing: $contract" }
 }
+foreach ($contract in @('resolve_app_bundle() {', 'resolve_app_executable() {', '"$app_executable" "${launch_arguments[@]}"', 'chatgpt-launch.log')) {
+    if (-not $launcher.Contains($contract)) { throw "macOS permission-free application launch contract is missing: $contract" }
+}
+if ($launcher.Contains('/usr/bin/open "${open_arguments[@]}"') -or $launcher.Contains('path to application')) {
+    throw 'The application launch path still depends on TCC-sensitive LaunchServices or Apple Events.'
+}
 foreach ($contract in @('ObjC.bindFunction("kill"', '$.__error()[0]', '--mode', 'self-test', 'acknowledgeReady')) {
     if (-not $startupProgress.Contains($contract)) { throw "macOS native startup progress runtime contract is missing: $contract" }
 }

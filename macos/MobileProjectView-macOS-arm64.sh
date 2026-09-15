@@ -259,6 +259,31 @@ app_is_running() {
   /bin/zsh "$process_guard" running --app-name "$app_name"
 }
 
+resolve_app_bundle() {
+  local candidate
+  for candidate in "/Applications/$app_name.app" "$HOME/Applications/$app_name.app"; do
+    if [[ -d "$candidate" && ! -L "$candidate" && -f "$candidate/Contents/Info.plist" ]]; then
+      print -r -- "$candidate"
+      return 0
+    fi
+  done
+  print -u2 "The exact $app_name application bundle was not found in Applications."
+  return 1
+}
+
+resolve_app_executable() {
+  local app_path executable_name executable_path
+  app_path="$(resolve_app_bundle)" || return 1
+  executable_name="$(/usr/bin/defaults read "$app_path/Contents/Info" CFBundleExecutable 2>/dev/null)" \
+    || { print -u2 "The exact application executable name could not be resolved."; return 1; }
+  [[ "$executable_name" != */* && "$executable_name" != *$'\n'* ]] \
+    || { print -u2 "The exact application executable name is unsafe."; return 1; }
+  executable_path="$app_path/Contents/MacOS/$executable_name"
+  [[ -x "$executable_path" && ! -L "$executable_path" ]] \
+    || { print -u2 "The exact application executable is missing or unsafe: $executable_path"; return 1; }
+  print -r -- "$executable_path"
+}
+
 last_json_result() {
   local node_bin="$1" output="$2"
   print -r -- "$output" | "$node_bin" -e '
@@ -430,14 +455,7 @@ readiness_state() {
 
 capture_app_identity() {
   local app_path executable_name executable_path bundle_id pid_value start_token command_line
-  app_path="$(/usr/bin/osascript - "$app_name" <<'APPLESCRIPT'
-on run argv
-  return POSIX path of (path to application (item 1 of argv))
-end run
-APPLESCRIPT
-)"
-  app_path="${app_path%/}"
-  [[ "$app_path" == /* && -d "$app_path" ]] || { print -u2 "The exact application bundle could not be resolved."; return 1; }
+  app_path="$(resolve_app_bundle)" || return 1
   executable_name="$(/usr/bin/defaults read "$app_path/Contents/Info" CFBundleExecutable)"
   bundle_id="$(/usr/bin/defaults read "$app_path/Contents/Info" CFBundleIdentifier)"
   executable_path="$app_path/Contents/MacOS/$executable_name"
@@ -460,14 +478,7 @@ APPLESCRIPT
 
 verify_running_proxy_mode() {
   local exact_app_path executable_name executable_path candidate command_line="" matched_line="" matches=0
-  exact_app_path="$(/usr/bin/osascript - "$app_name" <<'APPLESCRIPT'
-on run argv
-  return POSIX path of (path to application (item 1 of argv))
-end run
-APPLESCRIPT
-)"
-  exact_app_path="${exact_app_path%/}"
-  [[ "$exact_app_path" == /* && -d "$exact_app_path" ]] || { print -u2 'The exact ChatGPT application bundle could not be resolved for proxy verification.'; return 1; }
+  exact_app_path="$(resolve_app_bundle)" || return 1
   executable_name="$(/usr/bin/defaults read "$exact_app_path/Contents/Info" CFBundleExecutable 2>/dev/null || print -r -- "$app_name")"
   executable_path="$exact_app_path/Contents/MacOS/$executable_name"
   while IFS=$'\t' read -r candidate command_line; do
@@ -598,13 +609,9 @@ enable_view() {
     if (( use_proxy )); then
       launch_arguments+=("--proxy-server=$proxy_server" '--proxy-bypass-list=localhost;127.0.0.1;[::1]')
     fi
-    local -a open_arguments=(-na "$app_name")
-    if (( use_proxy )); then
-      open_arguments+=(--env "HTTP_PROXY=$proxy_server" --env "HTTPS_PROXY=$proxy_server" --env "ALL_PROXY=$proxy_server"
-        --env "http_proxy=$proxy_server" --env "https_proxy=$proxy_server" --env "all_proxy=$proxy_server"
-        --env 'NO_PROXY=localhost,127.0.0.1,::1' --env 'no_proxy=localhost,127.0.0.1,::1' --env 'NODE_USE_ENV_PROXY=1')
-    fi
-    /usr/bin/open "${open_arguments[@]}" --args "${launch_arguments[@]}"
+    local app_executable
+    app_executable="$(resolve_app_executable)" || return 1
+    "$app_executable" "${launch_arguments[@]}" >>"$log_root/chatgpt-launch.log" 2>&1 &!
     local attempt
     for attempt in {1..60}; do
       debug_endpoint_ready "$node_bin" && break

@@ -530,8 +530,12 @@ function Wait-ForContinuationParent {
         throw 'The updated entry point continuation is missing the parent process start time.'
     }
     $process = $null
+    $process = Get-Process -Id $ContinuationParentProcessId -ErrorAction SilentlyContinue
+    if ($null -eq $process) {
+        Write-StartupLog "$(Get-Date -Format o) [$computerName] updated entry point continuation parent already exited; acquiring launch mutex"
+        return
+    }
     try {
-        $process = [Diagnostics.Process]::GetProcessById($ContinuationParentProcessId)
         $actual = $process.StartTime.ToUniversalTime().ToFileTimeUtc()
         if ($actual -ne $ContinuationParentProcessStartTimeFileTimeUtc) {
             throw "Continuation parent $ContinuationParentProcessId did not match the captured start time."
@@ -677,6 +681,7 @@ switch ($Action) {
                             Action = 'Enable'
                             UseProxy = [bool]$UseProxy
                             RefuseExistingApp = [bool]$UpdateResume
+                            TimeoutSeconds = [Math]::Min(60, [Math]::Max(20, $MobileReadyTimeoutSeconds))
                             Confirm = $false
                         }
                         if ($UseProxy) { $stableArguments.ProxyServer = $proxyServer }
@@ -750,7 +755,10 @@ switch ($Action) {
                 Write-StartupLog "$(Get-Date -Format o) [$computerName] startup run completed"
             } catch {
                 Write-StartupLog "$(Get-Date -Format o) [$computerName] startup run failed: $($_.Exception.Message)"
-                if ($handshakeReady) { Show-StartupFailure -Message $_.Exception.Message }
+                if ($handshakeReady) {
+                    Stop-StartupProgress
+                    Show-StartupFailure -Message $_.Exception.Message
+                }
                 throw
             }
         } catch {

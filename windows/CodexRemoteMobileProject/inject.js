@@ -23,6 +23,13 @@ const RETRYABLE_DISCOVERY_CODES = new Set([
   "DISCOVERY_RESPONSE_FAILED",
   "DISCOVERY_TIMEOUT",
 ]);
+const RETRYABLE_CONNECT_CODES = new Set([
+  ...RETRYABLE_DISCOVERY_CODES,
+  "TARGET_NOT_FOUND",
+  "WEBSOCKET_CLOSED",
+  "WEBSOCKET_CONNECT_FAILED",
+  "WEBSOCKET_CONNECT_TIMEOUT",
+]);
 const DEAD_REGISTRATION_PORT_CODES = new Set([
   "ECONNREFUSED",
   "ECONNRESET",
@@ -182,7 +189,9 @@ async function discoverRendererTarget(port, waitMs, dependencies = {}) {
     const targets = await discover(port, 5000);
     const target = exactRendererTarget(targets);
     if (target) return target;
-    throw new Error("Exact Codex renderer target was not found");
+    const error = new Error("Exact Codex renderer target was not found");
+    error.code = "TARGET_NOT_FOUND";
+    throw error;
   }
   const deadline = Date.now() + waitMs;
   let lastError = null;
@@ -200,8 +209,29 @@ async function discoverRendererTarget(port, waitMs, dependencies = {}) {
     await wait(Math.min(250, Math.max(1, deadline - Date.now())));
   }
   const error = new Error(waitMs > 0 ? `Exact Codex renderer target was not found after ${waitMs} ms` : "Exact Codex renderer target was not found");
+  error.code = "TARGET_NOT_FOUND";
   error.cause = lastError;
   throw error;
+}
+
+async function connectRendererTargetWithRetry(port, waitMs, dependencies = {}) {
+  const connect = dependencies.connectTarget ?? connectTarget;
+  const discoverRenderer = dependencies.discoverRendererTarget ?? discoverRendererTarget;
+  const wait = dependencies.delay ?? delay;
+  const deadline = Date.now() + waitMs;
+  let lastError = null;
+  for (;;) {
+    const remaining = Math.max(1, deadline - Date.now());
+    try {
+      const target = await discoverRenderer(port, Math.min(1000, remaining), dependencies);
+      return await connect(target, port, Math.min(2000, Math.max(1, deadline - Date.now())));
+    } catch (error) {
+      if (!RETRYABLE_CONNECT_CODES.has(error?.code)) throw error;
+      lastError = error;
+    }
+    if (Date.now() >= deadline) throw lastError;
+    await wait(Math.min(250, Math.max(1, deadline - Date.now())));
+  }
 }
 
 function requiredApiCall(methodNames, args = []) {
@@ -248,8 +278,7 @@ async function disableRenderer(client, port, dependencies = {}) {
 
 async function main(argv = process.argv.slice(2)) {
   const options = parseArgs(argv);
-  const target = await discoverRendererTarget(options.port, options.targetWaitMs);
-  const client = await connectTarget(target, options.port, 5000);
+  const client = await connectRendererTargetWithRetry(options.port, Math.max(5000, options.targetWaitMs));
   try {
     if (options.action === "enable") {
       const prior = readSessionState();
@@ -354,6 +383,7 @@ if (require.main === module) {
 module.exports = {
   assertActiveReport,
   atomicWriteJson,
+  connectRendererTargetWithRetry,
   discoverRendererTarget,
   exactRendererTarget,
   main,

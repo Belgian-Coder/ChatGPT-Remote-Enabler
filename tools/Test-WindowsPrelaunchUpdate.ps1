@@ -84,7 +84,7 @@ if (`$decision -eq 'Installed') { `$proof.Manifest = [ordered]@{Name='OpenAI.Cod
         [pscustomobject]@{
             Name = 'Enable-ChatGPTRemote'
             Path = 'windows\Enable-ChatGPTRemote.ps1'
-            Injection = '& $stable -Action Enable'
+            Injection = '& $stable @stableArguments'
             RecoveryCall = '& $UpdaterPath -Action Recover'
         },
         [pscustomobject]@{
@@ -123,6 +123,30 @@ if (`$decision -eq 'Installed') { `$proof.Manifest = [ordered]@{Name='OpenAI.Cod
         Assert-Condition ($sourceText.Contains('-Action Update -Transport Git') -and -not $sourceText.Contains('-Action Auto -Transport Git')) "$($case.Name) does not require a verified Git update."
         Assert-Condition ($sourceText.Contains("if (`$recovery.recovered -and [string]`$recovery.recoveryMode -cne 'rollback')") -and $sourceText.Contains('if ($RecoveryContinuation)') -and $sourceText.Contains('launch aborted to prevent a reload loop')) "$($case.Name) does not safely reload after forward recovery while retaining rollback compatibility."
         Assert-Condition ($sourceText.Contains('ContinuationParentProcessId') -and $sourceText.Contains('Wait-ForContinuationParent')) "$($case.Name) lacks the continuation handoff contract."
+        Assert-Condition ($sourceText.Contains('Get-Process -Id $ContinuationParentProcessId -ErrorAction SilentlyContinue') -and $sourceText.Contains('continuation parent already exited; acquiring launch mutex')) "$($case.Name) does not accept an already-exited continuation parent as a completed handoff."
+        if ($case.Name -eq 'Enable-ChatGPTRemote') {
+            $sessionArgumentsIndex = $sourceText.IndexOf('$sessionArguments = @{', [StringComparison]::Ordinal)
+            $sessionLaunchIndex = $sourceText.IndexOf('& $updateSessionLauncher @sessionArguments', $sessionArgumentsIndex, [StringComparison]::Ordinal)
+            $sessionArgumentsBlock = if ($sessionArgumentsIndex -ge 0 -and $sessionLaunchIndex -gt $sessionArgumentsIndex) {
+                $sourceText.Substring($sessionArgumentsIndex, $sessionLaunchIndex - $sessionArgumentsIndex)
+            } else { '' }
+            Assert-Condition ($sourceText.Contains('[switch]$UseProxy') -and
+                $sourceText.Contains("if (`$UseProxy) { `$recoveryArguments += '-UseProxy' }") -and
+                $sourceText.Contains("if (`$UseProxy) { `$reloadArguments += '-UseProxy' }") -and
+                $sessionArgumentsBlock.Contains('UseProxy = [bool]$UseProxy')) 'Root launcher worker does not preserve proxy mode through update and update-session relaunch handoffs.'
+        }
+        Invoke-Expression (Get-FunctionDefinitionText -Ast $ast -Name 'Wait-ForContinuationParent')
+        $exitedParent = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') -ArgumentList '-NoProfile -NonInteractive -Command "exit 0"' -WindowStyle Hidden -PassThru
+        $ContinuationParentProcessId = $exitedParent.Id
+        $ContinuationParentProcessStartTimeFileTimeUtc = $exitedParent.StartTime.ToUniversalTime().ToFileTimeUtc()
+        $exitedParent.WaitForExit()
+        $exitedParent.Dispose()
+        Wait-ForContinuationParent
+        $ContinuationParentProcessId = $PID
+        $ContinuationParentProcessStartTimeFileTimeUtc = 1
+        $mismatchedContinuationRejected = $false
+        try { Wait-ForContinuationParent } catch { $mismatchedContinuationRejected = $_.Exception.Message -like '*did not match the captured start time*' }
+        Assert-Condition $mismatchedContinuationRejected "$($case.Name) accepted a reused or mismatched continuation parent PID."
         foreach ($argument in @('-RelaunchHandoffPath', '-UpdateResume', '-ContinuationAfterAcceptedHandshake')) {
             Assert-Condition $sourceText.Contains($argument) "$($case.Name) does not preserve $argument during updated-entry-point handoff."
         }

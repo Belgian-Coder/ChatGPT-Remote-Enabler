@@ -11,8 +11,8 @@ using System.Threading;
 [assembly: AssemblyDescription("Starts ChatGPT with the remote access and Mobile projects injection")]
 [assembly: AssemblyCompany("Community")]
 [assembly: AssemblyProduct("ChatGPT Remote Enabler")]
-[assembly: AssemblyVersion("1.5.80.0")]
-[assembly: AssemblyFileVersion("1.5.80.0")]
+[assembly: AssemblyVersion("1.5.81.0")]
+[assembly: AssemblyFileVersion("1.5.81.0")]
 
 internal static class ChatGPTRemoteLauncher
 {
@@ -299,10 +299,21 @@ internal static class ChatGPTRemoteLauncher
     }
 
     [STAThread]
-    private static int Main()
+    private static int Main(string[] args)
     {
+        bool useProxy = false;
+        foreach (string arg in args)
+        {
+            if (string.Equals(arg, "--proxy", StringComparison.OrdinalIgnoreCase))
+            {
+                useProxy = true;
+                continue;
+            }
+            return Fail(16, "The shortcut contains an unsupported launcher argument.");
+        }
+
         string root = AppDomain.CurrentDomain.BaseDirectory;
-        int redirected = RedirectLegacyAlias(root, new string[0]);
+        int redirected = RedirectLegacyAlias(root, args);
         if (redirected >= 0) return redirected;
         string script = Path.Combine(root, "Enable-ChatGPTRemote.ps1");
         if (!File.Exists(script))
@@ -336,6 +347,7 @@ internal static class ChatGPTRemoteLauncher
             }
 
             string workerArguments = "-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File " + QuoteArgument(script) +
+                    (useProxy ? " -UseProxy" : "") +
                     " -ParentProcessId " + current.Id +
                     " -ParentProcessStartTimeFileTimeUtc " + parentStartTimeFileTimeUtc +
                     " -ReadyEventName " + QuoteArgument(readyEventName) +

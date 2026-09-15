@@ -139,7 +139,7 @@ function replaceFile(source, destination) {
   // needed here. Endpoint scanners can briefly deny the replace on Windows;
   // retry that single atomic operation without ever removing destination.
   const retryable = new Set(["EACCES", "EBUSY", "EPERM"]);
-  const deadline = Date.now() + 2_000;
+  const deadline = Date.now() + 15_000;
   let attempt = 0;
   for (;;) {
     try {

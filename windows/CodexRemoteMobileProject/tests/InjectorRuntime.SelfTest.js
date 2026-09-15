@@ -27,6 +27,72 @@ async function testTransientDiscoveryRetry() {
   assert.throws(() => injector.exactRendererTarget([target, { ...target, type: "webview" }]), (error) => error?.code === "TARGET_AMBIGUOUS");
 }
 
+async function testTransientConnectRetry() {
+  let discoveries = 0;
+  let connections = 0;
+  const client = { close() {} };
+  const result = await injector.connectRendererTargetWithRetry(41001, 1000, {
+    delay: async () => {},
+    discoverTargets: async () => {
+      discoveries += 1;
+      return [{ type: "page", url: "app://-/index.html", webSocketDebuggerUrl: `ws://127.0.0.1/${discoveries}` }];
+    },
+    connectTarget: async (target) => {
+      connections += 1;
+      if (connections === 1) {
+        const error = new Error("renderer target was replaced");
+        error.code = "WEBSOCKET_CONNECT_FAILED";
+        throw error;
+      }
+      assert.equal(target.webSocketDebuggerUrl, "ws://127.0.0.1/2");
+      return client;
+    },
+  });
+  assert.equal(result, client);
+  assert.equal(discoveries, 2);
+  assert.equal(connections, 2);
+
+  let targetSlices = 0;
+  const lateTargetClient = { close() {} };
+  const lateTargetResult = await injector.connectRendererTargetWithRetry(41001, 1000, {
+    delay: async () => {},
+    discoverRendererTarget: async () => {
+      targetSlices += 1;
+      if (targetSlices === 1) {
+        const error = new Error("exact target is still loading");
+        error.code = "TARGET_NOT_FOUND";
+        throw error;
+      }
+      return { type: "page", url: "app://-/index.html", webSocketDebuggerUrl: "ws://127.0.0.1/late" };
+    },
+    connectTarget: async () => lateTargetClient,
+  });
+  assert.equal(lateTargetResult, lateTargetClient);
+  assert.equal(targetSlices, 2);
+
+  const terminal = new Error("ambiguous target");
+  terminal.code = "TARGET_AMBIGUOUS";
+  let terminalAttempts = 0;
+  await assert.rejects(
+    injector.connectRendererTargetWithRetry(41001, 1000, {
+      discoverTargets: async () => { terminalAttempts += 1; throw terminal; },
+    }),
+    (error) => error === terminal,
+  );
+  assert.equal(terminalAttempts, 1);
+
+  const exhausted = new Error("renderer stayed unavailable");
+  exhausted.code = "WEBSOCKET_CONNECT_FAILED";
+  await assert.rejects(
+    injector.connectRendererTargetWithRetry(41001, 1, {
+      delay: async () => {},
+      discoverTargets: async () => [{ type: "page", url: "app://-/index.html", webSocketDebuggerUrl: "ws://127.0.0.1/stale" }],
+      connectTarget: async () => { throw exhausted; },
+    }),
+    (error) => error === exhausted,
+  );
+}
+
 async function testPersistentCleanupRetention() {
   const registrations = [
     { identifier: "remove-me", port: 41001 },
@@ -118,11 +184,12 @@ function testInactiveMutationFails() {
 
 async function main() {
   await testTransientDiscoveryRetry();
+  await testTransientConnectRetry();
   await testPersistentCleanupRetention();
   await testDisablePrunesDeadRegistrations();
   testAtomicStateAndLegacyMigration();
   testInactiveMutationFails();
-  process.stdout.write(`${JSON.stringify({ atomicState: true, cleanupRetention: true, disablePrunesDeadRegistrations: true, inactiveMutationFails: true, transientDiscoveryRetry: true })}\n`);
+  process.stdout.write(`${JSON.stringify({ atomicState: true, cleanupRetention: true, disablePrunesDeadRegistrations: true, inactiveMutationFails: true, transientDiscoveryRetry: true, transientConnectRetry: true })}\n`);
 }
 
 main().catch((error) => {

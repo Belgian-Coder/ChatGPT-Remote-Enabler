@@ -172,7 +172,7 @@ if (-not $controllerSourceText.Contains('CliPath = $runtimeCliPath') -or
 $rootWorkerSourceText = Get-Content -LiteralPath (Join-Path $root 'windows\Enable-ChatGPTRemote.ps1') -Raw
 foreach ($worker in @(
     [pscustomobject]@{ Name = 'MobileProjectStartup'; Text = $startupSourceText; Injection = '& $stableController @stableArguments' },
-    [pscustomobject]@{ Name = 'Enable-ChatGPTRemote'; Text = $rootWorkerSourceText; Injection = '& $stable -Action Enable' }
+    [pscustomobject]@{ Name = 'Enable-ChatGPTRemote'; Text = $rootWorkerSourceText; Injection = '& $stable @stableArguments' }
 )) {
     $capture = $worker.Text.IndexOf('$parentProcess = Capture-ExactParent', [StringComparison]::Ordinal)
     $signal = $worker.Text.IndexOf('Signal-Handshake', $capture, [StringComparison]::Ordinal)
@@ -372,17 +372,23 @@ try {
         Wait-ForFixtureWorkerExit -Path $workerIdentityLog -Index $case.WorkerIndex -ExpectedOutcome acquired
     }
 
-    $rootProcess = Start-Process -FilePath $rootLauncher -PassThru
-    $processes.Add($rootProcess)
+    $rootDirectProcess = Start-Process -FilePath $rootLauncher -PassThru
+    $processes.Add($rootDirectProcess)
     Wait-ForLineCount -Path $readyLog -Count 5
-    if (-not $rootProcess.WaitForExit(5000) -or $rootProcess.ExitCode -ne 0) { throw 'Root launcher did not exit successfully after the worker handshake.' }
+    if (-not $rootDirectProcess.WaitForExit(5000) -or $rootDirectProcess.ExitCode -ne 0) { throw 'Direct root launcher did not exit successfully after the worker handshake.' }
+    Wait-ForLineCount -Path $finishedLog -Count 5 -TimeoutSeconds 30
+    Wait-ForFixtureWorkerExit -Path $workerIdentityLog -Index 6 -ExpectedOutcome acquired
+    $rootProxyProcess = Start-Process -FilePath $rootLauncher -ArgumentList '--proxy' -PassThru
+    $processes.Add($rootProxyProcess)
+    Wait-ForLineCount -Path $readyLog -Count 6
+    if (-not $rootProxyProcess.WaitForExit(5000) -or $rootProxyProcess.ExitCode -ne 0) { throw 'Proxy root launcher did not exit successfully after the worker handshake.' }
     $rootReplacementVersion = New-ReplacementLauncher -Source $rootLauncherSource -Destination $rootLauncher -Compiler $compiler -TemporaryRoot $temporaryRoot
     $crossEntry = Start-Process -FilePath $launcher -ArgumentList '--startup' -PassThru -Wait
     $processes.Add($crossEntry)
     if ($crossEntry.ExitCode -ne 15) { throw 'Root/custom cross-entry collision was not rejected.' }
-    Wait-ForFixtureWorkerExit -Path $workerIdentityLog -Index 7 -ExpectedOutcome rejected
-    Wait-ForLineCount -Path $finishedLog -Count 5 -TimeoutSeconds 30
-    Wait-ForFixtureWorkerExit -Path $workerIdentityLog -Index 6 -ExpectedOutcome acquired
+    Wait-ForFixtureWorkerExit -Path $workerIdentityLog -Index 8 -ExpectedOutcome rejected
+    Wait-ForLineCount -Path $finishedLog -Count 6 -TimeoutSeconds 30
+    Wait-ForFixtureWorkerExit -Path $workerIdentityLog -Index 7 -ExpectedOutcome acquired
 
     $invocations = @([IO.File]::ReadAllLines($readyLog))
     $expectedInvocations = @(
@@ -390,10 +396,11 @@ try {
         'custom|Run|proxy=False|replace=False',
         'custom|Run|proxy=False|replace=True',
         'custom|Run|proxy=True|replace=True',
-        'root||proxy=False|replace=False'
+        'root||proxy=False|replace=False',
+        'root||proxy=True|replace=False'
     )
     if (($invocations -join "`n") -ne ($expectedInvocations -join "`n")) { throw "Launcher arguments changed across handoff: $($invocations -join '; ')" }
-    if (@([IO.File]::ReadAllLines($afterParentLog)).Count -ne 5) { throw 'A worker continued before its exact launcher parent exited.' }
+    if (@([IO.File]::ReadAllLines($afterParentLog)).Count -ne 6) { throw 'A worker continued before its exact launcher parent exited.' }
     $taskHostDeadline = [DateTime]::UtcNow.AddSeconds(5)
     do {
         $remainingTaskHosts = @(Get-FixtureTaskHosts)

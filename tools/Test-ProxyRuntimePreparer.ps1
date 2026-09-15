@@ -36,6 +36,8 @@ try {
     $originalChallengeValidator = 'function vQ(e,t){let n=new URL(t),r=n.protocol===`wss:`?`https:`:n.protocol===`ws:`?`http:`:null;return r!=null&&e.targetOrigin===`${r}//${n.host}`&&e.targetPath===n.pathname}'
     $nextController = 'ole=class extends n.$t{constructor(e){let t=dC(e.desktopApiOptions),i=e.globalState,a=e.deviceKeyClient;super({envId:e.hostConfig.env_id,connectionGroup:e.appServerClient,connectionKey:t,websocketUrl:n.en(r.X(e.desktopApiOptions,`/codex/remote/control/client`)),getAuthHeaders:({headers:t}={})=>pC({appServerClient:e.appServerClient,desktopApiOptions:e.desktopApiOptions,headers:t}),enrollClient:({headers:n})=>mC({appServerClient:e.appServerClient,deviceKeyClient:a,desktopApiOptions:e.desktopApiOptions,enrollmentKey:t,globalState:i,headers:n,onEnrollmentAuthorizationRequired:e.onEnrollmentAuthorizationRequired,requestRemoteControlEnrollmentStepUpToken:e.requestRemoteControlEnrollmentStepUpToken}),authorizeDeviceKeyChallenge:e=>Ale({challenge:e,deviceKeyClient:a,enrollmentKey:t,globalState:i})})}}'
     $nextChallengeValidator = 'function pQ(e,t){let n=new URL(t),r=n.protocol===`wss:`?`https:`:n.protocol===`ws:`?`http:`:null;return r!=null&&e.targetOrigin===`${r}//${n.host}`&&e.targetPath===n.pathname}'
+    $latestController = '$Ce=class extends n.an{constructor(e){let t=ZD(e.desktopApiOptions),i=e.globalState,a=e.deviceKeyClient;super({envId:e.hostConfig.env_id,connectionGroup:e.appServerClient,connectionKey:t,websocketUrl:n.on(r.Z(e.desktopApiOptions,`/codex/remote/control/client`)),getAuthHeaders:({headers:t}={})=>$D({appServerClient:e.appServerClient,desktopApiOptions:e.desktopApiOptions,headers:t}),enrollClient:({headers:n})=>eO({appServerClient:e.appServerClient,deviceKeyClient:a,desktopApiOptions:e.desktopApiOptions,enrollmentKey:t,globalState:i,headers:n,onEnrollmentAuthorizationRequired:e.onEnrollmentAuthorizationRequired,requestRemoteControlEnrollmentStepUpToken:e.requestRemoteControlEnrollmentStepUpToken}),authorizeDeviceKeyChallenge:e=>MO({challenge:e,deviceKeyClient:a,enrollmentKey:t,globalState:i})})}}'
+    $latestChallengeValidator = 'function E$(e,t){let n=new URL(t),r=n.protocol===`wss:`?`https:`:n.protocol===`ws:`?`http:`:null;return r!=null&&e.targetOrigin===`${r}//${n.host}`&&e.targetPath===n.pathname}'
     $currentKeyLoader = 'return this.addon??=Xke((0,p.join)(this.resourcesPath,`native`,Zke)),this.addon'
     $currentKeyProvider = 'var Xke=(0,F.createRequire)(__filename),Zke=`remote-control-device-key.node`,Qke=`codex-device-key-sign-payload/v1`;$ke=class{resourcesPath;addon=null;constructor(e){this.resourcesPath=e}createDeviceKey(e){return this.getAddon().createDeviceKey(e??`hardware_only`)}deleteDeviceKey(e){return this.getAddon().deleteDeviceKey(e)}getDeviceKeyPublic(e){return this.getAddon().getDeviceKeyPublic(e)}async signDeviceKey(e,t){let n=eAe(t);return{...await this.getAddon().signDeviceKey(e,n),signedPayloadBase64:n.toString(`base64`)}}getAddon(){if(process.platform!==`darwin`&&process.platform!==`win32`)throw Error(`Remote control device keys are only available on macOS and Windows`);if(this.resourcesPath==null)throw Error(`Remote control device keys require resourcesPath`);return this.addon??=Xke((0,p.join)(this.resourcesPath,`native`,Zke)),this.addon}}'
     $legacyKeyLoader = 'return this.addon??=Yke((0,p.join)(this.resourcesPath,`native`,Xke)),this.addon'
@@ -120,6 +122,21 @@ try {
         -not $nextPatchedAsar.Contains('process.env.CHATGPT_REMOTE_WS_URL??') -or
         -not $nextPatchedAsar.Contains('function pQ(e,t){let n=new URL(process.env.CRWU||t)')) {
         throw 'The next audited ChatGPT signatures were not patched.'
+    }
+
+    $latestSource = Join-Path $temporaryRoot 'latest-installed-app'
+    Copy-Item -LiteralPath $source -Destination $latestSource -Recurse
+    $latestAsarPath = Join-Path $latestSource 'resources\app.asar'
+    $latestAsar = (Get-Content -LiteralPath $latestAsarPath -Raw).Replace($originalController, $latestController).Replace($originalChallengeValidator, $latestChallengeValidator)
+    [IO.File]::WriteAllText($latestAsarPath, $latestAsar, [Text.UTF8Encoding]::new($false))
+    $latestOutput = @(& $node $preparer '--source-app' $latestSource '--package-version' '1.2.3.9' '--proxy-enabled' 'true' '--legacy-device-keys' 'false' 2>&1)
+    if ($LASTEXITCODE -ne 0 -or $latestOutput.Count -ne 1) { throw "Latest ChatGPT signature preparation failed: $($latestOutput -join ' ')" }
+    $latestResult = [string]$latestOutput[0] | ConvertFrom-Json
+    $latestPatchedAsar = Get-Content -LiteralPath ([string]$latestResult.appAsarPath) -Raw
+    if ($latestPatchedAsar.Contains($latestController) -or $latestPatchedAsar.Contains($latestChallengeValidator) -or
+        -not $latestPatchedAsar.Contains('process.env.CHATGPT_REMOTE_WS_URL??') -or
+        -not $latestPatchedAsar.Contains('function E$(e,t){let n=new URL(process.env.CRWU||t)')) {
+        throw 'The latest audited ChatGPT signatures were not patched.'
     }
 
     # Current native-renderer builds may already ship with embedded-ASAR

@@ -125,7 +125,23 @@ function testPersistentHistory() {
   const second = path.join(stateRoot, "sessions", "history-second");
   fs.mkdirSync(first); fs.mkdirSync(second);
   const now = Date.now();
-  session.appendUpdateHistory(config({ sessionDirectory: first }), { at: now - 10, state: "checked", version: "v1.0.0", privateMessage: "must not persist" });
+  const originalRename = fs.renameSync;
+  let transientRenameFailures = 0;
+  fs.renameSync = (source, destination) => {
+    if (process.platform === "win32" && transientRenameFailures < 2 && destination.endsWith("update-history-v1.json")) {
+      transientRenameFailures += 1;
+      const error = new Error("temporary endpoint-scanner lock");
+      error.code = "EPERM";
+      throw error;
+    }
+    return originalRename(source, destination);
+  };
+  try {
+    session.appendUpdateHistory(config({ sessionDirectory: first }), { at: now - 10, state: "checked", version: "v1.0.0", privateMessage: "must not persist" });
+  } finally {
+    fs.renameSync = originalRename;
+  }
+  if (process.platform === "win32") assert.equal(transientRenameFailures, 2);
   session.appendUpdateHistory(config({ sessionDirectory: first }), { at: now - 9, state: "updating", version: "v2.0.0" });
   session.appendUpdateHistory(config({ sessionDirectory: second }), { at: now - 8, state: "restart-confirmed", version: "v2.0.0" });
   const entries = session.readUpdateHistory(config({ sessionDirectory: second }));

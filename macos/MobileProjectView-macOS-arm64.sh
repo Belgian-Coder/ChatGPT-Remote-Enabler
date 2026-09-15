@@ -45,6 +45,7 @@ prune_startup_rollbacks() {
 }
 port="${CODEX_REMOTE_DEBUG_PORT:-9229}"
 app_name="${CODEX_APP_NAME:-ChatGPT}"
+process_guard="${script_path:h}/AppProcessGuard.sh"
 peer_name="${CODEX_REMOTE_PEER_NAME:-}"
 startup_delay_seconds="${CODEX_STARTUP_DELAY_SECONDS:-60}"
 startup_required_path="${CODEX_STARTUP_REQUIRED_PATH:-}"
@@ -182,7 +183,8 @@ debug_endpoint_ready() {
 }
 
 app_is_running() {
-  /usr/bin/pgrep -x "$app_name" >/dev/null 2>&1 || /usr/bin/pgrep -x ChatGPT >/dev/null 2>&1 || /usr/bin/pgrep -x Codex >/dev/null 2>&1
+  [[ -f "$process_guard" && ! -L "$process_guard" ]] || { print -u2 "The exact application process guard is missing."; return 2; }
+  /bin/zsh "$process_guard" running --app-name "$app_name"
 }
 
 last_json_result() {
@@ -369,12 +371,12 @@ APPLESCRIPT
   [[ -x "$executable_path" && "$bundle_id" != *[^A-Za-z0-9.-]* ]] || { print -u2 "The exact application bundle identity is invalid."; return 1; }
   local candidates=()
   local candidate
-  for candidate in $(/usr/bin/pgrep -x "$executable_name" 2>/dev/null || true); do
-    command_line="$(/bin/ps -p "$candidate" -o command= 2>/dev/null || true)"
+  while IFS=$'\t' read -r candidate command_line; do
+    [[ -n "$candidate" ]] || continue
     [[ "$command_line" == *"--type="* ]] && continue
     [[ "$command_line" == *"--remote-debugging-port=$port"* || "$command_line" == *"--remote-debugging-port $port"* ]] || continue
     candidates+=("$candidate")
-  done
+  done < <(/bin/zsh "$process_guard" list --executable "$executable_path")
   (( ${#candidates[@]} == 1 )) || { print -u2 "Expected one exact application process for renderer port $port; found ${#candidates[@]}."; return 1; }
   pid_value="${candidates[1]}"
   start_token="$(/bin/ps -p "$pid_value" -o lstart= | /usr/bin/awk '{$1=$1; print}')"
@@ -384,7 +386,7 @@ APPLESCRIPT
 }
 
 verify_running_proxy_mode() {
-  local exact_app_path executable_name candidate command_line="" matched_line="" matches=0
+  local exact_app_path executable_name executable_path candidate command_line="" matched_line="" matches=0
   exact_app_path="$(/usr/bin/osascript - "$app_name" <<'APPLESCRIPT'
 on run argv
   return POSIX path of (path to application (item 1 of argv))
@@ -394,13 +396,14 @@ APPLESCRIPT
   exact_app_path="${exact_app_path%/}"
   [[ "$exact_app_path" == /* && -d "$exact_app_path" ]] || { print -u2 'The exact ChatGPT application bundle could not be resolved for proxy verification.'; return 1; }
   executable_name="$(/usr/bin/defaults read "$exact_app_path/Contents/Info" CFBundleExecutable 2>/dev/null || print -r -- "$app_name")"
-  for candidate in $(/usr/bin/pgrep -x "$executable_name" 2>/dev/null || true); do
-    command_line="$(/bin/ps -p "$candidate" -o command= 2>/dev/null || true)"
+  executable_path="$exact_app_path/Contents/MacOS/$executable_name"
+  while IFS=$'\t' read -r candidate command_line; do
+    [[ -n "$candidate" ]] || continue
     [[ "$command_line" == *"--type="* ]] && continue
     [[ "$command_line" == *"--remote-debugging-port=$port"* || "$command_line" == *"--remote-debugging-port $port"* ]] || continue
     (( matches += 1 ))
     matched_line="$command_line"
-  done
+  done < <(/bin/zsh "$process_guard" list --executable "$executable_path")
   (( matches == 1 )) || { print -u2 'The exact ChatGPT process for proxy-mode validation is ambiguous.'; return 1; }
   if (( use_proxy )); then
     [[ "$matched_line" == *"--proxy-server=$proxy_server"* && "$matched_line" == *'--proxy-bypass-list=localhost;127.0.0.1;[::1]'* ]] \
@@ -501,8 +504,13 @@ enable_view() {
   prelaunch_update "$node_bin"
   continue_with_updated_launcher
   if ! debug_endpoint_ready "$node_bin"; then
-    if app_is_running; then
+    local guard_status=0
+    app_is_running || guard_status=$?
+    if (( guard_status == 0 )); then
       print -u2 "$app_name is already running without the required loopback renderer endpoint. Quit it normally and reopen it with the ChatGPT Custom shortcut; refusing to start a second instance."
+      return 1
+    elif (( guard_status != 1 )); then
+      print -u2 "The exact application process check failed; refusing to risk a second instance."
       return 1
     fi
     local maintenance_started=$EPOCHREALTIME

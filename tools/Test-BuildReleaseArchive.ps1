@@ -13,6 +13,7 @@ try {
 
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $macExecutableNames = @(
+        'AppProcessGuard.sh',
         'MacOSShortcut.sh',
         'MobileProjectView-macOS-arm64.sh',
         'Setup.command',

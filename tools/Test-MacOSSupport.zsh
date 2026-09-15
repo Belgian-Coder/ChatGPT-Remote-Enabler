@@ -4,6 +4,7 @@ zmodload zsh/datetime
 
 root="${0:A:h:h}"
 shortcut="$root/macos/MacOSShortcut.sh"
+process_guard="$root/macos/AppProcessGuard.sh"
 temporary="$(mktemp -d "${TMPDIR:-/tmp}/chatgpt-remote-macos-support.XXXXXX")"
 temporary="${temporary:A}"
 cleanup() { rm -rf -- "$temporary"; }
@@ -25,12 +26,54 @@ uses="$(grep -Fc 'escape_applescript_string "$launcher"' "$shortcut")"
 
 for script in "$root"/macos/*.sh; do /bin/zsh -n "$script"; done
 
+process_fixture="$temporary/processes.txt"
+cat > "$process_fixture" <<'PROCESSES'
+101 /Applications/ChatGPT.app/Contents/MacOS/ChatGPT
+102 /Applications/Codex.app/Contents/MacOS/Codex --remote-debugging-port=9229
+103 /bin/zsh /fixture/AppProcessGuard.sh running /Applications/ChatGPT.app/Contents/MacOS/ChatGPT
+104 /Applications/ChatGPT.app/Contents/Frameworks/ChatGPT Helper.app/Contents/MacOS/ChatGPT Helper --parent=/Applications/ChatGPT.app/Contents/MacOS/ChatGPT
+105 /Applications/Custom Client.app/Contents/MacOS/Custom Client --fixture
+PROCESSES
+exact_matches="$(/bin/zsh "$process_guard" match-stdin \
+  --executable '/Applications/ChatGPT.app/Contents/MacOS/ChatGPT' \
+  --executable '/Applications/Codex.app/Contents/MacOS/Codex' < "$process_fixture")"
+[[ "$exact_matches" == *$'101\t/Applications/ChatGPT.app/Contents/MacOS/ChatGPT'* ]]
+[[ "$exact_matches" == *$'102\t/Applications/Codex.app/Contents/MacOS/Codex --remote-debugging-port=9229'* ]]
+[[ "$exact_matches" != *$'103\t'* && "$exact_matches" != *$'104\t'* ]] || {
+  print -u2 'The exact process guard matched its helper or an unrelated child process.'
+  exit 1
+}
+custom_match="$(/bin/zsh "$process_guard" match-stdin --executable '/Applications/Custom Client.app/Contents/MacOS/Custom Client' < "$process_fixture")"
+[[ "$custom_match" == *$'105\t/Applications/Custom Client.app/Contents/MacOS/Custom Client --fixture'* ]]
+legacy_process_name='Electron'
+! print -r -- "$legacy_process_name" | /usr/bin/grep -Fx ChatGPT >/dev/null
+[[ "$exact_matches" == *$'101\t'* ]] || { print -u2 'The command-path detector did not recover the app missed by the legacy name probe.'; exit 1; }
+HOME="$temporary/home" /bin/zsh "$process_guard" running --process-list-file "$process_fixture" \
+  --executable '/Applications/ChatGPT.app/Contents/MacOS/ChatGPT'
+empty_process_fixture="$temporary/empty-processes.txt"
+: > "$empty_process_fixture"
+empty_status=0
+HOME="$temporary/home" /bin/zsh "$process_guard" running --process-list-file "$empty_process_fixture" \
+  --executable '/Applications/ChatGPT.app/Contents/MacOS/ChatGPT' || empty_status=$?
+[[ "$empty_status" == 1 ]] || { print -u2 'A successful zero-match scan did not return the reserved stopped status.'; exit 1; }
+failure_status=0
+HOME="$temporary/home" /bin/zsh "$process_guard" running --process-list-file "$temporary/missing-processes.txt" \
+  --executable '/Applications/ChatGPT.app/Contents/MacOS/ChatGPT' 2>/dev/null || failure_status=$?
+[[ "$failure_status" == 2 ]] || { print -u2 'A failed process enumeration was confused with a stopped application.'; exit 1; }
+
 mkdir -p "$temporary/home"
+mkdir -p "$temporary/home/Applications/ChatGPT Mobile Projects.app" "$temporary/home/Library/Application Support/CodexRemoteFeatures/launchers"
+print -r -- 'set launcherPath to "/obsolete/ChatGPT-Remote-Enabler-macOS-arm64-v1.5.1/MobileProjectView-macOS-arm64.sh"' \
+  > "$temporary/home/Library/Application Support/CodexRemoteFeatures/launchers/ChatGPT Mobile Projects.applescript"
 shortcut_install="$(HOME="$temporary/home" /bin/zsh "$shortcut" install)"
 [[ "$shortcut_install" == *"Shortcut is valid:"* ]]
 HOME="$temporary/home" /bin/zsh "$shortcut" probe >/dev/null
 [[ -f "$temporary/home/Library/Application Support/CodexRemoteFeatures/launchers/ChatGPT Remote Enabler.applescript" ]]
 [[ -d "$temporary/home/Applications/ChatGPT Remote Enabler.app" ]]
+legacy_source="$temporary/home/Library/Application Support/CodexRemoteFeatures/launchers/ChatGPT Mobile Projects.applescript"
+[[ -d "$temporary/home/Applications/ChatGPT Mobile Projects.app" && -f "$legacy_source" ]]
+/usr/bin/grep -F "set launcherPath to \"$root/macos/MobileProjectView-macOS-arm64.sh\"" "$legacy_source" >/dev/null
+! /usr/bin/grep -F 'v1.5.1' "$legacy_source" >/dev/null
 relative_probe="$(cd "$root/macos" && HOME="$temporary/home" /bin/zsh ./Update-ChatGPTRemote.sh probe)"
 [[ "$relative_probe" == *"\"installRoot\":\"$root/macos\""* ]] || {
   print -u2 "Relative updater invocation resolved against HOME instead of its original working directory."
@@ -222,4 +265,4 @@ handoff_output="$(continue_with_updated_launcher)"
 [[ "$handoff_output" == *'"sourceCheckoutInterpreterHandoff":true'* && "$handoff_output" == *'"recoveryContinuation":true'* ]] \
   || { print -u2 "The updated source-checkout launcher was not handed off through zsh."; exit 1; }
 
-print -r -- '{"AppleScriptEscapeSemantic":true,"SharedEscapeHelper":true,"ShortcutAtomicInstall":true,"MacOSShellSyntax":true,"RelativeInvocation":true,"TransactionApply":true,"PrelaunchCurrentProof":true,"RecoveredCurrentHandoff":true,"RepeatedRecoveryRejected":true,"PrelaunchVerifiedUpdate":true,"PrelaunchMethodRejected":true,"PrelaunchStrictFinalJsonProof":true,"PrelaunchCurrentMethodRequired":true,"PrelaunchRecoveryFailClosed":true,"InheritedLaunchGuard":true,"SourceCheckoutInterpreterHandoff":true}'
+print -r -- '{"AppleScriptEscapeSemantic":true,"SharedEscapeHelper":true,"ExactExecutableProcessGuard":true,"LegacyNameProbeMissCovered":true,"NoHelperOrUnrelatedMatches":true,"CustomAppNamePath":true,"EnumerationFailureFailClosed":true,"ShortcutAtomicInstall":true,"LegacyShortcutMigrated":true,"MacOSShellSyntax":true,"RelativeInvocation":true,"TransactionApply":true,"PrelaunchCurrentProof":true,"RecoveredCurrentHandoff":true,"RepeatedRecoveryRejected":true,"PrelaunchVerifiedUpdate":true,"PrelaunchMethodRejected":true,"PrelaunchStrictFinalJsonProof":true,"PrelaunchCurrentMethodRequired":true,"PrelaunchRecoveryFailClosed":true,"InheritedLaunchGuard":true,"SourceCheckoutInterpreterHandoff":true}'

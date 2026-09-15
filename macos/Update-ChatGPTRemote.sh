@@ -381,6 +381,7 @@ invoke_transaction_helper() {
 normalize_prepared_executable_modes() {
   local root="$1" relative candidate
   local -a executable_paths=(
+    AppProcessGuard.sh
     MacOSShortcut.sh
     MobileProjectView-macOS-arm64.sh
     Setup.command
@@ -561,9 +562,9 @@ ensure_stable_install_root() {
 }
 
 finalize_stable_install_root() {
+  local launcher="$install_root/MobileProjectView-macOS-arm64.sh"
+  local shortcut="$install_root/MacOSShortcut.sh"
   if (( stable_migration_pending )); then
-    local launcher="$install_root/MobileProjectView-macOS-arm64.sh"
-    local shortcut="$install_root/MacOSShortcut.sh"
     local plist="$HOME/Library/LaunchAgents/com.local.codex-mobile-project-view.plist"
     if [[ -f "$plist" ]]; then
       local delay required startup_proxy=0
@@ -574,13 +575,18 @@ finalize_stable_install_root() {
       (( startup_proxy )) && startup_arguments+=(--proxy)
       CODEX_REMOTE_USE_PROXY="$startup_proxy" CODEX_STARTUP_DELAY_SECONDS="$delay" CODEX_STARTUP_REQUIRED_PATH="$required" /bin/zsh "$launcher" "${startup_arguments[@]}" >/dev/null
     fi
-    if [[ -d "$HOME/Applications/ChatGPT Remote Enabler.app" || -f "$HOME/Library/Application Support/CodexRemoteFeatures/launchers/ChatGPT Remote Enabler.applescript" ]]; then
-      local shortcut_proxy=0 shortcut_source="$HOME/Library/Application Support/CodexRemoteFeatures/launchers/ChatGPT Remote Enabler.applescript"
-      [[ -f "$shortcut_source" ]] && /usr/bin/grep -F 'quoted form of launcherPath & " enable --proxy"' "$shortcut_source" >/dev/null 2>&1 && shortcut_proxy=1
-      local -a shortcut_arguments=(install)
-      (( shortcut_proxy )) && shortcut_arguments+=(--proxy)
-      /bin/zsh "$shortcut" "${shortcut_arguments[@]}" >/dev/null
+  fi
+  local primary_source="$HOME/Library/Application Support/CodexRemoteFeatures/launchers/ChatGPT Remote Enabler.applescript"
+  local legacy_source="$HOME/Library/Application Support/CodexRemoteFeatures/launchers/ChatGPT Mobile Projects.applescript"
+  if [[ -d "$HOME/Applications/ChatGPT Remote Enabler.app" || -f "$primary_source" || -d "$HOME/Applications/ChatGPT Mobile Projects.app" || -f "$legacy_source" ]]; then
+    local shortcut_proxy=0
+    if { [[ -f "$primary_source" ]] && /usr/bin/grep -F 'quoted form of launcherPath & " enable --proxy"' "$primary_source" >/dev/null 2>&1; } \
+      || { [[ -f "$legacy_source" ]] && /usr/bin/grep -F 'quoted form of launcherPath & " enable --proxy"' "$legacy_source" >/dev/null 2>&1; }; then
+      shortcut_proxy=1
     fi
+    local -a shortcut_arguments=(install)
+    (( shortcut_proxy )) && shortcut_arguments+=(--proxy)
+    /bin/zsh "$shortcut" "${shortcut_arguments[@]}" >/dev/null
   fi
   cleanup_rollback_history
   cleanup_legacy_install_roots

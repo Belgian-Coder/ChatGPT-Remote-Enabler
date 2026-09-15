@@ -39,12 +39,11 @@ function appProcessesRunning() {
     return { safe: running.length === 0, running };
   }
   if (process.platform === "darwin") {
-    const running = [];
-    for (const name of ["ChatGPT", "Codex", "codex"]) {
-      const result = childProcess.spawnSync("/usr/bin/pgrep", ["-x", name], { encoding: "utf8", timeout: 5000 });
-      if (result.status === 0 && String(result.stdout).trim()) running.push(name);
-      else if (result.status !== 1) return { safe: false, reason: "process-check-failed" };
-    }
+    const guard = path.join(__dirname, "AppProcessGuard.sh");
+    const arguments_ = [guard, "list", "--app-name", process.env.CODEX_APP_NAME || "ChatGPT"];
+    const result = childProcess.spawnSync("/bin/zsh", arguments_, { encoding: "utf8", timeout: 5000 });
+    if (result.status !== 0) return { safe: false, reason: "process-check-failed" };
+    const running = String(result.stdout).split(/\r?\n/u).filter(Boolean);
     return { safe: running.length === 0, running };
   }
   return { safe: false, reason: "unsupported-platform" };

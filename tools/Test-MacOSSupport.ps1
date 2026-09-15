@@ -6,6 +6,7 @@ $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $updater = Get-Content -LiteralPath (Join-Path $root 'macos\Update-ChatGPTRemote.sh') -Raw
 $launcher = Get-Content -LiteralPath (Join-Path $root 'macos\MobileProjectView-macOS-arm64.sh') -Raw
 $shortcut = Get-Content -LiteralPath (Join-Path $root 'macos\MacOSShortcut.sh') -Raw
+$processGuard = Get-Content -LiteralPath (Join-Path $root 'macos\AppProcessGuard.sh') -Raw
 $setup = Get-Content -LiteralPath (Join-Path $root 'macos\Setup.command') -Raw
 $zshSemanticTest = Get-Content -LiteralPath (Join-Path $root 'tools\Test-MacOSSupport.zsh') -Raw
 $updateSession = Get-Content -LiteralPath (Join-Path $root 'macos\update-session.js') -Raw
@@ -23,7 +24,7 @@ foreach ($contract in @(
 )) {
     if (-not $updater.Contains($contract)) { throw "macOS updater reliability contract is missing: $contract" }
 }
-if (-not $shortcut.Contains('candidate_app="$app_root/.ChatGPT Remote Enabler.tmp.$$.$RANDOM.app"')) {
+if (-not $shortcut.Contains('candidate_app="$app_root/.$shortcut_name.tmp.$$.$RANDOM.app"')) {
     throw 'The macOS shortcut candidate must end in .app so osacompile emits an application bundle.'
 }
 if ($updater.IndexOf('script_path="${0:A}"') -gt $updater.IndexOf('cd -- "$HOME"')) {
@@ -66,6 +67,12 @@ if (-not $updateSessionPlatform.Contains('/usr/bin/awk ''{$1=$1; print}''')) {
 }
 foreach ($contract in @('startup_proxy=0', 'startup_arguments+=(--proxy)', 'shortcut_proxy=0', 'shortcut_arguments+=(--proxy)')) {
     if (-not $updater.Contains($contract)) { throw "macOS migration proxy-preservation contract is missing: $contract" }
+}
+foreach ($contract in @('match-stdin', '/bin/ps -axo pid=,command=', 'command == path', 'index(command, path " ") == 1', 'process_list="$(/bin/ps -axo pid=,command=)" || return 2', 'first="$(enumerate_processes)" || exit 2')) {
+    if (-not $processGuard.Contains($contract)) { throw "macOS exact executable process-guard contract is missing: $contract" }
+}
+if ($launcher.Contains('/usr/bin/pgrep -x') -or $shortcut.Contains('/usr/bin/pgrep -x') -or $processGuard.Contains('/usr/bin/pgrep')) {
+    throw 'A macOS launch-safety path still relies on the basename-only pgrep detector.'
 }
 foreach ($contract in @('matched_line=""', 'matched_line="$command_line"', '[[ "$matched_line" == *"--proxy-server=$proxy_server"*', '[[ "$matched_line" != *''--proxy-server=''*')) {
     if (-not $launcher.Contains($contract)) { throw "macOS running proxy-mode validation does not retain the exact matched process: $contract" }
@@ -142,7 +149,8 @@ foreach ($contract in @(
     'Shortcut candidate failed validation; the installed shortcut was left unchanged.',
     'escape_applescript_string() {',
     'set launcherPath to \"$escaped_launcher\"',
-    '/usr/bin/pgrep -x Codex',
+    'set processGuardPath to "$escaped_process_guard"',
+    "install_shortcut 'ChatGPT Mobile Projects'",
     'Shortcut removal failed; the application wrapper was restored.',
     'Shortcut removal did not complete; the previous shortcut was restored.',
     'if (( source_preserved )); then rm -f -- "$previous_source"; fi',
@@ -159,6 +167,12 @@ if (([regex]::Matches($shortcut, 'escape_applescript_string "\$launcher"')).Coun
     -not $zshSemanticTest.Contains('"$node_bin" "$transaction_helper" apply') -or
     -not $zshSemanticTest.Contains('/bin/zsh ./Update-ChatGPTRemote.sh probe')) {
     throw 'The real-zsh AppleScript escaping regression is not wired to the shared helper.'
+}
+foreach ($contract in @('app_is_running || guard_status=$?', 'elif (( guard_status != 1 ))', 'refusing to risk a second instance')) {
+    if (-not $launcher.Contains($contract)) { throw "macOS process-guard failure does not fail closed: $contract" }
+}
+foreach ($contract in @('ExactExecutableProcessGuard', 'LegacyNameProbeMissCovered', 'NoHelperOrUnrelatedMatches', 'CustomAppNamePath', 'EnumerationFailureFailClosed', 'LegacyShortcutMigrated')) {
+    if (-not $zshSemanticTest.Contains($contract)) { throw "The real-zsh process-guard regression is not wired: $contract" }
 }
 
 $global:LASTEXITCODE = 0
@@ -188,5 +202,7 @@ $global:LASTEXITCODE = 0
     ShortcutExactTarget = $true
     ShortcutRemovalTransactional = $true
     ShortcutRollbackCleanup = $true
+    ExactExecutableProcessGuard = $true
+    LegacyShortcutMigrated = $true
     RealZshSemanticTestPresent = $true
 } | ConvertTo-Json -Compress

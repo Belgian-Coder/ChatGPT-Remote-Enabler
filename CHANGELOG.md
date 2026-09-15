@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.5.85 — 2026-09-15
+
+- Detect running ChatGPT, Codex, and the configured macOS application by exact
+  executable path instead of basename-only `pgrep`, preventing a second app
+  instance when Electron exposes a different process name.
+- Share that fail-closed detector across the launcher, generated Dock shortcut,
+  exact renderer-process capture, proxy verification, and maintenance safety.
+- Regenerate an existing legacy **ChatGPT Mobile Projects** compatibility
+  wrapper after a successful update so it follows the fixed stable install root
+  and receives the same exact process guard as the current shortcut.
+- Cover ChatGPT, Codex, names containing spaces, the legacy-name miss, and
+  rejection of helper and unrelated command lines with real-zsh fixtures.
+
 ## v1.5.84 — 2026-09-15
 
 - Use one automatic graceful ChatGPT restart for the v1.5.83-to-v1.5.84

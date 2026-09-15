@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.5.87 — 2026-09-16
+
+- Repair the native macOS startup window's JavaScript for Automation runtime,
+  keep its run loop alive, acknowledge startup, and close it automatically
+  after renderer readiness is proven.
+- Launch the exact ChatGPT executable directly without Apple Events, preserve
+  stable Dock-wrapper identities, and retain actionable startup logs.
+- Reinstall after renderer replacement, defer DOM attachment until available,
+  bound renderer requests, and force the injector CLI to exit after completion.
+- Prefer a standalone Git installation over the Xcode command-line-tools shim
+  so prelaunch updates are not blocked by an unaccepted Xcode license.
+
 ## v1.5.86 — 2026-09-15
 
 - Add a native AppKit startup-progress window to the macOS Dock shortcut. It

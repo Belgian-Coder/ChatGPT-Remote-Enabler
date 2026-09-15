@@ -21,9 +21,14 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 [[ -f "$startup_progress" ]] || { print -u2 'The native startup progress helper is missing.'; exit 1; }
-for progress_contract in NSWindow NSProgressIndicator NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock update-recovery update-check renderer-readiness; do
+for progress_contract in NSWindow NSProgressIndicator NSRunLoop.currentRunLoop update-recovery update-check renderer-readiness; do
   /usr/bin/grep -F "$progress_contract" "$startup_progress" >/dev/null || { print -u2 "Native startup progress contract is missing: $progress_contract"; exit 1; }
 done
+progress_runtime_proof="$(/usr/bin/osascript -l JavaScript "$startup_progress" --owner "$$" --mode self-test)"
+[[ "$progress_runtime_proof" == *'"runtimeReady":true'* && "$progress_runtime_proof" == *'"ownerAlive":true'* ]] || {
+  print -u2 "The native startup progress runtime self-test failed: $progress_runtime_proof"
+  exit 1
+}
 if /usr/bin/grep -E 'NSRunningApplication|terminate\(\)|do shell script|kill -9|killall|pkill' "$update_platform" >/dev/null; then
   print -u2 'The macOS close path still contains a TCC-sensitive or force-kill operation.'
   exit 1

@@ -50,6 +50,7 @@ progress_helper="${script_path:h}/StartupProgress.js"
 progress_state_path="${CODEX_REMOTE_PROGRESS_STATE:-}"
 progress_enabled=0
 progress_started=0
+progress_pid=""
 peer_name="${CODEX_REMOTE_PEER_NAME:-}"
 startup_delay_seconds="${CODEX_STARTUP_DELAY_SECONDS:-60}"
 startup_required_path="${CODEX_STARTUP_REQUIRED_PATH:-}"
@@ -92,12 +93,27 @@ progress_start() {
   progress_state_is_safe || { print -u2 'The startup progress state path is outside the private per-user directory.'; return 1; }
   [[ -f "$progress_helper" && ! -L "$progress_helper" ]] || { print -u2 "Startup progress helper is missing: $progress_helper"; return 1; }
   mkdir -m 700 -p "${progress_state_path:h}"
+  mkdir -m 700 -p "$log_root"
+  rm -f -- "${progress_state_path}.ready"
   progress_enabled=1
   progress_write starting 'Starting ChatGPT Remote Enabler…'
   if [[ "${CODEX_REMOTE_PROGRESS_STARTED:-0}" != 1 ]]; then
-    /usr/bin/osascript -l JavaScript "$progress_helper" --state "$progress_state_path" --owner "$$" >/dev/null 2>&1 &!
+    /usr/bin/osascript -l JavaScript "$progress_helper" --state "$progress_state_path" --owner "$$" >>"$log_root/startup-progress.log" 2>&1 &!
+    progress_pid=$!
     progress_started=1
     export CODEX_REMOTE_PROGRESS_STARTED=1
+    local progress_deadline=$(( EPOCHREALTIME + 3 ))
+    while [[ ! -f "${progress_state_path}.ready" ]]; do
+      if ! kill -0 "$progress_pid" 2>/dev/null; then
+        print -u2 "The startup progress helper exited before opening its window. Review $log_root/startup-progress.log."
+        return 1
+      fi
+      (( EPOCHREALTIME < progress_deadline )) || {
+        print -u2 "The startup progress helper did not acknowledge its window. Review $log_root/startup-progress.log."
+        return 1
+      }
+      sleep 0.05
+    done
   fi
 }
 
@@ -131,12 +147,12 @@ release_launch_guard() {
 }
 
 launcher_exit() {
-  local status=$?
-  if (( status != 0 )); then
+  local exit_code=$?
+  if (( exit_code != 0 )); then
     progress_error 'Startup could not complete. Review the launcher log, correct the issue, and retry.'
   fi
   release_launch_guard
-  return "$status"
+  return "$exit_code"
 }
 
 trap launcher_exit EXIT
@@ -605,12 +621,15 @@ enable_view() {
   summary="$(readiness_state "$node_bin" "$output")"
   readiness_exit=$?
   set -e
-  (( readiness_exit == 2 )) && return 1
   deadline=$(( EPOCHSECONDS + mobile_ready_timeout_seconds ))
-  while (( readiness_exit == 3 )); do
+  while (( readiness_exit != 0 )); do
     (( EPOCHSECONDS < deadline )) || { print -u2 "The mobile project view did not become ready within $mobile_ready_timeout_seconds seconds. Last readiness proof: $summary"; return 1; }
     sleep 0.5
-    output="$(run_injector "$node_bin" probe)"
+    if (( readiness_exit == 2 )); then
+      output="$(run_injector "$node_bin" enable)"
+    else
+      output="$(run_injector "$node_bin" probe)"
+    fi
     set +e
     summary="$(readiness_state "$node_bin" "$output")"
     readiness_exit=$?

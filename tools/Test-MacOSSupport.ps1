@@ -25,8 +25,11 @@ foreach ($contract in @(
 )) {
     if (-not $updater.Contains($contract)) { throw "macOS updater reliability contract is missing: $contract" }
 }
-if (-not $shortcut.Contains('candidate_app="$app_root/.$shortcut_name.tmp.$$.$RANDOM.app"')) {
+if (-not $shortcut.Contains('candidate_app="$candidate_root/$shortcut_name.app"')) {
     throw 'The macOS shortcut candidate must end in .app so osacompile emits an application bundle.'
+}
+foreach ($contract in @('CFBundleName', 'CFBundleDisplayName', 'CFBundleIdentifier', 'com.local.chatgpt-remote-enabler')) {
+    if (-not $shortcut.Contains($contract)) { throw "The macOS shortcut stable identity contract is missing: $contract" }
 }
 if ($updater.IndexOf('script_path="${0:A}"') -gt $updater.IndexOf('cd -- "$HOME"')) {
     throw 'Relative updater invocation is resolved only after changing working directory.'
@@ -72,8 +75,11 @@ foreach ($contract in @('startup_proxy=0', 'startup_arguments+=(--proxy)', 'shor
 foreach ($contract in @('progress_start()', 'progress_write update-recovery', 'progress_write update-check', 'progress_write maintenance', 'progress_write launch', 'progress_write renderer-readiness', 'progress_complete', 'CODEX_REMOTE_PROGRESS_STATE')) {
     if (-not $launcher.Contains($contract)) { throw "macOS startup progress lifecycle contract is missing: $contract" }
 }
-foreach ($contract in @('NSWindow', 'NSProgressIndicator', 'NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock', 'update-recovery', 'update-check', 'renderer-readiness', 'complete', 'Action required', 'private per-user')) {
+foreach ($contract in @('NSWindow', 'NSProgressIndicator', 'NSRunLoop.currentRunLoop', 'update-recovery', 'update-check', 'renderer-readiness', 'complete', 'Action required', 'private per-user')) {
     if (-not $startupProgress.Contains($contract)) { throw "macOS native startup progress helper contract is missing: $contract" }
+}
+foreach ($contract in @('ObjC.bindFunction("kill"', '$.__error()[0]', '--mode', 'self-test', 'acknowledgeReady')) {
+    if (-not $startupProgress.Contains($contract)) { throw "macOS native startup progress runtime contract is missing: $contract" }
 }
 foreach ($contract in @('StartupProgress.js', 'progressRequested', 'CODEX_REMOTE_PROGRESS_ENABLED=1')) {
     if (-not $shortcut.Contains($contract)) { throw "macOS Dock shortcut progress contract is missing: $contract" }

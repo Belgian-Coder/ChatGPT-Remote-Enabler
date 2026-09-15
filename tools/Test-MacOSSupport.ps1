@@ -84,6 +84,10 @@ foreach ($contract in @('resolve_app_bundle() {', 'resolve_app_executable() {', 
 if (-not (Get-Content -LiteralPath (Join-Path $root 'macos\inject.js') -Raw).Contains('() => process.exit(0)')) {
     throw 'The macOS injector CLI does not force a clean exit after closing CDP.'
 }
+$gitRelease = Get-Content -LiteralPath (Join-Path $root 'macos\git-release.js') -Raw
+if (-not $gitRelease.Contains('candidates.push("/opt/homebrew/bin/git", "/usr/local/bin/git", "git", "/usr/bin/git")')) {
+    throw 'The macOS Git resolver does not prefer standalone Git over the Xcode shim.'
+}
 if ($launcher.Contains('/usr/bin/open "${open_arguments[@]}"') -or $launcher.Contains('path to application')) {
     throw 'The application launch path still depends on TCC-sensitive LaunchServices or Apple Events.'
 }

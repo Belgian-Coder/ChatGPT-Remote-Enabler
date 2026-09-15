@@ -173,15 +173,18 @@ function protectedProxyArguments(canonicalRemote, environment = process.env) {
 }
 
 function gitCandidates() {
-  const candidates = [process.env.CHATGPT_REMOTE_GIT, process.env.BUNDLED_CODEX_GIT, "git"];
+  const candidates = [process.env.CHATGPT_REMOTE_GIT, process.env.BUNDLED_CODEX_GIT];
   if (process.platform === "win32") {
+    candidates.push("git");
     const programFiles = process.env.ProgramW6432 || process.env.ProgramFiles;
     const localAppData = process.env.LOCALAPPDATA;
     if (programFiles) candidates.push(path.join(programFiles, "Git", "cmd", "git.exe"));
     if (localAppData) candidates.push(path.join(localAppData, "Programs", "Git", "cmd", "git.exe"));
     if (process.env.USERPROFILE) candidates.push(path.join(process.env.USERPROFILE, ".cache", "codex-runtimes", "codex-primary-runtime", "dependencies", "native", "git", "cmd", "git.exe"));
   } else {
-    candidates.push("/usr/bin/git", "/opt/homebrew/bin/git", "/usr/local/bin/git");
+    // Apple's /usr/bin/git is an Xcode shim and can exist while being unusable
+    // until an unrelated Xcode license is accepted. Prefer standalone Git.
+    candidates.push("/opt/homebrew/bin/git", "/usr/local/bin/git", "git", "/usr/bin/git");
   }
   return [...new Set(candidates.filter((candidate) => typeof candidate === "string" && candidate.length > 0))];
 }

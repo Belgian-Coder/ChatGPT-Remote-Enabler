@@ -277,6 +277,7 @@ HANDOFF_LAUNCHER
 chmod 644 "$handoff_launcher"
 script_path="$handoff_launcher"
 action=enable
+use_proxy=0
 launch_guard_token="$-$EPOCHSECONDS-456-launch"
 prelaunch_updated=1
 recovery_changed=1
@@ -291,7 +292,7 @@ handoff_output="$(continue_with_updated_launcher)"
 fake_app="$temporary/Fake ChatGPT.app"
 fake_executable="$fake_app/Contents/MacOS/ChatGPT"
 mkdir -p "$fake_app/Contents/MacOS"
-cp -p -- /bin/sleep "$fake_executable"
+ln -s /bin/sleep "$fake_executable"
 cat > "$fake_app/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

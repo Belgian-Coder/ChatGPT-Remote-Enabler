@@ -37,16 +37,27 @@ escape_applescript_string() {
 }
 
 codesign_quiet() {
-  local diagnostics status=0
+  local diagnostics exit_code=0
   diagnostics="$(mktemp "${TMPDIR:-/tmp}/chatgpt-remote-codesign.XXXXXX")"
-  /usr/bin/codesign "$@" 2>"$diagnostics" || status=$?
+  /usr/bin/codesign "$@" 2>"$diagnostics" || exit_code=$?
   # codesign emits this informational line when an ad-hoc signature replaces
   # the candidate's existing ad-hoc signature. Keep real diagnostics visible.
   if [[ -s "$diagnostics" ]]; then
     /usr/bin/sed '/replacing existing signature/d' "$diagnostics" >&2
   fi
   rm -f -- "$diagnostics"
-  return "$status"
+  return "$exit_code"
+}
+
+osacompile_quiet() {
+  local diagnostics exit_code=0
+  diagnostics="$(mktemp "${TMPDIR:-/tmp}/chatgpt-remote-osacompile.XXXXXX")"
+  /usr/bin/osacompile "$@" 2>"$diagnostics" || exit_code=$?
+  if [[ -s "$diagnostics" ]]; then
+    /usr/bin/sed '/replacing existing signature/d' "$diagnostics" >&2
+  fi
+  rm -f -- "$diagnostics"
+  return "$exit_code"
 }
 
 probe_shortcut() {
@@ -109,7 +120,7 @@ on run
     end try
 end run
 APPLESCRIPT
-  if ! /usr/bin/osacompile -o "$candidate_app" "$candidate_source" \
+  if ! osacompile_quiet -o "$candidate_app" "$candidate_source" \
     || ! codesign_quiet --force --deep --sign - "$candidate_app" \
     || ! probe_shortcut "$candidate_app" "$candidate_source"; then
     rm -rf -- "$candidate_source" "$candidate_app"

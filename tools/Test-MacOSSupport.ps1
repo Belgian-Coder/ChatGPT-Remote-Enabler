@@ -78,7 +78,7 @@ foreach ($contract in @('NSWindow', 'NSProgressIndicator', 'NSTimer.scheduledTim
 foreach ($contract in @('StartupProgress.js', 'progressRequested', 'CODEX_REMOTE_PROGRESS_ENABLED=1')) {
     if (-not $shortcut.Contains($contract)) { throw "macOS Dock shortcut progress contract is missing: $contract" }
 }
-foreach ($contract in @('codesign_quiet() {', 'replacing existing signature', '/usr/bin/sed ''/replacing existing signature/d''')) {
+foreach ($contract in @('codesign_quiet() {', 'osacompile_quiet() {', 'replacing existing signature', '/usr/bin/sed ''/replacing existing signature/d''')) {
     if (-not $shortcut.Contains($contract)) { throw "macOS codesign diagnostic suppression contract is missing: $contract" }
 }
 foreach ($contract in @('native_renderer_quit()', 'SystemInfo.getProcessInfo', 'bridge.sendMessageFromView({ type: "quit-app" })', '/bin/kill -TERM "$pid_value"', 'POSIX_SIGTERM', 'expected_uid', '0=SAME, 1=GONE, 2=ERROR, 3=CHANGED')) {

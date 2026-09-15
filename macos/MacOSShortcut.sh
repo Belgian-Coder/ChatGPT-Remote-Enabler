@@ -90,8 +90,10 @@ install_shortcut() {
   local stamp
   stamp="$(date +%Y%m%d-%H%M%S)-$$"
   local candidate_source="$source_root/.$shortcut_name.applescript.tmp.$$"
-  local candidate_app="$app_root/.$shortcut_name.tmp.$$.$RANDOM.app"
-  rm -rf -- "$candidate_source" "$candidate_app"
+  local candidate_root="$app_root/.$shortcut_name.tmp.$$.$RANDOM"
+  local candidate_app="$candidate_root/$shortcut_name.app"
+  rm -rf -- "$candidate_source" "$candidate_root"
+  mkdir -m 700 -- "$candidate_root"
   local escaped_launcher="$(escape_applescript_string "$launcher")"
   local escaped_process_guard="$(escape_applescript_string "$process_guard")"
   local escaped_app_name="$(escape_applescript_string "$app_name")"
@@ -114,16 +116,19 @@ on run
         set progressStatePath to progressRoot & "/dock-" & (do shell script "/usr/bin/uuidgen") & ".status"
         do shell script "export CODEX_REMOTE_PROGRESS_ENABLED=1; export CODEX_REMOTE_PROGRESS_STATE=" & quoted form of progressStatePath & "; /bin/zsh " & quoted form of launcherPath & " enable$proxy_suffix"
     on error errorMessage number errorNumber
-        if not progressRequested then
-            display alert "ChatGPT Remote Enabler failed to start" message (errorMessage & " (error " & (errorNumber as text) & ")") as critical
-        end if
+        display alert "ChatGPT Remote Enabler failed to start" message (errorMessage & " (error " & (errorNumber as text) & ")") as critical
     end try
 end run
 APPLESCRIPT
+  local bundle_id='com.local.chatgpt-remote-enabler'
+  [[ "$shortcut_name" == 'ChatGPT Mobile Projects' ]] && bundle_id='com.local.chatgpt-mobile-projects'
   if ! osacompile_quiet -o "$candidate_app" "$candidate_source" \
+    || ! /usr/libexec/PlistBuddy -c "Set :CFBundleName $shortcut_name" "$candidate_app/Contents/Info.plist" \
+    || ! /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string $shortcut_name" "$candidate_app/Contents/Info.plist" \
+    || ! /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string $bundle_id" "$candidate_app/Contents/Info.plist" \
     || ! codesign_quiet --force --deep --sign - "$candidate_app" \
     || ! probe_shortcut "$candidate_app" "$candidate_source"; then
-    rm -rf -- "$candidate_source" "$candidate_app"
+    rm -rf -- "$candidate_source" "$candidate_root"
     print -u2 "Shortcut candidate failed validation; the installed shortcut was left unchanged."
     return 1
   fi
@@ -132,7 +137,7 @@ APPLESCRIPT
   local source_preserved=0 app_preserved=0
   if [[ -f "$installed_source" ]]; then
     if ! mv -- "$installed_source" "$previous_source"; then
-      rm -rf -- "$candidate_source" "$candidate_app"
+      rm -rf -- "$candidate_source" "$candidate_root"
       return 1
     fi
     source_preserved=1
@@ -140,18 +145,19 @@ APPLESCRIPT
   if [[ -e "$installed_app" ]]; then
     if ! mv -- "$installed_app" "$previous_app"; then
       if (( source_preserved )); then mv -- "$previous_source" "$installed_source"; fi
-      rm -rf -- "$candidate_source" "$candidate_app"
+      rm -rf -- "$candidate_source" "$candidate_root"
       return 1
     fi
     app_preserved=1
   fi
   if ! mv -- "$candidate_source" "$installed_source" || ! mv -- "$candidate_app" "$installed_app"; then
-    rm -rf -- "$installed_source" "$installed_app" "$candidate_source" "$candidate_app"
+    rm -rf -- "$installed_source" "$installed_app" "$candidate_source" "$candidate_root"
     if (( source_preserved )); then mv -- "$previous_source" "$installed_source"; fi
     if (( app_preserved )); then mv -- "$previous_app" "$installed_app"; fi
     print -u2 "Shortcut replacement failed; the previous shortcut was restored."
     return 1
   fi
+  rmdir -- "$candidate_root" 2>/dev/null || true
   if ! probe_shortcut "$installed_app" "$installed_source"; then
     rm -rf -- "$installed_source" "$installed_app"
     if (( source_preserved )); then mv -- "$previous_source" "$installed_source"; fi

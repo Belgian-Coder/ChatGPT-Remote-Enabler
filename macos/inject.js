@@ -345,7 +345,13 @@ async function main(argv = process.argv.slice(2)) {
 }
 
 if (require.main === module) {
-  main().catch((error) => { process.stderr.write(`${error?.message || "Unexpected failure"}\n`); process.exitCode = 1; });
+  main().then(
+    () => process.exit(0),
+    (error) => {
+      fs.writeSync(2, `${error?.message || "Unexpected failure"}\n`);
+      process.exit(1);
+    },
+  );
 }
 
 module.exports = {

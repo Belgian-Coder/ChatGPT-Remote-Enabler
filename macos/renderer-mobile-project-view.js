@@ -7771,5 +7771,8 @@
   loadVerifiedThreadIds();
   const api = Object.freeze({ install, previewAutoArchive, previewAutoMaintenance: previewAutoArchive, probe, publishInventoryHeartbeat, reconcileAutoRegisteredProjects, recoverUnconfirmedRemoteSteer, removeAllAutoRegistered, runAutoArchiveNow, runAutoMaintenanceNow: runAutoArchiveNow, setAutoArchive, setAutoMaintenance: setAutoArchive, setAutoRegistration, setFilter, setView, uninstall, updateActivity, version: VERSION });
   Object.defineProperty(globalThis, API_SLOT, { configurable: true, enumerable: false, value: api });
-  return install();
+  if (document.body) return install();
+  return new Promise((resolve) => {
+    document.addEventListener("DOMContentLoaded", () => resolve(install()), { once: true });
+  });
 })();

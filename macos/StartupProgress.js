@@ -8,7 +8,7 @@
 
 ObjC.import("Cocoa");
 ObjC.import("Foundation");
-ObjC.import("Darwin");
+ObjC.bindFunction("kill", ["int", ["int", "int"]]);
 
 const WINDOW_TITLE = "ChatGPT Remote Enabler";
 const PROGRESS_ROOT_SUFFIX = "/Library/Application Support/CodexRemoteFeatures/startup-progress/";
@@ -74,7 +74,7 @@ function ownerIsAlive(ownerPid) {
   try {
     const result = Number($.kill(Number(ownerPid), 0));
     if (result === 0) return true;
-    return Number($.errno) === 1; // EPERM: the same-user owner is alive but protected.
+    return Number($.__error()[0]) === 1; // EPERM: the same-user owner is alive but protected.
   } catch {
     return false;
   }
@@ -82,6 +82,15 @@ function ownerIsAlive(ownerPid) {
 
 function removeState(statePath) {
   try { $.NSFileManager.defaultManager.removeItemAtPathError(statePath, null); } catch {}
+  try { $.NSFileManager.defaultManager.removeItemAtPathError(`${statePath}.ready`, null); } catch {}
+}
+
+function acknowledgeReady(statePath) {
+  const readyPath = `${statePath}.ready`;
+  const value = $.NSString.stringWithString("ready\n");
+  if (!value.writeToFileAtomicallyEncodingError(readyPath, true, $.NSUTF8StringEncoding, null)) {
+    throw new Error("The startup progress helper could not acknowledge readiness.");
+  }
 }
 
 function labelWithFrame(frame, text, size) {
@@ -97,9 +106,13 @@ function labelWithFrame(frame, text, size) {
 
 function run(argv) {
   const argumentsValue = parseArguments(argv);
-  const statePath = assertStatePath(argumentsValue.state);
   const ownerPid = Number(argumentsValue.owner);
   if (!Number.isSafeInteger(ownerPid) || ownerPid <= 0) throw new Error("The startup progress owner is invalid.");
+  if (argumentsValue.mode === "self-test") {
+    return JSON.stringify({ runtimeReady: true, ownerAlive: ownerIsAlive(ownerPid) });
+  }
+  if (argumentsValue.mode) throw new Error(`Unsupported startup-progress mode: ${argumentsValue.mode}`);
+  const statePath = assertStatePath(argumentsValue.state);
 
   const application = $.NSApplication.sharedApplication;
   application.setActivationPolicy($.NSApplicationActivationPolicyRegular);
@@ -111,7 +124,7 @@ function run(argv) {
   );
   window.title = WINDOW_TITLE;
   window.releasedWhenClosed = false;
-  window.center();
+  window.center;
 
   const content = window.contentView;
   const heading = labelWithFrame($.NSMakeRect(24, 142, 472, 28), WINDOW_TITLE, 18);
@@ -134,10 +147,10 @@ function run(argv) {
 
   window.makeKeyAndOrderFront(null);
   application.activateIgnoringOtherApps(true);
+  acknowledgeReady(statePath);
 
   let completeAt = 0;
   let errorShown = false;
-  let timer = null;
   const applyState = (state) => {
     if (!state) return;
     const kind = state.kind;
@@ -169,15 +182,14 @@ function run(argv) {
     if (kind === "complete") {
       heading.stringValue = "ChatGPT Remote Enabler is ready";
       hint.stringValue = "The protected session is ready. This window will close automatically.";
-      completeAt = Date.now() + 700;
+      if (completeAt === 0) completeAt = Date.now() + 700;
     }
   };
 
-  timer = $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(0.2, true, () => {
+  for (;;) {
     if (!window.isVisible) {
       removeState(statePath);
-      application.terminate(null);
-      return;
+      break;
     }
     const state = readState(statePath);
     if (state) applyState(state);
@@ -185,11 +197,11 @@ function run(argv) {
       applyState({ kind: "error", message: "The launcher exited before it reported readiness. Review the launcher log and retry." });
     }
     if (completeAt > 0 && Date.now() >= completeAt) {
-      timer.invalidate();
-      window.close();
+      window.close;
       removeState(statePath);
-      application.terminate(null);
+      break;
     }
-  });
-  application.run();
+    $.NSRunLoop.currentRunLoop.runUntilDate($.NSDate.dateWithTimeIntervalSinceNow(0.2));
+  }
+  application.terminate(null);
 }

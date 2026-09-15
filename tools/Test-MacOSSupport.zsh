@@ -21,9 +21,14 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 [[ -f "$startup_progress" ]] || { print -u2 'The native startup progress helper is missing.'; exit 1; }
-for progress_contract in NSWindow NSProgressIndicator NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock update-recovery update-check renderer-readiness; do
+for progress_contract in NSWindow NSProgressIndicator NSRunLoop.currentRunLoop update-recovery update-check renderer-readiness; do
   /usr/bin/grep -F "$progress_contract" "$startup_progress" >/dev/null || { print -u2 "Native startup progress contract is missing: $progress_contract"; exit 1; }
 done
+progress_runtime_proof="$(/usr/bin/osascript -l JavaScript "$startup_progress" --owner "$$" --mode self-test)"
+[[ "$progress_runtime_proof" == *'"runtimeReady":true'* && "$progress_runtime_proof" == *'"ownerAlive":true'* ]] || {
+  print -u2 "The native startup progress runtime self-test failed: $progress_runtime_proof"
+  exit 1
+}
 if /usr/bin/grep -E 'NSRunningApplication|terminate\(\)|do shell script|kill -9|killall|pkill' "$update_platform" >/dev/null; then
   print -u2 'The macOS close path still contains a TCC-sensitive or force-kill operation.'
   exit 1
@@ -44,6 +49,19 @@ uses="$(grep -Fc 'escape_applescript_string "$launcher"' "$shortcut")"
 [[ "$uses" == 2 ]] || { print -u2 "Installer and probe do not share one escape helper."; exit 1; }
 
 for script in "$root"/macos/*.sh; do /bin/zsh -n "$script"; done
+for launch_contract in 'resolve_app_bundle() {' 'resolve_app_executable() {' '"$app_executable" "${launch_arguments[@]}"' 'chatgpt-launch.log' 'timeout_seconds=35' '[[ "$requested_action" == probe ]] && timeout_seconds=12' 'return 124'; do
+  /usr/bin/grep -F "$launch_contract" "$root/macos/MobileProjectView-macOS-arm64.sh" >/dev/null \
+    || { print -u2 "The permission-free application launch contract is missing: $launch_contract"; exit 1; }
+done
+/usr/bin/grep -F '() => process.exit(0)' "$root/macos/inject.js" >/dev/null \
+  || { print -u2 'The macOS injector CLI does not force a clean exit after closing CDP.'; exit 1; }
+/usr/bin/grep -F 'candidates.push("/opt/homebrew/bin/git", "/usr/local/bin/git", "git", "/usr/bin/git")' "$root/macos/git-release.js" >/dev/null \
+  || { print -u2 'The macOS Git resolver does not prefer standalone Git over the Xcode shim.'; exit 1; }
+if /usr/bin/grep -F '/usr/bin/open "${open_arguments[@]}"' "$root/macos/MobileProjectView-macOS-arm64.sh" >/dev/null \
+  || /usr/bin/grep -F 'path to application' "$root/macos/MobileProjectView-macOS-arm64.sh" >/dev/null; then
+  print -u2 'The application launch path still depends on TCC-sensitive LaunchServices or Apple Events.'
+  exit 1
+fi
 
 process_fixture="$temporary/processes.txt"
 cat > "$process_fixture" <<'PROCESSES'

@@ -50,6 +50,7 @@ progress_helper="${script_path:h}/StartupProgress.js"
 progress_state_path="${CODEX_REMOTE_PROGRESS_STATE:-}"
 progress_enabled=0
 progress_started=0
+progress_pid=""
 peer_name="${CODEX_REMOTE_PEER_NAME:-}"
 startup_delay_seconds="${CODEX_STARTUP_DELAY_SECONDS:-60}"
 startup_required_path="${CODEX_STARTUP_REQUIRED_PATH:-}"
@@ -92,12 +93,27 @@ progress_start() {
   progress_state_is_safe || { print -u2 'The startup progress state path is outside the private per-user directory.'; return 1; }
   [[ -f "$progress_helper" && ! -L "$progress_helper" ]] || { print -u2 "Startup progress helper is missing: $progress_helper"; return 1; }
   mkdir -m 700 -p "${progress_state_path:h}"
+  mkdir -m 700 -p "$log_root"
+  rm -f -- "${progress_state_path}.ready"
   progress_enabled=1
   progress_write starting 'Starting ChatGPT Remote Enabler…'
   if [[ "${CODEX_REMOTE_PROGRESS_STARTED:-0}" != 1 ]]; then
-    /usr/bin/osascript -l JavaScript "$progress_helper" --state "$progress_state_path" --owner "$$" >/dev/null 2>&1 &!
+    /usr/bin/osascript -l JavaScript "$progress_helper" --state "$progress_state_path" --owner "$$" >>"$log_root/startup-progress.log" 2>&1 &!
+    progress_pid=$!
     progress_started=1
     export CODEX_REMOTE_PROGRESS_STARTED=1
+    local progress_deadline=$(( EPOCHREALTIME + 3 ))
+    while [[ ! -f "${progress_state_path}.ready" ]]; do
+      if ! kill -0 "$progress_pid" 2>/dev/null; then
+        print -u2 "The startup progress helper exited before opening its window. Review $log_root/startup-progress.log."
+        return 1
+      fi
+      (( EPOCHREALTIME < progress_deadline )) || {
+        print -u2 "The startup progress helper did not acknowledge its window. Review $log_root/startup-progress.log."
+        return 1
+      }
+      sleep 0.05
+    done
   fi
 }
 
@@ -131,12 +147,12 @@ release_launch_guard() {
 }
 
 launcher_exit() {
-  local status=$?
-  if (( status != 0 )); then
+  local exit_code=$?
+  if (( exit_code != 0 )); then
     progress_error 'Startup could not complete. Review the launcher log, correct the issue, and retry.'
   fi
   release_launch_guard
-  return "$status"
+  return "$exit_code"
 }
 
 trap launcher_exit EXIT
@@ -241,6 +257,31 @@ debug_endpoint_ready() {
 app_is_running() {
   [[ -f "$process_guard" && ! -L "$process_guard" ]] || { print -u2 "The exact application process guard is missing."; return 2; }
   /bin/zsh "$process_guard" running --app-name "$app_name"
+}
+
+resolve_app_bundle() {
+  local candidate
+  for candidate in "/Applications/$app_name.app" "$HOME/Applications/$app_name.app"; do
+    if [[ -d "$candidate" && ! -L "$candidate" && -f "$candidate/Contents/Info.plist" ]]; then
+      print -r -- "$candidate"
+      return 0
+    fi
+  done
+  print -u2 "The exact $app_name application bundle was not found in Applications."
+  return 1
+}
+
+resolve_app_executable() {
+  local app_path executable_name executable_path
+  app_path="$(resolve_app_bundle)" || return 1
+  executable_name="$(/usr/bin/defaults read "$app_path/Contents/Info" CFBundleExecutable 2>/dev/null)" \
+    || { print -u2 "The exact application executable name could not be resolved."; return 1; }
+  [[ "$executable_name" != */* && "$executable_name" != *$'\n'* ]] \
+    || { print -u2 "The exact application executable name is unsafe."; return 1; }
+  executable_path="$app_path/Contents/MacOS/$executable_name"
+  [[ -x "$executable_path" && ! -L "$executable_path" ]] \
+    || { print -u2 "The exact application executable is missing or unsafe: $executable_path"; return 1; }
+  print -r -- "$executable_path"
 }
 
 last_json_result() {
@@ -390,9 +431,26 @@ continue_with_updated_launcher() {
 run_injector() {
   local node_bin="$1"
   local requested_action="$2"
+  local timeout_seconds=35 injector_pid deadline wait_status=0
+  [[ "$requested_action" == probe ]] && timeout_seconds=12
   local args=("$injector" --action "$requested_action" --port "$port" --local-name "$(computer_name)" --target-wait-ms 30000)
   if [[ -n "$peer_name" ]]; then args+=(--single-remote-name "$peer_name"); fi
-  "$node_bin" "${args[@]}"
+  "$node_bin" "${args[@]}" &
+  injector_pid=$!
+  deadline=$(( EPOCHSECONDS + timeout_seconds ))
+  while kill -0 "$injector_pid" 2>/dev/null; do
+    if (( EPOCHSECONDS >= deadline )); then
+      kill -TERM "$injector_pid" 2>/dev/null || true
+      sleep 0.2
+      kill -KILL "$injector_pid" 2>/dev/null || true
+      wait "$injector_pid" 2>/dev/null || true
+      print -u2 "The renderer $requested_action request exceeded its $timeout_seconds second safety timeout."
+      return 124
+    fi
+    sleep 0.1
+  done
+  wait "$injector_pid" || wait_status=$?
+  return "$wait_status"
 }
 
 readiness_state() {
@@ -414,14 +472,7 @@ readiness_state() {
 
 capture_app_identity() {
   local app_path executable_name executable_path bundle_id pid_value start_token command_line
-  app_path="$(/usr/bin/osascript - "$app_name" <<'APPLESCRIPT'
-on run argv
-  return POSIX path of (path to application (item 1 of argv))
-end run
-APPLESCRIPT
-)"
-  app_path="${app_path%/}"
-  [[ "$app_path" == /* && -d "$app_path" ]] || { print -u2 "The exact application bundle could not be resolved."; return 1; }
+  app_path="$(resolve_app_bundle)" || return 1
   executable_name="$(/usr/bin/defaults read "$app_path/Contents/Info" CFBundleExecutable)"
   bundle_id="$(/usr/bin/defaults read "$app_path/Contents/Info" CFBundleIdentifier)"
   executable_path="$app_path/Contents/MacOS/$executable_name"
@@ -444,14 +495,7 @@ APPLESCRIPT
 
 verify_running_proxy_mode() {
   local exact_app_path executable_name executable_path candidate command_line="" matched_line="" matches=0
-  exact_app_path="$(/usr/bin/osascript - "$app_name" <<'APPLESCRIPT'
-on run argv
-  return POSIX path of (path to application (item 1 of argv))
-end run
-APPLESCRIPT
-)"
-  exact_app_path="${exact_app_path%/}"
-  [[ "$exact_app_path" == /* && -d "$exact_app_path" ]] || { print -u2 'The exact ChatGPT application bundle could not be resolved for proxy verification.'; return 1; }
+  exact_app_path="$(resolve_app_bundle)" || return 1
   executable_name="$(/usr/bin/defaults read "$exact_app_path/Contents/Info" CFBundleExecutable 2>/dev/null || print -r -- "$app_name")"
   executable_path="$exact_app_path/Contents/MacOS/$executable_name"
   while IFS=$'\t' read -r candidate command_line; do
@@ -582,13 +626,9 @@ enable_view() {
     if (( use_proxy )); then
       launch_arguments+=("--proxy-server=$proxy_server" '--proxy-bypass-list=localhost;127.0.0.1;[::1]')
     fi
-    local -a open_arguments=(-na "$app_name")
-    if (( use_proxy )); then
-      open_arguments+=(--env "HTTP_PROXY=$proxy_server" --env "HTTPS_PROXY=$proxy_server" --env "ALL_PROXY=$proxy_server"
-        --env "http_proxy=$proxy_server" --env "https_proxy=$proxy_server" --env "all_proxy=$proxy_server"
-        --env 'NO_PROXY=localhost,127.0.0.1,::1' --env 'no_proxy=localhost,127.0.0.1,::1' --env 'NODE_USE_ENV_PROXY=1')
-    fi
-    /usr/bin/open "${open_arguments[@]}" --args "${launch_arguments[@]}"
+    local app_executable
+    app_executable="$(resolve_app_executable)" || return 1
+    "$app_executable" "${launch_arguments[@]}" >>"$log_root/chatgpt-launch.log" 2>&1 &!
     local attempt
     for attempt in {1..60}; do
       debug_endpoint_ready "$node_bin" && break
@@ -598,24 +638,39 @@ enable_view() {
   debug_endpoint_ready "$node_bin" || { print -u2 "The loopback Codex renderer endpoint did not become ready."; return 1; }
   progress_write renderer-readiness 'Waiting for renderer readiness…'
   verify_running_proxy_mode
-  local mobile_started=$EPOCHREALTIME output summary readiness_exit deadline
-  output="$(run_injector "$node_bin" enable)"
-  print -r -- "$output"
+  local mobile_started=$EPOCHREALTIME output summary readiness_exit deadline injector_exit=0 requested_injector_action=enable
   set +e
-  summary="$(readiness_state "$node_bin" "$output")"
-  readiness_exit=$?
-  set -e
-  (( readiness_exit == 2 )) && return 1
-  deadline=$(( EPOCHSECONDS + mobile_ready_timeout_seconds ))
-  while (( readiness_exit == 3 )); do
-    (( EPOCHSECONDS < deadline )) || { print -u2 "The mobile project view did not become ready within $mobile_ready_timeout_seconds seconds. Last readiness proof: $summary"; return 1; }
-    sleep 0.5
-    output="$(run_injector "$node_bin" probe)"
-    set +e
+  output="$(run_injector "$node_bin" "$requested_injector_action")"
+  injector_exit=$?
+  if (( injector_exit == 0 )); then
+    print -r -- "$output"
     summary="$(readiness_state "$node_bin" "$output")"
     readiness_exit=$?
+  else
+    summary="{\"error\":\"renderer $requested_injector_action request exited $injector_exit\"}"
+    readiness_exit=2
+  fi
+  set -e
+  deadline=$(( EPOCHSECONDS + mobile_ready_timeout_seconds ))
+  while (( readiness_exit != 0 )); do
+    (( EPOCHSECONDS < deadline )) || { print -u2 "The mobile project view did not become ready within $mobile_ready_timeout_seconds seconds. Last readiness proof: $summary"; return 1; }
+    sleep 0.5
+    if (( readiness_exit == 2 )); then
+      requested_injector_action=enable
+    else
+      requested_injector_action=probe
+    fi
+    set +e
+    output="$(run_injector "$node_bin" "$requested_injector_action")"
+    injector_exit=$?
+    if (( injector_exit == 0 )); then
+      summary="$(readiness_state "$node_bin" "$output")"
+      readiness_exit=$?
+    else
+      summary="{\"error\":\"renderer $requested_injector_action request exited $injector_exit\"}"
+      readiness_exit=2
+    fi
     set -e
-    (( readiness_exit == 2 )) && return 1
   done
   (( readiness_exit == 0 )) || { print -u2 "The mobile project view readiness probe failed."; return 1; }
   print "stage=mobile-readiness durationMs=$(( (EPOCHREALTIME - mobile_started) * 1000 )) proof=$summary"

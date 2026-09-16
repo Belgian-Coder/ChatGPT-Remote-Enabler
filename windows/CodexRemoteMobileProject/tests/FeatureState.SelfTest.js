@@ -5,7 +5,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 const rendererPath = path.join(__dirname, "..", "renderer-mobile-project-view.js");
 const original = fs.readFileSync(rendererPath, "utf8");
-const source = original.replace("  return install();\n})();", "  globalThis.features = { state, hostName, displayDeviceName, saveDeviceAlias, compareDeviceAliasRecords, deviceAliasesForDestination, mergeDeviceAliasRecords, mergeInventoryDeviceAliases, parseDeviceAliasEnvelope, parseInventoryPayload, peerTransferText, publicationSignature, publishedDeviceAliases, readDeviceAliasRecords, serializePeerInventory, previewAutoArchive, requestCleanupPreview, readCleanupHistory, recordCleanupEvent, runAutoArchiveNow, diagnosticSnapshot, normalizeUpdateDetails };\n})();");
+const source = original.replace("  return installWhenDocumentReady(api, state, install, probe);\n})();", "  globalThis.features = { state, hostName, displayDeviceName, saveDeviceAlias, compareDeviceAliasRecords, deviceAliasesForDestination, mergeDeviceAliasRecords, mergeInventoryDeviceAliases, parseDeviceAliasEnvelope, parseInventoryPayload, peerTransferText, publicationSignature, publishedDeviceAliases, readDeviceAliasRecords, serializePeerInventory, previewAutoArchive, requestCleanupPreview, readCleanupHistory, recordCleanupEvent, runAutoArchiveNow, diagnosticSnapshot, normalizeUpdateDetails };\n})();");
 assert.notEqual(source, original);
 const storage = new Map();
 const context = vm.createContext({

@@ -8,7 +8,7 @@ const vm = require("node:vm");
 const rendererPath = path.join(__dirname, "..", "renderer-mobile-project-view.js");
 const source = fs.readFileSync(rendererPath, "utf8");
 const testSource = source.replace("(() => {", "globalThis.__sidebarStatusTest = (() => {")
-  .replace("  return install();\n})();", "  return { aggregateSidebarStatus, ensureStyle, metadataFromRow, nativeProjectStatus, nativeTaskStatusMetadata, normalizeSidebarStatus, projectStatusIndicator, reserveTaskStatusSpace, sidebarStatusContent, sidebarStatusKind, sidebarStatusTemplate, taskSidebarStatus, taskStatusIndicator, taskStatusLabel };\n})();");
+  .replace("  return installWhenDocumentReady(api, state, install, probe);\n})();", "  return { aggregateSidebarStatus, ensureStyle, metadataFromRow, nativeProjectStatus, nativeTaskStatusMetadata, normalizeSidebarStatus, projectStatusIndicator, reserveTaskStatusSpace, sidebarStatusContent, sidebarStatusKind, sidebarStatusTemplate, taskSidebarStatus, taskStatusIndicator, taskStatusLabel };\n})();");
 
 class FixtureElement {
   constructor(tagName = "div") {

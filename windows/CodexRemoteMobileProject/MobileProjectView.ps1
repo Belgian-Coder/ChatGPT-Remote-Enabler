@@ -3,6 +3,8 @@ param(
     [ValidateSet('Enable', 'Disable', 'Probe', 'EnableAutoMaintenance', 'DisableAutoMaintenance', 'PreviewAutoMaintenance', 'RunAutoMaintenance', 'EnableAutoArchive', 'DisableAutoArchive', 'PreviewAutoArchive', 'RunAutoArchive', 'EnableAutoRegistration', 'DisableAutoRegistration', 'ReconcileAutoRegistrations', 'RemoveAutoRegistrations')]
     [string]$Action = 'Probe',
     [string]$NodePath,
+    [ValidateRange(0, 30000)]
+    [int]$TargetWaitMilliseconds = 0,
     [switch]$DeferUpdateSession
 )
 
@@ -63,7 +65,16 @@ $nodeAction = switch ($Action) {
     'RemoveAutoRegistrations' { 'auto-remove' }
     default { $Action.ToLowerInvariant() }
 }
-& $NodePath (Join-Path $PSScriptRoot 'inject.js') --action $nodeAction --port $port --local-name $env:COMPUTERNAME
+$injectorArguments = @(
+    (Join-Path $PSScriptRoot 'inject.js'),
+    '--action', $nodeAction,
+    '--port', [string]$port,
+    '--local-name', $env:COMPUTERNAME
+)
+if ($TargetWaitMilliseconds -gt 0) {
+    $injectorArguments += @('--target-wait-ms', [string]$TargetWaitMilliseconds)
+}
+& $NodePath @injectorArguments
 if ($LASTEXITCODE -ne 0) { throw "Mobile project view action failed with exit code $LASTEXITCODE." }
 
 # Legacy launchers may have updated these files while their pre-update startup

@@ -9,7 +9,7 @@ const rendererPath = path.join(__dirname, "..", "renderer-mobile-project-view.js
 const originalSource = fs.readFileSync(rendererPath, "utf8");
 const testSource = originalSource
   .replace("(() => {", "globalThis.__statusInvalidationTest = (() => {")
-  .replace(/  return install\(\);\r?\n\}\)\(\);\s*$/u, `  return {
+  .replace("  return installWhenDocumentReady(api, state, install, probe);\n})();", `  return {
     state, armRemoteProjectInventoryRefresh, mutationsChangeTaskPresentation, nativeTaskStatusObservedAt, schedule,
     configure(publish) {
       scheduleLocalProjectInventoryPublication = publish;

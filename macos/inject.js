@@ -147,6 +147,13 @@ function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+function targetNotFoundError(waitMs, cause = null) {
+  const error = new Error(waitMs > 0 ? `Exact Codex renderer target was not found after ${waitMs} ms` : "Exact Codex renderer target was not found");
+  error.code = "TARGET_NOT_FOUND";
+  if (cause) error.cause = cause;
+  return error;
+}
+
 function exactRendererTarget(targets) {
   const exact = targets.filter(
     (candidate) => (candidate?.type === "page" || candidate?.type === "webview") && candidate.url === "app://-/index.html",
@@ -166,9 +173,7 @@ async function discoverRendererTarget(port, waitMs, dependencies = {}) {
     const targets = await discover(port, 5000);
     const target = exactRendererTarget(targets);
     if (target) return target;
-    const error = new Error("Exact Codex renderer target was not found");
-    error.code = "TARGET_NOT_FOUND";
-    throw error;
+    throw targetNotFoundError(0);
   }
   const deadline = Date.now() + waitMs;
   let lastError = null;
@@ -185,10 +190,7 @@ async function discoverRendererTarget(port, waitMs, dependencies = {}) {
     if (Date.now() >= deadline) break;
     await wait(Math.min(250, Math.max(1, deadline - Date.now())));
   }
-  const error = new Error(waitMs > 0 ? `Exact Codex renderer target was not found after ${waitMs} ms` : "Exact Codex renderer target was not found");
-  error.code = "TARGET_NOT_FOUND";
-  error.cause = lastError;
-  throw error;
+  throw targetNotFoundError(waitMs, lastError);
 }
 
 async function connectRendererTargetWithRetry(port, waitMs, dependencies = {}) {
@@ -206,7 +208,10 @@ async function connectRendererTargetWithRetry(port, waitMs, dependencies = {}) {
       if (!RETRYABLE_CONNECT_CODES.has(error?.code)) throw error;
       lastError = error;
     }
-    if (Date.now() >= deadline) throw lastError;
+    if (Date.now() >= deadline) {
+      if (lastError?.code === "TARGET_NOT_FOUND") throw targetNotFoundError(waitMs, lastError);
+      throw lastError;
+    }
     await wait(Math.min(250, Math.max(1, deadline - Date.now())));
   }
 }

@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.5.88 — 2026-09-16
+
+- Give the Windows cold-start renderer target the same bounded 30-second
+  discovery window already used on macOS, sharing the existing overall mobile
+  readiness deadline instead of failing after the five-second command default.
+- Report the full renderer-target retry budget when the final discovery slice
+  expires, rather than presenting the last one-millisecond sub-attempt as the
+  complete wait.
+- Keep pre-DOM renderer reinjection single-owner so a superseded payload cannot
+  reactivate after its replacement handles `DOMContentLoaded`.
+- Skip transaction copies whose installed destination already has the pinned
+  hash, allowing long-running proxy sessions to update without replacing their
+  unchanged, locked process launcher.
+
 ## v1.5.87 — 2026-09-16
 
 - Repair the native macOS startup window's JavaScript for Automation runtime,

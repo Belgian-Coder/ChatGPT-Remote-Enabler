@@ -630,9 +630,9 @@ function applyJournal(journalPath, journal) {
     if (pathKey(destination) !== pathKey(operation.destination)) throw new Error(`Journal destination changed: ${operation.relative}`);
     if (operation.kind === "copy") {
       if (sha256File(operation.source) !== operation.hash) throw new Error(`Prepared source changed during installation: ${operation.relative}`);
-      copyAndVerify(operation.source, destination, operation.hash);
+      if (!operationHasAppliedState(journal, operation)) copyAndVerify(operation.source, destination, operation.hash);
     } else if (operation.kind === "remove") {
-      if (fs.existsSync(destination)) {
+      if (!operationHasAppliedState(journal, operation) && fs.existsSync(destination)) {
         const details = fs.lstatSync(destination);
         if (!details.isFile() || details.isSymbolicLink()) throw new Error(`Refusing to remove a non-file destination: ${operation.relative}`);
         fs.unlinkSync(destination);

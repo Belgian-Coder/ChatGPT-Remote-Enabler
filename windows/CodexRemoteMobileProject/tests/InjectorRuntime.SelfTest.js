@@ -91,6 +91,18 @@ async function testTransientConnectRetry() {
     }),
     (error) => error === exhausted,
   );
+
+  const finalSlice = new Error("Exact Codex renderer target was not found after 1 ms");
+  finalSlice.code = "TARGET_NOT_FOUND";
+  await assert.rejects(
+    injector.connectRendererTargetWithRetry(41001, 20, {
+      delay: async () => new Promise((resolve) => setTimeout(resolve, 25)),
+      discoverRendererTarget: async () => { throw finalSlice; },
+    }),
+    (error) => error?.code === "TARGET_NOT_FOUND"
+      && error.message === "Exact Codex renderer target was not found after 20 ms"
+      && error.cause === finalSlice,
+  );
 }
 
 async function testPersistentCleanupRetention() {

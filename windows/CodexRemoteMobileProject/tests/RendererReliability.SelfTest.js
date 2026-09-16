@@ -10,7 +10,7 @@ const rendererPath = path.join(__dirname, "..", "renderer-mobile-project-view.js
 const originalSource = fs.readFileSync(rendererPath, "utf8").replace(/\r\n/gu, "\n");
 const testSource = originalSource
   .replace("(() => {", "globalThis.__rendererReliabilityTest = (() => {")
-  .replace("  return install();\n})();", `
+  .replace("  return installWhenDocumentReady(api, state, install, probe);\n})();", `
   discoverHostNames = () => ({ availability: new Map(), names: new Map(), registeredProjects: new Map(), runtimes: new Map() });
   discoverRemoteRuntimes = () => new Map();
   render = () => {
@@ -19,7 +19,7 @@ const testSource = originalSource
     scheduleNativeInventoryHydration();
     return { active: state.active, version: VERSION };
   };
-  return { assignLocalRuntime, hydrateNativeInventory, publishInventoryHeartbeat, readiness, schedule, scheduleLocalProjectInventoryPublication, scheduleNativeInventoryHydration, state };
+  return { assignLocalRuntime, hydrateNativeInventory, installWhenDocumentReady, publishInventoryHeartbeat, readiness, schedule, scheduleLocalProjectInventoryPublication, scheduleNativeInventoryHydration, state };
 })();`);
 assert.notEqual(testSource, originalSource, "full renderer test adapter must replace the production entrypoint");
 
@@ -129,6 +129,87 @@ async function advanceTo(target) {
 }
 
 (async () => {
+  const listeners = [];
+  const loadingDocument = {
+    body: null,
+    addEventListener(name, listener, options) {
+      assert.equal(name, "DOMContentLoaded");
+      assert.equal(options?.once, true);
+      listeners.push(listener);
+    },
+  };
+  const rendererRoot = {};
+  let oldInstalls = 0;
+  const oldState = { active: false, disposed: false };
+  const oldApi = {
+    install() { oldInstalls += 1; oldState.active = true; return { active: true, version: 87 }; },
+    probe() { return { active: oldState.active && !oldState.disposed, version: 87 }; },
+  };
+  rendererRoot.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__ = oldApi;
+  const oldPending = reliability.installWhenDocumentReady(
+    oldApi, oldState, oldApi.install, () => ({ active: oldState.active, version: 87 }),
+    { document: loadingDocument, root: rendererRoot },
+  );
+  oldState.disposed = true;
+
+  let currentInstalls = 0;
+  const currentState = { active: false, disposed: false };
+  const currentApi = {
+    install() { currentInstalls += 1; currentState.active = true; return { active: true, version: 88 }; },
+    probe() { return { active: currentState.active && !currentState.disposed, version: 88 }; },
+  };
+  rendererRoot.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__ = currentApi;
+  const currentPending = reliability.installWhenDocumentReady(
+    currentApi, currentState, currentApi.install, () => ({ active: currentState.active, version: 88 }),
+    { document: loadingDocument, root: rendererRoot },
+  );
+  assert.equal(listeners.length, 2);
+  loadingDocument.body = {};
+  for (const listener of listeners) listener();
+  const [oldResult, currentResult] = await Promise.all([oldPending, currentPending]);
+  assert.equal(oldInstalls, 0, "the disposed pre-DOM renderer must not reactivate");
+  assert.equal(currentInstalls, 1, "reinjection must install only the current renderer");
+  assert.equal(oldState.disposed, true);
+  assert.equal(oldResult.active, false, "the superseded evaluation must not activate another renderer owner");
+  assert.equal(currentResult.active, true);
+
+  const disposedListeners = [];
+  const disposedDocument = {
+    body: null,
+    addEventListener(name, listener, options) {
+      assert.equal(name, "DOMContentLoaded");
+      assert.equal(options?.once, true);
+      disposedListeners.push(listener);
+    },
+  };
+  const disposedRoot = {};
+  let disposedInstalls = 0;
+  const supersededState = { active: false, disposed: true };
+  const supersededApi = {
+    install() { disposedInstalls += 1; return { active: true, version: 87 }; },
+    probe() { return { active: false, version: 87 }; },
+  };
+  disposedRoot.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__ = supersededApi;
+  const supersededPending = reliability.installWhenDocumentReady(
+    supersededApi, supersededState, supersededApi.install, supersededApi.probe,
+    { document: disposedDocument, root: disposedRoot },
+  );
+  const disposedCurrentState = { active: false, disposed: true };
+  const disposedCurrentApi = {
+    install() { disposedInstalls += 1; return { active: true, version: 88 }; },
+    probe() { return { active: false, version: 88 }; },
+  };
+  disposedRoot.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__ = disposedCurrentApi;
+  const disposedCurrentPending = reliability.installWhenDocumentReady(
+    disposedCurrentApi, disposedCurrentState, disposedCurrentApi.install, disposedCurrentApi.probe,
+    { document: disposedDocument, root: disposedRoot },
+  );
+  disposedDocument.body = {};
+  for (const listener of disposedListeners) listener();
+  const disposedResults = await Promise.all([supersededPending, disposedCurrentPending]);
+  assert.equal(disposedInstalls, 0, "deferred callbacks must not reactivate a disposed current renderer");
+  assert.deepEqual(disposedResults.map(result => result.active), [false, false]);
+
   let failThreadLists = false;
   let truncateThreadLists = false;
   let listCalls = 0;
@@ -275,6 +356,7 @@ async function advanceTo(target) {
 
   console.log(JSON.stringify({
     backgroundMutationBatches: 200,
+    preDomReinjectionConverged: true,
     backgroundRenderDelta: 0,
     backgroundScanDelta: 0,
     backgroundPublisherWithoutAnimationFrame: true,

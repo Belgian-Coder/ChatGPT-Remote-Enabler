@@ -51,6 +51,7 @@ const testSource = originalSource
     hydrateNativeInventory,
     navigationCalls,
     refreshDeviceHealth,
+    refreshNativeConnectionSnapshot,
     requestDeviceRefresh: typeof requestDeviceRefresh === "function" ? requestDeviceRefresh : null,
     schedule,
     scheduleAutoRegistration,
@@ -58,6 +59,7 @@ const testSource = originalSource
     scheduleRemoteProjectInventory,
     freshInventory,
     emptyInventoryMessage,
+    freshDirectDeviceInventory,
     inventoryContainsProject,
     projectIdentity,
     nativeNavigationDispatcher,
@@ -571,6 +573,10 @@ async function expectRetainedAfterFailure(harness, hostId, message, response) {
     await forced;
     assert.equal(calls.length, 1, "force must bypass the local registered-project TTL");
     assert.ok(h.fixture.state.localRegisteredProjects.has("registered-forced"));
+    const successfulCatalogAt = h.fixture.state.localRegisteredProjectsFetchedAt;
+    h.fixture.invalidateDiscoveryCaches();
+    assert.equal(h.fixture.state.localRegisteredProjectsFetchedAt, successfulCatalogAt,
+      "refresh invalidation must retain the last successful catalog until its forced replacement finishes");
 
     h.fixture.state.localRegisteredProjectsFetchedAt = 0;
     const staleGeneration = h.fixture.state.discoveryGeneration;
@@ -590,6 +596,103 @@ async function expectRetainedAfterFailure(harness, hostId, message, response) {
     assert.equal(h.fixture.state.localRegisteredProjects.has("registered-forced"), false, "the queued current read must replace the stale snapshot");
     assert.equal(h.fixture.state.localRegisteredProjectsPending, false);
     assert.equal(h.fixture.state.localRegisteredProjectsError, null);
+  }
+
+  // Once a required forced read has started, a normal render-time schedule
+  // must join that read rather than queueing an identical second bridge call.
+  {
+    const h = createHarness();
+    let catalogReads = 0;
+    let releaseCatalog;
+    h.fixture.state.localFetchFromHost = async () => {
+      catalogReads += 1;
+      return new Promise(resolve => { releaseCatalog = resolve; });
+    };
+    h.fixture.invalidateDiscoveryCaches();
+    const forced = h.fixture.scheduleLocalRegisteredProjectsRefresh(true);
+    await h.settle();
+    assert.equal(catalogReads, 1);
+    assert.equal(h.fixture.state.localRegisteredProjectsRefreshRequired, false, "starting the current forced read must consume the required-refresh flag");
+    const joined = h.fixture.scheduleLocalRegisteredProjectsRefresh();
+    assert.strictEqual(joined, forced, "an ordinary render schedule must join the in-flight forced catalog read");
+    assert.equal(h.fixture.state.localRegisteredProjectsQueuedPromise, null, "joining the current read must not queue a duplicate catalog fetch");
+    releaseCatalog({ value: [] });
+    await forced;
+    await h.settle();
+    assert.equal(catalogReads, 1);
+  }
+
+  // A native connection transition must force a registered-project catalog
+  // read without discarding the last successful catalog while it is pending.
+  {
+    const h = createHarness();
+    const hostId = remoteHost("catalog_reconnect");
+    const project = { id: "catalog-reconnect-project", label: "Reconnect project", hostId, remotePath: "/fixture/reconnect" };
+    let catalogReads = 0;
+    h.context.electronBridge = {
+      getSharedObjectSnapshotValue(key) {
+        if (key === "remote_control_connections") return [{ hostId, displayName: "Reconnect peer", online: true }];
+        if (key === "remote_control_connections_state") return { available: true, clientAuthorized: true };
+        return null;
+      },
+    };
+    h.fixture.state.active = true;
+    h.fixture.state.localRegisteredProjectsFetchedAt = h.now();
+    const catalogBridge = async (action, options) => {
+      if (action === "get-global-state" && options?.params?.key === "remote-projects") {
+        catalogReads += 1;
+        return { value: [project] };
+      }
+      return null;
+    };
+    assert.equal(h.fixture.refreshNativeConnectionSnapshot(), true, "a changed native connection snapshot must invalidate discovery");
+    await h.settle();
+    assert.equal(catalogReads, 0, "a temporarily unavailable project-state bridge must not lose the required refresh");
+    assert.equal(h.fixture.state.localRegisteredProjectsRefreshRequired, true);
+    h.fixture.state.localFetchFromHost = catalogBridge;
+    await h.fixture.scheduleLocalRegisteredProjectsRefresh();
+    assert.equal(catalogReads, 1, "native connection changes must force one current-generation project catalog read");
+    assert.ok(h.fixture.state.localRegisteredProjects.has(project.id));
+    assert.equal(h.fixture.state.localRegisteredProjectsRefreshRequired, false);
+  }
+
+  // A transient forced catalog failure must retain the previous map and get
+  // one quick retry. Persistent failures must then return to the normal TTL
+  // cadence instead of producing an unbounded read/render loop.
+  {
+    const h = createHarness();
+    const hostId = remoteHost("catalog_retry");
+    const retainedProject = { id: "catalog-retained-project", label: "Retained project", hostId, remotePath: "/fixture/retained" };
+    let catalogReads = 0;
+    h.fixture.state.localRegisteredProjects.set(retainedProject.id, retainedProject);
+    h.fixture.state.localRegisteredProjectsFetchedAt = h.now();
+    h.fixture.state.threadInventories.set(hostId, {
+      error: null, fetchedAt: h.now(), threads: [{ id: id("099"), cwd: retainedProject.remotePath }], truncated: false,
+    });
+    let keepFailing = true;
+    h.fixture.state.localFetchFromHost = async () => {
+      catalogReads += 1;
+      if (keepFailing) throw new Error("transient catalog failure");
+      return { value: [retainedProject] };
+    };
+    await h.fixture.scheduleLocalRegisteredProjectsRefresh(true);
+    assert.equal(catalogReads, 1);
+    assert.ok(h.fixture.state.localRegisteredProjects.has(retainedProject.id), "a failed read must retain the last successful project map");
+    assert.equal(h.fixture.state.localRegisteredProjectsFetchedAt, h.now(), "a failed read must preserve the last successful catalog timestamp");
+    assert.match(h.fixture.state.localRegisteredProjectsError, /transient catalog failure/u);
+    assert.ok(h.fixture.freshDirectDeviceInventory(hostId), "a recent retained catalog must remain authoritative during its bounded retry window");
+    assert.equal(h.fixture.state.localRegisteredProjectsRetryTimer !== null, true, "the first current-generation failure must arm one quick retry");
+    await h.advanceTo(h.now() + 1000);
+    assert.equal(catalogReads, 2, "the bounded quick retry must run once");
+    assert.equal(h.fixture.state.localRegisteredProjectsRetryTimer, null, "a persistent second failure must not arm another quick retry");
+    for (let index = 0; index < 10; index += 1) await h.fixture.scheduleLocalRegisteredProjectsRefresh();
+    assert.equal(catalogReads, 2, "repeated render schedules must not hammer a persistently failing bridge");
+    keepFailing = false;
+    await h.advanceTo(h.fixture.state.localRegisteredProjectsRetryAt);
+    await h.fixture.scheduleLocalRegisteredProjectsRefresh();
+    assert.equal(catalogReads, 3, "the normal TTL cadence must permit later recovery");
+    assert.equal(h.fixture.state.localRegisteredProjectsError, null);
+    assert.ok(h.fixture.state.localRegisteredProjectsFetchedAt > 0);
   }
 
   // The legacy auto-registration preference must not re-enable automatic

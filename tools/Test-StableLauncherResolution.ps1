@@ -30,6 +30,7 @@ function New-ReleaseManifest {
 $fixtureRoot = Join-Path ([IO.Path]::GetTempPath()) ('stable-launcher-resolution-' + [guid]::NewGuid().ToString('N'))
 $stableRoot = Join-Path $fixtureRoot 'canonical'
 $packagedSource = Join-Path $fixtureRoot 'packaged-source'
+$recoverySourceRoot = Join-Path $fixtureRoot 'packaged-recovery-source'
 $recoveryStableRoot = Join-Path $fixtureRoot 'canonical-recovery'
 $recoveryStateRoot = Join-Path $fixtureRoot 'updater-recovery-state'
 $legacyRoot = Join-Path (Join-Path $fixtureRoot 'releases') 'ChatGPT-Remote-Enabler-Windows-x64-v1.5.23'
@@ -47,7 +48,7 @@ try {
     $expectedDefaultRoot = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) 'CodexRemoteFeatures\ChatGPT-Remote-Enabler-Windows-x64'
     Assert-Condition ([string]::Equals((Get-StableInstallRoot), $expectedDefaultRoot, [StringComparison]::OrdinalIgnoreCase)) 'The canonical stable root is not current-user LocalAppData.'
     Assert-Condition (Test-StableLegacyRoot -Path (Get-StableMachineInstallRoot)) 'The former machine-wide stable root is not recognized as a legacy migration source.'
-    New-Item -ItemType Directory -Path $stableRoot,$packagedSource,$legacyRoot,$newerLegacyRoot,$processFailureLegacyRoot,$migrationFailureLegacyRoot,$sessionLegacyRoot,$desktopPath,$startMenuPath,$startupPath -Force | Out-Null
+    New-Item -ItemType Directory -Path $stableRoot,$packagedSource,$recoverySourceRoot,$legacyRoot,$newerLegacyRoot,$processFailureLegacyRoot,$migrationFailureLegacyRoot,$sessionLegacyRoot,$desktopPath,$startMenuPath,$startupPath -Force | Out-Null
     Copy-StablePackageContents -SourceRoot (Join-Path $repositoryRoot 'windows') -DestinationRoot $stableRoot
     Write-Version -Root $stableRoot -Version $currentVersion
     New-ReleaseManifest -Root $stableRoot
@@ -136,16 +137,26 @@ try { [IO.File]::WriteAllText($SignalPath, 'locked'); Start-Sleep -Seconds 60 } 
     Copy-StablePackageContents -SourceRoot $packagedSource -DestinationRoot $recoveryStableRoot
     New-ReleaseManifest -Root $recoveryStableRoot
     Add-Content -LiteralPath (Join-Path $recoveryStableRoot 'FEATURES.md') -Value 'force repair' -Encoding UTF8
+    Copy-StablePackageContents -SourceRoot $packagedSource -DestinationRoot $recoverySourceRoot
+    $replacementTaskHost = Join-Path $recoverySourceRoot 'CodexRemoteMobileProject\UpdateSessionTaskHost.exe'
+    $replacementBytes = [IO.File]::ReadAllBytes($replacementTaskHost)
+    $replacementBytes[$replacementBytes.Length - 1] = [byte]($replacementBytes[$replacementBytes.Length - 1] -bxor 1)
+    [IO.File]::WriteAllBytes($replacementTaskHost, $replacementBytes)
+    New-ReleaseManifest -Root $recoverySourceRoot
+    Assert-Condition (Test-StablePackage -Root $recoverySourceRoot -RequireManifest) 'The executable-replacement source fixture failed package validation.'
     $lockedStableTaskHost = Join-Path $recoveryStableRoot 'CodexRemoteMobileProject\UpdateSessionTaskHost.exe'
+    # Deny delete sharing for the executable that must be replaced. The
+    # dedicated source fixture differs at that exact path, so this models the
+    # historical EPERM instead of merely locking an unchanged package file.
     $stableLock = [IO.File]::Open($lockedStableTaskHost, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
     $blockedMessage = $null
     try {
-        try { [void](Ensure-StableInstallRoot -SourceRoot $packagedSource -StableRoot $recoveryStableRoot -UpdaterStateRoot $recoveryStateRoot -LockTimeoutSeconds 10) }
+        try { [void](Ensure-StableInstallRoot -SourceRoot $recoverySourceRoot -StableRoot $recoveryStableRoot -UpdaterStateRoot $recoveryStateRoot -LockTimeoutSeconds 10) }
         catch { $blockedMessage = $_.Exception.Message }
         Assert-Condition ($blockedMessage -match 'UNSAFE_MIXED_INSTALL') 'A locked in-root task host did not stop with a recoverable mixed-install error.'
         Assert-Condition (Test-Path -LiteralPath (Join-Path $recoveryStateRoot 'transaction.json') -PathType Leaf) 'The blocked stable update did not retain its recovery journal.'
     } finally { $stableLock.Dispose() }
-    [void](Ensure-StableInstallRoot -SourceRoot $packagedSource -StableRoot $recoveryStableRoot -UpdaterStateRoot $recoveryStateRoot -LockTimeoutSeconds 10)
+    [void](Ensure-StableInstallRoot -SourceRoot $recoverySourceRoot -StableRoot $recoveryStableRoot -UpdaterStateRoot $recoveryStateRoot -LockTimeoutSeconds 10)
     Assert-Condition (Test-StablePackage -Root $recoveryStableRoot -RequireManifest) 'Stable recovery did not complete after releasing the old in-root task host.'
     Assert-Condition (-not (Test-Path -LiteralPath (Join-Path $recoveryStateRoot 'transaction.json') -PathType Leaf)) 'Recovered stable update left its journal behind.'
 

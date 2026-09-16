@@ -171,7 +171,7 @@ const testSource = originalSource
   bindReorder = () => {};
   probe = () => ({});
   nativeThreadAction = () => null;
-  return { appendEmptyProjectState, appendGroup, commonAncestor, emptyInventoryMessage, ensureStyle, freshDirectDeviceInventory, freshDirectThreadInventory, install, inventoryLabel, nativeFolderIcon, nativeListContainer, plainFolderIcon, reactRootFibers, render, state,
+  return { appendEmptyProjectState, appendGroup, canDirectArchiveTask, commonAncestor, emptyInventoryMessage, ensureStyle, freshDirectDeviceInventory, freshDirectThreadInventory, install, inventoryLabel, nativeFolderIcon, nativeListContainer, plainFolderIcon, reactRootFibers, render, state,
     useModel(model) { collectModel = () => model; }
   };
 })();`);
@@ -369,6 +369,7 @@ assert.equal(layout.state.nativeContainer, nativeContainer, "an empty recent-tas
 assert.ok(nav.querySelector(".native-global-control"), "choosing the list mount must preserve global sidebar controls");
 
 layout.state.view = "mobile";
+layout.state.localRuntime = { requestClient: { sendRequest: async () => ({}) } };
 layout.useModel({
   rows: [nativeRecentRow], nativeProjectItems: [opened, closed],
   hosts: [
@@ -416,6 +417,20 @@ for (const heading of headings) {
 }
 const recentGroup = layout.state.panel.querySelector('[data-project-key="fixture-recent"]');
 assert.ok(recentGroup.querySelector(".crmp-task-row"));
+assert.ok(recentGroup.querySelector('.crmp-task-action[aria-label="Archive chat"]'), "a synthetic local row must expose the direct Archive chat action when its app-server runtime is available");
+const archiveRuntime = layout.state.localRuntime;
+layout.state.localRuntime = null;
+layout.render();
+assert.equal(layout.state.panel.querySelector('.crmp-task-action[aria-label="Archive chat"]'), null, "a synthetic row must not advertise direct archive when no current app-server runtime exists");
+layout.state.localRuntime = archiveRuntime;
+layout.render();
+layout.state.pendingDirectArchives.set(`local::${task.conversationId}`, Promise.resolve(true));
+layout.render();
+const pendingArchiveButton = layout.state.panel.querySelector('.crmp-task-action[aria-label="Archive chat"]');
+assert.equal(pendingArchiveButton.disabled, true, "an in-flight direct archive must disable repeated activation");
+assert.equal(pendingArchiveButton.getAttribute("aria-busy"), "true", "an in-flight direct archive must expose accessible pending state");
+layout.state.pendingDirectArchives.clear();
+layout.render();
 assert.equal(recentGroup.querySelector(".crmp-project-head"), null, "a single recent-task group must not add a synthetic folder absent from native Recents");
 assert.equal(nativeContainer.style.display, "none", "Mobile projects must replace both native sections together");
 layout.state.view = "native";
@@ -472,7 +487,8 @@ layout.state.localRegisteredProjectsFetchedAt = Date.now() - 181000;
 assert.equal(layout.emptyInventoryMessage(boundaryHost), "Task information is out of date. Waiting for the device to refresh.", "the native project catalog must expire at the authority boundary, not the refresh cadence");
 layout.state.localRegisteredProjectsFetchedAt = Date.now();
 layout.state.localRegisteredProjectsError = "fixture catalog failure";
-assert.equal(layout.emptyInventoryMessage(boundaryHost), "Task information is out of date. Waiting for the device to refresh.", "a current-looking catalog timestamp must fail closed when the catalog refresh errored");
+assert.equal(layout.emptyInventoryMessage(boundaryHost), "No chats", "a recent successful catalog must stay authoritative during a transient refresh error");
+assert.equal(layout.inventoryLabel(boundaryHost), "Current project catalog and task membership read directly through Codex.");
 layout.state.localRegisteredProjectsError = null;
 layout.state.localRegisteredProjectsPending = false;
 layout.state.threadInventories.delete(boundaryHost);
@@ -504,6 +520,14 @@ layout.state.deviceRefreshLastSuccessfulAt = Date.now();
 layout.render();
 assert.equal(layout.state.panel.querySelector(".crmp-sync-status")?.dataset.state, "ready", "fresh direct task membership must clear the stale-device banner");
 assert.equal(layout.state.panel.querySelector(".crmp-sync-status")?.textContent, "Device data is up to date.");
+assert.equal(layout.state.panel.querySelector(".crmp-inventory-status"), null, "fresh direct project and task data must suppress an older helper failure banner");
+layout.state.taskActionFeedback = "Could not archive //NAS/Data\\Backups\\Infrastructure: archive refused";
+layout.render();
+assert.equal(layout.state.panel.querySelector(".crmp-sync-status")?.dataset.state, "error", "task action failures must use the visible error status");
+assert.ok(layout.state.panel.querySelector(".crmp-sync-status")?.textContent.startsWith(layout.state.taskActionFeedback), "archive failure details must remain visible to the user");
+assert.ok(layout.state.panel.querySelector(".crmp-sync-details"), "archive feedback must not hide the Device health entry point");
+layout.state.taskActionFeedback = null;
+layout.render();
 const refreshChildren = [...layout.state.panel.children];
 const refreshReplacementCount = layout.state.panel.replaceChildrenCalls;
 const refreshSkipCount = layout.state.counters.panelRenderSkips;

@@ -109,6 +109,43 @@ const flush = async () => { for (let i = 0; i < 40; i++) await Promise.resolve()
   assert.equal(model.hosts.find(item => item.id === host).name, "Named workstation", "inventory hostnames must not replace a native device label");
   assert.equal(model.hosts.find(item => item.id === host).available, true);
 
+  // Current direct Codex data must outrank an older helper snapshot. During a
+  // staggered upgrade the helper can retain the task's previous project even
+  // though the native catalog and thread/list already contain its new home.
+  const priorRegisteredProjects = first.f.state.localRegisteredProjects;
+  const priorRegisteredProjectsFetchedAt = first.f.state.localRegisteredProjectsFetchedAt;
+  const priorThreadInventory = first.f.state.threadInventories.get(host);
+  const priorHelperInventory = first.f.state.remoteProjectInventories.get(host);
+  const movedId = "00000000-0000-4000-8000-000000000089";
+  const orphanId = "00000000-0000-4000-8000-000000000090";
+  const directProject = { cwd: "/fixture/new", hostDisplayName: "Named workstation", hostId: host, item: null, label: "New project", projectId: "project-new" };
+  first.f.state.localRegisteredProjects = new Map([[directProject.projectId, directProject]]);
+  first.f.state.localRegisteredProjectsFetchedAt = Date.now();
+  first.f.state.threadInventories.set(host, {
+    error: null, fetchedAt: Date.now(), hostId: host, pages: 1, retryAt: 0, truncated: false,
+    threads: [
+      { cwd: directProject.cwd, id: movedId, projectId: directProject.projectId, status: "idle", title: "Moved task" },
+      { cwd: "/fixture/orphan", id: orphanId, projectId: null, status: "idle", title: "Orphan task" },
+    ],
+  });
+  first.f.state.remoteProjectInventories.set(host, {
+    error: "older helper publisher unavailable", fetchedAt: Date.now() - 600000, generatedAt: Date.now() - 600000,
+    pending: true, projects: [{ cwd: "/fixture/old", name: "Old project", rootPaths: ["/fixture/old"] }], tasks: new Map(),
+    threads: [{ cwd: "/fixture/old", id: movedId, projectId: "project-old", status: "idle", title: "Moved task" }], threadsAuthoritative: true,
+  });
+  const movedModel = first.f.collectModel();
+  const movedTask = movedModel.tasks.find(task => task.conversationId === movedId);
+  assert.equal(movedTask.cwd, directProject.cwd, "stale helper data must not replace a current direct task path");
+  assert.equal(movedTask.projectId, directProject.projectId, "stale helper data must not replace a current direct task project id");
+  assert.equal(movedTask.inventoryFresh, true, "stale helper data must not invalidate current direct task authority");
+  assert.equal(movedModel.projects.some(project => project.cwd === "/fixture/old"), false, "stale helper projects must not filter or supplement a current direct catalog");
+  assert.ok(movedModel.projects.some(project => project.cwd === directProject.cwd), "the current direct project must remain visible");
+  assert.ok(movedModel.recents.some(group => group.tasks.some(task => task.conversationId === orphanId)), "an unmatched task from a complete direct catalog must remain in Recent chats");
+  first.f.state.localRegisteredProjects = priorRegisteredProjects;
+  first.f.state.localRegisteredProjectsFetchedAt = priorRegisteredProjectsFetchedAt;
+  if (priorThreadInventory) first.f.state.threadInventories.set(host, priorThreadInventory); else first.f.state.threadInventories.delete(host);
+  first.f.state.remoteProjectInventories.set(host, priorHelperInventory);
+
   // An ordinary inventory failure must keep the discovered runtime cached. A
   // known-offline peer otherwise turns every retry/render into another bounded
   // full React graph scan.

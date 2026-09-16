@@ -10,8 +10,9 @@ const originalSource = fs.readFileSync(rendererPath, "utf8");
 const testSource = originalSource
   .replace("(() => {", "globalThis.__navigationTest = (() => {")
   .replace("Object.freeze([750, 2500])", "Object.freeze([1, 2])")
+  .replace("const TASK_ACTION_FEEDBACK_MS = 12000;", "const TASK_ACTION_FEEDBACK_MS = 5;")
   .replace("  return installWhenDocumentReady(api, state, install, probe);\n})();", `  return {
-    state, markPendingArchivedTask, openNativeTask, pendingArchiveKey, reconcilePendingArchivedTask,
+    state, archiveTask, canDirectArchiveTask, markPendingArchivedTask, openNativeTask, pendingArchiveKey, reconcilePendingArchivedTask,
     recoverUnconfirmedRemoteSteer, rememberTaskActivation, retainRecentTaskActivations, suppressPendingArchivedTasks,
     configure(fixture) {
       confirmRemoteTaskMembership = async () => fixture.membershipPromise ?? fixture.membership !== false;
@@ -37,8 +38,12 @@ const testSource = originalSource
       nativeProjectItem = () => fixture.nativeProject;
       nativeThreadRow = () => fixture.hydrated ? fixture.nativeRow : null;
       invokeNativeElement = (element) => { element.click(); return true; };
-      requestDeviceRefresh = () => fixture.refreshPromise ?? Promise.resolve(fixture.refreshResult ?? { complete: true });
-      schedule = () => {};
+      requestDeviceRefresh = async () => {
+        fixture.refreshes = (fixture.refreshes ?? 0) + 1;
+        if (fixture.onRefresh) await fixture.onRefresh();
+        return fixture.refreshPromise ?? fixture.refreshResult ?? { complete: true };
+      };
+      schedule = () => { fixture.schedules = (fixture.schedules ?? 0) + 1; };
     },
   };\n})();`);
 assert.notEqual(testSource, originalSource, "test adapter must replace startup");
@@ -162,6 +167,124 @@ const task = { conversationId: "01a07ab9-07e9-7671-a2b9-e99236f4e986", conversat
   const localArchiveRecord = navigation.state.pendingArchivedTasks.get(localArchiveKey);
   navigation.state.threadInventories.set("local", { error: null, fetchedAt: localArchiveRecord.requestedAt + 1, threads: [], truncated: false });
   assert.equal(navigation.reconcilePendingArchivedTask(localArchiveKey), false, "a fresh local omission must confirm the optimistic archive suppression");
+
+  // Some CLI-created rows have a path title but no mounted native action rail.
+  // The Device projects view must still provide a reversible archive action
+  // through the same app-server runtime that supplied the authoritative row.
+  const pathTask = {
+    conversationId: "44444444-4444-4444-8444-444444444444",
+    conversationKey: "44444444-4444-4444-8444-444444444444",
+    cwd: "//NAS/Data\\Backups\\Infrastructure",
+    hostId: "local",
+    originalRow: null,
+    title: "//NAS/Data\\Backups\\Infrastructure",
+  };
+  const archiveRequests = [];
+  navigation.state.localRuntime = { requestClient: { sendRequest: async (method, params) => { archiveRequests.push({ method, params }); return {}; } } };
+  navigation.state.threadInventories.set("local", { error: null, fetchedAt: Date.now(), threads: [pathTask], truncated: false });
+  assert.equal(navigation.canDirectArchiveTask(pathTask), true, "a synthetic local row with an app-server runtime must expose Archive chat");
+  assert.equal(await navigation.archiveTask(pathTask), true, "a synthetic path-titled row must archive through its current app-server runtime");
+  assert.equal(archiveRequests.length, 1);
+  assert.equal(archiveRequests[0].method, "thread/archive");
+  assert.equal(archiveRequests[0].params.threadId, pathTask.conversationId);
+  assert.equal(navigation.state.pendingArchivedTasks.has(navigation.pendingArchiveKey(pathTask)), true, "a direct archive must hide the row until authoritative refresh confirms removal");
+  navigation.state.pendingArchivedTasks.delete(navigation.pendingArchiveKey(pathTask));
+
+  let releaseArchive;
+  archiveRequests.length = 0;
+  const deferredArchive = new Promise(resolve => { releaseArchive = resolve; });
+  navigation.state.localRuntime = { requestClient: { sendRequest: async (method, params) => { archiveRequests.push({ method, params }); return deferredArchive; } } };
+  navigation.state.threadInventories.set("local", { error: null, fetchedAt: Date.now(), threads: [pathTask], truncated: false });
+  const firstArchive = navigation.archiveTask(pathTask);
+  const duplicateArchive = navigation.archiveTask(pathTask);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(archiveRequests.length, 1, "two activations during a slow archive must dispatch one request");
+  assert.equal(navigation.state.pendingDirectArchives.has(navigation.pendingArchiveKey(pathTask)), true, "the direct archive must expose its in-flight state");
+  releaseArchive({});
+  assert.deepEqual(await Promise.all([firstArchive, duplicateArchive]), [true, true]);
+  assert.equal(navigation.state.pendingDirectArchives.has(navigation.pendingArchiveKey(pathTask)), false);
+  navigation.state.pendingArchivedTasks.delete(navigation.pendingArchiveKey(pathTask));
+
+  // Refresh reconstructs runtime wrapper objects even when the underlying
+  // app-server request client is unchanged. That must not cancel the archive.
+  archiveRequests.length = 0;
+  navigation.state.threadInventories.set("local", { error: "stale", fetchedAt: 0, threads: [pathTask], truncated: true });
+  fixture.onRefresh = async () => {
+    navigation.state.localRuntime = { requestClient: navigation.state.localRuntime.requestClient };
+    navigation.state.threadInventories.set("local", { error: null, fetchedAt: Date.now(), threads: [pathTask], truncated: false });
+  };
+  fixture.refreshResult = { complete: false, error: "unrelated peer unavailable" };
+  assert.equal(await navigation.archiveTask(pathTask), true, "archive must survive a refresh that rebuilds the runtime wrapper around the same request client");
+  assert.equal(archiveRequests.length, 1, "post-refresh archive must send exactly one request");
+  navigation.state.pendingArchivedTasks.delete(navigation.pendingArchiveKey(pathTask));
+  fixture.onRefresh = null;
+  fixture.refreshResult = null;
+
+  const remotePathTask = { ...pathTask, conversationId: "55555555-5555-4555-8555-555555555555", hostId };
+  const remoteRequests = [];
+  const remoteClient = { sendRequest: async (method, params) => { remoteRequests.push({ method, params }); return {}; } };
+  navigation.state.remoteRuntimeCache.set(hostId, { requestClient: remoteClient });
+  navigation.state.threadInventories.set(hostId, { error: "stale", fetchedAt: 0, threads: [remotePathTask], truncated: true });
+  fixture.onRefresh = async () => {
+    navigation.state.remoteRuntimeCache.set(hostId, { requestClient: remoteClient });
+    navigation.state.threadInventories.set(hostId, { error: null, fetchedAt: Date.now(), threads: [remotePathTask], truncated: false });
+  };
+  assert.equal(await navigation.archiveTask(remotePathTask), true, "remote archive must survive a refreshed wrapper around the same request client");
+  assert.equal(remoteRequests.length, 1);
+  navigation.state.pendingArchivedTasks.delete(navigation.pendingArchiveKey(remotePathTask));
+
+  remoteRequests.length = 0;
+  navigation.state.threadInventories.set(hostId, { error: "stale", fetchedAt: 0, threads: [remotePathTask], truncated: true });
+  fixture.onRefresh = async () => {
+    navigation.state.remoteRuntimeCache.set(hostId, { requestClient: { sendRequest: async () => ({}) } });
+    navigation.state.threadInventories.set(hostId, { error: null, fetchedAt: Date.now(), threads: [remotePathTask], truncated: false });
+  };
+  assert.equal(await navigation.archiveTask(remotePathTask), false, "archive must fail closed when refresh replaces the app-server request client");
+  assert.equal(remoteRequests.length, 0, "a retired request client must never receive the archive request");
+  assert.match(navigation.state.taskActionFeedback, /Task runtime changed before archive/u);
+  navigation.state.remoteRuntimeCache.delete(hostId);
+  fixture.onRefresh = null;
+
+  navigation.state.threadInventories.set("local", { error: null, fetchedAt: Date.now(), threads: [pathTask], truncated: false });
+  const failingClient = { sendRequest: async () => { throw new Error("archive refused"); } };
+  navigation.state.localRuntime = { requestClient: failingClient };
+  const schedulesBeforeFailure = fixture.schedules ?? 0;
+  const refreshesBeforeFailure = fixture.refreshes ?? 0;
+  assert.equal(await navigation.archiveTask(pathTask), false, "a rejected direct archive must fail cleanly");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(navigation.state.taskActionFeedback, /Could not archive.*archive refused/u, "archive failures must be available to the visible sync status");
+  assert.ok((fixture.schedules ?? 0) > schedulesBeforeFailure, "archive failures must schedule visible feedback");
+  assert.ok((fixture.refreshes ?? 0) > refreshesBeforeFailure, "an uncertain archive outcome must trigger authoritative reconciliation");
+  assert.equal(navigation.state.pendingArchivedTasks.has(navigation.pendingArchiveKey(pathTask)), false, "a definitive rejection must restore the hidden row immediately");
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(navigation.state.taskActionFeedback, null, "archive failure feedback must expire without requiring reinjection or a later successful archive");
+
+  const timeoutError = new Error("Archive request timed out");
+  timeoutError.code = "CODEX_REMOTE_REQUEST_TIMEOUT";
+  navigation.state.localRuntime = { requestClient: { sendRequest: async () => { throw timeoutError; } } };
+  navigation.state.threadInventories.set("local", { error: null, fetchedAt: Date.now(), threads: [pathTask], truncated: false });
+  assert.equal(await navigation.archiveTask(pathTask), false, "an archive timeout must report an uncertain result");
+  const timeoutArchiveKey = navigation.pendingArchiveKey(pathTask);
+  assert.equal(navigation.state.pendingArchivedTasks.has(timeoutArchiveKey), true, "a timeout must keep the row hidden while its outcome is reconciled");
+  assert.equal(navigation.state.pendingArchiveRefreshTimers.has(timeoutArchiveKey), true, "a timeout must schedule bounded authoritative reconciliation");
+  const timeoutRecord = navigation.state.pendingArchivedTasks.get(timeoutArchiveKey);
+  navigation.state.threadInventories.set("local", { error: null, fetchedAt: timeoutRecord.requestedAt + 1, threads: [], truncated: false });
+  assert.equal(navigation.reconcilePendingArchivedTask(timeoutArchiveKey), false, "a fresh omission after timeout must confirm the archive and release pending state");
+  assert.equal(navigation.state.pendingArchiveRefreshTimers.has(timeoutArchiveKey), false, "confirmed timeout reconciliation must cancel its remaining timer");
+
+  archiveRequests.length = 0;
+  navigation.state.localRuntime = { requestClient: { sendRequest: async (method, params) => { archiveRequests.push({ method, params }); return {}; } } };
+  navigation.state.threadInventories.set("local", { error: null, fetchedAt: Date.now(), threads: [], truncated: false });
+  const refreshesBeforeAbsentTask = fixture.refreshes ?? 0;
+  assert.equal(await navigation.archiveTask(pathTask), false, "a task absent from fresh authoritative membership must not be archived");
+  assert.equal(archiveRequests.length, 0, "the stale helper-only row must never reach thread/archive");
+  assert.equal(fixture.refreshes ?? 0, refreshesBeforeAbsentTask, "a definitive pre-dispatch membership failure must not trigger a redundant device refresh");
+  assert.match(navigation.state.taskActionFeedback, /Current task membership could not be confirmed/u);
+
+  navigation.state.localRuntime = null;
+  assert.equal(await navigation.archiveTask(pathTask), false, "a vanished runtime must fail visibly");
+  assert.match(navigation.state.taskActionFeedback, /Archive is unavailable for this device right now/u);
+
   assert.equal(navigation.markPendingArchivedTask(localTask, false), true);
   const localRollbackRecord = navigation.state.pendingArchivedTasks.get(localArchiveKey);
   navigation.state.threadInventories.set("local", { error: null, fetchedAt: localRollbackRecord.requestedAt + 1, threads: [localTask], truncated: false });

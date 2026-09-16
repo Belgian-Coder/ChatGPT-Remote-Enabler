@@ -5,7 +5,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 const filename = path.join(__dirname, "..", "renderer-mobile-project-view.js");
 const original = fs.readFileSync(filename, "utf8").replace(/\r\n/g, "\n");
-const source = original.replace("  return installWhenDocumentReady(api, state, install, probe);\n})();", "  globalThis.transportFixture = { state, boundedRelayPeers, compactInventoryText, peerTransferText, peerContentSignature, peerCacheIdentityMatches, inventoryHasWork, parseInventoryPayload, serializePeerInventory, queuePeerTransfer, drainPeerTransfer, pausePeerTransfer, resumePausedPeerTransfers, resolveRemoteHome, scheduleRemoteProjectInventory, connectionGuidance, peerWriteLocks };\n})();");
+const source = original.replace("  return installWhenDocumentReady(api, state, install, probe);\n})();", "  globalThis.transportFixture = { state, boundedRelayPeers, compactInventoryText, peerTransferText, peerContentSignature, peerCacheIdentityMatches, inventoryHasWork, parseInventoryPayload, serializePeerInventory, queuePeerTransfer, drainPeerTransfer, pausePeerTransfer, resumePausedPeerTransfers, eligiblePeerTransferRuntimes, pushLocalInventoryToPeers, resolveRemoteHome, scheduleRemoteProjectInventory, connectionGuidance, peerWriteLocks, configureDiscovery(entries) { const runtimes = new Map(entries); discoverHostNames = () => ({ runtimes }); discoverRemoteRuntimes = () => new Map(runtimes); } };\n})();");
 assert.notEqual(original, source);
 let now = Date.now();
 let timerId = 0;
@@ -74,6 +74,24 @@ async function advance(ms) { now += ms; for (let i = 0; i < 30; i++) { const due
   assert.equal(t.inventoryHasWork(originalPayload.tasks, originalPayload.threads), false);
   assert.equal(t.inventoryHasWork([{ statusType: "loading" }]), true);
   assert.equal(t.inventoryHasWork([], [{ status: "inProgress" }]), true);
+  const localAlias = `${host}-local-alias`;
+  t.state.localRuntimeHostIds.add(localAlias);
+  const eligibleRuntimes = t.eligiblePeerTransferRuntimes(new Map([["local", {}], [localAlias, {}], [host, {}], [other, {}]]));
+  assert.deepEqual([...eligibleRuntimes.keys()], [host, other], "peer publication must exclude the local runtime and every confirmed local-runtime alias");
+  t.state.localRuntimeHostIds.delete(localAlias);
+
+  const routedHosts = [];
+  const routedPeer = `${host}-routed`;
+  const routedRuntime = name => ({ requestClient: { sendRequest: async method => {
+    if (method === "config/read") { routedHosts.push(name); return { home: `/fixture/${name}/.codex` }; }
+    return {};
+  } } });
+  t.state.localRuntimeHostIds.add(localAlias);
+  t.configureDiscovery([[localAlias, routedRuntime("local-alias")], [routedPeer, routedRuntime("remote-peer")]]);
+  t.pushLocalInventoryToPeers(snapshot("wired publication"));
+  await flush();
+  assert.deepEqual(routedHosts, ["remote-peer"], "the publication entrypoint must not queue config or file requests for a confirmed local alias");
+  t.state.localRuntimeHostIds.delete(localAlias);
 
   const writes = []; let finish; let active = 0; let maxActive = 0; let configReads = 0;
   const runtime = { requestClient: { sendRequest: async (method, params) => {
@@ -245,7 +263,7 @@ async function advance(ms) { now += ms; for (let i = 0; i < 30; i++) { const due
   assert.equal(t.connectionGuidance(remoteHost).code, "direct-ready", "fresh native task membership must outrank an unavailable older helper publisher");
   t.state.localRegisteredProjectsError = "catalog refresh failed";
   t.state.remoteProjectInventories.set(host, { error: "older helper publisher unavailable", pending: false });
-  assert.equal(t.connectionGuidance(remoteHost).code, "publisher-unavailable", "a failed native project catalog must not be treated as authoritative");
+  assert.equal(t.connectionGuidance(remoteHost).code, "direct-ready", "a recent successful native catalog must remain authoritative during a transient refresh error");
   t.state.localRegisteredProjectsError = null;
   t.state.localRegisteredProjectsPending = false;
   t.state.threadInventories.delete(host);
@@ -264,5 +282,5 @@ async function advance(ms) { now += ms; for (let i = 0; i < 30; i++) { const due
   const twoClient = { ...large, peers: { [host]: large } };
   const oldBytes = Buffer.byteLength(JSON.stringify(twoClient)); const newBytes = Buffer.byteLength(t.peerTransferText(twoClient, host));
   assert.ok(newBytes < oldBytes * .55);
-  console.log(JSON.stringify({ nullableSemanticsPreserved: true, recipientEchoRemoved: true, relayPeerCountCapped: true, relayPeerBudgetCapped: true, relayFreshestPeersRetained: true, aliasRecipientContextMapped: true, aliasRecipientContextNotForwarded: true, aliasTombstoneSerialized: true, thirdPeerRetained: true, timestampEchoSuppressed: true, idleTaskDetection: true, latestSnapshotCoalesced: true, offlineOutboundPaused: true, offlineNewestResumed: true, offlineConfigRaceGuarded: true, offlineWriteRaceSerialized: true, maxConcurrentWrites: maxActive, timeoutLockAcrossReinjection: true, exponentialRetry: true, expiredAndDisposedJobsSkipped: true, sharedPullPushDiscovery: true, failedReadPreservesAuthority: true, directInventoryFallback: true, connectionFindings: 7, fixtureThreadsPerClient: 1000, previousPushJsonBytes: oldBytes, optimizedPushJsonBytes: newBytes, pushReductionPercent: Math.round(100 * (1 - newBytes / oldBytes)) }));
+  console.log(JSON.stringify({ nullableSemanticsPreserved: true, recipientEchoRemoved: true, relayPeerCountCapped: true, relayPeerBudgetCapped: true, relayFreshestPeersRetained: true, aliasRecipientContextMapped: true, aliasRecipientContextNotForwarded: true, aliasTombstoneSerialized: true, thirdPeerRetained: true, timestampEchoSuppressed: true, idleTaskDetection: true, latestSnapshotCoalesced: true, offlineOutboundPaused: true, offlineNewestResumed: true, offlineConfigRaceGuarded: true, offlineWriteRaceSerialized: true, localAliasTransferExcluded: true, maxConcurrentWrites: maxActive, timeoutLockAcrossReinjection: true, exponentialRetry: true, expiredAndDisposedJobsSkipped: true, sharedPullPushDiscovery: true, failedReadPreservesAuthority: true, directInventoryFallback: true, connectionFindings: 7, fixtureThreadsPerClient: 1000, previousPushJsonBytes: oldBytes, optimizedPushJsonBytes: newBytes, pushReductionPercent: Math.round(100 * (1 - newBytes / oldBytes)) }));
 })().catch(error => { console.error(error); process.exitCode = 1; });

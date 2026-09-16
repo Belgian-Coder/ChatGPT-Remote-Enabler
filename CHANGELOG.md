@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.5.90 — 2026-09-16
+
+- Keep fresh direct Codex task and project metadata authoritative when an older
+  helper snapshot fails, preventing chats from moving back to stale project
+  paths during staggered upgrades.
+- Suppress the misleading project-sync warning when direct device inventory is
+  current, while retaining helper failure details in diagnostics.
+- Provide a direct app-server archive action for authoritative path-titled
+  threads that have no mounted native action rail, so they can be removed from
+  Device projects without manual database or filesystem changes. The action is
+  single-flight, survives safe runtime-wrapper refreshes, reconciles uncertain
+  outcomes, restores definitive rejections immediately, and reports failures
+  visibly without permanently hiding sync health or depending on unrelated peers.
+- Exclude local runtime aliases from peer inventory writes and cache normalized
+  loaded-search text, reducing duplicate sharing work and repeated filtering
+  cost for large task lists.
+- Exercise locked executable recovery with a changing package payload so the
+  Windows startup regression proves journal retention and automatic recovery.
+
 ## v1.5.89 — 2026-09-16
 
 - Treat a fresh native project catalog plus complete direct task inventory as

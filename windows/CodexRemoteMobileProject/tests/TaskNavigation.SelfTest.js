@@ -9,6 +9,7 @@ const rendererPath = path.join(__dirname, "..", "renderer-mobile-project-view.js
 const originalSource = fs.readFileSync(rendererPath, "utf8");
 const testSource = originalSource
   .replace("(() => {", "globalThis.__navigationTest = (() => {")
+  .replace("Object.freeze([750, 2500])", "Object.freeze([1, 2])")
   .replace("  return installWhenDocumentReady(api, state, install, probe);\n})();", `  return {
     state, markPendingArchivedTask, openNativeTask, pendingArchiveKey, reconcilePendingArchivedTask,
     recoverUnconfirmedRemoteSteer, rememberTaskActivation, retainRecentTaskActivations, suppressPendingArchivedTasks,
@@ -36,7 +37,7 @@ const testSource = originalSource
       nativeProjectItem = () => fixture.nativeProject;
       nativeThreadRow = () => fixture.hydrated ? fixture.nativeRow : null;
       invokeNativeElement = (element) => { element.click(); return true; };
-      requestDeviceRefresh = async () => fixture.refreshResult ?? { complete: true };
+      requestDeviceRefresh = () => fixture.refreshPromise ?? Promise.resolve(fixture.refreshResult ?? { complete: true });
       schedule = () => {};
     },
   };\n})();`);
@@ -151,6 +152,30 @@ const task = { conversationId: "01a07ab9-07e9-7671-a2b9-e99236f4e986", conversat
   assert.equal(navigation.reconcilePendingArchivedTask(archiveKey), false,
     "a second authoritative inventory may restore a task when archive did not persist");
   assert.equal(navigation.state.pendingArchivedTasks.has(archiveKey), false);
+
+  const localTask = { ...task, conversationId: "22222222-2222-4222-8222-222222222222", hostId: "local" };
+  const localArchiveKey = navigation.pendingArchiveKey(localTask);
+  assert.equal(navigation.markPendingArchivedTask(localTask, false), true, "local archive actions must use the same immediate suppression path");
+  const localArchiveTasks = new Map([[localArchiveKey, localTask]]);
+  navigation.suppressPendingArchivedTasks(localArchiveTasks);
+  assert.equal(localArchiveTasks.has(localArchiveKey), false, "a local archived chat must disappear before the next periodic inventory read");
+  const localArchiveRecord = navigation.state.pendingArchivedTasks.get(localArchiveKey);
+  navigation.state.threadInventories.set("local", { error: null, fetchedAt: localArchiveRecord.requestedAt + 1, threads: [], truncated: false });
+  assert.equal(navigation.reconcilePendingArchivedTask(localArchiveKey), false, "a fresh local omission must confirm the optimistic archive suppression");
+  assert.equal(navigation.markPendingArchivedTask(localTask, false), true);
+  const localRollbackRecord = navigation.state.pendingArchivedTasks.get(localArchiveKey);
+  navigation.state.threadInventories.set("local", { error: null, fetchedAt: localRollbackRecord.requestedAt + 1, threads: [localTask], truncated: false });
+  localRollbackRecord.attempts = 2;
+  assert.equal(navigation.reconcilePendingArchivedTask(localArchiveKey), false, "bounded local reconciliation must restore a chat when archiving did not persist");
+
+  const delayedTask = { ...localTask, conversationId: "33333333-3333-4333-8333-333333333333" };
+  const delayedKey = navigation.pendingArchiveKey(delayedTask);
+  fixture.refreshPromise = new Promise(() => {});
+  assert.equal(navigation.markPendingArchivedTask(delayedTask), true);
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(navigation.state.pendingArchivedTasks.has(delayedKey), false,
+    "a stalled shared refresh must not extend optimistic archive suppression beyond its retry deadline");
+  fixture.refreshPromise = null;
 
   assert.equal(navigation.markPendingArchivedTask(task, false), true);
   const omittedRecord = navigation.state.pendingArchivedTasks.get(archiveKey);

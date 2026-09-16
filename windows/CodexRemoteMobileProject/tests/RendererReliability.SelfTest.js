@@ -155,12 +155,12 @@ async function advanceTo(target) {
   let currentInstalls = 0;
   const currentState = { active: false, disposed: false };
   const currentApi = {
-    install() { currentInstalls += 1; currentState.active = true; return { active: true, version: 88 }; },
-    probe() { return { active: currentState.active && !currentState.disposed, version: 88 }; },
+    install() { currentInstalls += 1; currentState.active = true; return { active: true, version: 89 }; },
+    probe() { return { active: currentState.active && !currentState.disposed, version: 89 }; },
   };
   rendererRoot.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__ = currentApi;
   const currentPending = reliability.installWhenDocumentReady(
-    currentApi, currentState, currentApi.install, () => ({ active: currentState.active, version: 88 }),
+    currentApi, currentState, currentApi.install, () => ({ active: currentState.active, version: 89 }),
     { document: loadingDocument, root: rendererRoot },
   );
   assert.equal(listeners.length, 2);
@@ -196,8 +196,8 @@ async function advanceTo(target) {
   );
   const disposedCurrentState = { active: false, disposed: true };
   const disposedCurrentApi = {
-    install() { disposedInstalls += 1; return { active: true, version: 88 }; },
-    probe() { return { active: false, version: 88 }; },
+    install() { disposedInstalls += 1; return { active: true, version: 89 }; },
+    probe() { return { active: false, version: 89 }; },
   };
   disposedRoot.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__ = disposedCurrentApi;
   const disposedCurrentPending = reliability.installWhenDocumentReady(

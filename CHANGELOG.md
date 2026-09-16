@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.5.89 — 2026-09-16
+
+- Treat a fresh native project catalog plus complete direct task inventory as
+  authoritative even when an older helper cannot publish its optional peer
+  inventory, preventing connected devices from appearing out of date.
+- Separate the 15-second native refresh cadence from the three-minute
+  authority window, and report the older required evidence age in diagnostics
+  so long-running sessions do not flicker or understate staleness.
+- Hide locally archived chats immediately and reconcile them against fresh
+  post-action inventory with a bounded rollback that remains timely even when
+  a shared device refresh stalls.
+
 ## v1.5.88 — 2026-09-16
 
 - Give the Windows cold-start renderer target the same bounded 30-second

@@ -171,7 +171,7 @@ const testSource = originalSource
   bindReorder = () => {};
   probe = () => ({});
   nativeThreadAction = () => null;
-  return { appendEmptyProjectState, appendGroup, commonAncestor, emptyInventoryMessage, ensureStyle, install, nativeFolderIcon, nativeListContainer, plainFolderIcon, reactRootFibers, render, state,
+  return { appendEmptyProjectState, appendGroup, commonAncestor, emptyInventoryMessage, ensureStyle, freshDirectDeviceInventory, freshDirectThreadInventory, install, inventoryLabel, nativeFolderIcon, nativeListContainer, plainFolderIcon, reactRootFibers, render, state,
     useModel(model) { collectModel = () => model; }
   };
 })();`);
@@ -461,6 +461,21 @@ assert.equal(layout.emptyInventoryMessage(boundaryHost), "No chats", "a fresh au
 assert.equal(layout.emptyInventoryMessage(boundaryHost, true), "No projects or tasks match this device. Choose All to see other devices.");
 layout.state.remoteProjectInventories.set(boundaryHost, { ...freshEmptyInventory, fetchedAt: Date.now() - 600000, generatedAt: Date.now() - 600000, pending: true });
 assert.equal(layout.emptyInventoryMessage(boundaryHost), "Task information is out of date. Waiting for the device to refresh.", "a stale pending inventory must not borrow an authoritative empty label");
+layout.state.threadInventories.set(boundaryHost, { error: null, fetchedAt: Date.now(), threads: [], truncated: false });
+layout.state.localRegisteredProjectsFetchedAt = Date.now() - 16000;
+layout.state.localRegisteredProjectsPending = true;
+assert.equal(layout.emptyInventoryMessage(boundaryHost), "No chats", "a fresh direct Codex task list must outrank stale optional peer inventory");
+assert.equal(layout.inventoryLabel(boundaryHost), "Current project catalog and task membership read directly through Codex.");
+assert.equal(layout.freshDirectDeviceInventory(boundaryHost).fetchedAt, layout.state.localRegisteredProjectsFetchedAt,
+  "combined direct-inventory age must report the older required catalog evidence");
+layout.state.localRegisteredProjectsFetchedAt = Date.now() - 181000;
+assert.equal(layout.emptyInventoryMessage(boundaryHost), "Task information is out of date. Waiting for the device to refresh.", "the native project catalog must expire at the authority boundary, not the refresh cadence");
+layout.state.localRegisteredProjectsFetchedAt = Date.now();
+layout.state.localRegisteredProjectsError = "fixture catalog failure";
+assert.equal(layout.emptyInventoryMessage(boundaryHost), "Task information is out of date. Waiting for the device to refresh.", "a current-looking catalog timestamp must fail closed when the catalog refresh errored");
+layout.state.localRegisteredProjectsError = null;
+layout.state.localRegisteredProjectsPending = false;
+layout.state.threadInventories.delete(boundaryHost);
 layout.state.remoteProjectInventories.set(boundaryHost, { ...freshEmptyInventory, error: "fixture failure", pending: true });
 assert.equal(layout.emptyInventoryMessage(boundaryHost), "Task information is out of date. Waiting for the device to refresh.", "a failed pending inventory must retain its failure boundary");
 layout.state.displayedHosts[1].available = false;
@@ -483,12 +498,17 @@ const refreshModel = {
   recents: [],
 };
 layout.useModel(refreshModel);
+layout.state.threadInventories.set(boundaryHost, { error: null, fetchedAt: Date.now(), threads: [], truncated: false });
+layout.state.remoteProjectInventories.set(boundaryHost, { ...freshEmptyInventory, error: "older helper publisher unavailable", fetchedAt: Date.now() - 600000, generatedAt: Date.now() - 600000 });
+layout.state.deviceRefreshLastSuccessfulAt = Date.now();
 layout.render();
+assert.equal(layout.state.panel.querySelector(".crmp-sync-status")?.dataset.state, "ready", "fresh direct task membership must clear the stale-device banner");
+assert.equal(layout.state.panel.querySelector(".crmp-sync-status")?.textContent, "Device data is up to date.");
 const refreshChildren = [...layout.state.panel.children];
 const refreshReplacementCount = layout.state.panel.replaceChildrenCalls;
 const refreshSkipCount = layout.state.counters.panelRenderSkips;
 layout.state.inventoryHydrationPending = true;
-layout.state.remoteProjectInventories.set(boundaryHost, { ...freshEmptyInventory, pending: true });
+layout.state.remoteProjectInventories.set(boundaryHost, { ...freshEmptyInventory, error: "older helper publisher unavailable", fetchedAt: Date.now() - 600000, generatedAt: Date.now() - 600000, pending: true });
 layout.render();
 assert.deepEqual(layout.state.panel.querySelectorAll(".crmp-empty-project-message").map((item) => item.textContent), ["No chats", "No chats"], "a pending refresh must retain both known authoritative empty labels");
 assert.equal(layout.state.panel.replaceChildrenCalls, refreshReplacementCount, "a pending refresh with unchanged authoritative empty results must not replace the panel");

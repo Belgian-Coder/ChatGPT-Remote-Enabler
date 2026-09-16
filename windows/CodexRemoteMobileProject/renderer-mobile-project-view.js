@@ -44,6 +44,7 @@
   const NATIVE_CONNECTION_CATALOG_REFRESH_MS = 15000;
   const REMOTE_INVENTORY_FILENAME = "remote-project-inventory-v1.json";
   const REMOTE_INVENTORY_MAX_AGE_MS = 180000;
+  const NATIVE_PROJECT_CATALOG_MAX_AGE_MS = REMOTE_INVENTORY_MAX_AGE_MS;
   const REMOTE_INVENTORY_ACTIVE_MS = 5000;
   const REMOTE_INVENTORY_IDLE_MS = 15000;
   const REMOTE_INVENTORY_FUTURE_SKEW_MS = 5 * 60 * 1000;
@@ -74,7 +75,7 @@
     "unknown",
   ]);
   const PUBLISHER_VERSION = 53;
-  const VERSION = 88;
+  const VERSION = 89;
   // Keep outstanding writes locked across renderer reinjection until the underlying RPC settles.
   const peerWriteLocks = globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ instanceof Map
     ? globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ : (globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ = new Map());
@@ -1632,6 +1633,29 @@
     return inventory;
   }
 
+  function freshDirectThreadInventory(hostId) {
+    const inventory = state.threadInventories.get(hostId);
+    return inventory && !inventory.error && inventory.truncated !== true && Array.isArray(inventory.threads)
+      && Number.isFinite(inventory.fetchedAt) && Date.now() - inventory.fetchedAt <= REMOTE_INVENTORY_MAX_AGE_MS
+      ? inventory : null;
+  }
+
+  function freshNativeProjectCatalog() {
+    return !state.localRegisteredProjectsError && Number.isFinite(state.localRegisteredProjectsFetchedAt)
+      && state.localRegisteredProjectsFetchedAt > 0
+      && Date.now() - state.localRegisteredProjectsFetchedAt <= NATIVE_PROJECT_CATALOG_MAX_AGE_MS;
+  }
+
+  function freshDirectDeviceInventory(hostId) {
+    const threadInventory = freshDirectThreadInventory(hostId);
+    if (!freshNativeProjectCatalog() || !threadInventory) return null;
+    return {
+      catalogFetchedAt: state.localRegisteredProjectsFetchedAt,
+      fetchedAt: Math.min(state.localRegisteredProjectsFetchedAt, threadInventory.fetchedAt),
+      threadFetchedAt: threadInventory.fetchedAt,
+    };
+  }
+
   function inventoryMatchesLocal(inventory) {
     const localThreads = state.threadInventories.get("local");
     let threadsMatch = false;
@@ -2853,8 +2877,7 @@
     const directAuthoritativeHosts = new Set();
     for (const [hostId, record] of state.verifiedThreadIds) authoritativeIds.set(hostId, new Set(record.ids));
     for (const [hostId, inventory] of state.threadInventories) {
-      const fresh = !inventory.error && inventory.truncated !== true
-        && Number.isFinite(inventory.fetchedAt) && Date.now() - inventory.fetchedAt <= REMOTE_INVENTORY_MAX_AGE_MS;
+      const fresh = Boolean(freshDirectThreadInventory(hostId));
       if (fresh) {
         authoritativeIds.set(hostId, new Set((inventory.threads ?? []).map((thread) => rawConversationId(thread?.id ?? thread?.conversationId ?? "")).filter(Boolean)));
         directAuthoritativeHosts.add(hostId);
@@ -2891,7 +2914,7 @@
   }
 
   function remoteTaskMembershipEvidence(task, notBefore = 0) {
-    if (!task?.conversationId || task.hostId === "local") return { authoritativeAt: Date.now(), present: true };
+    if (!task?.conversationId) return { authoritativeAt: Date.now(), present: true };
     const direct = state.threadInventories.get(task.hostId);
     if (direct && !direct.error && direct.truncated !== true && Number.isFinite(direct.fetchedAt)
       && direct.fetchedAt >= notBefore && Date.now() - direct.fetchedAt <= NATIVE_INVENTORY_REFRESH_MS) {
@@ -2900,6 +2923,7 @@
         present: (direct.threads ?? []).some((thread) => rawConversationId(thread?.id ?? thread?.conversationId ?? "") === task.conversationId),
       };
     }
+    if (task.hostId === "local") return null;
     const remote = freshInventory(task.hostId);
     const authoritativeAt = remote?.threadScopeGeneratedAt ?? remote?.generatedAt;
     if (scopedThreadsAreFresh(remote) && Number.isFinite(authoritativeAt) && authoritativeAt >= notBefore) {
@@ -2921,6 +2945,9 @@
     const evidence = remoteTaskMembershipEvidence(record.task, record.requestedAt);
     if (evidence?.present === false || record.attempts >= ARCHIVE_RECONCILIATION_DELAYS_MS.length) {
       state.pendingArchivedTasks.delete(key);
+      const timer = state.pendingArchiveRefreshTimers.get(key);
+      if (timer !== undefined) clearTimeout(timer);
+      state.pendingArchiveRefreshTimers.delete(key);
       return false;
     }
     return true;
@@ -2935,22 +2962,25 @@
       schedule();
       return;
     }
-    const timer = setTimeout(async () => {
+    const timer = setTimeout(() => {
       state.pendingArchiveRefreshTimers.delete(key);
       const current = state.pendingArchivedTasks.get(key);
       if (!current || state.disposed) return;
       current.attempts += 1;
-      await requestDeviceRefresh();
-      if (state.disposed) return;
       if (reconcilePendingArchivedTask(key)) queuePendingArchiveRefresh(key);
       schedule();
+      void Promise.resolve().then(() => requestDeviceRefresh()).catch(() => null).then(() => {
+        if (state.disposed || state.pendingArchivedTasks.get(key) !== current) return;
+        if (reconcilePendingArchivedTask(key)) queuePendingArchiveRefresh(key);
+        schedule();
+      });
     }, delay);
     state.pendingArchiveRefreshTimers.set(key, timer);
   }
 
   function markPendingArchivedTask(task, scheduleRefresh = true) {
     const key = pendingArchiveKey(task);
-    if (!key || task.hostId === "local") return false;
+    if (!key) return false;
     state.pendingArchivedTasks.set(key, {
       attempts: 0,
       requestedAt: Date.now(),
@@ -3331,11 +3361,8 @@
       group.tasks.push(task);
     }
     for (const group of groups) {
-      const directInventory = state.threadInventories.get(group.hostId);
       const remoteInventory = state.remoteProjectInventories.get(group.hostId);
-      const directMembershipFresh = Boolean(directInventory && !directInventory.error
-        && directInventory.truncated !== true && Number.isFinite(directInventory.fetchedAt)
-        && Date.now() - directInventory.fetchedAt <= REMOTE_INVENTORY_MAX_AGE_MS);
+      const directMembershipFresh = Boolean(freshDirectThreadInventory(group.hostId));
       const membershipAuthoritative = authoritativeIds.has(group.hostId)
         && (directMembershipFresh || scopedThreadsAreFresh(remoteInventory));
       group.taskStatusAuthoritative = membershipAuthoritative && group.tasks.every((task) => (
@@ -3822,7 +3849,8 @@
       .filter((inventory) => connectedHosts.has(inventory.hostId) && inventory.error)
       .map((inventory) => `${inventory.hostId}: ${inventory.error}`);
     for (const [hostId, inventory] of state.remoteProjectInventories) {
-      if (inventory?.error && runtimes.has(hostId) && !nativeConnectionExplicitlyOffline(hostId)) failures.push(`${hostId}: ${inventory.error}`);
+      if (inventory?.error && runtimes.has(hostId) && !nativeConnectionExplicitlyOffline(hostId)
+        && !freshDirectDeviceInventory(hostId)) failures.push(`${hostId}: ${inventory.error}`);
     }
     for (const hostId of hosts) {
       if (!runtimes.has(hostId)) failures.push(`${hostId}: direct runtime unavailable`);
@@ -3915,10 +3943,12 @@
     const connectivity = state.hostConnectivity.get(host.id);
     const checkedRecently = ageSeconds(connectivity?.checkedAt) !== null && ageSeconds(connectivity.checkedAt) <= 30;
     const fresh = Boolean(freshInventory(host.id));
+    const directFresh = Boolean(freshDirectDeviceInventory(host.id));
     if (host.availabilityKnown && host.available === false) return { code: "disconnected", summary: "This device is currently unavailable to the helper.", next: "Keep the other device awake with the app open, check its network and Remote connection, then refresh here. Cached projects do not prove it is online." };
     if (state.healthRefreshOutcomes.get(host.id) === "no-runtime" && !checkedRecently) return { code: "no-runtime", summary: "Refresh could not start a direct check: the app has not exposed a connection for this device.", next: "Open the app's Remote controls, confirm this device is connected, then refresh here. A saved device name or cached inventory alone is not a live connection." };
-    if (inventory?.pending) return { code: "checking", summary: "A direct inventory check is still in progress.", next: "Wait for this check to finish. Repeated refreshes reuse the same pending request." };
     if (!checkedRecently || connectivity?.available !== true) return { code: "unknown", summary: "A recent successful connection check is not available.", next: "Refresh the evidence. If it remains unknown, inspect the app's Remote connection on both devices; this helper cannot determine account or network health from cached data." };
+    if (directFresh) return { code: "direct-ready", summary: "The device is connected and its current project catalog and task membership were read directly through Codex.", next: "No action is required. Helper-published status details may remain unavailable when the other device runs an older helper." };
+    if (inventory?.pending) return { code: "checking", summary: "A direct inventory check is still in progress.", next: "Wait for this check to finish. Repeated refreshes reuse the same pending request." };
     if (!inventory || inventory.error) return { code: "publisher-unavailable", summary: "The device responded, but its project inventory could not be read or validated.", next: "On that device, launch through Remote Enabler and inspect its Device health panel. Confirm local inventory/publication is ready, then refresh here." };
     if (!fresh || !scopedThreadsAreFresh(inventory)) return { code: "stale", summary: "Connection evidence exists, but the project/task inventory is stale or incomplete.", next: "Check the other device's local inventory status and helper version. Refresh there and here; old membership is not renewed by status-only updates." };
     if (inventory.sourcePeerCache || inventory.sourcePeerHostId) return { code: "cached", summary: "Fresh inventory is available through a cache or another peer.", next: "Refresh for a direct read. This is useful fallback data, but the source alone does not prove a direct connection." };
@@ -3994,9 +4024,10 @@
         helpText(card, `Local inventory: ${ready.authoritativeInventoryReady ? "ready" : "waiting for authoritative information"}. Project publisher: ${ready.publisherReady ? "ready" : "not ready"}.`);
       }
       if (host.id !== "local") {
-        helpText(card, `Connection checked: ${timeLabel(connectivity?.checkedAt)}. Inventory received: ${timeLabel(inventory?.fetchedAt)}.`);
-        const age = ageSeconds(inventory?.generatedAt);
-        helpText(card, `Inventory age: ${age === null ? "unknown" : `${age} seconds`}. Source: ${inventory?.sourcePeerCache ? "local peer cache" : inventory?.sourcePeerHostId ? "forwarded by a peer" : inventory ? "direct device read" : "not received"}.`);
+        const directInventory = freshDirectDeviceInventory(host.id);
+        helpText(card, `Connection checked: ${timeLabel(connectivity?.checkedAt)}. Inventory received: ${timeLabel(directInventory?.fetchedAt ?? inventory?.fetchedAt)}.`);
+        const age = ageSeconds(directInventory?.fetchedAt ?? inventory?.generatedAt);
+        helpText(card, `Inventory age: ${age === null ? "unknown" : `${age} seconds`}. Source: ${directInventory ? "direct Codex task read" : inventory?.sourcePeerCache ? "local peer cache" : inventory?.sourcePeerHostId ? "forwarded by a peer" : inventory ? "direct helper read" : "not received"}.`);
       }
       const version = host.id === "local" ? releaseVersion(config.helperVersion) : releaseVersion(inventory?.helperVersion);
       helpText(card, `Helper version: ${version || "not reported"}${Number.isInteger(inventory?.publisherVersion) ? `; publisher protocol ${inventory.publisherVersion}` : ""}.`);
@@ -4209,8 +4240,8 @@
       devices: model.hosts.map((host, index) => {
         const inventory = state.remoteProjectInventories.get(host.id);
         return { label: `Device ${index + 1}`, local: host.id === "local", connection: connectionLabel(host),
-          inventoryAgeSeconds: ageSeconds(host.id === "local" ? state.localInventoryPublishedAt : inventory?.generatedAt), inventoryPending: inventory?.pending === true,
-          inventoryError: Boolean(inventory?.error), inventoryFresh: host.id === "local" ? readiness().publisherReady && readiness().authoritativeInventoryReady : Boolean(freshInventory(host.id)),
+          inventoryAgeSeconds: ageSeconds(host.id === "local" ? state.localInventoryPublishedAt : freshDirectDeviceInventory(host.id)?.fetchedAt ?? inventory?.generatedAt), inventoryPending: inventory?.pending === true,
+          inventoryError: Boolean(inventory?.error && !freshDirectDeviceInventory(host.id)), inventoryFresh: host.id === "local" ? readiness().publisherReady && readiness().authoritativeInventoryReady : Boolean(freshInventory(host.id) || freshDirectDeviceInventory(host.id)),
           helperVersion: host.id === "local" ? releaseVersion(config.helperVersion) : releaseVersion(inventory?.helperVersion),
           connectionFinding: connectionGuidance(host).code,
           transfer: state.transferStats.has(host.id) ? { ...state.transferStats.get(host.id) } : null,
@@ -4308,6 +4339,7 @@
 
   function inventoryLabel(hostId) {
     if (hostId === "local") return state.inventoryHydrationPending ? "Loading local inventory." : "Local projects.";
+    if (freshDirectDeviceInventory(hostId)) return "Current project catalog and task membership read directly through Codex.";
     const inventory = state.remoteProjectInventories.get(hostId);
     if (!inventory) return "Inventory not received yet.";
     const fresh = freshInventory(hostId);
@@ -4321,6 +4353,7 @@
       ? "Loading local tasks. Waiting for current inventory." : (filtered ? "No projects or tasks on this device." : "No chats");
     const host = state.displayedHosts.find(item => item.id === hostId);
     if (host?.availabilityKnown && host.available === false) return "Device disconnected. Reconnect it using Remote to load tasks.";
+    if (freshDirectDeviceInventory(hostId)) return filtered ? "No projects or tasks match this device. Choose All to see other devices." : "No chats";
     const inventory = state.remoteProjectInventories.get(hostId);
     if (!inventory || (!inventory.fetchedAt && !inventory.error)) return "Loading tasks from this device…";
     if (!freshInventory(hostId)) return "Task information is out of date. Waiting for the device to refresh.";
@@ -7262,7 +7295,7 @@
 
     const staleHosts = model.hosts.filter((host) => host.id !== "local" && (() => {
       const inventory = state.remoteProjectInventories.get(host.id);
-      return !inventory || Boolean(inventory.error) || !freshInventory(host.id);
+      return !freshDirectDeviceInventory(host.id) && (!inventory || Boolean(inventory.error) || !freshInventory(host.id));
     })());
     const syncStatus = document.createElement("div");
     syncStatus.className = "crmp-sync-status";

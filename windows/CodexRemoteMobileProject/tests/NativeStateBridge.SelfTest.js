@@ -5,7 +5,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 const rendererPath = path.join(__dirname, "..", "renderer-mobile-project-view.js");
 const original = fs.readFileSync(rendererPath, "utf8").replace(/\r\n/gu, "\n");
-const source = original.replace("  return install();\n})();", "  globalThis.fixture = { state, ensureLocalStateBridge, nativeStateClientClass, nativeStateModuleUrls, saveDiagnosticPreview, previewAutoArchive, cleanupFailureReason, readCleanupHistory, recordCleanupEvent };\n})();");
+const source = original.replace("  return installWhenDocumentReady(api, state, install, probe);\n})();", "  globalThis.fixture = { state, ensureLocalStateBridge, nativeStateClientClass, nativeStateModuleUrls, saveDiagnosticPreview, previewAutoArchive, cleanupFailureReason, readCleanupHistory, recordCleanupEvent };\n})();");
 assert.notEqual(source, original);
 function fixture() {
   const storage = new Map();

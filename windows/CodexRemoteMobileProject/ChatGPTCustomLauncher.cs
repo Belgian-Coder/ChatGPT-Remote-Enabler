@@ -11,8 +11,8 @@ using System.Threading;
 [assembly: AssemblyDescription("Starts ChatGPT with the audited remote Mobile projects injection")]
 [assembly: AssemblyCompany("Community")]
 [assembly: AssemblyProduct("ChatGPT Custom")]
-[assembly: AssemblyVersion("1.5.87.0")]
-[assembly: AssemblyFileVersion("1.5.87.0")]
+[assembly: AssemblyVersion("1.5.88.0")]
+[assembly: AssemblyFileVersion("1.5.88.0")]
 
 internal static class ChatGPTCustomLauncher
 {
@@ -387,7 +387,6 @@ internal static class ChatGPTCustomLauncher
                                 }
                                 else if (handshake == 1)
                                 {
-                                    child.WaitForExit(5000);
                                     resultCode = 15;
                                     failureMessage = "Another ChatGPT Custom launch is still running. Wait for it to finish, then try again.";
                                 }

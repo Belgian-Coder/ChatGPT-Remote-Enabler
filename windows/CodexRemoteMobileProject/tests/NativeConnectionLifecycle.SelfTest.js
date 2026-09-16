@@ -5,7 +5,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 const filename = path.join(__dirname, "..", "renderer-mobile-project-view.js");
 const original = fs.readFileSync(filename, "utf8").replace(/\r\n/gu, "\n");
-const source = original.replace("  return install();\n})();", "  globalThis.fixture = { state, collectModel, hostName, nativeConnectionStatus, startNativeConnectionObservation, refreshDeviceHealth, refreshNativeConnectionCatalog, refreshNativeConnectionSnapshot, publishedLocalProjectSnapshot, scheduleRemoteProjectInventory, hydrateNativeInventory, runDeviceRefresh, connectionGuidance, diagnosticSnapshot, uninstall };\n})();");
+const source = original.replace("  return installWhenDocumentReady(api, state, install, probe);\n})();", "  globalThis.fixture = { state, collectModel, hostName, nativeConnectionStatus, startNativeConnectionObservation, refreshDeviceHealth, refreshNativeConnectionCatalog, refreshNativeConnectionSnapshot, publishedLocalProjectSnapshot, scheduleRemoteProjectInventory, hydrateNativeInventory, runDeviceRefresh, connectionGuidance, diagnosticSnapshot, uninstall };\n})();");
 assert.notEqual(source, original);
 assert.match(original, /state\.disposed = false;\s+startNativeConnectionObservation\(\);/u, "normal installation must start observation");
 

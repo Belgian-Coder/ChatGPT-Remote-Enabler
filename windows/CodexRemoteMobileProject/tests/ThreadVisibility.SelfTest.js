@@ -12,7 +12,7 @@ const testSource = originalSource
   .replace("const AUTO_MAINTENANCE_RUN_LIMIT_MS = 90000;", "const AUTO_MAINTENANCE_RUN_LIMIT_MS = 40;")
   .replace("    const report = probe();", "    const report = {};")
   .replace(
-    "  return install();\n})();",
+    "  return installWhenDocumentReady(api, state, install, probe);\n})();",
     "  return { assignLocalRuntime, collectAuthoritativeThreadIds, directInventoryHasPriority, eligibleAutoArchiveThreads, eligibleAutoDeleteThreads, lexicalAbsolutePath, listAllLocalThreads, listAllRuntimeThreads, maintenanceThreadPathManaged, normalizePath, parseInventoryPayload, preferredThreadInventory, pruneVerifiedThreadIds, publishedLocalProjectSnapshot, purgeLocalRuntimeAliases, rememberVerifiedThreadIds, removeGossipedLocalInventoryDuplicates, runAutoArchiveNow, runtimeThreadInventoryDue, sanitizedMaintenanceFailure, scopedThreadsAreFresh, serializePeerInventory, sharedThreadListRegistry, state, taskIsAuthoritative, unmanagedMaintenanceThreadCount, uninstall, updateActivity };\n})();",
   );
 

@@ -11,8 +11,8 @@ using System.Threading;
 [assembly: AssemblyDescription("Starts ChatGPT with the remote access and Mobile projects injection")]
 [assembly: AssemblyCompany("Community")]
 [assembly: AssemblyProduct("ChatGPT Remote Enabler")]
-[assembly: AssemblyVersion("1.5.87.0")]
-[assembly: AssemblyFileVersion("1.5.87.0")]
+[assembly: AssemblyVersion("1.5.88.0")]
+[assembly: AssemblyFileVersion("1.5.88.0")]
 
 internal static class ChatGPTRemoteLauncher
 {
@@ -361,7 +361,6 @@ internal static class ChatGPTRemoteLauncher
                     if (handshake == 0) return 0;
                     if (handshake == 1)
                     {
-                        child.WaitForExit(5000);
                         return Fail(15, "Another ChatGPT Remote Enabler launch is still running. Wait for it to finish, then try again.");
                     }
                     child.WaitForExit(5000);

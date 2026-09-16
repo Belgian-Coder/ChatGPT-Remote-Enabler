@@ -9,7 +9,7 @@ const rendererPath = path.join(__dirname, "..", "renderer-mobile-project-view.js
 const originalSource = fs.readFileSync(rendererPath, "utf8");
 const testSource = originalSource
   .replace("(() => {", "globalThis.__navigationTest = (() => {")
-  .replace(/  return install\(\);\r?\n\}\)\(\);\s*$/u, `  return {
+  .replace("  return installWhenDocumentReady(api, state, install, probe);\n})();", `  return {
     state, markPendingArchivedTask, openNativeTask, pendingArchiveKey, reconcilePendingArchivedTask,
     recoverUnconfirmedRemoteSteer, rememberTaskActivation, retainRecentTaskActivations, suppressPendingArchivedTasks,
     configure(fixture) {

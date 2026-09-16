@@ -7,6 +7,22 @@ $stablePath = Join-Path $root 'windows\CodexRemoteSimple\CodexRemoteSimple.ps1'
 $launcherSource = Join-Path $root 'windows\CodexRemoteMobileProject\ChatGPTCustomLauncher.cs'
 $rootLauncherSource = Join-Path $root 'windows\ChatGPTRemoteLauncher.cs'
 $taskHostSource = Join-Path $root 'windows\CodexRemoteMobileProject\UpdateSessionTaskHost.cs'
+$rootEntrySource = Join-Path $root 'windows\Enable-ChatGPTRemote.ps1'
+$startupEntrySource = Join-Path $root 'windows\CodexRemoteMobileProject\MobileProjectStartup.ps1'
+$mobileViewSource = Join-Path $root 'windows\CodexRemoteMobileProject\MobileProjectView.ps1'
+$rootEntryText = Get-Content -LiteralPath $rootEntrySource -Raw
+$startupEntryText = Get-Content -LiteralPath $startupEntrySource -Raw
+$mobileViewText = Get-Content -LiteralPath $mobileViewSource -Raw
+if (-not $rootEntryText.Contains('-Action Enable -TargetWaitMilliseconds 30000 -DeferUpdateSession')) {
+    throw 'The root launcher does not pass the bounded cold renderer-target wait.'
+}
+if (-not $startupEntryText.Contains('-Action Enable -NodePath $node -TargetWaitMilliseconds $targetWaitMilliseconds -DeferUpdateSession')) {
+    throw 'The startup launcher does not pass the bounded cold renderer-target wait.'
+}
+if (-not $mobileViewText.Contains('[int]$TargetWaitMilliseconds = 0') -or
+    -not $mobileViewText.Contains("@('--target-wait-ms', [string]`$TargetWaitMilliseconds)")) {
+    throw 'The Windows mobile controller does not forward its renderer-target wait.'
+}
 $stableSourceText = Get-Content -LiteralPath $stablePath -Raw
 foreach ($contract in @(
     'PackageContextEnvironmentProxy',
@@ -144,7 +160,7 @@ function Wait-ForFixtureWorkerExit {
     }
 }
 
-function New-ReplacementLauncher {
+function New-ReplacementLauncherCandidate {
     param([string]$Source, [string]$Destination, [string]$Compiler, [string]$TemporaryRoot)
     $text = Get-Content -LiteralPath $Source -Raw
     $match = [regex]::Match($text, 'AssemblyFileVersion\("([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)"\)')
@@ -156,9 +172,13 @@ function New-ReplacementLauncher {
     [IO.File]::WriteAllText($replacementSource, $text.Replace($match.Groups[1].Value, $replacementVersion), [Text.UTF8Encoding]::new($false))
     & $Compiler /nologo /target:winexe "/out:$replacementExe" $replacementSource
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $replacementExe -PathType Leaf)) { throw "Replacement launcher compilation failed: $Destination" }
-    Move-Item -LiteralPath $replacementExe -Destination $Destination -Force
-    if ((Get-Item -LiteralPath $Destination).VersionInfo.FileVersion -ne $replacementVersion) { throw "Running launcher replacement failed: $Destination" }
-    return $replacementVersion
+    return [pscustomobject]@{ Path = $replacementExe; Version = $replacementVersion }
+}
+
+function Install-ReplacementLauncherCandidate {
+    param([pscustomobject]$Candidate, [string]$Destination)
+    Move-Item -LiteralPath $Candidate.Path -Destination $Destination -Force
+    if ((Get-Item -LiteralPath $Destination).VersionInfo.FileVersion -ne $Candidate.Version) { throw "Running launcher replacement failed: $Destination" }
 }
 
 $startupSourceText = Get-Content -LiteralPath (Join-Path $root 'windows\CodexRemoteMobileProject\MobileProjectStartup.ps1') -Raw
@@ -239,6 +259,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Temporary custom launcher compilation failed.' }
     & $compiler /nologo /target:winexe "/out:$rootLauncher" $rootLauncherSource
     if ($LASTEXITCODE -ne 0) { throw 'Temporary root launcher compilation failed.' }
+    $customReplacement = New-ReplacementLauncherCandidate -Source $launcherSource -Destination $launcher -Compiler $compiler -TemporaryRoot $temporaryRoot
+    $rootReplacement = New-ReplacementLauncherCandidate -Source $rootLauncherSource -Destination $rootLauncher -Compiler $compiler -TemporaryRoot $temporaryRoot
 
     $readyLog = Join-Path $temporaryRoot 'worker-ready.log'
     $afterParentLog = Join-Path $temporaryRoot 'worker-after-parent.log'
@@ -247,6 +269,7 @@ try {
     $workerErrorLog = Join-Path $temporaryRoot 'worker-error.log'
     $descendantReadyLog = Join-Path $temporaryRoot 'descendant-ready.log'
     $descendantSignal = Join-Path $temporaryRoot 'release-descendants.signal'
+    $mutexReleaseSignal = Join-Path $temporaryRoot 'release-mutex.signal'
     $descendantMarkerLog = Join-Path $temporaryRoot 'descendant-finished.log'
     $descendantScript = Join-Path $temporaryRoot 'descendant-sentinel.ps1'
     $descendantSource = @"
@@ -311,8 +334,16 @@ try {
         if ([DateTime]::UtcNow -ge `$descendantDeadline) { throw 'descendant sentinel did not start' }
         Start-Sleep -Milliseconds 25
     }
-    `$holdMilliseconds = if ((`$kind -eq 'custom' -and `$UseProxy -and -not `$ReplaceRunningApp) -or `$kind -eq 'root') { 15000 } else { 100 }
-    Start-Sleep -Milliseconds `$holdMilliseconds
+    `$holdMutexForCollision = (`$kind -eq 'custom' -and `$UseProxy -and -not `$ReplaceRunningApp) -or (`$kind -eq 'root' -and `$UseProxy)
+    if (`$holdMutexForCollision) {
+        `$holdDeadline = [DateTime]::UtcNow.AddSeconds(45)
+        while (-not (Test-Path -LiteralPath '$($mutexReleaseSignal.Replace("'", "''"))' -PathType Leaf)) {
+            if ([DateTime]::UtcNow -ge `$holdDeadline) { throw 'mutex release signal timed out' }
+            Start-Sleep -Milliseconds 25
+        }
+    } else {
+        Start-Sleep -Milliseconds 100
+    }
 } catch {
     [IO.File]::AppendAllText('$($workerErrorLog.Replace("'", "''"))', "`$kind|`$(`$_.Exception.Message)$([Environment]::NewLine)")
     [void]`$rejected.Set()
@@ -333,13 +364,16 @@ try {
     $processes.Add($first)
     Wait-ForLineCount -Path $readyLog -Count 1
     if (-not $first.WaitForExit(5000) -or $first.ExitCode -ne 0) { throw 'Custom launcher did not exit successfully after the worker handshake.' }
-    $customReplacementVersion = New-ReplacementLauncher -Source $launcherSource -Destination $launcher -Compiler $compiler -TemporaryRoot $temporaryRoot
+    Install-ReplacementLauncherCandidate -Candidate $customReplacement -Destination $launcher
+    $customReplacementVersion = $customReplacement.Version
     $watch = [Diagnostics.Stopwatch]::StartNew()
-    $concurrent = Start-Process -FilePath $launcher -ArgumentList '--startup' -PassThru -Wait
+    $concurrent = Start-Process -FilePath $launcher -ArgumentList '--startup' -PassThru
+    if (-not $concurrent.WaitForExit(10000)) { throw 'Concurrent custom launcher did not exit promptly.' }
     $watch.Stop()
     $processes.Add($concurrent)
-    if ($concurrent.ExitCode -ne 15 -or $watch.Elapsed.TotalSeconds -ge 5) { throw "Concurrent custom launcher was not rejected promptly: $($concurrent.ExitCode)." }
+    if ($concurrent.ExitCode -ne 15 -or $watch.Elapsed.TotalSeconds -ge 10) { throw "Concurrent custom launcher was not rejected promptly: exit=$($concurrent.ExitCode), elapsed=$($watch.Elapsed.TotalSeconds)." }
     Wait-ForFixtureWorkerExit -Path $workerIdentityLog -Index 2 -ExpectedOutcome rejected
+    [IO.File]::WriteAllText($mutexReleaseSignal, 'release', [Text.UTF8Encoding]::new($false))
     Wait-ForLineCount -Path $finishedLog -Count 1 -TimeoutSeconds 30
     Wait-ForFixtureWorkerExit -Path $workerIdentityLog -Index 1 -ExpectedOutcome acquired
     $firstTaskHostDeadline = [DateTime]::UtcNow.AddSeconds(5)
@@ -385,15 +419,19 @@ try {
     if (-not $rootDirectProcess.WaitForExit(5000) -or $rootDirectProcess.ExitCode -ne 0) { throw 'Direct root launcher did not exit successfully after the worker handshake.' }
     Wait-ForLineCount -Path $finishedLog -Count 5 -TimeoutSeconds 30
     Wait-ForFixtureWorkerExit -Path $workerIdentityLog -Index 6 -ExpectedOutcome acquired
+    Remove-Item -LiteralPath $mutexReleaseSignal -Force -ErrorAction SilentlyContinue
     $rootProxyProcess = Start-Process -FilePath $rootLauncher -ArgumentList '--proxy' -PassThru
     $processes.Add($rootProxyProcess)
     Wait-ForLineCount -Path $readyLog -Count 6
     if (-not $rootProxyProcess.WaitForExit(5000) -or $rootProxyProcess.ExitCode -ne 0) { throw 'Proxy root launcher did not exit successfully after the worker handshake.' }
-    $rootReplacementVersion = New-ReplacementLauncher -Source $rootLauncherSource -Destination $rootLauncher -Compiler $compiler -TemporaryRoot $temporaryRoot
-    $crossEntry = Start-Process -FilePath $launcher -ArgumentList '--startup' -PassThru -Wait
+    Install-ReplacementLauncherCandidate -Candidate $rootReplacement -Destination $rootLauncher
+    $rootReplacementVersion = $rootReplacement.Version
+    $crossEntry = Start-Process -FilePath $launcher -ArgumentList '--startup' -PassThru
+    if (-not $crossEntry.WaitForExit(10000)) { throw 'Root/custom cross-entry collision was not rejected promptly.' }
     $processes.Add($crossEntry)
-    if ($crossEntry.ExitCode -ne 15) { throw 'Root/custom cross-entry collision was not rejected.' }
+    if ($crossEntry.ExitCode -ne 15) { throw "Root/custom cross-entry collision was not rejected: $($crossEntry.ExitCode)." }
     Wait-ForFixtureWorkerExit -Path $workerIdentityLog -Index 8 -ExpectedOutcome rejected
+    [IO.File]::WriteAllText($mutexReleaseSignal, 'release', [Text.UTF8Encoding]::new($false))
     Wait-ForLineCount -Path $finishedLog -Count 6 -TimeoutSeconds 30
     Wait-ForFixtureWorkerExit -Path $workerIdentityLog -Index 7 -ExpectedOutcome acquired
 

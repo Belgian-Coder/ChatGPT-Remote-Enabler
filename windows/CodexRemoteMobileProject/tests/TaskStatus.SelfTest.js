@@ -10,7 +10,7 @@ const originalSource = fs.readFileSync(rendererPath, "utf8");
 const testSource = originalSource
   .replace("(() => {", "globalThis.__taskStatusTest = (() => {")
   .replace(
-    "  return install();\n})();",
+    "  return installWhenDocumentReady(api, state, install, probe);\n})();",
     "  return { applyRemoteTaskState, parseInventoryPayload, publishedTaskMetadata, remoteTaskStatusIsFresh, serializePeerInventory };\n})();",
   );
 

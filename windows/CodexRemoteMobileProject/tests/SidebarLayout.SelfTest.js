@@ -157,7 +157,7 @@ document.getElementById = id => document.querySelector(`#${id}`);
 
 const rendererPath = path.join(__dirname, "..", "renderer-mobile-project-view.js");
 const originalSource = fs.readFileSync(rendererPath, "utf8").replace(/\r\n/g, "\n");
-assert.ok(originalSource.includes("  return install();\n})();"), "test entrypoint extraction must succeed before evaluating the renderer");
+assert.ok(originalSource.includes("  return installWhenDocumentReady(api, state, install, probe);\n})();"), "test entrypoint extraction must succeed before evaluating the renderer");
 const schedules = [
   "scheduleLocalProjectInventoryPublication", "scheduleLocalPeerCacheInventory",
   "scheduleLocalRegisteredProjectsRefresh", "scheduleRemoteProjectInventory",
@@ -166,7 +166,7 @@ const schedules = [
 ];
 const testSource = originalSource
   .replace("(() => {", "globalThis.__sidebarLayoutTest = (() => {")
-  .replace("  return install();\n})();", `
+  .replace("  return installWhenDocumentReady(api, state, install, probe);\n})();", `
   ${schedules.map(name => `${name} = () => {};`).join("\n  ")}
   bindReorder = () => {};
   probe = () => ({});

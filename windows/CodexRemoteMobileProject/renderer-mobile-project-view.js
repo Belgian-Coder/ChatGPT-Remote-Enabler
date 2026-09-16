@@ -7645,6 +7645,22 @@
     return render();
   }
 
+  function installWhenDocumentReady(api, runtimeState, installAction, probeAction, dependencies = {}) {
+    const root = dependencies.root ?? globalThis;
+    const documentRef = dependencies.document ?? document;
+    const inactive = () => ({ active: false, version: VERSION });
+    const activate = () => {
+      const current = root[API_SLOT];
+      if (current !== api) return typeof current?.probe === "function" ? current.probe() : inactive();
+      if (runtimeState.disposed) return inactive();
+      return runtimeState.active ? probeAction() : installAction();
+    };
+    if (documentRef.body) return activate();
+    return new Promise((resolve) => {
+      documentRef.addEventListener("DOMContentLoaded", () => resolve(activate()), { once: true });
+    });
+  }
+
   function setFilter(hostId) {
     state.filter = typeof hostId === "string" ? hostId : "all";
     return render();
@@ -7771,5 +7787,5 @@
   loadVerifiedThreadIds();
   const api = Object.freeze({ install, previewAutoArchive, previewAutoMaintenance: previewAutoArchive, probe, publishInventoryHeartbeat, reconcileAutoRegisteredProjects, recoverUnconfirmedRemoteSteer, removeAllAutoRegistered, runAutoArchiveNow, runAutoMaintenanceNow: runAutoArchiveNow, setAutoArchive, setAutoMaintenance: setAutoArchive, setAutoRegistration, setFilter, setView, uninstall, updateActivity, version: VERSION });
   Object.defineProperty(globalThis, API_SLOT, { configurable: true, enumerable: false, value: api });
-  return install();
+  return installWhenDocumentReady(api, state, install, probe);
 })();

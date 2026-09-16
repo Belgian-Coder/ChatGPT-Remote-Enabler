@@ -188,6 +188,16 @@ childProcess.spawnSync = function() {
     assert.equal(fs.readFileSync(renameDestination, "utf8"), "new\n");
     assert.equal(fs.existsSync(renameSource), false);
 
+    const matching = createFixture("matching-pending-destination");
+    writeFile(path.join(matching.install, "00-alpha.txt"), "new alpha\n");
+    writeManifest(matching.install);
+    invoke(applyArguments(matching), hookEnvironment(matching));
+    const matchingWrites = readEvents(matching.events).filter(
+      (event) => path.normalize(event.destination) === path.normalize(path.join(matching.install, "00-alpha.txt")),
+    );
+    assert.equal(matchingWrites.length, 0, "an already-matching pending destination was rewritten");
+    assertUpdated(matching);
+
     const first = createFixture("boundary-0");
     const firstJournal = await pauseApplyAtCheckpoint(first, 0);
     const operationCount = firstJournal.operations.length;
@@ -201,7 +211,7 @@ childProcess.spawnSync = function() {
       const journal = await pauseApplyAtCheckpoint(fixture, checkpoint);
       fs.writeFileSync(fixture.events, "", "utf8");
       recovered = invoke(["recover", "--journal-path", fixture.journal, "--install-root", fixture.install], hookEnvironment(fixture));
-      assert.equal(recovered.recoveryMode, "complete-forward");
+      assert.equal(recovered.recoveryMode, "complete-forward", `checkpoint ${checkpoint} did not complete forward`);
       const rewritten = new Set(readEvents(fixture.events).map((event) => path.normalize(event.destination)));
       for (const operation of journal.operations.slice(0, checkpoint)) {
         if (operation.kind === "copy") {
@@ -228,6 +238,7 @@ childProcess.spawnSync = function() {
     process.stdout.write(`${JSON.stringify({
       ok: true,
       atomicExistingDestinationRename: true,
+      matchingPendingDestinationNotRewritten: true,
       completedPrefixNotRewritten: true,
       corruptionRewindsDurably: true,
       interruptBoundaries: operationCount + 1,

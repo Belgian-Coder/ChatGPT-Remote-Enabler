@@ -9,7 +9,7 @@ const rendererPath = path.join(__dirname, "..", "renderer-mobile-project-view.js
 const originalSource = fs.readFileSync(rendererPath, "utf8").replace(/\r\n/gu, "\n");
 const testSource = originalSource
   .replace("(() => {", "globalThis.__hostFlowTest = (() => {")
-  .replace("  return install();\n})();", "  return { collectModel, discoverHostNames, hostName, state, uninstall };\n})();");
+  .replace("  return installWhenDocumentReady(api, state, install, probe);\n})();", "  return { collectModel, discoverHostNames, hostName, state, uninstall };\n})();");
 assert.notEqual(testSource, originalSource, "full renderer test adapter must replace the production entrypoint");
 
 class FixtureElement {

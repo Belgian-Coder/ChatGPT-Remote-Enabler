@@ -6,7 +6,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 const rendererPath = path.join(__dirname, "../renderer-mobile-project-view.js");
 const source = fs.readFileSync(rendererPath, "utf8").replace(/\r\n/gu, "\n");
-const testSource = source.replace("  return install();\n})();", "  globalThis.search = { filterLoadedGroups, normalizeSearch };\n})();");
+const testSource = source.replace("  return installWhenDocumentReady(api, state, install, probe);\n})();", "  globalThis.search = { filterLoadedGroups, normalizeSearch };\n})();");
 assert.notEqual(source, testSource);
 const context = vm.createContext({
   TextDecoder, TextEncoder, clearInterval, clearTimeout, console,

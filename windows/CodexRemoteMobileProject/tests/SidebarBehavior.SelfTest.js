@@ -114,7 +114,7 @@ const rendererPath = path.join(__dirname, "..", "renderer-mobile-project-view.js
 const originalSource = fs.readFileSync(rendererPath, "utf8");
 const testSource = originalSource
   .replace("(() => {", "globalThis.__sidebarTest = (() => {")
-  .replace(/  return install\(\);\r?\n\}\)\(\);\s*$/u, `  return {
+  .replace("  return installWhenDocumentReady(api, state, install, probe);\n})();", `  return {
     state, button, setFocusKey, nativeElementDisabled, invokeNativeElement, bindActivation,
     captureSidebarFocus, restoreSidebarFocus, restoreRenderedFocus,
     focusProjectOverlay, bindOverlayKeyboard, openProjectContextMenu,

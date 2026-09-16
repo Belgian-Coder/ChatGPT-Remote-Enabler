@@ -5,7 +5,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 const filename = path.join(__dirname, "..", "renderer-mobile-project-view.js");
 const original = fs.readFileSync(filename, "utf8").replace(/\r\n/g, "\n");
-const source = original.replace("  return install();\n})();", "  globalThis.transportFixture = { state, boundedRelayPeers, compactInventoryText, peerTransferText, peerContentSignature, peerCacheIdentityMatches, inventoryHasWork, parseInventoryPayload, serializePeerInventory, queuePeerTransfer, drainPeerTransfer, pausePeerTransfer, resumePausedPeerTransfers, resolveRemoteHome, scheduleRemoteProjectInventory, connectionGuidance, peerWriteLocks };\n})();");
+const source = original.replace("  return installWhenDocumentReady(api, state, install, probe);\n})();", "  globalThis.transportFixture = { state, boundedRelayPeers, compactInventoryText, peerTransferText, peerContentSignature, peerCacheIdentityMatches, inventoryHasWork, parseInventoryPayload, serializePeerInventory, queuePeerTransfer, drainPeerTransfer, pausePeerTransfer, resumePausedPeerTransfers, resolveRemoteHome, scheduleRemoteProjectInventory, connectionGuidance, peerWriteLocks };\n})();");
 assert.notEqual(original, source);
 let now = Date.now();
 let timerId = 0;

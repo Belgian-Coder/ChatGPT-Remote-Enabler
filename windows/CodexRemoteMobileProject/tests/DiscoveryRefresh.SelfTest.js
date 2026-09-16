@@ -13,7 +13,7 @@ const originalSource = fs.readFileSync(rendererPath, "utf8").replace(/\r\n/gu, "
 const remoteHost = suffix => "remote-control:" + "env" + "_" + suffix;
 const testSource = originalSource
   .replace("(() => {", "globalThis.__discoveryRefreshTest = (() => {")
-  .replace("  return install();\n})();", `
+  .replace("  return installWhenDocumentReady(api, state, install, probe);\n})();", `
   const realCollectModel = collectModel;
   const realDiscoverRemoteRuntimes = discoverRemoteRuntimes;
   const fixtureRuntimes = new Map();

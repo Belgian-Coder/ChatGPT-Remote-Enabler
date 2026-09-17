@@ -10,6 +10,7 @@
   const PANEL_ID = "codex-remote-mobile-project-panel";
   const STYLE_ID = "codex-remote-mobile-project-style";
   const ROW_SELECTOR = "[data-app-action-sidebar-thread-row]";
+  const SIDEBAR_SCROLL_SELECTOR = "[data-app-action-sidebar-scroll]";
   const SIDEBAR_SECTION_SELECTOR = "[data-app-action-sidebar-section]";
   const AUTO_ENABLED_KEY = "codex-remote-mobile-auto-register-enabled-v1";
   const HOST_NAMES_KEY = "codex-remote-mobile-host-names-v1";
@@ -77,7 +78,7 @@
     "unknown",
   ]);
   const PUBLISHER_VERSION = 53;
-  const VERSION = 90;
+  const VERSION = 91;
   // Keep outstanding writes locked across renderer reinjection until the underlying RPC settles.
   const peerWriteLocks = globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ instanceof Map
     ? globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ : (globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ = new Map());
@@ -227,7 +228,10 @@
     mountRetryTimer: null,
     mountRetryDelay: 500,
     mountObserver: null,
+    mountAnchor: null,
     nativeContainer: null,
+    nativeContainers: [],
+    nativeOriginalDisplays: new Map(),
     originalDisplay: "",
     observer: null,
     observerTarget: null,
@@ -1046,10 +1050,8 @@
     return candidate;
   }
 
-  function nativeListContainer(rows, nativeProjectItems) {
-    const elements = [...rows, ...nativeProjectItems]
-      .filter((element) => element instanceof Element && !element.closest(`#${PANEL_ID}`));
-    const containsSidebarChrome = (candidate) => [...candidate.querySelectorAll('button,a,[role="button"]')].some((element) => {
+  function containsSidebarChrome(candidate) {
+    return [...candidate.querySelectorAll('button,a,[role="button"]')].some((element) => {
       if (element.closest(`[data-sidebar-project-kind],${ROW_SELECTOR}`)) return false;
       // A native section's small New chat action belongs to that list, unlike
       // the global New chat/Explore navigation rows above all sections.
@@ -1057,17 +1059,32 @@
       const label = (element.getAttribute("aria-label") || element.textContent || "").replace(/\s+/gu, " ").trim();
       return label === "New chat" || label === "Explore";
     });
+  }
+
+  function visibleNativeSections() {
+    return [...document.querySelectorAll(SIDEBAR_SECTION_SELECTOR)].filter((element) => (
+      !element.closest(`#${PANEL_ID}`)
+      && element.closest("nav,aside")
+      && element.getAttribute("aria-hidden") !== "true"
+    ));
+  }
+
+  function nativeListContainer(rows, nativeProjectItems) {
+    const elements = [...rows, ...nativeProjectItems]
+      .filter((element) => element instanceof Element && element.isConnected && !element.closest(`#${PANEL_ID}`));
     if (!elements.length) {
       // Empty Projects/Recents lists have no row to anchor on. The native
       // renderer marks those stable section containers explicitly; only use
       // them when they are inside the sidebar chrome and not our own panel.
-      const sections = [...document.querySelectorAll(SIDEBAR_SECTION_SELECTOR)]
-        .filter((element) => !element.closest(`#${PANEL_ID}`)
-          && element.closest("nav")
-          && element.getAttribute("aria-hidden") !== "true");
+      const provisionalChrome = sidebarMountAnchor()?.closest("nav,aside") ?? null;
+      const sections = visibleNativeSections().filter((element) => (
+        !provisionalChrome || element.closest("nav,aside") === provisionalChrome
+      ));
+      const scopes = [...new Set(sections.map((element) => element.closest(SIDEBAR_SCROLL_SELECTOR) ?? element.closest("nav,aside")))];
+      if (scopes.length !== 1) return null;
       if (sections.length) {
         const candidate = commonAncestor(sections) ?? sections[0];
-        if (candidate && !candidate.matches("body,nav,header") && !containsSidebarChrome(candidate)) return candidate;
+        if (candidate && !candidate.matches(`body,nav,aside,header,${SIDEBAR_SCROLL_SELECTOR}`) && !containsSidebarChrome(candidate)) return candidate;
       }
       return null;
     }
@@ -1082,7 +1099,9 @@
     const section = elements[0].closest("section");
     if (section) {
       let candidate = section;
-      while (isSectionWrapper(candidate.parentElement) && !containsSidebarChrome(candidate.parentElement)) {
+      while (isSectionWrapper(candidate.parentElement)
+        && !candidate.parentElement.matches(SIDEBAR_SCROLL_SELECTOR)
+        && !containsSidebarChrome(candidate.parentElement)) {
         candidate = candidate.parentElement;
       }
       if (elements.every((element) => candidate.contains(element)) && !containsSidebarChrome(candidate)) return candidate;
@@ -1090,7 +1109,67 @@
     // Older packages have one list without section wrappers. Keep the proven
     // common ancestor, but never replace the sidebar shell or global controls.
     const fallback = commonAncestor(elements);
-    return fallback && !fallback.matches("body,nav,header") && !containsSidebarChrome(fallback) ? fallback : null;
+    return fallback && !fallback.matches(`body,nav,aside,header,${SIDEBAR_SCROLL_SELECTOR}`) && !containsSidebarChrome(fallback) ? fallback : null;
+  }
+
+  function nativeListContainers(rows, nativeProjectItems) {
+    const single = nativeListContainer(rows, nativeProjectItems);
+    const elements = [...rows, ...nativeProjectItems]
+      .filter((element) => element instanceof Element && element.isConnected && !element.closest(`#${PANEL_ID}`));
+    const candidateChrome = single?.closest("nav,aside")
+      ?? elements[0]?.closest("nav,aside")
+      ?? sidebarMountAnchor()?.closest("nav,aside")
+      ?? null;
+    const visibleSections = visibleNativeSections().filter((section) => (
+      !candidateChrome || section.closest("nav,aside") === candidateChrome
+    ));
+    const ownershipEvidence = [...elements, ...visibleSections];
+    const evidenceScrollRoots = [...new Set(ownershipEvidence.map((element) => element.closest(SIDEBAR_SCROLL_SELECTOR)).filter(Boolean))];
+    const hasLegacyEvidence = ownershipEvidence.some((element) => !element.closest(SIDEBAR_SCROLL_SELECTOR));
+    if ((hasLegacyEvidence && evidenceScrollRoots.length) || evidenceScrollRoots.length > 1) return [];
+    const knownScrollRoot = single?.closest(SIDEBAR_SCROLL_SELECTOR)
+      ?? elements[0]?.closest(SIDEBAR_SCROLL_SELECTOR)
+      ?? (evidenceScrollRoots.length === 1 ? evidenceScrollRoots[0] : null);
+    if (single && !knownScrollRoot) return [single];
+    const relatedSections = knownScrollRoot
+      ? visibleSections.filter((section) => section.closest(SIDEBAR_SCROLL_SELECTOR) === knownScrollRoot)
+      : [];
+    const markers = [...new Set([...(elements.length ? elements : []), ...relatedSections])];
+    if (!markers.length) return [];
+    // Prefer the narrow container already proven by nativeListContainer. A
+    // scroll-root child can also contain unrelated pinned controls around that
+    // list, and must not be hidden merely because it covers every marker.
+    if (single && markers.every((marker) => single === marker || single.contains(marker))) return [single];
+    const scrollRoots = [...new Set(markers.map((element) => element.closest(SIDEBAR_SCROLL_SELECTOR)).filter(Boolean))];
+    if (scrollRoots.length !== 1) return single ? [single] : [];
+    const scrollRoot = scrollRoots[0];
+    const containers = [...scrollRoot.children].filter((child) => (
+      child.id !== PANEL_ID
+      && markers.some((marker) => child === marker || child.contains(marker))
+      && !containsSidebarChrome(child)
+    ));
+    if (containers.length && markers.every((marker) => containers.some((container) => container === marker || container.contains(marker)))) return containers;
+    return single ? [single] : [];
+  }
+
+  function restoreNativeContainers() {
+    for (const container of state.nativeContainers) {
+      if (container) container.style.display = state.nativeOriginalDisplays.get(container) ?? "";
+    }
+  }
+
+  function sidebarMountAnchor() {
+    // The sidebar scroll root is present before React has populated Projects or
+    // Recents. It is a safe place to mount our panel while the native list is
+    // empty or being rebuilt after an application update. Never hide this
+    // anchor: once native list markers appear, render() reanchors the panel and
+    // only hides the exact native list container in Mobile projects mode.
+    return [...document.querySelectorAll(SIDEBAR_SCROLL_SELECTOR)].find((element) => (
+      element instanceof Element
+      && !element.closest(`#${PANEL_ID}`)
+      && Boolean(element.closest("nav,aside"))
+      && element.getAttribute("aria-hidden") !== "true"
+    )) ?? null;
   }
 
   function readNativeConnectionSnapshot() {
@@ -7124,7 +7203,7 @@
 
   function readiness() {
     const localInventory = state.threadInventories.get("local");
-    const mounted = Boolean(state.panel?.isConnected && state.nativeContainer?.isConnected);
+    const mounted = Boolean(state.panel?.isConnected && state.mountAnchor?.isConnected);
     const localRuntimeReady = typeof state.localRuntime?.requestClient?.sendRequest === "function";
     const authoritativeInventoryReady = Boolean(localInventory
       && !localInventory.error
@@ -7363,8 +7442,29 @@
     state.displayedHosts = model.hosts;
     // Current Codex separates Projects and Recents into sibling sections.
     // Include both sets so the replacement covers the complete native list.
-    const nextNative = nativeListContainer(model.rows, model.nativeProjectItems);
-    if (!nextNative) {
+    const nextNativeContainers = nativeListContainers(model.rows, model.nativeProjectItems);
+    const nextNative = nextNativeContainers[0] ?? null;
+    const fallbackMountAnchor = sidebarMountAnchor();
+    const nativeMarkersPresent = [...model.rows, ...model.nativeProjectItems].some((element) => (
+      element instanceof Element && element.isConnected && !element.closest(`#${PANEL_ID}`)
+    )) || visibleNativeSections().some((element) => (
+      !element.closest(`#${PANEL_ID}`)
+      && element.closest("nav,aside") === fallbackMountAnchor?.closest("nav,aside")
+      && element.getAttribute("aria-hidden") !== "true"
+    ));
+    const nextMountAnchor = nextNativeContainers.length === 1
+      ? nextNative
+      : nextNativeContainers.length > 1
+        ? nextNative?.parentElement ?? null
+        : nativeMarkersPresent ? null : fallbackMountAnchor;
+    if (!nextMountAnchor) {
+      restoreNativeContainers();
+      state.nativeContainers = [];
+      state.nativeOriginalDisplays = new Map();
+      state.nativeContainer = null;
+      state.originalDisplay = "";
+      state.mountAnchor = null;
+      state.panel?.remove();
       if (state.mountRetryTimer === null) {
         state.mountRetryTimer = setTimeout(() => {
           state.mountRetryTimer = null;
@@ -7376,18 +7476,27 @@
     }
     state.mountRetryDelay = 500;
 
-    if (state.nativeContainer !== nextNative) {
-      if (state.nativeContainer?.isConnected) state.nativeContainer.style.display = state.originalDisplay;
+    const nativeContainersChanged = state.nativeContainers.length !== nextNativeContainers.length
+      || state.nativeContainers.some((container, index) => container !== nextNativeContainers[index]);
+    if (nativeContainersChanged) {
+      restoreNativeContainers();
+      state.nativeContainers = nextNativeContainers;
+      state.nativeOriginalDisplays = new Map(nextNativeContainers.map((container) => [container, container.style.display]));
       state.nativeContainer = nextNative;
-      state.originalDisplay = nextNative.style.display;
+      state.originalDisplay = nextNative?.style.display ?? "";
     }
-    const nativeParent = nextNative.parentElement;
-    const siblings = nativeParent ? [...nativeParent.children] : [];
-    if (nativeParent && (!state.panel?.isConnected || state.panel.parentElement !== nativeParent
-      || siblings.indexOf(state.panel) !== siblings.indexOf(nextNative) - 1)) {
-      nativeParent.insertBefore(state.panel, nextNative);
+    state.mountAnchor = nextMountAnchor;
+    if (nextNativeContainers.length) {
+      const nativeParent = nextNative.parentElement;
+      const siblings = nativeParent ? [...nativeParent.children] : [];
+      if (nativeParent && (!state.panel?.isConnected || state.panel.parentElement !== nativeParent
+        || siblings.indexOf(state.panel) !== siblings.indexOf(nextNative) - 1)) {
+        nativeParent.insertBefore(state.panel, nextNative);
+      }
+    } else if (!state.panel?.isConnected || state.panel.parentElement !== nextMountAnchor) {
+      nextMountAnchor.appendChild(state.panel);
     }
-    observeSidebarMutations(nextNative.closest?.("nav,aside") ?? nextNative.parentElement ?? document.body);
+    observeSidebarMutations(nextMountAnchor.closest?.("nav,aside") ?? nextMountAnchor.parentElement ?? document.body);
 
     const fragment = document.createDocumentFragment();
     const modes = document.createElement("div");
@@ -7536,12 +7645,12 @@
     }
 
     if (state.view === "native") {
-      state.nativeContainer.style.display = state.originalDisplay;
+      restoreNativeContainers();
       replacePanelContent(fragment, model);
       restoreRenderedFocus(focus);
       return renderReport(model);
     }
-    state.nativeContainer.style.setProperty("display", "none", "important");
+    for (const container of state.nativeContainers) container.style.setProperty("display", "none", "important");
 
     if (state.filter !== "all" && !model.hosts.some((host) => host.id === state.filter)) state.filter = "all";
     const filters = document.createElement("div");
@@ -7873,11 +7982,11 @@
     }
     if (!state.mountObserver) {
       state.mountObserver = new MutationObserver((mutations) => {
-        if (!state.observerTarget?.isConnected || !state.nativeContainer?.isConnected || !state.panel?.isConnected) schedule(mutations);
+        if (!state.observerTarget?.isConnected || !state.mountAnchor?.isConnected || !state.panel?.isConnected) schedule(mutations);
       });
       state.mountObserver.observe(document.body, { childList: true, subtree: true });
     }
-    observeSidebarMutations(state.nativeContainer?.parentElement ?? document.body);
+    observeSidebarMutations(state.mountAnchor ?? state.nativeContainer?.parentElement ?? document.body);
     return render();
   }
 
@@ -8000,8 +8109,11 @@
     state.healthRefreshTimer = null;
     if (state.mountRetryTimer !== null) clearTimeout(state.mountRetryTimer);
     state.mountRetryTimer = null;
-    if (state.nativeContainer?.isConnected) state.nativeContainer.style.display = state.originalDisplay;
+    restoreNativeContainers();
     state.nativeContainer = null;
+    state.nativeContainers = [];
+    state.nativeOriginalDisplays.clear();
+    state.mountAnchor = null;
     state.panel?.remove();
     state.panelActionSignature = null;
     state.liveRegion?.remove();

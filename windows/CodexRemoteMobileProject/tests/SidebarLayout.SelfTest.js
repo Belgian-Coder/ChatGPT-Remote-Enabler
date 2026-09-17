@@ -171,7 +171,7 @@ const testSource = originalSource
   bindReorder = () => {};
   probe = () => ({});
   nativeThreadAction = () => null;
-  return { appendEmptyProjectState, appendGroup, canDirectArchiveTask, commonAncestor, emptyInventoryMessage, ensureStyle, freshDirectDeviceInventory, freshDirectThreadInventory, install, inventoryLabel, nativeFolderIcon, nativeListContainer, plainFolderIcon, reactRootFibers, render, state,
+  return { appendEmptyProjectState, appendGroup, canDirectArchiveTask, commonAncestor, emptyInventoryMessage, ensureStyle, freshDirectDeviceInventory, freshDirectThreadInventory, install, inventoryLabel, nativeFolderIcon, nativeListContainer, nativeListContainers, plainFolderIcon, reactRootFibers, render, sidebarMountAnchor, state,
     useModel(model) { collectModel = () => model; }
   };
 })();`);
@@ -258,7 +258,9 @@ function project(id, tasks = []) {
 const nav = document.body.appendChild(element("nav"));
 nav.appendChild(element("button", "native-global-control", "New chat"));
 nav.appendChild(element("button", "native-global-control", "Explore"));
-const nativeContainer = nav.appendChild(element("div", "contents"));
+const sidebarScroll = nav.appendChild(element("div", "sidebar-scroll"));
+sidebarScroll.setAttribute("data-app-action-sidebar-scroll", "true");
+const nativeContainer = sidebarScroll.appendChild(element("div", "contents"));
 const projectsSection = nativeContainer.appendChild(element("div")).appendChild(element("section"));
 const recentsSection = nativeContainer.appendChild(element("div")).appendChild(element("section"));
 projectsSection.setAttribute("data-app-action-sidebar-section", "projects");
@@ -347,12 +349,12 @@ context.__CHATGPT_REMOTE_UPDATE__ = {
 layout.useModel({ rows: [nativeRecentRow], nativeProjectItems: [opened, closed], hosts: [], remoteRuntimes: [], projects: [], recents: [] });
 layout.install();
 assert.equal(layout.state.nativeContainer, nativeContainer, "render must include native project items as well as task rows when choosing its mount");
-assert.equal(layout.state.panel.parentElement, nav, "mode controls must mount beside the common Projects/Recents container");
+assert.equal(layout.state.panel.parentElement, sidebarScroll, "mode controls must mount beside the common Projects/Recents container");
 layout.state.panel.remove();
 assert.equal(layout.state.nativeContainer, nativeContainer, "the native sibling remains mounted in the React replacement regression");
 layout.render();
-assert.equal(layout.state.panel.parentElement, nav, "render must remount a panel removed independently by React");
-assert.equal(nav.children.indexOf(layout.state.panel), nav.children.indexOf(nativeContainer) - 1, "the recovered panel must be directly before the native list");
+assert.equal(layout.state.panel.parentElement, sidebarScroll, "render must remount a panel removed independently by React");
+assert.equal(sidebarScroll.children.indexOf(layout.state.panel), sidebarScroll.children.indexOf(nativeContainer) - 1, "the recovered panel must be directly before the native list");
 assert.equal(layout.state.panel.querySelector(".crmp-update-status").textContent, "Automatic update checks");
 assert.match(layout.state.panel.querySelector(".crmp-version").textContent, /v1\.5\.32/u, "loaded version remains visible outside Settings");
 updateStatus = { state: "available", version: "v1.5.33", message: "Ready", canCancel: false, canQueue: true };
@@ -367,6 +369,138 @@ layout.useModel({ rows: [], nativeProjectItems: [opened, closed], hosts: [], rem
 layout.render();
 assert.equal(layout.state.nativeContainer, nativeContainer, "an empty recent-task inventory must keep the whole native list mounted consistently");
 assert.ok(nav.querySelector(".native-global-control"), "choosing the list mount must preserve global sidebar controls");
+
+// A new application build can expose the stable sidebar scroll capability
+// before it renders any native project, task, or section marker. Mount there
+// immediately so runtime discovery and inventory publication can start, then
+// reanchor automatically when the native list arrives.
+nativeContainer.remove();
+layout.useModel({ rows: [], nativeProjectItems: [], hosts: [], remoteRuntimes: [], projects: [], recents: [] });
+layout.render();
+assert.equal(layout.sidebarMountAnchor(), sidebarScroll, "the stable sidebar scroll root must support an initially empty native sidebar");
+assert.equal(layout.state.nativeContainer, null, "the scroll root must never be treated as a native list that can be hidden");
+assert.equal(layout.state.mountAnchor, sidebarScroll, "readiness must track the capability-based mount anchor");
+assert.equal(layout.state.panel.parentElement, sidebarScroll, "the panel must mount while native rows are still loading");
+assert.notEqual(sidebarScroll.style.display, "none", "the stable sidebar shell must remain visible");
+assert.equal(layout.state.panel.isConnected, true, "the fallback mount must be connected without a native list");
+
+const projectsWrapper = projectsSection.parentElement;
+const recentsWrapper = recentsSection.parentElement;
+sidebarScroll.append(projectsWrapper, recentsWrapper);
+layout.state.view = "mobile";
+layout.useModel({ rows: [nativeRecentRow], nativeProjectItems: [opened, closed], hosts: [], remoteRuntimes: [], projects: [], recents: [] });
+layout.render();
+assert.equal(layout.nativeListContainer([nativeRecentRow], [opened, closed]), null, "the shared scroll root must never be returned as one hideable native list");
+const directNativeContainers = layout.nativeListContainers([nativeRecentRow], [opened, closed]);
+assert.equal(directNativeContainers.length, 2, "direct native section siblings must remain separate hideable containers");
+assert.equal(directNativeContainers[0], projectsWrapper);
+assert.equal(directNativeContainers[1], recentsWrapper);
+assert.equal(layout.state.mountAnchor, sidebarScroll, "multiple native containers must keep the stable scroll root as their mount anchor");
+assert.equal(sidebarScroll.style.display, undefined, "multi-section replacement must never hide the sidebar scroll root");
+assert.equal(projectsWrapper.style.display, "none", "Mobile projects must hide the exact native Projects wrapper");
+assert.equal(recentsWrapper.style.display, "none", "Mobile projects must hide the exact native Recents wrapper");
+layout.useModel({ rows: [nativeRecentRow], nativeProjectItems: [], hosts: [], remoteRuntimes: [], projects: [], recents: [] });
+layout.render();
+assert.equal(layout.state.nativeContainers.length, 2, "a populated direct sibling must retain its empty marked sibling in the replacement set");
+assert.equal(projectsWrapper.style.display, "none", "an empty marked Projects sibling must not remain duplicated beside Device projects");
+assert.equal(recentsWrapper.style.display, "none", "the populated Recents sibling must remain hidden in Mobile projects mode");
+const unrelatedSection = nav.appendChild(element("section"));
+unrelatedSection.setAttribute("data-app-action-sidebar-section", "unrelated");
+const emptyDirectContainers = layout.nativeListContainers([], []);
+assert.equal(emptyDirectContainers.length, 0, "mixed legacy and modern section ownership in one sidebar must fail closed");
+layout.useModel({ rows: [], nativeProjectItems: [], hosts: [], remoteRuntimes: [], projects: [], recents: [] });
+layout.render();
+assert.equal(layout.state.mountAnchor, null, "an unrelated scroll root must not claim readiness while a visible legacy section remains");
+assert.equal(layout.state.panel.isConnected, false);
+unrelatedSection.remove();
+layout.useModel({ rows: [nativeRecentRow], nativeProjectItems: [], hosts: [], remoteRuntimes: [], projects: [], recents: [] });
+layout.render();
+assert.equal(layout.state.nativeContainers.length, 2, "pure modern direct sections must recover after mixed ownership disappears");
+
+// A legacy layout whose empty marked sections are direct children of aside has
+// no safe hideable list container. Never select and hide the aside shell.
+sidebarScroll.remove();
+const legacyAside = document.body.appendChild(element("aside"));
+const legacyAsideProjects = legacyAside.appendChild(element("section"));
+legacyAsideProjects.setAttribute("data-app-action-sidebar-section", "projects");
+const legacyAsideRecents = legacyAside.appendChild(element("section"));
+legacyAsideRecents.setAttribute("data-app-action-sidebar-section", "recents");
+assert.equal(layout.nativeListContainer([], []), null, "the complete aside shell must never become a hideable native list");
+assert.equal(layout.nativeListContainers([], []).length, 0);
+legacyAside.remove();
+nav.appendChild(sidebarScroll);
+layout.useModel({ rows: [nativeRecentRow], nativeProjectItems: [], hosts: [], remoteRuntimes: [], projects: [], recents: [] });
+layout.render();
+
+// A scroll-root child can contain pinned controls beside the actual list. Keep
+// the narrower proven list container instead of hiding that whole outer child.
+const nestedNav = document.body.appendChild(element("nav"));
+const nestedScroll = nestedNav.appendChild(element("div"));
+nestedScroll.setAttribute("data-app-action-sidebar-scroll", "true");
+const nestedOuter = nestedScroll.appendChild(element("div", "outer"));
+const pinnedControl = nestedOuter.appendChild(element("button", "pinned-control", "Library"));
+const nestedContents = nestedOuter.appendChild(element("div", "contents"));
+const nestedSection = nestedContents.appendChild(element("section"));
+nestedSection.setAttribute("data-app-action-sidebar-section", "recents");
+const nestedRow = nestedSection.appendChild(element("button"));
+nestedRow.setAttribute("data-app-action-sidebar-thread-row", "true");
+const nestedContainers = layout.nativeListContainers([nestedRow], []);
+assert.equal(nestedContainers.length, 1, "the nested native list must have one hideable container");
+assert.equal(nestedContainers[0], nestedContents, "unrelated pinned controls must stay outside the hideable list container");
+assert.ok(nestedOuter.contains(pinnedControl));
+nestedNav.remove();
+
+// Some builds use an aside rather than a nav around the scroll root. Multiple
+// direct native sections must anchor to their own shared parent in that shape.
+const aside = document.body.appendChild(element("aside"));
+const asideScroll = aside.appendChild(element("div"));
+asideScroll.setAttribute("data-app-action-sidebar-scroll", "true");
+const asideProjectsWrapper = asideScroll.appendChild(element("div"));
+const asideProjects = asideProjectsWrapper.appendChild(element("section"));
+asideProjects.setAttribute("data-app-action-sidebar-section", "projects");
+const asideProject = asideProjects.appendChild(nativeProject("aside-project", false));
+const asideRecentsWrapper = asideScroll.appendChild(element("div"));
+const asideRecents = asideRecentsWrapper.appendChild(element("section"));
+asideRecents.setAttribute("data-app-action-sidebar-section", "recents");
+const asideRow = asideRecents.appendChild(element("button"));
+asideRow.setAttribute("data-app-action-sidebar-thread-row", "true");
+layout.state.view = "native";
+layout.useModel({ rows: [asideRow], nativeProjectItems: [asideProject], hosts: [], remoteRuntimes: [], projects: [], recents: [] });
+layout.render();
+assert.equal(layout.state.mountAnchor, asideScroll, "an aside-based multi-section layout must use its own scroll root as the mount anchor");
+assert.equal(layout.state.panel.parentElement, asideScroll);
+aside.remove();
+layout.state.view = "mobile";
+
+nativeContainer.append(projectsWrapper, recentsWrapper);
+sidebarScroll.appendChild(nativeContainer);
+layout.useModel({ rows: [nativeRecentRow], nativeProjectItems: [opened, closed], hosts: [], remoteRuntimes: [], projects: [], recents: [] });
+layout.render();
+assert.equal(layout.state.nativeContainer, nativeContainer, "the renderer must adopt the native list when React finishes loading it");
+assert.equal(layout.state.mountAnchor, nativeContainer, "readiness must follow the discovered native list after reanchoring");
+assert.equal(sidebarScroll.children.indexOf(layout.state.panel), sidebarScroll.children.indexOf(nativeContainer) - 1, "the panel must reanchor directly before the late native list");
+
+nativeContainer.remove();
+layout.useModel({ rows: [], nativeProjectItems: [], hosts: [], remoteRuntimes: [], projects: [], recents: [] });
+layout.render();
+assert.notEqual(nativeContainer.style.display, "none", "a temporarily detached native list must have its Mobile-mode hiding restored before state forgets it");
+sidebarScroll.appendChild(nativeContainer);
+layout.useModel({ rows: [nativeRecentRow], nativeProjectItems: [opened, closed], hosts: [], remoteRuntimes: [], projects: [], recents: [] });
+layout.render();
+assert.equal(nativeContainer.style.display, "none", "a reinserted native list must be hidden again in Mobile projects mode");
+layout.state.view = "native";
+layout.render();
+assert.notEqual(nativeContainer.style.display, "none", "switching to Native sidebar after same-node reinsertion must restore its original display");
+
+// A cached search model can retain a native row for less than one frame after
+// React detaches it. Ignore that stale marker and keep the proven live mount.
+const detachedCachedRow = recentsSection.appendChild(element("button"));
+detachedCachedRow.setAttribute("data-app-action-sidebar-thread-row", "true");
+detachedCachedRow.remove();
+layout.useModel({ rows: [detachedCachedRow], nativeProjectItems: [], hosts: [], remoteRuntimes: [], projects: [], recents: [] });
+layout.render();
+assert.equal(layout.state.mountAnchor, nativeContainer, "a detached cached row must not clear a still-valid live native-list mount");
+assert.equal(layout.state.panel.isConnected, true, "a transient detached cached row must not drop search focus by removing the panel");
 
 layout.state.view = "mobile";
 layout.state.localRuntime = { requestClient: { sendRequest: async () => ({}) } };
@@ -543,6 +677,11 @@ const legacyContainer = nav.appendChild(element("div", "legacy-native-list"));
 const legacyRow = legacyContainer.appendChild(element("button"));
 legacyRow.setAttribute("data-app-action-sidebar-thread-row", "true");
 assert.equal(layout.nativeListContainer([legacyRow], []), legacyContainer, "legacy sectionless lists must retain their safe common ancestor");
+assert.equal(layout.nativeListContainers([legacyRow], []).length, 0, "a populated legacy list plus modern marked sections must fail closed as mixed ownership");
+layout.useModel({ rows: [legacyRow], nativeProjectItems: [], hosts: [], remoteRuntimes: [], projects: [], recents: [] });
+layout.render();
+assert.equal(layout.state.mountAnchor, null, "mixed row and section ownership must clear readiness instead of mounting a partial replacement");
+assert.equal(layout.state.panel.isConnected, false);
 const unsafeSection = nav.appendChild(element("section"));
 const unsafeRow = unsafeSection.appendChild(element("button"));
 unsafeRow.setAttribute("data-app-action-sidebar-thread-row", "true");
@@ -552,6 +691,30 @@ const otherSection = nav.appendChild(element("section"));
 const otherRow = otherSection.appendChild(element("button"));
 otherRow.setAttribute("data-app-action-sidebar-thread-row", "true");
 assert.equal(layout.nativeListContainer([legacyRow, otherRow], []), null, "a nav/body fallback must never hide the entire sidebar shell");
+
+// Rows in an unrecognized shell must fail readiness rather than mounting below
+// and duplicating the complete native list or retaining an earlier ready mount.
+const unsafeScroll = nav.appendChild(element("div"));
+unsafeScroll.setAttribute("data-app-action-sidebar-scroll", "true");
+const unsafeShell = unsafeScroll.appendChild(element("div"));
+unsafeShell.appendChild(element("button", "", "New chat"));
+const unsafeLegacyRow = unsafeShell.appendChild(element("button"));
+unsafeLegacyRow.setAttribute("data-app-action-sidebar-thread-row", "true");
+layout.useModel({ rows: [unsafeLegacyRow], nativeProjectItems: [], hosts: [], remoteRuntimes: [], projects: [], recents: [] });
+layout.render();
+assert.equal(layout.state.mountAnchor, null, "an unsafe populated layout must clear stale readiness");
+assert.equal(layout.state.panel.isConnected, false, "an unsafe populated layout must not mount below the duplicated native list");
+unsafeScroll.remove();
+
+// Older builds expose stable native section markers inside nav without the
+// newer scroll capability. Preserve that exact list as the mount anchor.
+sidebarScroll.removeAttribute("data-app-action-sidebar-scroll");
+layout.useModel({ rows: [], nativeProjectItems: [], hosts: [], remoteRuntimes: [], projects: [], recents: [] });
+layout.render();
+assert.equal(layout.state.nativeContainer, nativeContainer, "legacy empty sections without a scroll marker must remain discoverable");
+assert.equal(layout.state.mountAnchor, nativeContainer, "legacy empty-section readiness must follow the proven native list");
+assert.equal(layout.state.panel.parentElement, sidebarScroll, "the legacy panel must mount directly before the proven native list");
+sidebarScroll.setAttribute("data-app-action-sidebar-scroll", "true");
 
 // Missing native rows still receive a useful empty state, without borrowing
 // project names, host IDs or stale native task content.

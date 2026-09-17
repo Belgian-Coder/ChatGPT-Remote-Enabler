@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.5.92 — 2026-09-17
+
+- Mount Device projects from the stable sidebar scroll capability while a new
+  ChatGPT build is still loading and has not rendered project, recent-task, or
+  section rows yet, so runtime discovery and inventory publication no longer
+  remain blocked behind an empty native sidebar.
+- Reanchor automatically to the exact native list when it appears without ever
+  hiding the sidebar shell or global navigation, preserving live update support
+  across staggered desktop versions and renderer rebuilds.
+- Apply the same capability-based startup and recovery behavior on Windows and
+  macOS, with regression coverage for empty-start and late-list transitions.
+
 ## v1.5.91 — 2026-09-17
 
 - Accept the current platform-neutral Windows device-key provider only when one

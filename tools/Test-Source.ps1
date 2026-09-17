@@ -10,6 +10,7 @@ $javascript = @(
     'windows\CodexRemoteSimple\runtime\renderer-payload.js',
     'windows\CodexRemoteSimple\runtime\orchestrator.js',
     'windows\CodexRemoteSimple\runtime\legacy-device-key-compat.cjs',
+    'windows\CodexRemoteSimple\runtime\device-key-provider-contract.cjs',
     'windows\CodexRemoteSimple\runtime\main-payload.js',
     'windows\CodexRemoteSimple\runtime\api-proxy-bridge.js',
     'windows\CodexRemoteSimple\runtime\prepare-proxy-runtime.js',
@@ -67,6 +68,7 @@ $powershell = @(
     'tools\Test-WindowsUpdaterNonGit.ps1'
     'tools\Test-WindowsMsixUpdater.ps1'
     'tools\Test-WindowsControllerReliability.ps1'
+    'tools\Test-WindowsPackageCompatibility.ps1'
     'tools\Test-PackageProcessLauncher.ps1'
     'tools\Test-ProxyRuntimePreparer.ps1'
     'tools\Test-LegacyDeviceKeyStartup.ps1'
@@ -251,6 +253,14 @@ foreach ($relative in @(
 & $node (Join-Path $root 'windows\CodexRemoteSimple\tests\PackageCompatibility.SelfTest.mjs')
 if ($LASTEXITCODE -ne 0) { throw 'Windows package compatibility self-test failed.' }
 
+$packageCompatibilityTest = Join-Path $root 'tools\Test-WindowsPackageCompatibility.ps1'
+foreach ($hostCommand in @('powershell.exe', 'pwsh.exe')) {
+    $hostPath = (Get-Command $hostCommand -ErrorAction SilentlyContinue).Source
+    if ([string]::IsNullOrWhiteSpace($hostPath)) { throw "Required PowerShell host was not found: $hostCommand" }
+    & $hostPath -NoProfile -ExecutionPolicy Bypass -File $packageCompatibilityTest -NodePath $node
+    if ($LASTEXITCODE -ne 0) { throw "Windows package compatibility self-test failed under $hostCommand" }
+}
+
 & $node (Join-Path $root 'windows\CodexRemoteMobileProject\tests\TitleProvenance.SelfTest.js')
 if ($LASTEXITCODE -ne 0) { throw 'Title provenance self-test failed.' }
 
@@ -392,6 +402,7 @@ if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
     ProxyBridgeSelfTest = $true
     InjectorRuntimeSelfTest = $true
     PackageCompatibilitySelfTest = $true
+    PackageCompatibilityPowerShell51And7 = $true
     TitleProvenanceSelfTest = $true
     ThreadVisibilitySelfTest = $true
     TaskStatusSelfTest = $true

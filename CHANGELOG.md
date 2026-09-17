@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.5.91 — 2026-09-17
+
+- Accept the current platform-neutral Windows device-key provider only when one
+  shared exact parser proves its signing flow, native loader bindings,
+  controller capability, and native PE module, instead of depending on a
+  removed platform-specific error sentence.
+- Keep both guarded and platform-neutral compatibility fail-closed for
+  incomplete, duplicated, mixed-generation, decoy, mismatched-loader, or
+  non-Windows provider signatures.
+- Patch the same audited platform-neutral provider when an existing protected
+  enrollment needs the private compatibility runtime, preventing a later
+  startup failure after the initial compatibility check succeeds.
+- Exercise the controller compatibility result and rejection path under both
+  Windows PowerShell 5.1 and PowerShell 7.
+
 ## v1.5.90 — 2026-09-16
 
 - Keep fresh direct Codex task and project metadata authoritative when an older

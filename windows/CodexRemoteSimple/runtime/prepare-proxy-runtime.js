@@ -4,6 +4,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { findAuditedDeviceKeyProvider } = require("./device-key-provider-contract.cjs");
 
 const PATCH_SCHEMA = 4;
 const FUSE_SENTINEL = Buffer.from("dL7pKGdnNz796PbbjQWNKmHXBZaB9tsX", "ascii");
@@ -33,9 +34,6 @@ const CHALLENGE_TARGET_PATCHES = [
   original: Buffer.from(original, "utf8"),
   replacement: Buffer.from(`function ${name}(e,t){let n=new URL(process.env.CRWU||t),r=n.protocol===\`wss:\`?\`https:\`:\`http:\`;return e.targetOrigin===\`\${r}//\${n.host}\`&&e.targetPath===n.pathname}`, "utf8"),
 }));
-const DEVICE_KEY_MODULE_NAME = "remote-control-device-key.node";
-const DEVICE_KEY_MODULE = Buffer.from(`\`${DEVICE_KEY_MODULE_NAME}\``, "utf8");
-const MINIFIED_IDENTIFIER = "[$A-Z_a-z][$\\w]*";
 
 function fail(message) {
   throw new Error(message);
@@ -118,42 +116,9 @@ function patchAuditedVariantInPlace(contents, variants, label) {
 }
 
 function findAuditedDeviceKeyLoader(contents) {
-  if (occurrenceCount(contents, DEVICE_KEY_MODULE) !== 1) {
-    fail("This ChatGPT build does not contain the audited existing protected device-key loader signature.");
-  }
-  const moduleOffset = contents.indexOf(DEVICE_KEY_MODULE);
-  const windowStart = Math.max(0, moduleOffset - 512);
-  const windowEnd = Math.min(contents.length, moduleOffset + 4096);
-  const source = contents.subarray(windowStart, windowEnd).toString("utf8");
-  const declaration = new RegExp(
-    `var (?<requireName>${MINIFIED_IDENTIFIER})=\\(0,${MINIFIED_IDENTIFIER}\\.createRequire\\)\\(__filename\\),(?<moduleName>${MINIFIED_IDENTIFIER})=\`${DEVICE_KEY_MODULE_NAME.replaceAll(".", "\\.")}\``,
-    "u",
-  ).exec(source);
-  if (!declaration?.groups) {
-    fail("This ChatGPT build does not contain the audited existing protected device-key loader signature.");
-  }
-  const identity = new RegExp(
-    `resourcesPath;addon=null;(?:constructor\\(${MINIFIED_IDENTIFIER}\\)\\{[^{}]*\\})?createDeviceKey\\((?<argument>${MINIFIED_IDENTIFIER})\\)\\{return this\\.getAddon\\(\\)\\.createDeviceKey\\(\\k<argument>\\?\\?\`hardware_only\`\\)\\}deleteDeviceKey\\((?<deleteArgument>${MINIFIED_IDENTIFIER})\\)\\{return this\\.getAddon\\(\\)\\.deleteDeviceKey\\(\\k<deleteArgument>\\)\\}getDeviceKeyPublic\\((?<publicArgument>${MINIFIED_IDENTIFIER})\\)\\{return this\\.getAddon\\(\\)\\.getDeviceKeyPublic\\(\\k<publicArgument>\\)\\}async signDeviceKey\\((?<signKey>${MINIFIED_IDENTIFIER}),(?<signInput>${MINIFIED_IDENTIFIER})\\)\\{let (?<signPayload>${MINIFIED_IDENTIFIER})=${MINIFIED_IDENTIFIER}\\(\\k<signInput>\\);return\\{\\.\\.\\.await this\\.getAddon\\(\\)\\.signDeviceKey\\(\\k<signKey>,\\k<signPayload>\\),signedPayloadBase64:\\k<signPayload>\\.toString\\(\`base64\`\\)\\}\\}`,
-    "u",
-  ).exec(source);
-  if (!identity) {
-    fail("This ChatGPT build does not contain the audited existing protected device-key loader signature.");
-  }
-  const loader = new RegExp(
-    `getAddon\\(\\)\\{if\\(process\\.platform!==\`darwin\`&&process\\.platform!==\`win32\`\\)throw Error\\(\`Remote control device keys are only available on macOS and Windows\`\\);if\\(this\\.resourcesPath==null\\)throw Error\\(\`Remote control device keys require resourcesPath\`\\);(?<loader>return this\\.addon\\?\\?=(?<requireName>${MINIFIED_IDENTIFIER})\\(\\(0,${MINIFIED_IDENTIFIER}\\.join\\)\\(this\\.resourcesPath,\`native\`,(?<moduleName>${MINIFIED_IDENTIFIER})\\)\\),this\\.addon)\\}`,
-    "u",
-  ).exec(source);
-  if (!loader?.groups || declaration.index >= identity.index ||
-      identity.index + identity[0].length !== loader.index ||
-      loader.groups.requireName !== declaration.groups.requireName ||
-      loader.groups.moduleName !== declaration.groups.moduleName) {
-    fail("This ChatGPT build does not contain the audited existing protected device-key loader signature.");
-  }
-  const original = Buffer.from(loader.groups.loader, "utf8");
-  if (occurrenceCount(contents, original) !== 1) {
-    fail("This ChatGPT build does not contain the audited existing protected device-key loader signature.");
-  }
-  return { original, requireName: loader.groups.requireName };
+  const audited = findAuditedDeviceKeyProvider(contents);
+  if (!audited) fail("This ChatGPT build does not contain the audited existing protected device-key loader signature.");
+  return audited;
 }
 
 function patchDeviceKeyLoader(contents) {

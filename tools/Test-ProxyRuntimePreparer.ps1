@@ -40,6 +40,7 @@ try {
     $latestChallengeValidator = 'function E$(e,t){let n=new URL(t),r=n.protocol===`wss:`?`https:`:n.protocol===`ws:`?`http:`:null;return r!=null&&e.targetOrigin===`${r}//${n.host}`&&e.targetPath===n.pathname}'
     $currentKeyLoader = 'return this.addon??=Xke((0,p.join)(this.resourcesPath,`native`,Zke)),this.addon'
     $currentKeyProvider = 'var Xke=(0,F.createRequire)(__filename),Zke=`remote-control-device-key.node`,Qke=`codex-device-key-sign-payload/v1`;$ke=class{resourcesPath;addon=null;constructor(e){this.resourcesPath=e}createDeviceKey(e){return this.getAddon().createDeviceKey(e??`hardware_only`)}deleteDeviceKey(e){return this.getAddon().deleteDeviceKey(e)}getDeviceKeyPublic(e){return this.getAddon().getDeviceKeyPublic(e)}async signDeviceKey(e,t){let n=eAe(t);return{...await this.getAddon().signDeviceKey(e,n),signedPayloadBase64:n.toString(`base64`)}}getAddon(){if(process.platform!==`darwin`&&process.platform!==`win32`)throw Error(`Remote control device keys are only available on macOS and Windows`);if(this.resourcesPath==null)throw Error(`Remote control device keys require resourcesPath`);return this.addon??=Xke((0,p.join)(this.resourcesPath,`native`,Zke)),this.addon}}'
+    $platformNeutralKeyProvider = $currentKeyProvider.Replace('if(process.platform!==`darwin`&&process.platform!==`win32`)throw Error(`Remote control device keys are only available on macOS and Windows`);', '')
     $legacyKeyLoader = 'return this.addon??=Yke((0,p.join)(this.resourcesPath,`native`,Xke)),this.addon'
     $legacyKeyProvider = 'var Yke=(0,F.createRequire)(__filename),Xke=`remote-control-device-key.node`,Qke=`codex-device-key-sign-payload/v1`;$ke=class{resourcesPath;addon=null;constructor(e){this.resourcesPath=e}createDeviceKey(e){return this.getAddon().createDeviceKey(e??`hardware_only`)}deleteDeviceKey(e){return this.getAddon().deleteDeviceKey(e)}getDeviceKeyPublic(e){return this.getAddon().getDeviceKeyPublic(e)}async signDeviceKey(e,t){let n=eAe(t);return{...await this.getAddon().signDeviceKey(e,n),signedPayloadBase64:n.toString(`base64`)}}getAddon(){if(process.platform!==`darwin`&&process.platform!==`win32`)throw Error(`Remote control device keys are only available on macOS and Windows`);if(this.resourcesPath==null)throw Error(`Remote control device keys require resourcesPath`);return this.addon??=Yke((0,p.join)(this.resourcesPath,`native`,Xke)),this.addon}}'
     [IO.File]::WriteAllText((Join-Path $resources 'app.asar'), "header${originalController};async function Ele;${originalChallengeValidator};${currentKeyProvider};trailer", [Text.UTF8Encoding]::new($false))
@@ -170,6 +171,19 @@ try {
         throw 'The audited legacy minifier signature was not patched with its own require binding.'
     }
 
+    $platformNeutralSource = Join-Path $temporaryRoot 'platform-neutral-installed-app'
+    Copy-Item -LiteralPath $source -Destination $platformNeutralSource -Recurse
+    $platformNeutralAsarPath = Join-Path $platformNeutralSource 'resources\app.asar'
+    $platformNeutralAsar = (Get-Content -LiteralPath $platformNeutralAsarPath -Raw).Replace($currentKeyProvider, $platformNeutralKeyProvider)
+    [IO.File]::WriteAllText($platformNeutralAsarPath, $platformNeutralAsar, [Text.UTF8Encoding]::new($false))
+    $platformNeutralOutput = @(& $node $preparer '--source-app' $platformNeutralSource '--package-version' '1.2.3.10' '--proxy-enabled' 'false' '--legacy-device-keys' 'true' 2>&1)
+    if ($LASTEXITCODE -ne 0 -or $platformNeutralOutput.Count -ne 1) { throw "Platform-neutral existing-key fixture failed: $($platformNeutralOutput -join ' ')" }
+    $platformNeutralResult = [string]$platformNeutralOutput[0] | ConvertFrom-Json
+    $platformNeutralPatchedAsar = Get-Content -LiteralPath ([string]$platformNeutralResult.appAsarPath) -Raw
+    if ($platformNeutralPatchedAsar.Contains($currentKeyLoader) -or -not $platformNeutralPatchedAsar.Contains('Xke(this.resourcesPath+`/crk.cjs`)()')) {
+        throw 'The audited platform-neutral provider was not patched with its matching require binding.'
+    }
+
     $mismatchedSource = Join-Path $temporaryRoot 'mismatched-installed-app'
     Copy-Item -LiteralPath $source -Destination $mismatchedSource -Recurse
     $mismatchedAsarPath = Join-Path $mismatchedSource 'resources\app.asar'
@@ -200,6 +214,7 @@ try {
         ExistingKeyLoaderPatched = $true
         CurrentMinifierSignaturePatched = $true
         LegacyMinifierSignaturePatched = $true
+        PlatformNeutralProviderPatched = $true
         MismatchedRequireBindingRejected = $true
         DirectNetworkAndChallengesPreserved = $true
         ExistingKeyHelpersVerified = $true

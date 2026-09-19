@@ -159,12 +159,15 @@ function Test-CrsCompatibility {
         throw 'The Codex package compatibility checker failed.'
     }
     $result = [string]$output[0] | ConvertFrom-Json -ErrorAction Stop
-    if ($result.schemaVersion -ne 2 -or $result.bridgeMode -cnotin @('legacy-main-shim', 'native-renderer') -or
-        $result.classification -cnotin @('CandidateCompatible', 'NativeWindowsCompatible') -or
-        $result.affected -isnot [bool] -or -not $result.affected -or
-        $result.appAsarSha256 -isnot [string] -or $result.appAsarSha256 -cnotmatch '^[0-9a-f]{64}$') {
-        throw 'This Codex build does not match the audited Windows compatibility signature. Refusing to inject.'
+    if ($result.schemaVersion -ne 3 -or $result.artifactReadable -isnot [bool] -or -not $result.artifactReadable -or
+        $result.recommendedBridgeMode -cnotin @('legacy-main-shim', 'native-renderer') -or
+        $result.classification -cne 'CapabilityCompatible' -or
+        $result.nativeModulePresent -isnot [bool] -or
+        ($result.recommendedBridgeMode -ceq 'native-renderer' -and
+            (-not $result.nativeModulePresent -or $result.nativeModuleFormat -cne 'windows-pe'))) {
+        throw 'The installed ChatGPT runtime did not return valid capability evidence. It was left unchanged.'
     }
+    $result | Add-Member -NotePropertyName bridgeMode -NotePropertyValue ([string]$result.recommendedBridgeMode) -Force
     return $result
 }
 
@@ -228,7 +231,7 @@ function New-CrsProxyRuntimePackage {
         # A process launched from the private runtime cannot execute the CLI
         # directly from WindowsApps on managed Windows installations (spawn
         # EPERM). The copied CLI has ordinary per-user ACLs and belongs to the
-        # same audited package runtime.
+        # same capability-tested package runtime.
         CliPath = $runtimeCliPath
         OriginalExecutablePath = $Package.ExecutablePath
         ProxyRuntimeReused = [bool]$runtime.reused
@@ -273,14 +276,138 @@ function Get-CrsCodexProcesses {
     param([string]$ExecutablePath)
 
     @(
-        Get-Process -Name ChatGPT -ErrorAction SilentlyContinue | ForEach-Object {
-            try {
-                if ([string]::Equals($_.Path, $ExecutablePath, [StringComparison]::OrdinalIgnoreCase)) { $_ }
-            } catch {
-                # An inaccessible process is not accepted as the target.
+        Get-CimInstance Win32_Process -Filter "Name='ChatGPT.exe'" -ErrorAction SilentlyContinue |
+            Where-Object {
+                [string]::Equals([string]$_.ExecutablePath, $ExecutablePath, [StringComparison]::OrdinalIgnoreCase) -and
+                [string]$_.CommandLine -notmatch '(?:^|\s)--type='
+            } | ForEach-Object {
+                try { Get-Process -Id ([int]$_.ProcessId) -ErrorAction Stop } catch {
+                    # A process that changes or becomes inaccessible is not
+                    # accepted as lifecycle ownership evidence.
+                }
             }
-        }
     )
+}
+
+function Get-CrsProcessIdentity {
+    param(
+        [int]$ProcessId,
+        [string]$ExecutablePath
+    )
+
+    if ($ProcessId -le 0 -or [string]::IsNullOrWhiteSpace($ExecutablePath)) { return $null }
+    try {
+        $expectedPath = [IO.Path]::GetFullPath($ExecutablePath)
+        $process = [Diagnostics.Process]::GetProcessById($ProcessId)
+        try {
+            $actualPath = [IO.Path]::GetFullPath([string]$process.MainModule.FileName)
+            $startTimeFileTimeUtc = [long]$process.StartTime.ToUniversalTime().ToFileTimeUtc()
+        } finally {
+            $process.Dispose()
+        }
+        if ($startTimeFileTimeUtc -le 0 -or
+            -not [string]::Equals($actualPath, $expectedPath, [StringComparison]::OrdinalIgnoreCase)) {
+            return $null
+        }
+        return [pscustomobject][ordered]@{
+            ProcessId = [int]$ProcessId
+            ExecutablePath = $actualPath
+            StartTimeFileTimeUtc = $startTimeFileTimeUtc
+            StartToken = $startTimeFileTimeUtc
+            ProcessOwned = $true
+            ProcessOwnership = 'helper-owned'
+        }
+    } catch {
+        return $null
+    }
+}
+
+function Test-CrsExpectedDebugProcess {
+    param(
+        [int]$ProcessId,
+        [string]$ExecutablePath,
+        [int]$ExpectedPort,
+        [scriptblock]$ProcessReader
+    )
+
+    if ($ProcessId -le 0 -or [string]::IsNullOrWhiteSpace($ExecutablePath) -or $ExpectedPort -le 0) { return $false }
+    if ($null -eq $ProcessReader) {
+        $ProcessReader = {
+            param([int]$Id)
+            @(Get-CimInstance Win32_Process -Filter "ProcessId=$Id" -ErrorAction SilentlyContinue)
+        }
+    }
+    $processes = @(& $ProcessReader $ProcessId)
+    if ($processes.Count -ne 1) { return $false }
+    $process = $processes[0]
+    $commandLine = [string]$process.CommandLine
+    return [int]$process.ProcessId -eq $ProcessId -and
+        [string]::Equals([string]$process.ExecutablePath, $ExecutablePath, [StringComparison]::OrdinalIgnoreCase) -and
+        $commandLine -notmatch '(?:^|\s)--type=' -and
+        $commandLine -match '(?:^|\s)--remote-debugging-address(?:=|\s+)127\.0\.0\.1(?:\s|$)' -and
+        $commandLine -match "(?:^|\s)--remote-debugging-port(?:=|\s+)$ExpectedPort(?:\s|$)"
+}
+
+function Get-CrsOwnedProcessIdentity {
+    param($Ownership)
+
+    if ($null -eq $Ownership) { return $null }
+    $owned = $false
+    if ($null -ne $Ownership.PSObject.Properties['ProcessOwned']) {
+        $owned = $Ownership.ProcessOwned -is [bool] -and [bool]$Ownership.ProcessOwned
+    } elseif ($null -ne $Ownership.PSObject.Properties['launchProcessOwned']) {
+        $owned = $Ownership.launchProcessOwned -is [bool] -and [bool]$Ownership.launchProcessOwned
+    } elseif ($null -ne $Ownership.PSObject.Properties['processOwnership']) {
+        $owned = [string]$Ownership.processOwnership -ceq 'helper-owned'
+    } elseif ($null -ne $Ownership.PSObject.Properties['ProcessOwnership']) {
+        $owned = [string]$Ownership.ProcessOwnership -ceq 'helper-owned'
+    }
+    if (-not $owned) { return $null }
+
+    $processId = 0
+    if ($null -ne $Ownership.PSObject.Properties['ProcessId']) {
+        [void][int]::TryParse([string]$Ownership.ProcessId, [ref]$processId)
+    } elseif ($null -ne $Ownership.PSObject.Properties['launchProcessId']) {
+        [void][int]::TryParse([string]$Ownership.launchProcessId, [ref]$processId)
+    }
+    $startTimeFileTimeUtc = 0L
+    if ($null -ne $Ownership.PSObject.Properties['StartTimeFileTimeUtc']) {
+        [void][long]::TryParse([string]$Ownership.StartTimeFileTimeUtc, [ref]$startTimeFileTimeUtc)
+    } elseif ($null -ne $Ownership.PSObject.Properties['ProcessStartTimeFileTimeUtc']) {
+        [void][long]::TryParse([string]$Ownership.ProcessStartTimeFileTimeUtc, [ref]$startTimeFileTimeUtc)
+    } elseif ($null -ne $Ownership.PSObject.Properties['launchProcessStartTimeFileTimeUtc']) {
+        [void][long]::TryParse([string]$Ownership.launchProcessStartTimeFileTimeUtc, [ref]$startTimeFileTimeUtc)
+    } elseif ($null -ne $Ownership.PSObject.Properties['ProcessStartToken']) {
+        [void][long]::TryParse([string]$Ownership.ProcessStartToken, [ref]$startTimeFileTimeUtc)
+    } elseif ($null -ne $Ownership.PSObject.Properties['launchProcessStartToken']) {
+        [void][long]::TryParse([string]$Ownership.launchProcessStartToken, [ref]$startTimeFileTimeUtc)
+    } elseif ($null -ne $Ownership.PSObject.Properties['startToken']) {
+        [void][long]::TryParse([string]$Ownership.startToken, [ref]$startTimeFileTimeUtc)
+    }
+    $executablePath = $null
+    if ($null -ne $Ownership.PSObject.Properties['ExecutablePath']) {
+        $executablePath = [string]$Ownership.ExecutablePath
+    } elseif ($null -ne $Ownership.PSObject.Properties['executablePath']) {
+        $executablePath = [string]$Ownership.executablePath
+    }
+    if ($processId -le 0 -or $startTimeFileTimeUtc -le 0 -or [string]::IsNullOrWhiteSpace($executablePath)) {
+        return $null
+    }
+
+    $identity = Get-CrsProcessIdentity -ProcessId $processId -ExecutablePath $executablePath
+    $identityStartTimeFileTimeUtc = 0L
+    if ($null -ne $identity -and $null -ne $identity.PSObject.Properties['StartTimeFileTimeUtc']) {
+        [void][long]::TryParse([string]$identity.StartTimeFileTimeUtc, [ref]$identityStartTimeFileTimeUtc)
+    } elseif ($null -ne $identity -and $null -ne $identity.PSObject.Properties['StartToken']) {
+        [void][long]::TryParse([string]$identity.StartToken, [ref]$identityStartTimeFileTimeUtc)
+    }
+    if ($null -eq $identity -or
+        [int]$identity.ProcessId -ne $processId -or
+        $identityStartTimeFileTimeUtc -ne $startTimeFileTimeUtc -or
+        -not [string]::Equals([string]$identity.ExecutablePath, $executablePath, [StringComparison]::OrdinalIgnoreCase)) {
+        return $null
+    }
+    return $identity
 }
 
 function Assert-CrsNoExistingAppForReplacement {
@@ -339,11 +466,13 @@ function Get-CrsDiscoverableSession {
             mainPort = $mainPort
             launchMethod = 'adopted-existing-session'
             launchProcessId = $process.ProcessId
+            launchProcessOwned = $false
+            launchProcessStartTimeFileTimeUtc = $null
+            processOwnership = 'unowned'
             # Renderer-only native sessions cannot contain the legacy scoped
             # proxy shim. Legacy command lines cannot prove whether it ran.
             proxyMode = if ($BridgeMode -ceq 'native-renderer') { $false } else { $null }
             proxyTransport = $null
-            appAsarSha256 = $null
             startedAtUtc = $null
         }
     }
@@ -353,21 +482,55 @@ function Get-CrsDiscoverableSession {
 }
 
 function Stop-CrsCodex {
-    param([string]$ExecutablePath)
+    param($Ownership)
 
-    $targets = @(Get-CrsCodexProcesses -ExecutablePath $ExecutablePath)
-    if ($targets.Count -eq 0) { return }
+    $target = Get-CrsOwnedProcessIdentity -Ownership $Ownership
+    if ($null -eq $target) { return $false }
 
-    $targets | Stop-Process -ErrorAction SilentlyContinue
-    $deadline = [DateTime]::UtcNow.AddSeconds(5)
-    do {
-        Start-Sleep -Milliseconds 100
-        $remaining = @(Get-CrsCodexProcesses -ExecutablePath $ExecutablePath)
-    } while ($remaining.Count -gt 0 -and [DateTime]::UtcNow -lt $deadline)
+    try {
+        # Revalidate immediately before the signal. A reused PID or changed
+        # executable must never receive a lifecycle signal from this helper.
+        $current = Get-CrsOwnedProcessIdentity -Ownership $Ownership
+        if ($null -eq $current) { return $false }
+        Stop-Process -Id ([int]$current.ProcessId) -ErrorAction SilentlyContinue
 
-    if ($remaining.Count -gt 0) {
-        $remaining | Stop-Process -Force -ErrorAction Stop
+        $deadline = [DateTime]::UtcNow.AddSeconds(5)
+        do {
+            Start-Sleep -Milliseconds 100
+            $remaining = Get-CrsOwnedProcessIdentity -Ownership $Ownership
+        } while ($null -ne $remaining -and [DateTime]::UtcNow -lt $deadline)
+
+        if ($null -ne $remaining) {
+            # Revalidation above still binds the forceful fallback to the same
+            # PID, executable, and creation token.
+            Stop-Process -Id ([int]$remaining.ProcessId) -Force -ErrorAction Stop
+        }
+        return $true
+    } catch {
+        throw
     }
+}
+
+function Assert-CrsNoUnownedCodexProcess {
+    param(
+        [string[]]$ExecutablePaths,
+        $OwnedProcess
+    )
+
+    $ownedIdentity = if ($null -eq $OwnedProcess) { $null } else { Get-CrsOwnedProcessIdentity -Ownership $OwnedProcess }
+    foreach ($executablePath in @($ExecutablePaths | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)) {
+        foreach ($process in @(Get-CrsCodexProcesses -ExecutablePath $executablePath)) {
+            $processId = if ($null -ne $process.PSObject.Properties['Id']) { [int]$process.Id } else { [int]$process.ProcessId }
+            $identity = Get-CrsProcessIdentity -ProcessId $processId -ExecutablePath $executablePath
+            if ($null -eq $identity -or $null -eq $ownedIdentity -or
+                [int]$identity.ProcessId -ne [int]$ownedIdentity.ProcessId -or
+                [long]$identity.StartTimeFileTimeUtc -ne [long]$ownedIdentity.StartTimeFileTimeUtc -or
+                -not [string]::Equals([string]$identity.ExecutablePath, [string]$ownedIdentity.ExecutablePath, [StringComparison]::OrdinalIgnoreCase)) {
+                throw "A ChatGPT process at $executablePath is not helper-owned by this controller. It was left running and automatic lifecycle recovery was aborted."
+            }
+        }
+    }
+    return $ownedIdentity
 }
 
 function Wait-CrsPortOpen {
@@ -423,6 +586,7 @@ function Start-CrsPackagedCodex {
     }
     $argumentString = @($ArgumentList) -join ' '
     $primaryError = ''
+    $launchOwnership = $null
 
     if (-not [string]::IsNullOrWhiteSpace($EnvironmentProxyServer)) {
         $proxyWorker = $null
@@ -467,7 +631,7 @@ function Start-CrsPackagedCodex {
                 if (-not $portReady) { Start-Sleep -Milliseconds 100 }
             }
             if (-not $portReady) { throw "The package-context proxy launch completed, but loopback port $ExpectedPort did not open." }
-            $launchProcessId = [uint32]$proxyWorker.Id
+            $launchProcessId = 0
             if ($ExpectedPort -gt 0) {
                 $identityDeadline = $null
                 $identityAttempts = 0
@@ -487,15 +651,21 @@ function Start-CrsPackagedCodex {
                     Start-Sleep -Milliseconds 100
                 } while ($identityAttempts -lt 3 -or [DateTime]::UtcNow -lt $identityDeadline)
                 if ($launchedProcesses.Count -ne 1) { throw 'The package-context proxy launch could not resolve the exact ChatGPT process identity.' }
-                $launchProcessId = [uint32]$launchedProcesses[0].ProcessId
+                $launchOwnership = Get-CrsProcessIdentity -ProcessId ([int]$launchedProcesses[0].ProcessId) -ExecutablePath ([string]$Package.ExecutablePath)
+                if ($null -eq $launchOwnership) { throw 'The package-context proxy launch could not prove the exact ChatGPT process identity.' }
+                $launchProcessId = [uint32]$launchOwnership.ProcessId
             }
             Write-CrsLaunchDiagnostic -Method 'PackageContextEnvironmentProxy' -Succeeded $true -PrimaryError '' -FallbackError ''
             return [pscustomobject][ordered]@{
                 Method = 'PackageContextEnvironmentProxy'
                 ProcessId = $launchProcessId
+                ExecutablePath = [string]$Package.ExecutablePath
+                ProcessOwned = [bool]($null -ne $launchOwnership)
+                ProcessStartTimeFileTimeUtc = if ($null -ne $launchOwnership) { [long]$launchOwnership.StartTimeFileTimeUtc } else { $null }
+                ProcessOwnership = if ($null -ne $launchOwnership) { 'helper-owned' } else { 'unowned' }
             }
         } catch {
-            Stop-CrsCodex -ExecutablePath $Package.ExecutablePath
+            if ($null -ne $launchOwnership) { [void](Stop-CrsCodex -Ownership $launchOwnership) }
             if ($null -ne $proxyWorker -and -not $proxyWorker.HasExited) {
                 Stop-Process -Id $proxyWorker.Id -Force -ErrorAction SilentlyContinue
             }
@@ -516,6 +686,11 @@ function Start-CrsPackagedCodex {
         if (-not (Test-Path -LiteralPath $script:PackageActivationLauncher -PathType Leaf)) {
             throw "The package activation launcher is missing: $script:PackageActivationLauncher"
         }
+        $preActivationProcesses = @(Get-CrsCodexProcesses -ExecutablePath ([string]$Package.ExecutablePath))
+        if ($preActivationProcesses.Count -ne 0) {
+            throw 'A ChatGPT main process appeared before package activation. It was left running and launch was aborted.'
+        }
+        $activationBoundaryFileTimeUtc = [DateTime]::UtcNow.ToFileTimeUtc()
         $output = @(& $script:PackageActivationLauncher $Package.AppUserModelId $argumentString 2>&1)
         $exitCode = $LASTEXITCODE
         [uint32]$activatedProcessId = 0
@@ -524,16 +699,33 @@ function Start-CrsPackagedCodex {
             $activatedProcessId -eq 0) {
             throw "Package activation failed with exit code ${exitCode}: $($output -join ' ')"
         }
+        $launchOwnership = Get-CrsProcessIdentity -ProcessId ([int]$activatedProcessId) -ExecutablePath ([string]$Package.ExecutablePath)
+        if ($null -ne $launchOwnership -and
+            ([long]$launchOwnership.StartTimeFileTimeUtc -lt $activationBoundaryFileTimeUtc -or
+                -not (Test-CrsExpectedDebugProcess -ProcessId ([int]$activatedProcessId) -ExecutablePath ([string]$Package.ExecutablePath) -ExpectedPort $ExpectedPort))) {
+            $launchOwnership = $null
+        }
+        if ($ExpectedPort -gt 0 -and $null -eq $launchOwnership) {
+            throw "Package activation returned process $activatedProcessId, but its exact executable and creation token could not be proved."
+        }
         if ($ExpectedPort -gt 0 -and -not (Wait-CrsPortOpen -Port $ExpectedPort -TimeoutMilliseconds $PortTimeoutMilliseconds)) {
-            Stop-CrsCodex -ExecutablePath $Package.ExecutablePath
+            if ($null -ne $launchOwnership) { [void](Stop-CrsCodex -Ownership $launchOwnership) }
             throw "Package activation returned process $activatedProcessId, but loopback port $ExpectedPort did not open."
         }
         Write-CrsLaunchDiagnostic -Method 'ApplicationActivationManager' -Succeeded $true -PrimaryError '' -FallbackError ''
         return [pscustomobject][ordered]@{
             Method = 'ApplicationActivationManager'
             ProcessId = [uint32]$activatedProcessId
+            ExecutablePath = [string]$Package.ExecutablePath
+            ProcessOwned = [bool]($null -ne $launchOwnership)
+            ProcessStartTimeFileTimeUtc = if ($null -ne $launchOwnership) { [long]$launchOwnership.StartTimeFileTimeUtc } else { $null }
+            ProcessOwnership = if ($null -ne $launchOwnership) { 'helper-owned' } else { 'unowned' }
         }
     } catch {
+        if ($null -ne $launchOwnership) {
+            [void](Stop-CrsCodex -Ownership $launchOwnership)
+            $launchOwnership = $null
+        }
         $primaryError = $_.Exception.Message
     }
 
@@ -549,15 +741,46 @@ function Start-CrsPackagedCodex {
         }
         Invoke-CommandInDesktopPackage @fallbackParameters | Out-Null
         if ($ExpectedPort -gt 0 -and -not (Wait-CrsPortOpen -Port $ExpectedPort -TimeoutMilliseconds $PortTimeoutMilliseconds)) {
-            Stop-CrsCodex -ExecutablePath $Package.ExecutablePath
             throw "The package-context fallback started, but loopback port $ExpectedPort did not open."
+        }
+        if ($ExpectedPort -gt 0) {
+            $identityDeadline = [DateTime]::UtcNow.AddSeconds(5)
+            $identityAttempts = 0
+            do {
+                $identityAttempts += 1
+                $launchedProcesses = @(
+                    Get-CimInstance Win32_Process -Filter "Name='ChatGPT.exe'" -ErrorAction SilentlyContinue |
+                        Where-Object {
+                            [string]::Equals([string]$_.ExecutablePath, [string]$Package.ExecutablePath, [StringComparison]::OrdinalIgnoreCase) -and
+                            [string]$_.CommandLine -notmatch '(?:^|\s)--type=' -and
+                            [string]$_.CommandLine -match "(?:^|\s)--remote-debugging-port(?:=|\s+)$ExpectedPort(?:\s|$)"
+                        }
+                )
+                if ($launchedProcesses.Count -gt 1) { throw 'The package-context fallback produced multiple matching ChatGPT processes.' }
+                if ($launchedProcesses.Count -eq 1) {
+                    $launchOwnership = Get-CrsProcessIdentity -ProcessId ([int]$launchedProcesses[0].ProcessId) -ExecutablePath ([string]$Package.ExecutablePath)
+                    if ($null -ne $launchOwnership) { break }
+                }
+                Start-Sleep -Milliseconds 100
+            } while ($identityAttempts -lt 3 -or [DateTime]::UtcNow -lt $identityDeadline)
+            if ($null -eq $launchOwnership) {
+                throw 'The package-context fallback started, but the exact ChatGPT process identity could not be proved.'
+            }
         }
         Write-CrsLaunchDiagnostic -Method 'Invoke-CommandInDesktopPackage' -Succeeded $true -PrimaryError $primaryError -FallbackError ''
         return [pscustomobject][ordered]@{
             Method = 'Invoke-CommandInDesktopPackage'
-            ProcessId = $null
+            ProcessId = if ($null -ne $launchOwnership) { [uint32]$launchOwnership.ProcessId } else { $null }
+            ExecutablePath = [string]$Package.ExecutablePath
+            ProcessOwned = [bool]($null -ne $launchOwnership)
+            ProcessStartTimeFileTimeUtc = if ($null -ne $launchOwnership) { [long]$launchOwnership.StartTimeFileTimeUtc } else { $null }
+            ProcessOwnership = if ($null -ne $launchOwnership) { 'helper-owned' } else { 'unowned' }
         }
     } catch {
+        if ($null -ne $launchOwnership) {
+            [void](Stop-CrsCodex -Ownership $launchOwnership)
+            $launchOwnership = $null
+        }
         $fallbackError = $_.Exception.Message
         Write-CrsLaunchDiagnostic -Method 'None' -Succeeded $false -PrimaryError $primaryError -FallbackError $fallbackError
         throw "Both packaged Codex launch methods failed. Package activation: $primaryError Fallback: $fallbackError"
@@ -665,11 +888,13 @@ function Write-CrsState {
         mainPort = $MainPort
         launchMethod = [string]$Launch.Method
         launchProcessId = $Launch.ProcessId
+        launchProcessOwned = if ($null -ne $Launch.PSObject.Properties['ProcessOwned']) { [bool]$Launch.ProcessOwned } else { $false }
+        launchProcessStartTimeFileTimeUtc = if ($null -ne $Launch.PSObject.Properties['ProcessStartTimeFileTimeUtc'] -and $null -ne $Launch.ProcessStartTimeFileTimeUtc) { [long]$Launch.ProcessStartTimeFileTimeUtc } else { $null }
+        processOwnership = if ($null -ne $Launch.PSObject.Properties['ProcessOwned'] -and [bool]$Launch.ProcessOwned) { 'helper-owned' } else { 'unowned' }
         proxyMode = $ProxyMode
         proxyFingerprint = if ($ProxyMode) { $ProxyFingerprint } else { $null }
         legacyDeviceKeyCompatibility = $LegacyDeviceKeyCompatibility
         proxyTransport = if ($ProxyMode) { 'all-connections-proxy-v1' } else { $null }
-        appAsarSha256 = [string]$Probe.appAsarSha256
         startedAtUtc = [DateTime]::UtcNow.ToString('o')
     }
     $json = $state | ConvertTo-Json -Depth 4
@@ -816,10 +1041,17 @@ function Invoke-CrsRollback {
         return
     }
 
+    $rollbackOwnership = if ($null -eq $State) { $null } else { Get-CrsOwnedProcessIdentity -Ownership $State }
+    $rollbackPaths = @($Package.ExecutablePath)
     if ($null -ne $State -and -not [string]::IsNullOrWhiteSpace([string]$State.executablePath)) {
-        Stop-CrsCodex -ExecutablePath ([string]$State.executablePath)
+        $rollbackPaths += [string]$State.executablePath
     }
-    Stop-CrsCodex -ExecutablePath $Package.ExecutablePath
+    [void](Assert-CrsNoUnownedCodexProcess -ExecutablePaths $rollbackPaths -OwnedProcess $rollbackOwnership)
+    if ($null -ne $rollbackOwnership -and -not (Stop-CrsCodex -Ownership $rollbackOwnership)) {
+        if (@(Get-CrsCodexProcesses -ExecutablePath ([string]$rollbackOwnership.ExecutablePath)).Count -ne 0) {
+            throw 'Rollback could not prove the helper-owned ChatGPT process identity at the stop boundary. The process was left running and Codex was not relaunched.'
+        }
+    }
     if ($null -ne $State) {
         foreach ($port in @($State.rendererPort, $State.mainPort) | Where-Object { $null -ne $_ }) {
             if (-not (Wait-CrsPortClosed -Port $port)) {
@@ -857,7 +1089,6 @@ switch ($Action) {
             PackageVersion = $package.Version
             PackageFullName = $package.FullName
             NodeVersion = $node.Version
-            AppAsarSha256 = $compatibility.appAsarSha256
             Classification = $compatibility.classification
             BridgeMode = $bridgeMode
             LegacyDeviceKeyCompatibilityNeeded = $legacyDeviceKeyCompatibilityNeeded
@@ -880,7 +1111,7 @@ switch ($Action) {
                     Write-CrsState -Package $package -RendererPort $discovered.rendererPort -MainPort $discovered.mainPort -Probe $compatibility -Launch ([pscustomobject]@{ Method = 'adopted-existing-session'; ProcessId = $discovered.launchProcessId }) -ProxyMode ([bool]$discovered.proxyMode) -BridgeMode $bridgeMode -ProxyFingerprint $requestedProxyFingerprint
                     $state = Read-CrsState
                     $existing = $discoveredProbe
-                    Write-Host 'Adopted the existing audited loopback session without relaunching ChatGPT.' -ForegroundColor Green
+                    Write-Host 'Adopted the existing capability-proven loopback session without relaunching ChatGPT.' -ForegroundColor Green
                 }
             }
         }
@@ -892,7 +1123,7 @@ switch ($Action) {
             }
             Write-Host 'The requested connection compatibility differs from the active session; ChatGPT will be relaunched.' -ForegroundColor Yellow
         }
-        if (-not $PSCmdlet.ShouldProcess('the current OpenAI Codex session', 'Close it, relaunch with loopback debug ports, and inject the audited compatibility bridge')) {
+        if (-not $PSCmdlet.ShouldProcess('the current OpenAI Codex session', 'Close it, relaunch with loopback debug ports, and enable the capability-tested bridge')) {
             break
         }
 
@@ -903,24 +1134,29 @@ switch ($Action) {
         }
         $launchPackage = $package
         $sessionStopped = $false
+        $previousOwnership = $null
+        $launch = $null
         try {
             if ($UseProxy) {
                 Write-Host 'Protected proxy mode is enabled for all external ChatGPT and helper connections.' -ForegroundColor Yellow
             }
             if ($bridgeMode -ceq 'native-renderer' -and ($UseProxy -or $legacyDeviceKeyCompatibilityNeeded)) {
-                Write-Host 'Preparing the version-matched private ChatGPT compatibility runtime.' -ForegroundColor Yellow
+                Write-Host 'Preparing a private ChatGPT runtime from the installed capability-compatible files.' -ForegroundColor Yellow
                 $launchPackage = New-CrsProxyRuntimePackage -Package $package -Node $node -ProxyEnabled ([bool]$UseProxy) -LegacyDeviceKeys $legacyDeviceKeyCompatibilityNeeded
                 if ($UseProxy) { Write-Host 'Signed enrollment retains the canonical ChatGPT URL while all external traffic uses the protected proxy.' -ForegroundColor Yellow }
                 if ($legacyDeviceKeyCompatibilityNeeded) { Write-Host 'Existing protected enrollment keys remain available; new keys use the native Windows provider.' -ForegroundColor Yellow }
             }
             Assert-CrsNoExistingAppForReplacement -Package $package -LaunchPackage $launchPackage -Enabled:$RefuseExistingApp
             $sessionStopped = $true
-            if ($null -ne $state -and -not [string]::IsNullOrWhiteSpace([string]$state.executablePath)) {
-                Stop-CrsCodex -ExecutablePath ([string]$state.executablePath)
+            $replacementPaths = @([string]$package.ExecutablePath, [string]$launchPackage.ExecutablePath)
+            $previousOwnership = if ($null -eq $state) { $null } else { Get-CrsOwnedProcessIdentity -Ownership $state }
+            [void](Assert-CrsNoUnownedCodexProcess -ExecutablePaths $replacementPaths -OwnedProcess $previousOwnership)
+            if ($null -ne $previousOwnership) {
+                if (-not (Stop-CrsCodex -Ownership $previousOwnership)) {
+                    throw 'The helper-owned ChatGPT process changed before replacement. It was left running and the replacement was aborted.'
+                }
             }
-            Stop-CrsCodex -ExecutablePath $package.ExecutablePath
             if (-not [string]::Equals([string]$launchPackage.ExecutablePath, [string]$package.ExecutablePath, [StringComparison]::OrdinalIgnoreCase)) {
-                Stop-CrsCodex -ExecutablePath $launchPackage.ExecutablePath
                 Remove-CrsInactiveProxyRuntimes -KeepRoot $launchPackage.AppRoot
             }
             $arguments = @(
@@ -948,10 +1184,15 @@ switch ($Action) {
         } catch {
             if (-not $sessionStopped) { throw }
             Write-Warning 'Enable failed. Restoring an ordinary Codex session.'
-            if ($null -ne $launchPackage -and -not [string]::Equals([string]$launchPackage.ExecutablePath, [string]$package.ExecutablePath, [StringComparison]::OrdinalIgnoreCase)) {
-                Stop-CrsCodex -ExecutablePath $launchPackage.ExecutablePath
+            $launchOwnership = if ($null -eq $launch) { $null } else { Get-CrsOwnedProcessIdentity -Ownership $launch }
+            if ($null -ne $launchOwnership) {
+                if (-not (Stop-CrsCodex -Ownership $launchOwnership)) {
+                    throw 'Enable failed and the replacement ChatGPT process changed before rollback. It was left running and the ordinary session was not started.'
+                }
+            } else {
+                $remainingPaths = @([string]$package.ExecutablePath, [string]$launchPackage.ExecutablePath)
+                [void](Assert-CrsNoUnownedCodexProcess -ExecutablePaths $remainingPaths -OwnedProcess $null)
             }
-            Stop-CrsCodex -ExecutablePath $package.ExecutablePath
             foreach ($port in @($rendererPort, $mainPort) | Where-Object { $null -ne $_ }) { [void](Wait-CrsPortClosed -Port $port) }
             if (Test-Path -LiteralPath $script:StatePath) { Remove-Item -LiteralPath $script:StatePath -Force }
             Start-CrsOrdinaryCodex -Package $package

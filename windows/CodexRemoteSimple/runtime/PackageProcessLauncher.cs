@@ -222,7 +222,7 @@ internal static class PackageProcessLauncher
                     start.EnvironmentVariables["no_proxy"]);
                 start.EnvironmentVariables["NO_PROXY"] = noProxy;
                 start.EnvironmentVariables["no_proxy"] = noProxy;
-                // CRWU is consumed only by the audited in-place validator patch.
+                // CRWU is consumed only by the capability-discovered validator patch.
                 // It keeps the signed public target while the socket itself uses
                 // the authenticated loopback bridge URL.
                 start.EnvironmentVariables.Remove("CRWU");

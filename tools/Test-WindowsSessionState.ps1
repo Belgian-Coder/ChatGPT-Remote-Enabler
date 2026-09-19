@@ -15,7 +15,12 @@ $functionNames = @(
     'Write-CrsState',
     'Get-CrsDiscoverableSession',
     'Test-CrsProxyModeProof',
-    'Assert-CrsNoExistingAppForReplacement'
+    'Assert-CrsNoExistingAppForReplacement',
+    'Get-CrsProcessIdentity',
+    'Test-CrsExpectedDebugProcess',
+    'Get-CrsOwnedProcessIdentity',
+    'Stop-CrsCodex',
+    'Assert-CrsNoUnownedCodexProcess'
 )
 $definitions = $ast.FindAll({
     param($node)
@@ -149,12 +154,41 @@ try {
     }
 
     $script:fixtureExistingExecutablePaths = @()
+    $script:fixtureProcessIdentities = @()
     function Get-CrsCodexProcesses {
         param([string]$ExecutablePath)
+        $identities = @($script:fixtureProcessIdentities | Where-Object {
+            [string]::Equals([string]$_.ExecutablePath, $ExecutablePath, [StringComparison]::OrdinalIgnoreCase)
+        })
+        if ($identities.Count -gt 0) {
+            return @($identities | ForEach-Object { [pscustomobject]@{ Id = [int]$_.ProcessId; Path = [string]$_.ExecutablePath } })
+        }
         if ($ExecutablePath -in $script:fixtureExistingExecutablePaths) {
             return @([pscustomobject]@{ Id = 9999; Path = $ExecutablePath })
         }
         return @()
+    }
+    $script:fixtureLiveIdentity = $null
+    $script:fixtureStopCalls = [Collections.Generic.List[object]]::new()
+    function Get-CrsProcessIdentity {
+        param([int]$ProcessId, [string]$ExecutablePath)
+        $fixtureIdentity = @($script:fixtureProcessIdentities | Where-Object {
+            [int]$_.ProcessId -eq $ProcessId -and
+            [string]::Equals([string]$_.ExecutablePath, $ExecutablePath, [StringComparison]::OrdinalIgnoreCase)
+        } | Select-Object -First 1)
+        if ($fixtureIdentity.Count -eq 1) { return $fixtureIdentity[0] }
+        if ($null -eq $script:fixtureLiveIdentity -or
+            [int]$script:fixtureLiveIdentity.ProcessId -ne $ProcessId -or
+            -not [string]::Equals([string]$script:fixtureLiveIdentity.ExecutablePath, $ExecutablePath, [StringComparison]::OrdinalIgnoreCase)) {
+            return $null
+        }
+        return $script:fixtureLiveIdentity
+    }
+    function Stop-Process {
+        [CmdletBinding()]
+        param([int]$Id, [switch]$Force)
+        $script:fixtureStopCalls.Add([pscustomobject]@{ Id = $Id; Force = [bool]$Force })
+        if (-not $Force) { $script:fixtureLiveIdentity = $null }
     }
     $privatePackage = [pscustomobject]@{ ExecutablePath = 'C:\Fixture\Private\ChatGPT.exe' }
     $script:fixtureExistingExecutablePaths = @([string]$package.ExecutablePath)
@@ -178,14 +212,129 @@ try {
         throw 'Update resume did not refuse a newly appeared exact executable process.'
     }
 
+    $samePathUnrelated = [pscustomobject]@{
+        ProcessId = 5001
+        ExecutablePath = [string]$package.ExecutablePath
+        StartTimeFileTimeUtc = 7001L
+        ProcessOwned = $true
+    }
+    $script:fixtureLiveIdentity = $null
+    $script:fixtureStopCalls.Clear()
+    $script:fixtureExistingExecutablePaths = @([string]$package.ExecutablePath)
+    if (Stop-CrsCodex -Ownership $samePathUnrelated) {
+        throw 'A same-path process without the owned PID and start token was treated as stoppable.'
+    }
+    if ($script:fixtureStopCalls.Count -ne 0) {
+        throw 'A same-path unrelated process received a lifecycle signal.'
+    }
+    $unownedRejected = $false
+    try {
+        Assert-CrsNoUnownedCodexProcess -ExecutablePaths @([string]$package.ExecutablePath) -OwnedProcess $null
+    } catch {
+        $unownedRejected = $true
+    }
+    if (-not $unownedRejected) {
+        throw 'An existing same-path process without ownership evidence was not rejected before replacement.'
+    }
+
+    $ownedAmongUnrelated = [pscustomobject]@{
+        ProcessId = 5005
+        ExecutablePath = [string]$package.ExecutablePath
+        StartTimeFileTimeUtc = 7005L
+        ProcessOwned = $true
+    }
+    $script:fixtureProcessIdentities = @(
+        $ownedAmongUnrelated,
+        [pscustomobject]@{
+            ProcessId = 5006
+            ExecutablePath = [string]$package.ExecutablePath
+            StartTimeFileTimeUtc = 7006L
+        }
+    )
+    $additionalUnownedRejected = $false
+    try {
+        Assert-CrsNoUnownedCodexProcess -ExecutablePaths @([string]$package.ExecutablePath) -OwnedProcess $ownedAmongUnrelated
+    } catch {
+        $additionalUnownedRejected = $true
+    }
+    $script:fixtureProcessIdentities = @()
+    if (-not $additionalUnownedRejected) {
+        throw 'An additional unowned same-path main process was hidden by the owned process.'
+    }
+
+    $exactDebugReader = {
+        param([int]$Id)
+        [pscustomobject]@{
+            ProcessId = $Id
+            ExecutablePath = [string]$package.ExecutablePath
+            CommandLine = '"C:\Program Files\WindowsApps\OpenAI.Codex_fixture\app\ChatGPT.exe" --remote-debugging-address=127.0.0.1 --remote-debugging-port=24547'
+        }
+    }
+    $unrelatedReader = {
+        param([int]$Id)
+        [pscustomobject]@{
+            ProcessId = $Id
+            ExecutablePath = [string]$package.ExecutablePath
+            CommandLine = '"C:\Program Files\WindowsApps\OpenAI.Codex_fixture\app\ChatGPT.exe"'
+        }
+    }
+    if (-not (Test-CrsExpectedDebugProcess -ProcessId 5007 -ExecutablePath ([string]$package.ExecutablePath) -ExpectedPort 24547 -ProcessReader $exactDebugReader) -or
+        (Test-CrsExpectedDebugProcess -ProcessId 5008 -ExecutablePath ([string]$package.ExecutablePath) -ExpectedPort 24547 -ProcessReader $unrelatedReader)) {
+        throw 'Package activation ownership did not require the exact requested debug address and port.'
+    }
+
+    $pidReuse = [pscustomobject]@{
+        ProcessId = 5002
+        ExecutablePath = [string]$package.ExecutablePath
+        StartTimeFileTimeUtc = 7002L
+        ProcessOwned = $true
+    }
+    $script:fixtureExistingExecutablePaths = @()
+    $script:fixtureLiveIdentity = [pscustomobject]@{
+        ProcessId = 5002
+        ExecutablePath = [string]$package.ExecutablePath
+        StartTimeFileTimeUtc = 7003L
+    }
+    $script:fixtureStopCalls.Clear()
+    if (Stop-CrsCodex -Ownership $pidReuse) {
+        throw 'A PID reused with a different start token was treated as helper-owned.'
+    }
+    if ($script:fixtureStopCalls.Count -ne 0) {
+        throw 'A PID reuse/start-token mismatch received a lifecycle signal.'
+    }
+
+    $exactOwned = [pscustomobject]@{
+        ProcessId = 5003
+        ExecutablePath = [string]$package.ExecutablePath
+        StartTimeFileTimeUtc = 7004L
+        ProcessOwned = $true
+    }
+    $script:fixtureLiveIdentity = [pscustomobject]@{
+        ProcessId = 5003
+        ExecutablePath = [string]$package.ExecutablePath
+        StartTimeFileTimeUtc = 7004L
+    }
+    $script:fixtureStopCalls.Clear()
+    if (-not (Stop-CrsCodex -Ownership $exactOwned)) {
+        throw 'The exact helper-owned process was not stopped.'
+    }
+    if ($script:fixtureStopCalls.Count -ne 1 -or
+        [int]$script:fixtureStopCalls[0].Id -ne 5003 -or
+        [bool]$script:fixtureStopCalls[0].Force) {
+        throw 'The exact helper-owned process did not receive one normal lifecycle stop.'
+    }
+
     $controllerSource = [IO.File]::ReadAllText($controllerPath)
     $guardText = 'Assert-CrsNoExistingAppForReplacement -Package $package -LaunchPackage $launchPackage -Enabled:$RefuseExistingApp'
     $guardIndex = $controllerSource.IndexOf($guardText, [StringComparison]::Ordinal)
     $stoppedIndex = $controllerSource.IndexOf('$sessionStopped = $true', $guardIndex, [StringComparison]::Ordinal)
-    $stopCallIndex = $controllerSource.IndexOf('Stop-CrsCodex -ExecutablePath', $stoppedIndex, [StringComparison]::Ordinal)
+    $stopCallIndex = $controllerSource.IndexOf('Stop-CrsCodex -Ownership', $stoppedIndex, [StringComparison]::Ordinal)
     if ($guardIndex -lt 0 -or $stoppedIndex -lt $guardIndex -or $stopCallIndex -lt $stoppedIndex -or
         -not [string]::IsNullOrWhiteSpace($controllerSource.Substring($guardIndex + $guardText.Length, $stoppedIndex - ($guardIndex + $guardText.Length)))) {
         throw 'The update-resume process guard is not immediately before the replacement stop boundary.'
+    }
+    if ($controllerSource.Contains('Stop-CrsCodex -ExecutablePath')) {
+        throw 'The stable controller still contains a path-wide ChatGPT stop call.'
     }
 
     [pscustomobject]@{
@@ -200,6 +349,11 @@ try {
         RollbackFallbackPreserved = $true
         UpdateResumeRaceRefused = $true
         ReplacementGuardAtStopBoundary = $true
+        SamePathUnrelatedProcessUntouched = $true
+        AdditionalSamePathProcessRejected = $true
+        ActivationDebugArgumentsRequired = $true
+        PidReuseStartTokenMismatchRejected = $true
+        ExactOwnedProcessStopped = $true
     } | ConvertTo-Json -Compress
 } finally {
     $resolved = [IO.Path]::GetFullPath($temporaryRoot)

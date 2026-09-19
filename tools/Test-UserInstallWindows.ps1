@@ -431,8 +431,7 @@ function Invoke-UserWorker {
         }
         $probe = @($probeOutput | Where-Object { $_ -is [psobject] -and $null -ne $_.PSObject.Properties['Ready'] } | Select-Object -Last 1)
         Assert-Condition ($probe.Count -eq 1 -and $probe[0].Ready) 'The stable source runtime readiness check did not return Ready=true.'
-        Assert-Condition ($probe[0].Classification -cin @('CandidateCompatible','NativeWindowsCompatible')) "Unexpected compatibility classification: $($probe[0].Classification)"
-        Assert-Condition ($probe[0].AppAsarSha256 -cmatch '^[0-9a-f]{64}$') 'The stable source runtime readiness check did not hash app.asar.'
+        Assert-Condition ($probe[0].Classification -ceq 'CapabilityCompatible') "Unexpected compatibility classification: $($probe[0].Classification)"
         $mainAfter = @(Get-PackageMainProcessIdentity -ExecutablePath $packageExecutable)
         Assert-Condition (($mainBefore -join "`n") -ceq ($mainAfter -join "`n")) 'The packaged ChatGPT main-process identity changed during the read-only readiness check.'
 

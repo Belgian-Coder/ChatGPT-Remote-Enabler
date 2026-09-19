@@ -1,5 +1,39 @@
 # Changelog
 
+## v1.5.93 — 2026-09-19
+
+- Remove the exact ChatGPT build, UI-text, provider-layout, and minifier
+  signature allowlists from Windows startup. Select the bridge from installed
+  runtime capabilities, discover proxy patch points semantically, and require
+  successful live renderer readiness instead of a version-dependent prelaunch
+  signature. Release and private-copy hashes protect downloaded or copied
+  files from corruption; no ChatGPT executable or ASAR hash decides whether a
+  version is supported.
+- Bind every controller lifecycle action to the helper-owned main process by
+  PID, executable path, and process-start identity. An adopted session, reused
+  PID, or unrelated ChatGPT process sharing the same executable path is left
+  untouched instead of being stopped during replacement or failure recovery.
+- Continue launching an unchanged healthy current-user ChatGPT Store package
+  when Windows explicitly rejects its verified newer MSIX with deployment error
+  `0x80073D28`; unrelated installer failures and changed package state still
+  stop before injection, and no elevation or policy bypass is attempted. Cache
+  that exact verified deferral so later launches do not download the same large
+  package again; any candidate or installed-package change forces revalidation,
+  the unchanged candidate is retried after 24 hours, cache-disabled results
+  explain why, and an explicitly supplied local package always bypasses the
+  automatic cache.
+- Publish project-membership authority as renderer protocol 54 so it survives
+  older relays. Current helpers keep projectless tasks in Recent chats even when
+  their working directory is a registered project, while project tasks still
+  fall back to their published path when helper catalogues have no native ID.
+- Clear retained loading indicators only for stale empty projects on devices
+  known to be offline, without hiding current local, online, or unknown activity.
+- Close the Windows startup progress window as soon as renderer readiness is
+  proven, before arming the background update-session monitor.
+- Cover the Windows startup decision under PowerShell 5.1 and 7, plus direct
+  project attribution, staggered-version interoperability, and stale remote
+  status behavior on both platform renderers.
+
 ## v1.5.92 — 2026-09-17
 
 - Mount Device projects from the stable sidebar scroll capability while a new

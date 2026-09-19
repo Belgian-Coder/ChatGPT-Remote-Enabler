@@ -37,6 +37,9 @@ async function advance(ms) { now += ms; for (let i = 0; i < 30; i++) { const due
   assert.equal(t.peerCacheIdentityMatches({ id: other, name: "Fixture peer" }, identifiedInventory, 2), false);
   const compact = JSON.parse(t.compactInventoryText(originalPayload));
   assert.deepEqual(JSON.parse(JSON.stringify(t.parseInventoryPayload(compact))), JSON.parse(JSON.stringify(t.parseInventoryPayload(originalPayload))), "nullable-field removal must preserve all parsed semantics");
+  const compactLegacyMembership = JSON.parse(t.compactInventoryText({ threads: [{ id: "legacy", projectMembershipKnown: false }, { id: "current", projectMembershipKnown: true }] }));
+  assert.equal(Object.prototype.hasOwnProperty.call(compactLegacyMembership.threads[0], "projectMembershipKnown"), false, "a false optional membership marker must not consume relay budget");
+  assert.equal(compactLegacyMembership.threads[1].projectMembershipKnown, true);
   const payload = { ...originalPayload, peers: { [host]: snapshot("Receiver copy"), [other]: snapshot("Third peer") } };
   const sent = JSON.parse(t.peerTransferText(payload, host));
   assert.equal(sent.peers[host], undefined);
@@ -69,6 +72,12 @@ async function advance(ms) { now += ms; for (let i = 0; i < 30; i++) { const due
   assert.equal(forwardedAliases.recipientAlias, undefined, "recipient context must never be forwarded to a different peer");
   assert.deepEqual(JSON.parse(JSON.stringify(forwardedAliases.selfAlias)), selfAlias);
   assert.deepEqual(JSON.parse(JSON.stringify(forwardedAliases.records[other])), otherAlias);
+  const v54Inventory = t.parseInventoryPayload({ ...originalPayload, publisherVersion: 54, threads: [{ ...originalPayload.threads[0], projectMembershipKnown: true }] });
+  const oldRelayShape = t.serializePeerInventory(v54Inventory);
+  assert.equal(Object.prototype.hasOwnProperty.call(oldRelayShape.threads[0], "projectMembershipKnown"), false, "a v54 relay must omit membership authority already encoded by the top-level contract");
+  oldRelayShape.threads = oldRelayShape.threads.map(({ projectMembershipKnown, ...thread }) => thread);
+  const afterOldRelay = t.parseInventoryPayload({ ...oldRelayShape, generatedAt: new Date(now).toISOString() });
+  assert.equal(afterOldRelay.threads[0].projectMembershipKnown, true, "the top-level v54 contract must survive a relay that strips the optional per-thread membership field");
   assert.equal(t.peerContentSignature({ [host]: originalPayload }), t.peerContentSignature({ [host]: { ...originalPayload, generatedAt: new Date(now + 5000).toISOString(), threadScopeGeneratedAt: new Date(now + 5000).toISOString() } }));
   assert.notEqual(t.peerContentSignature({ [host]: originalPayload }), t.peerContentSignature({ [host]: snapshot("Changed title") }));
   assert.equal(t.inventoryHasWork(originalPayload.tasks, originalPayload.threads), false);

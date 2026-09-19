@@ -26,32 +26,49 @@ try {
     $nativeRoot = Join-Path $temporary 'native'
     New-Item -ItemType Directory -Path $nativeRoot -Force | Out-Null
     [IO.File]::WriteAllBytes((Join-Path $nativeRoot 'remote-control-device-key.node'), [byte[]](0x4d, 0x5a, 0x00, 0x00))
-    $provider = '782640499 Control other devices from this PC var Xke=(0,F.createRequire)(__filename),Zke=`remote-control-device-key.node`,Qke=`codex-device-key-sign-payload/v1`;$ke=class{resourcesPath;addon=null;constructor(e){this.resourcesPath=e}createDeviceKey(e){return this.getAddon().createDeviceKey(e??`hardware_only`)}deleteDeviceKey(e){return this.getAddon().deleteDeviceKey(e)}getDeviceKeyPublic(e){return this.getAddon().getDeviceKeyPublic(e)}async signDeviceKey(e,t){let n=eAe(t);return{...await this.getAddon().signDeviceKey(e,n),signedPayloadBase64:n.toString(`base64`)}}getAddon(){if(this.resourcesPath==null)throw Error(`Remote control device keys require resourcesPath`);return this.addon??=Xke((0,p.join)(this.resourcesPath,`native`,Zke)),this.addon}}'
-    $compatibleAsar = Join-Path $temporary 'compatible.asar'
-    [IO.File]::WriteAllText($compatibleAsar, $provider, [Text.UTF8Encoding]::new($false))
+    $asar = Join-Path $temporary 'arbitrary.asar'
+    [IO.File]::WriteAllText($asar, 'renamed minified members; reordered capability implementation; no package signature table', [Text.UTF8Encoding]::new($false))
     $node = [pscustomobject]@{ Path = [IO.Path]::GetFullPath($NodePath) }
-    $package = [pscustomobject]@{ AppAsarPath = $compatibleAsar; NativeRoot = $nativeRoot }
-    $result = Test-CrsCompatibility -Package $package -Node $node
-    if ($result.classification -cne 'NativeWindowsCompatible' -or
-        $result.bridgeMode -cne 'native-renderer' -or
-        $result.providerContract -isnot [bool] -or -not $result.providerContract) {
-        throw 'The platform-neutral Windows fixture was not accepted with its complete provider contract.'
+    $package = [pscustomobject]@{ AppAsarPath = $asar; NativeRoot = $nativeRoot }
+
+    $native = Test-CrsCompatibility -Package $package -Node $node
+    if ($native.schemaVersion -ne 3 -or
+        $native.artifactReadable -isnot [bool] -or -not $native.artifactReadable -or
+        $native.classification -cne 'CapabilityCompatible' -or
+        $native.nativeModulePresent -ne $true -or $native.nativeModuleFormat -cne 'windows-pe' -or
+        $native.recommendedBridgeMode -cne 'native-renderer' -or
+        $native.bridgeMode -cne 'native-renderer' -or
+        $null -ne $native.PSObject.Properties['appAsarSha256'] -or
+        $null -ne $native.PSObject.Properties['affected'] -or
+        $null -ne $native.PSObject.Properties['signatures']) {
+        throw 'The Windows native capability schema was not returned exactly.'
     }
 
-    $incompleteAsar = Join-Path $temporary 'incomplete.asar'
-    [IO.File]::WriteAllText($incompleteAsar, $provider.Replace('Remote control device keys require resourcesPath', 'unrelated error'), [Text.UTF8Encoding]::new($false))
-    $package.AppAsarPath = $incompleteAsar
-    $rejected = $false
-    try { Test-CrsCompatibility -Package $package -Node $node | Out-Null } catch {
-        $rejected = $_.Exception.Message -match 'audited Windows compatibility signature'
+    $legacyPackage = [pscustomobject]@{ AppAsarPath = $asar; NativeRoot = (Join-Path $temporary 'missing-native') }
+    $legacy = Test-CrsCompatibility -Package $legacyPackage -Node $node
+    if ($legacy.schemaVersion -ne 3 -or $legacy.classification -cne 'CapabilityCompatible' -or
+        $legacy.nativeModulePresent -ne $false -or $legacy.recommendedBridgeMode -cne 'legacy-main-shim' -or
+        $legacy.bridgeMode -cne 'legacy-main-shim') {
+        throw 'The artifact-only legacy capability fallback was not returned.'
     }
-    if (-not $rejected) { throw 'The incomplete platform-neutral Windows fixture did not fail closed.' }
+
+    $nonWindowsRoot = Join-Path $temporary 'non-windows-native'
+    New-Item -ItemType Directory -Path $nonWindowsRoot -Force | Out-Null
+    [IO.File]::WriteAllBytes((Join-Path $nonWindowsRoot 'remote-control-device-key.node'), [byte[]](0x7f, 0x45, 0x4c, 0x46))
+    $nonWindows = Test-CrsCompatibility -Package ([pscustomobject]@{ AppAsarPath = $asar; NativeRoot = $nonWindowsRoot }) -Node $node
+    if ($nonWindows.nativeModulePresent -ne $true -or $nonWindows.nativeModuleFormat -cne 'non-windows' -or
+        $nonWindows.bridgeMode -cne 'legacy-main-shim') {
+        throw 'A non-Windows native module did not fall back to the legacy runtime capability.'
+    }
 
     [pscustomobject]@{
         Edition = $PSVersionTable.PSEdition
         PowerShellVersion = [string]$PSVersionTable.PSVersion
-        PlatformNeutralAccepted = $true
-        IncompleteRejected = $true
+        SchemaVersion = [int]$native.schemaVersion
+        NativeRendererAccepted = $true
+        LegacyFallbackAccepted = $true
+        NoSupportedVersionHash = $true
+        NoSignatureAllowlist = $true
     } | ConvertTo-Json -Compress
 } finally {
     Remove-Item -LiteralPath $temporary -Force -Recurse -ErrorAction SilentlyContinue

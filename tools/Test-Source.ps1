@@ -141,7 +141,7 @@ foreach ($pair in @(
 }
 $renderer = Get-Content -LiteralPath $windowsRenderer -Raw
 $requiredContracts = @(
-    'const VERSION = 91;',
+    'const VERSION = 92;',
     'NATIVE_CONNECTION_CATALOG_REFRESH_MS',
     'refresh-remote-control-connections',
     'hostDisplayName: config.localDisplayName || null',
@@ -254,11 +254,19 @@ foreach ($relative in @(
 if ($LASTEXITCODE -ne 0) { throw 'Windows package compatibility self-test failed.' }
 
 $packageCompatibilityTest = Join-Path $root 'tools\Test-WindowsPackageCompatibility.ps1'
+$crossHostPowerShellTests = @(
+    (Join-Path $root 'tools\Test-WindowsMsixUpdater.ps1'),
+    (Join-Path $root 'tools\Test-WindowsPrelaunchUpdate.ps1')
+)
 foreach ($hostCommand in @('powershell.exe', 'pwsh.exe')) {
     $hostPath = (Get-Command $hostCommand -ErrorAction SilentlyContinue).Source
     if ([string]::IsNullOrWhiteSpace($hostPath)) { throw "Required PowerShell host was not found: $hostCommand" }
     & $hostPath -NoProfile -ExecutionPolicy Bypass -File $packageCompatibilityTest -NodePath $node
     if ($LASTEXITCODE -ne 0) { throw "Windows package compatibility self-test failed under $hostCommand" }
+    foreach ($crossHostTest in $crossHostPowerShellTests) {
+        & $hostPath -NoProfile -ExecutionPolicy Bypass -File $crossHostTest
+        if ($LASTEXITCODE -ne 0) { throw "Cross-PowerShell self-test failed under $hostCommand`: $crossHostTest" }
+    }
 }
 
 & $node (Join-Path $root 'windows\CodexRemoteMobileProject\tests\TitleProvenance.SelfTest.js')
@@ -311,17 +319,11 @@ if ($LASTEXITCODE -ne 0) { throw 'Git updater integration test failed.' }
 & (Join-Path $root 'tools\Test-WindowsUpdaterNonGit.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Windows packaged updater self-test failed.' }
 
-& (Join-Path $root 'tools\Test-WindowsMsixUpdater.ps1')
-if ($LASTEXITCODE -ne 0) { throw 'Windows MSIX updater self-test failed.' }
-
 & (Join-Path $root 'tools\Test-LegacyUpdateBootstrap.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Legacy update bootstrap test failed.' }
 
 & (Join-Path $root 'tools\Test-WindowsControllerReliability.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Windows controller reliability self-test failed.' }
-
-& (Join-Path $root 'tools\Test-WindowsPrelaunchUpdate.ps1')
-if ($LASTEXITCODE -ne 0) { throw 'Windows prelaunch update self-test failed.' }
 
 & (Join-Path $root 'tools\Test-StableLauncherResolution.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Stable launcher resolution self-test failed.' }
@@ -356,7 +358,7 @@ if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
 [pscustomobject]@{
     JavaScriptFiles = $javascript.Count
     PowerShellFiles = $powershell.Count
-    RendererVersion = 91
+    RendererVersion = 92
     LegacyUpdateBootstrapSelfTest = $true
     SetupAssistantSelfTest = $true
     RendererParity = $true
@@ -390,8 +392,10 @@ if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed.' }
     ProxyConfigurationSelfTest = $true
     WindowsPowerShellNodeProbeSelfTest = $true
     WindowsPackagedUpdaterSelfTest = $true
+    WindowsMsixUpdaterPowerShell51And7 = $true
     WindowsControllerReliabilitySelfTest = $true
     WindowsPrelaunchUpdateSelfTest = $true
+    WindowsPrelaunchPowerShell51And7 = $true
     StableLauncherResolutionSelfTest = $true
     PackageProcessLauncherSelfTest = $true
     ProxyRuntimePreparerSelfTest = $true

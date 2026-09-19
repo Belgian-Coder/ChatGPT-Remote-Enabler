@@ -1,6 +1,6 @@
 # Windows 11: install for your user without administrator access
 
-Release v1.5.92 keeps the permanent helper in the current user's unversioned
+Release v1.5.93 keeps the permanent helper in the current user's unversioned
 LocalAppData root and migrates the v1.5.60 ProgramData root as legacy. Automatic
 updates therefore replace files owned by the same limited user that owns the
 shortcuts and updater state. Successful updates retain only the immediate prior
@@ -14,11 +14,23 @@ automatic graceful restart. It retains renderer v88 and the ordered Remote
 Enabler update, desktop MSIX, and launch gates. Installation and live
 multi-device acceptance remain separate checks.
 
+When a verified newer ChatGPT MSIX needs a packaged service that the current
+user cannot install (`0x80073D28`), the launcher revalidates and opens the
+unchanged healthy Store package. It does not request administrator rights or
+bypass AppX policy. The exact verified candidate and installed-package state are
+cached, so following launches skip its full download until either changes or
+the 24-hour retry expires. If a proxy strips the strong ETag needed to identify
+the exact file safely, launch still continues but the result reports that the
+deferral could not be cached.
+Renderer v92 also keeps authoritative projectless tasks in Recent chats and
+removes stale activity indicators from empty devices known to be offline. Its
+protocol 54 membership marker survives older relays during staggered upgrades.
+
 You need Windows 11 x64, the ChatGPT/Codex desktop app signed in with Remote available on your account, and Node.js 22 or newer. The special launcher can install or update the supported current-user desktop package from OpenAI's signed stable x64 MSIX while the app is closed; it does not unlock account features or bypass AppX policy.
 
 ## 1. Download and extract
 
-1. Download **ChatGPT-Remote-Enabler-Windows-x64-v1.5.92.zip** from [v1.5.92 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.92). Read the verification limitations.
+1. Download **ChatGPT-Remote-Enabler-Windows-x64-v1.5.93.zip** from [v1.5.93 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.93). Read the verification limitations.
 2. Right-click the ZIP in File Explorer, choose **Properties**, select **Unblock** if offered, and click **OK**. Then choose **Extract All**.
 3. Enter `%LOCALAPPDATA%\Programs` in File Explorer's address bar. Create a **ChatGPTRemoteEnabler** folder and copy the extracted package contents into it.
 4. **ChatGPT Remote Enabler.exe**, **README.md**, and **CodexRemoteMobileProject** must be directly inside that folder. Keep the whole package together.
@@ -214,8 +226,8 @@ row is not mounted by the selected grouping.
 Newer Windows builds include native remote-control device keys and disable
 Electron main-process inspection. The launcher detects that capability and
 uses only the loopback renderer bridge, avoiding a debugger-target timeout.
-Older audited builds retain the legacy main-process shim. On a native-key
-build, `-UseProxy` prepares a version- and hash-matched private runtime under
+Builds without that native capability retain the legacy main-process shim. On a native-key
+build, `-UseProxy` prepares a capability-discovered private runtime under
 `%LOCALAPPDATA%\ChatGPTRemoteEnabler\patched-chatgpt`, starts it inside the
 installed package context, and routes its external Chromium, Electron/Node,
 app-server, Remote-control, Git, and updater connections through the selected
@@ -283,8 +295,8 @@ mode replaces inherited bypass lists with loopback-only entries in child
 processes and passes the same selected endpoint explicitly to Git and both
 updaters. Native-key builds use a random per-launch localhost WebSocket bridge.
 The launcher makes a private copy of the currently
-installed ChatGPT runtime, verifies exact source signatures, changes only its
-Remote-control WebSocket URL selection, and disables embedded-ASAR integrity
+installed ChatGPT runtime, discovers the required Remote-control capabilities
+from their behavior, changes only its WebSocket URL selection, and disables embedded-ASAR integrity
 checking only in that private copy so Electron can load it. The signed package,
 canonical API base, enrollment challenge, and all other applications remain
 unchanged. The bridge and background supervisor exit with ChatGPT, and stopped
@@ -411,20 +423,20 @@ Check the target of **ChatGPT Custom** in the Start menu (open its file location
 
 Fully quit the app when your work is safe, then use **ChatGPT Remote Enabler.exe** in the newly extracted folder, or the new **ChatGPT Remote Enabler** shortcut created by that folder's setup assistant. Open Settings to see the loaded helper version and update controls in either view. A missing update service shows recovery instructions there.
 
-v1.5.92 is a normal release and is discoverable by the existing automatic updater. The first Windows upgrade from v1.5.31 attaches the new update helper even through the legacy launcher.
+v1.5.93 is a normal release and is discoverable by the existing automatic updater. The first Windows upgrade from v1.5.31 attaches the new update helper even through the legacy launcher.
 
 
 ### Existing enrollment keys after a Codex update
 
 The Windows compatibility path detects an enrollment that still matches the
 older Remote Enabler DPAPI key store. On the next normal launch, it prepares a
-version-matched private runtime that tries Codex's native key provider first
+capability-discovered private runtime that tries Codex's native key provider first
 and uses the existing protected key when the native provider cannot find it.
 New keys use the native provider. This does not create or authorize an
 enrollment and does not rewrite the existing key store. Server-side revocation
 and authorization checks still apply.
 
-The compatibility copy lives under `%LOCALAPPDATA%\ChatGPTRemoteEnabler\patched-chatgpt`. The installed WindowsApps files remain unchanged. Without proxy mode, only the device-key loader changes; network destinations and challenge validation remain original. The private copy disables embedded ASAR integrity validation to load the reviewed compatibility code, and the launcher verifies its source/runtime/helper hashes before reuse. Use the ordinary Codex shortcut to return to the unmodified installed runtime; revoke a device through native settings before deliberately deleting its protected key material.
+The compatibility copy lives under `%LOCALAPPDATA%\ChatGPTRemoteEnabler\patched-chatgpt`. The installed WindowsApps files remain unchanged. Without proxy mode, only the device-key loader changes; network destinations and challenge validation remain original. The private copy disables embedded ASAR integrity validation to load the reviewed compatibility code. Content hashes prevent reuse of a stale or modified private copy; they are never a ChatGPT-version allowlist. Use the ordinary Codex shortcut to return to the unmodified installed runtime; revoke a device through native settings before deliberately deleting its protected key material.
 
 Device labels are now collected from Codex's connection catalog even for devices with no tasks. A saved label or local publisher-ready status is not proof of an authorized connection. If Codex still requests authorization, complete its native Settings > Connections > Control other devices flow. The helper resumes discovery after the connection state changes.
 

@@ -1,13 +1,13 @@
 # Feature guide
 
-This guide describes the Windows and macOS v1.5.92 source, including reliable
+This guide describes the Windows and macOS v1.5.93 source, including reliable
 background inventory publication, loaded search, compact Settings, guarded navigation, and stale-Steer recovery. Historical v1.5.49 packages and
 screenshots do not include those changes. Both packages share the Device
 projects renderer and the feature behavior below; the
 platform guides document their different launchers, setup assistants, proxy
 options, and shortcut/startup commands.
 
-Renderer v90 keeps direct Codex inventory authoritative over older helper data, avoids self-peer writes, and caches loaded-search normalization; renderer v88 adds collision-resistant peer caches, serialized remote reads, and complete update-activity scans; renderer v83 filters the current machine from the refreshed native device catalogue; renderer v82 adds automatic native device-catalogue recovery; renderer v81 added verified in-process update loading; renderer v79 makes native offline state authoritative while retaining cached rows and runtime evidence; renderer v78 adds a parent-bound heartbeat for fully frozen hidden renderers; renderer v77 adds the background inventory reliability correction; renderer
+Renderer v92 publishes optional project-membership authority for staggered upgrades and clears stale empty-project activity; renderer v90 keeps direct Codex inventory authoritative over older helper data, avoids self-peer writes, and caches loaded-search normalization; renderer v88 adds collision-resistant peer caches, serialized remote reads, and complete update-activity scans; renderer v83 filters the current machine from the refreshed native device catalogue; renderer v82 adds automatic native device-catalogue recovery; renderer v81 added verified in-process update loading; renderer v79 makes native offline state authoritative while retaining cached rows and runtime evidence; renderer v78 adds a parent-bound heartbeat for fully frozen hidden renderers; renderer v77 adds the background inventory reliability correction; renderer
 v76 added the search and Settings improvements described below.
 
 After a compatible live update succeeds, a detached helper first arms against

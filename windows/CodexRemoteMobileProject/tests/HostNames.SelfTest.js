@@ -9,21 +9,22 @@ const rendererPath = path.join(__dirname, "..", "renderer-mobile-project-view.js
 const originalSource = fs.readFileSync(rendererPath, "utf8").replace(/\r\n/gu, "\n");
 const testSource = originalSource
   .replace("(() => {", "globalThis.__hostFlowTest = (() => {")
-  .replace("  return installWhenDocumentReady(api, state, install, probe);\n})();", "  return { collectModel, discoverHostNames, hostName, state, uninstall };\n})();");
+  .replace("  return installWhenDocumentReady(api, state, install, probe);\n})();", "  return { collectModel, discoverHostNames, hostName, metadataFromRow, state, uninstall };\n})();");
 assert.notEqual(testSource, originalSource, "full renderer test adapter must replace the production entrypoint");
 
 class FixtureElement {
-  constructor(group = null) {
+  constructor(group = null, props = {}, attributes = {}) {
     this.nodeType = 1;
     this.parentElement = null;
     this.children = [];
-    if (group) this.__reactFiber$fixture = { memoizedProps: { group }, memoizedState: null, return: null, updateQueue: null };
+    this.attributes = attributes;
+    if (group || Object.keys(props).length) this.__reactFiber$fixture = { memoizedProps: { group, ...props }, memoizedState: null, return: null, updateQueue: null };
   }
   get isConnected() { return true; }
   closest() { return null; }
   contains(candidate) { return candidate === this || this.children.includes(candidate); }
-  getAttribute(name) { return name === "aria-label" ? this.ariaLabel ?? null : null; }
-  hasAttribute() { return false; }
+  getAttribute(name) { return this.attributes[name] ?? (name === "aria-label" ? this.ariaLabel ?? null : null); }
+  hasAttribute(name) { return Object.prototype.hasOwnProperty.call(this.attributes, name); }
   matches() { return false; }
   querySelector() { return null; }
   querySelectorAll() { return []; }
@@ -31,12 +32,15 @@ class FixtureElement {
 
 const storage = new Map();
 let nativeProjects = [];
+let nativeTasks = [];
 const document = {
   addEventListener() {},
   removeEventListener() {},
   getElementById: () => null,
   querySelector(selector) { return this.querySelectorAll(selector)[0] ?? null; },
   querySelectorAll(selector) {
+    if (selector === '[data-app-action-sidebar-thread-row]') return nativeTasks;
+    if (selector === '[data-app-action-sidebar-thread-row],[aria-label]') return [...nativeTasks, ...nativeProjects];
     if (selector === '[data-sidebar-project-kind][role="listitem"]'
       || selector === '[data-sidebar-project-kind="remote"][role="listitem"]') return nativeProjects;
     return [];
@@ -117,6 +121,22 @@ assert.equal(firstModel.projects.find((project) => project.hostId === hostId)?.t
 assert.equal(firstModel.projects.find((project) => project.hostId === hostId)?.taskStatusAuthoritative, true, "empty authoritative membership must also prove that no child is busy");
 assert.equal(firstModel.projects.find((project) => project.hostId === hostId)?.taskUnreadAuthoritative, true, "empty authoritative membership must also prove that no child is unread");
 
+const offlineStatusHostId = `remote-control:${environmentPrefix}fixture_status_offline`;
+const activeStatusHostId = `remote-control:${environmentPrefix}fixture_status_active`;
+const connectingStatusHostId = `remote-control:${environmentPrefix}fixture_status_connecting`;
+nativeProjects = [new FixtureElement(null, {
+  connectionFixtures: [
+    { displayName: "Offline status", hostId: offlineStatusHostId, status: "offline" },
+    { displayName: "Active status", hostId: activeStatusHostId, state: "active" },
+    { displayName: "Connecting status", hostId: connectingStatusHostId, status: "connecting" },
+  ],
+})];
+flow.state.hostDiscoveryDirty = true;
+const triStateDiscovery = flow.discoverHostNames();
+assert.equal(triStateDiscovery.availability.get(offlineStatusHostId), false, "an explicit offline status must remain authoritative");
+assert.equal(triStateDiscovery.availability.get(activeStatusHostId), true, "an explicit active state must remain authoritative");
+assert.equal(triStateDiscovery.availability.has(connectingStatusHostId), false, "a transitional status must remain unknown");
+
 const localThreadId = "11111111-1111-4111-8111-111111111111";
 const localThread = (threadStatus, hasUnreadTurn) => ({
   cwd: "C:\\Fixture\\Local",
@@ -149,8 +169,45 @@ localProject = flow.collectModel().projects.find((project) => project.projectId 
 assert.equal(localProject.taskStatusAuthoritative, true, "known completion stays authoritative when unread metadata is absent");
 assert.equal(localProject.taskUnreadAuthoritative, false, "missing unread metadata must remain independently unknown");
 assert.equal(localProject.tasksAuthoritative, false, "the combined marker remains conservative when either signal is unknown");
+nativeTasks = [new FixtureElement(null, {
+  cwd: "C:\\Fixture\\Local",
+  hoverCardProjectId: "local-project",
+  hoverCardProjectLabel: "Local project",
+  isGrouped: true,
+  isProjectlessHoverCard: false,
+}, {
+  "data-app-action-sidebar-thread-host-id": "local",
+  "data-app-action-sidebar-thread-id": localThreadId,
+  "data-app-action-sidebar-thread-title": "Native project task",
+})];
+const freshThreadWithoutMembership = localThread("completed", false);
+delete freshThreadWithoutMembership.projectId;
+freshThreadWithoutMembership.workspaceKind = "repository";
+flow.state.threadInventories.set("local", { error: null, fetchedAt: Date.now(), truncated: false, threads: [freshThreadWithoutMembership] });
+localProject = flow.collectModel().projects.find((project) => project.projectId === "local-project");
+assert.equal(localProject.tasks[0].projectId, "local-project", "a fresh listing without a membership field must preserve current native project ownership");
+assert.equal(flow.collectModel().recents.some(group => group.tasks.some(task => task.conversationId === localThreadId)), false, "missing membership metadata must retain cwd/native grouping instead of claiming projectlessness");
+const explicitProjectWithoutCwd = { ...freshThreadWithoutMembership, projectId: "local-project" };
+delete explicitProjectWithoutCwd.cwd;
+flow.state.threadInventories.set("local", { error: null, fetchedAt: Date.now(), truncated: false, threads: [explicitProjectWithoutCwd] });
+localProject = flow.collectModel().projects.find((project) => project.projectId === "local-project");
+assert.equal(localProject.tasks[0].cwd, "C:\\Fixture\\Local", "native cwd must survive when an authoritative direct thread omits cwd");
+assert.equal(localProject.tasks[0].isProjectless, false, "an authoritative project id without cwd must not mark a project thread as projectless");
+const explicitNestedProjectless = { ...freshThreadWithoutMembership, project: null };
+flow.state.threadInventories.set("local", { error: null, fetchedAt: Date.now(), truncated: false, threads: [explicitNestedProjectless] });
+let projectlessModel = flow.collectModel();
+assert.equal(projectlessModel.projects.find((project) => project.projectId === "local-project")?.tasks.some(task => task.conversationId === localThreadId) ?? false, false, "an explicit nested null project must remove stale native project ownership");
+assert.equal(projectlessModel.recents.some(group => group.tasks.some(task => task.conversationId === localThreadId)), true, "an explicit nested null project must classify the thread as projectless");
+flow.state.threadInventories.set("local", { error: "temporary listing failure", fetchedAt: Date.now(), truncated: false, threads: [{ ...localThread("completed", false), projectId: null }] });
+flow.state.verifiedThreadIds.set("local", { ids: new Set([localThreadId]), verifiedAt: Date.now() });
+assert.equal(flow.metadataFromRow(nativeTasks[0]).projectId, "local-project", "the fixture must expose current native project membership");
+localProject = flow.collectModel().projects.find((project) => project.projectId === "local-project");
+assert.equal(localProject.tasks[0].projectId, "local-project", "an errored retained direct listing must not clear current native project membership");
+assert.equal(flow.collectModel().recents.some(group => group.tasks.some(task => task.conversationId === localThreadId)), false, "an errored retained direct listing must not move a native project task into Recents");
 flow.state.threadInventories.delete("local");
+flow.state.verifiedThreadIds.delete("local");
 nativeProjects = [];
+nativeTasks = [];
 
 flow.state.remoteProjectInventories.set(hostId, inventory("Peer desktop", "D:\\Fixture\\Primary"));
 assert.equal(hostLabel(flow, hostId), "Peer desktop", "direct inventory metadata must update the rendered device name");

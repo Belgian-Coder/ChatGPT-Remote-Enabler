@@ -115,9 +115,9 @@ switch ($Action) {
             $shortcut.Arguments = if ($UseProxy) { '--proxy --startup' } else { '--startup' }
             $shortcut.WorkingDirectory = $stableRootResolved
             $shortcut.Description = if ($UseProxy) {
-                'Start ChatGPT/Codex with the audited injection and Remote-control proxy after sign-in.'
+                'Start ChatGPT/Codex with the capability-tested injection and Remote-control proxy after sign-in.'
             } else {
-                'Start ChatGPT/Codex with the audited injection after sign-in.'
+                'Start ChatGPT/Codex with the capability-tested injection after sign-in.'
             }
             $shortcut.IconLocation = "$launcherPath,0"
             $shortcut.WindowStyle = 1

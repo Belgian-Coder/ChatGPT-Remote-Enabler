@@ -112,6 +112,18 @@ function Assert-OfficialPackageUri {
     return $parsed.AbsoluteUri
 }
 
+function Test-CurrentUserAppxInstallBlocked {
+    param([Parameter(Mandatory)][Management.Automation.ErrorRecord]$ErrorRecord)
+
+    for ($exception = $ErrorRecord.Exception; $null -ne $exception; $exception = $exception.InnerException) {
+        $unsignedHResult = [BitConverter]::ToUInt32([BitConverter]::GetBytes([int]$exception.HResult), 0)
+        if ($unsignedHResult -eq [uint32]2147958056) { return $true }
+    }
+    # PowerShell may wrap the deployment exception and expose the native code
+    # only in the fully formatted error text.
+    return [string]$ErrorRecord -match '(?i)(?<![0-9A-F])0x80073D28(?![0-9A-F])'
+}
+
 function Read-CurlResponseHeaders {
     param([Parameter(Mandatory)][string]$Path)
     $lines = @(Get-Content -LiteralPath $Path -ErrorAction Stop)
@@ -321,6 +333,119 @@ function Get-InstalledChatGptPackageState {
         Summary = ConvertTo-PackageSummary $package
         Identity = $identity
         Version = $version
+    }
+}
+
+function Get-DesktopUpdateDeferredStatePath {
+    $localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+    Assert-Condition (-not [string]::IsNullOrWhiteSpace($localAppData)) 'LocalApplicationData is unavailable for deferred desktop-update state.'
+    return Join-Path $localAppData 'ChatGPTRemoteEnabler\desktop-update-deferred.json'
+}
+
+function Remove-DesktopUpdateDeferredState {
+    param([Parameter(Mandatory)][string]$Path)
+    Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+}
+
+function Read-DesktopUpdateDeferredState {
+    param([Parameter(Mandatory)][string]$Path, [switch]$PreserveInvalidState)
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+    $text = $null
+    try {
+        $text = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
+    } catch {
+        # A sharing violation or transient profile-storage failure is not
+        # evidence that a previously verified deferral record is corrupt.
+        return $null
+    }
+    try {
+        $state = $text | ConvertFrom-Json -ErrorAction Stop
+        if ([int]$state.schemaVersion -ne 1) { throw 'Unsupported schema.' }
+        return $state
+    } catch {
+        if (-not $PreserveInvalidState) { Remove-DesktopUpdateDeferredState -Path $Path }
+        return $null
+    }
+}
+
+function Test-StrongDesktopUpdateValidator {
+    param([AllowEmptyString()][string]$ETag)
+    if ([string]::IsNullOrWhiteSpace($ETag)) { return $false }
+    return -not $ETag.TrimStart().StartsWith('W/', [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Write-DesktopUpdateDeferredState {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][object]$Installed,
+        [Parameter(Mandatory)][object]$Remote,
+        [Parameter(Mandatory)][object]$Manifest
+    )
+    Assert-Condition (Test-StrongDesktopUpdateValidator -ETag ([string]$Remote.ETag)) 'The remote package did not provide a strong ETag, so its automatic update deferral cannot be cached safely.'
+    $parent = Split-Path -Parent ([IO.Path]::GetFullPath($Path))
+    New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    $temporary = Join-Path $parent ('.desktop-update-deferred-' + [guid]::NewGuid().ToString('N') + '.tmp')
+    $state = [ordered]@{
+        schemaVersion = 1
+        recordedAtFileTimeUtc = [DateTime]::UtcNow.ToFileTimeUtc().ToString([Globalization.CultureInfo]::InvariantCulture)
+        installed = [ordered]@{ name = [string]$Installed.Name; version = [string]$Installed.Version; packageFullName = [string]$Installed.PackageFullName; installLocation = [string]$Installed.InstallLocation }
+        remote = [ordered]@{ uri = [string]$Remote.Uri; name = [string]$Remote.Name; version = [string]$Remote.VersionText; architecture = [string]$Remote.Architecture; contentLength = [string]$Remote.ContentLength; etag = [string]$Remote.ETag }
+        manifest = [ordered]@{ name = [string]$Manifest.Name; version = [string]$Manifest.VersionText; architecture = [string]$Manifest.Architecture; publisher = [string]$Manifest.Publisher }
+    }
+    try {
+        [IO.File]::WriteAllText($temporary, (($state | ConvertTo-Json -Depth 5) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+        Move-Item -LiteralPath $temporary -Destination $Path -Force
+    } finally {
+        Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Get-MatchingDesktopUpdateDeferredState {
+    param([string]$Path, [object]$Installed, [object]$Remote, [switch]$PreserveInvalidState)
+    $state = Read-DesktopUpdateDeferredState -Path $Path -PreserveInvalidState:$PreserveInvalidState
+    if ($null -eq $state) { return $null }
+    # A proxy can transiently strip or weaken the live validator. That makes
+    # this launch unable to trust the cache, but it is not proof that the
+    # previously verified candidate changed, so preserve the record for a
+    # later response that can confirm or invalidate it.
+    if (-not (Test-StrongDesktopUpdateValidator -ETag ([string]$Remote.ETag))) { return $null }
+    try {
+        $recordedAt = [DateTime]::FromFileTimeUtc([long]::Parse([string]$state.recordedAtFileTimeUtc, [Globalization.CultureInfo]::InvariantCulture))
+        $now = [DateTime]::UtcNow
+        $recordAge = $now - $recordedAt
+        $isMatch = $recordAge -ge [TimeSpan]::Zero -and
+            $recordAge -le [TimeSpan]::FromHours(24) -and
+            (Test-StrongDesktopUpdateValidator -ETag ([string]$state.remote.etag)) -and
+            $Installed.State -ceq 'Installed' -and
+            [string]$state.installed.name -ceq [string]$Installed.Summary.Name -and
+            [string]$state.installed.version -ceq [string]$Installed.Summary.Version -and
+            -not [string]::IsNullOrWhiteSpace([string]$state.installed.packageFullName) -and
+            [string]$state.installed.packageFullName -ceq [string]$Installed.Summary.PackageFullName -and
+            -not [string]::IsNullOrWhiteSpace([string]$state.installed.installLocation) -and
+            [string]$state.installed.installLocation -ceq [string]$Installed.Summary.InstallLocation -and
+            [string]$Installed.Summary.SignatureKind -ieq 'Store' -and
+            [string]$Installed.Summary.Status -ieq 'Ok' -and
+            [string]$state.remote.uri -ceq [string]$Remote.Uri -and
+            [string]$state.remote.name -ceq [string]$Remote.Name -and
+            [string]$state.remote.version -ceq [string]$Remote.VersionText -and
+            [string]$state.remote.architecture -ieq [string]$Remote.Architecture -and
+            [string]$state.remote.contentLength -ceq [string]$Remote.ContentLength -and
+            [string]$state.remote.etag -ceq [string]$Remote.ETag -and
+            [string]$state.manifest.name -ceq [string]$Remote.Name -and
+            [string]$state.manifest.version -ceq [string]$Remote.VersionText -and
+            [string]$state.manifest.architecture -ieq [string]$Remote.Architecture -and
+            [string]$state.manifest.publisher -ceq $script:ExpectedPublisher
+    } catch { $isMatch = $false }
+    if (-not $isMatch) {
+        if (-not $PreserveInvalidState) { Remove-DesktopUpdateDeferredState -Path $Path }
+        return $null
+    }
+    return [pscustomobject][ordered]@{
+        Name = [string]$state.manifest.name
+        Publisher = [string]$state.manifest.publisher
+        Architecture = [string]$state.manifest.architecture
+        Version = [version]([string]$state.manifest.version)
+        VersionText = [string]$state.manifest.version
     }
 }
 
@@ -579,6 +704,7 @@ function Invoke-ChatGPTDesktopMsixUpdater {
         [scriptblock]$HeadRequester,
         [scriptblock]$SignatureReader,
         [scriptblock]$Installer,
+        [string]$DeferredStatePath,
         [ValidateRange(1, 5)][int]$MetadataMaximumAttempts = 3,
         [ValidateRange(0, 30)][int]$MetadataRetryDelaySeconds = 2,
         [scriptblock]$MetadataSleeper
@@ -603,6 +729,13 @@ function Invoke-ChatGPTDesktopMsixUpdater {
             AutomaticUpdateEntryPoints = @('ChatGPT Remote Enabler shortcut', 'Device Projects sign-in startup')
         }
     }
+    if ([string]::IsNullOrWhiteSpace($DeferredStatePath)) {
+        if ($Action -eq 'Update') {
+            $DeferredStatePath = Get-DesktopUpdateDeferredStatePath
+        } else {
+            try { $DeferredStatePath = Get-DesktopUpdateDeferredStatePath } catch { $DeferredStatePath = $null }
+        }
+    }
 
     try {
         $remote = Get-HeadPackageMetadata -Uri $PackageUri -HeadRequester $HeadRequester -MaximumAttempts $MetadataMaximumAttempts -RetryDelaySeconds $MetadataRetryDelaySeconds -Sleeper $MetadataSleeper
@@ -624,6 +757,7 @@ function Invoke-ChatGPTDesktopMsixUpdater {
         throw
     }
     if ($installed.State -eq 'Installed' -and $installed.Identity -cne $remote.Name) {
+        if ($Action -eq 'Update' -and -not $WhatIfPreference) { Remove-DesktopUpdateDeferredState -Path $DeferredStatePath }
         return [pscustomobject][ordered]@{
             Action = $Action; InstalledState = $installed.State; Installed = $installed.Summary; Remote = $remote
             Decision = 'IdentityMismatch'; CanInstall = $false
@@ -631,6 +765,16 @@ function Invoke-ChatGPTDesktopMsixUpdater {
         }
     }
     if ($Action -eq 'Check') {
+        $deferredManifest = if ([string]::IsNullOrWhiteSpace($PackagePath) -and -not [string]::IsNullOrWhiteSpace($DeferredStatePath)) {
+            Get-MatchingDesktopUpdateDeferredState -Path $DeferredStatePath -Installed $installed -Remote $remote -PreserveInvalidState
+        } else { $null }
+        if ($null -ne $deferredManifest) {
+            return [pscustomobject][ordered]@{
+                Action = $Action; InstalledState = $installed.State; Installed = $installed.Summary; Remote = $remote; Manifest = $deferredManifest
+                Decision = 'UpdateDeferredCurrentInstalled'; CanInstall = $false; InstallDeferred = $true; DeferredFromCache = $true
+                Message = 'Windows previously rejected this exact verified desktop update in the current-user context. The automatic updater will retry after the bounded deferral expires.'
+            }
+        }
         $decision = if ($installed.State -eq 'NotInstalled') {
             [pscustomobject][ordered]@{ Decision = 'FreshInstall'; CanInstall = $true; Message = 'No expected ChatGPT package is installed for this user; the official package can be installed if policy and licensing allow it.' }
         } elseif ($remote.Version -gt $installed.Version) {
@@ -645,8 +789,30 @@ function Invoke-ChatGPTDesktopMsixUpdater {
 
     Assert-Condition (-not [string]::IsNullOrWhiteSpace($PackagePath) -or $remote.Name -in $script:ChatGptPackageNames) 'The official package metadata is not an expected OpenAI identity.'
     if ($installed.State -eq 'Installed' -and $remote.Version -le $installed.Version) {
+        if (-not $WhatIfPreference) { Remove-DesktopUpdateDeferredState -Path $DeferredStatePath }
         $decision = if ($remote.Version -eq $installed.Version) { 'EqualVersion' } else { 'DowngradeRefused' }
         return [pscustomobject][ordered]@{ Action = $Action; InstalledState = $installed.State; Installed = $installed.Summary; Remote = $remote; Decision = $decision; CanInstall = $false; Message = "Package $($remote.Version) is not newer than installed $($installed.Version); refusing mutation." }
+    }
+
+    # The deferral cache only applies to the automatic endpoint candidate. An
+    # explicit package path is a caller-selected candidate and must always be
+    # opened, verified, and attempted (or rejected) on its own merits.
+    $deferredManifest = if ([string]::IsNullOrWhiteSpace($PackagePath) -and -not $WhatIfPreference) {
+        Get-MatchingDesktopUpdateDeferredState -Path $DeferredStatePath -Installed $installed -Remote $remote
+    } else { $null }
+    if ($null -ne $deferredManifest) {
+        return [pscustomobject][ordered]@{
+            Action = $Action
+            InstalledState = $installed.State
+            Installed = $installed.Summary
+            Remote = $remote
+            Manifest = $deferredManifest
+            Decision = 'UpdateDeferredCurrentInstalled'
+            CanInstall = $false
+            InstallDeferred = $true
+            DeferredFromCache = $true
+            Message = 'Windows previously rejected this exact verified desktop update in the current-user context. Launching the unchanged healthy Store installation without downloading the same package again.'
+        }
     }
 
     # Do not spend time downloading a candidate while the base app is open.
@@ -672,21 +838,66 @@ function Invoke-ChatGPTDesktopMsixUpdater {
         if (-not $shouldInstall) {
             return [pscustomobject][ordered]@{ Action = $Action; InstalledState = $installed.State; Installed = $installed.Summary; Remote = $remote; Manifest = $manifest; Decision = 'WhatIf'; CanInstall = $true; Message = 'WhatIf: verified package would be installed for the current user; no Add-AppxPackage call was made.' }
         }
-        if ($null -ne $Installer) {
-            & $Installer $localPackage
-        } else {
+        if ($null -eq $Installer) {
             Assert-Condition ($null -ne (Get-Command Add-AppxPackage -ErrorAction SilentlyContinue)) 'Add-AppxPackage is unavailable. No alternative installer or policy bypass was attempted.'
-            try {
+        }
+        try {
+            if ($null -ne $Installer) {
+                & $Installer $localPackage
+            } else {
                 # Current-user install/update only. Do not add -AllUsers,
                 # -Register, -ForceApplicationShutdown, or provisioning.
                 Add-AppxPackage -Path $localPackage -ErrorAction Stop
-            } catch {
-                throw "MSIX current-user installation failed; Windows or corporate AppX policy may have blocked it. No policy bypass was attempted. $($_.Exception.Message)"
             }
+        } catch {
+            $installError = $_
+            if (-not (Test-CurrentUserAppxInstallBlocked -ErrorRecord $installError)) {
+                throw "MSIX current-user installation failed; Windows or corporate AppX policy may have blocked it. No policy bypass was attempted. $($installError.Exception.Message)"
+            }
+            $afterFailure = $null
+            try { $afterFailure = Get-InstalledChatGptPackageState -PackageEnumerator $PackageEnumerator } catch {}
+            $unchangedHealthyInstall = $installed.State -ceq 'Installed' -and $null -ne $afterFailure -and $afterFailure.State -ceq 'Installed' -and
+                $afterFailure.Identity -ceq $installed.Identity -and $afterFailure.Version -eq $installed.Version -and
+                -not [string]::IsNullOrWhiteSpace([string]$installed.Summary.PackageFullName) -and
+                [string]$afterFailure.Summary.PackageFullName -ceq [string]$installed.Summary.PackageFullName -and
+                -not [string]::IsNullOrWhiteSpace([string]$installed.Summary.InstallLocation) -and
+                [string]$afterFailure.Summary.InstallLocation -ceq [string]$installed.Summary.InstallLocation -and
+                [string]$afterFailure.Summary.Publisher -ceq $script:ExpectedPublisher -and
+                [string]$afterFailure.Summary.Architecture -ieq $script:ExpectedArchitecture -and
+                [string]$afterFailure.Summary.SignatureKind -ieq 'Store' -and
+                [string]$afterFailure.Summary.Status -ieq 'Ok'
+            if ($unchangedHealthyInstall) {
+                $deferralCached = $false
+                $deferralCacheReason = $null
+                if ([string]::IsNullOrWhiteSpace($PackagePath)) {
+                    try {
+                        Write-DesktopUpdateDeferredState -Path $DeferredStatePath -Installed $afterFailure.Summary -Remote $remote -Manifest $manifest
+                        $deferralCached = $true
+                    } catch {
+                        $deferralCacheReason = $_.Exception.Message
+                    }
+                }
+                return [pscustomobject][ordered]@{
+                    Action = $Action
+                    InstalledState = $afterFailure.State
+                    Installed = $afterFailure.Summary
+                    Remote = $remote
+                    Manifest = $manifest
+                    Decision = 'UpdateDeferredCurrentInstalled'
+                    CanInstall = $false
+                    InstallDeferred = $true
+                    DeferredFromCache = $false
+                    DeferralCached = $deferralCached
+                    DeferralCacheReason = $deferralCacheReason
+                    Message = 'Windows did not allow the verified desktop update in the current-user context. Launching the unchanged healthy Store installation; Windows or the Store can apply the desktop update later.'
+                }
+            }
+            throw "MSIX current-user installation failed; Windows or corporate AppX policy may have blocked it. No policy bypass was attempted. $($installError.Exception.Message)"
         }
         $after = Get-InstalledChatGptPackageState -PackageEnumerator $PackageEnumerator
         Assert-Condition ($after.State -eq 'Installed') 'Add-AppxPackage returned without a current-user ChatGPT package being registered.'
         Assert-Condition ($after.Identity -ceq $manifest.Name -and $after.Version -eq $manifest.Version) 'Installed current-user ChatGPT package does not match the verified MSIX identity and version.'
+        Remove-DesktopUpdateDeferredState -Path $DeferredStatePath
         return [pscustomobject][ordered]@{ Action = $Action; InstalledState = $after.State; Installed = $after.Summary; Remote = $remote; Manifest = $manifest; Decision = 'Installed'; CanInstall = $true; Message = 'Verified package installed for the current user.' }
     } finally {
         if ($null -ne $tempRoot) { Remove-MsixTempRoot -Root $tempRoot }

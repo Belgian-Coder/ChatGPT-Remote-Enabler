@@ -19,7 +19,7 @@ const testSource = originalSource
     scheduleNativeInventoryHydration();
     return { active: state.active, version: VERSION };
   };
-  return { assignLocalRuntime, hydrateNativeInventory, installWhenDocumentReady, publishInventoryHeartbeat, readiness, schedule, scheduleLocalProjectInventoryPublication, scheduleNativeInventoryHydration, state };
+  return { assignLocalRuntime, hydrateNativeInventory, installWhenDocumentReady, parseInventoryPayload, publishInventoryHeartbeat, readiness, schedule, scheduleLocalProjectInventoryPublication, scheduleNativeInventoryHydration, state, taskFromThread };
 })();`);
 assert.notEqual(testSource, originalSource, "full renderer test adapter must replace the production entrypoint");
 
@@ -222,7 +222,7 @@ async function advanceTo(target) {
         if (failThreadLists) throw new Error("fixture listing rejection");
         const page = params.cursor ? Number(params.cursor.slice(1)) : 0;
         return {
-          data: [{ id: `thread-${page}`, status: "notLoaded", title: `Task ${page}` }],
+          data: [{ id: `thread-${page}`, project_id: page === 0 ? "fixture-project" : null, status: "notLoaded", title: `Task ${page}` }],
           nextCursor: page < 199 || truncateThreadLists ? `p${page + 1}` : null,
         };
       }
@@ -281,13 +281,42 @@ async function advanceTo(target) {
   assert.equal(retainedInventory.attemptedAt, clock, "a failed attempt needs a separate diagnostic timestamp");
   assert.equal(retainedInventory.threads.length, 200, "a rejected scan must retain the complete prior snapshot");
 
+  const writesBeforeRejectedPublication = writeCalls;
   const publishStartedAt = performance.now();
   reliability.scheduleLocalProjectInventoryPublication();
   await drainAsyncWork();
   const statusPublishElapsedMs = performance.now() - publishStartedAt;
-  assert.equal(reliability.state.localInventoryPublisherError, null, "retained authority must still permit status publication after a scan rejection");
+  assert.equal(writeCalls, writesBeforeRejectedPublication + 1, "an errored retained listing must keep publishing status through the legacy non-membership contract");
+  assert.equal(writtenPayload.publisherVersion, 53, "an errored retained thread listing must not be republished as protocol-54 membership authority");
+  failThreadLists = false;
+  await reliability.hydrateNativeInventory();
+  await drainAsyncWork();
+  const recoveredFetchedAt = reliability.state.threadInventories.get("local").fetchedAt;
+  reliability.scheduleLocalProjectInventoryPublication(true);
+  await drainAsyncWork();
+  assert.equal(reliability.state.localInventoryPublisherError, null, "publication must recover after a successful direct thread refresh");
   assert.ok(writtenPayload, "the full-source publisher must write a status envelope");
-  assert.equal(writtenPayload.threadScopeGeneratedAt, new Date(successfulFetchedAt).toISOString(), "publication must report the last successful full-scan timestamp");
+  assert.equal(writtenPayload.publisherVersion, 54, "a recovered complete listing must restore protocol-54 membership authority");
+  assert.equal(writtenPayload.threads.find(thread => thread.id === "thread-0").projectId, "fixture-project", "publisher membership authority must normalize alternate app-server project-id shapes");
+  assert.equal(writtenPayload.threadScopeGeneratedAt, new Date(recoveredFetchedAt).toISOString(), "publication must report the recovered successful full-scan timestamp");
+
+  const completeMembershipInventory = reliability.state.threadInventories.get("local");
+  const mixedMembershipThreads = completeMembershipInventory.threads.map(thread => ({ ...thread }));
+  delete mixedMembershipThreads[2].project_id;
+  reliability.state.threadInventories.set("local", { ...completeMembershipInventory, threads: mixedMembershipThreads });
+  reliability.scheduleLocalProjectInventoryPublication(true);
+  await drainAsyncWork();
+  assert.equal(writtenPayload.publisherVersion, 53, "one unknown membership record must downgrade only the envelope-wide authority contract");
+  const mixedRoundTrip = reliability.parseInventoryPayload(writtenPayload);
+  const knownProjectless = mixedRoundTrip.threads.find(thread => thread.id === "thread-1");
+  const unknownMembership = mixedRoundTrip.threads.find(thread => thread.id === "thread-2");
+  assert.equal(knownProjectless.projectMembershipKnown, true, "known projectless membership must survive a mixed v53 envelope");
+  assert.equal(reliability.taskFromThread(knownProjectless, "remote").isGrouped, false, "known projectless membership must not fall back to cwd grouping");
+  assert.equal(unknownMembership.projectMembershipKnown, false, "an unknown record in a mixed v53 envelope must retain cwd fallback semantics");
+  reliability.state.threadInventories.set("local", completeMembershipInventory);
+  reliability.scheduleLocalProjectInventoryPublication(true);
+  await drainAsyncWork();
+  assert.equal(writtenPayload.publisherVersion, 54, "restoring complete membership must restore the envelope-wide authority contract");
 
   const firstPublishedAt = reliability.state.localInventoryPublishedAt;
   const firstWriteCalls = writeCalls;
@@ -347,7 +376,7 @@ async function advanceTo(target) {
   const retainedAfterTruncation = reliability.state.threadInventories.get("local");
   assert.equal(retainedAfterTruncation.attemptTruncated, true);
   assert.match(retainedAfterTruncation.error, /incomplete inventory/);
-  assert.equal(retainedAfterTruncation.fetchedAt, successfulFetchedAt, "a truncated attempt must not move the authority timestamp");
+  assert.equal(retainedAfterTruncation.fetchedAt, recoveredFetchedAt, "a truncated attempt must not move the recovered authority timestamp");
   assert.equal(retainedAfterTruncation.truncated, false, "the retained prior complete snapshot must remain publishable");
   assert.equal(retainedAfterTruncation.threads.length, 200);
 

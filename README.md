@@ -10,17 +10,34 @@ device filters, native project grouping and ordering, empty remote projects,
 project-hover new-chat actions, and working/unread indicators. The original
 **Native sidebar** remains available, with its grouping preference preserved.
 
-v1.5.92 loads compatible verified releases into the current renderer without
+v1.5.93 loads verified Remote Enabler releases into the current renderer without
 closing ChatGPT. It validates the prepared renderer before replacing files and
 uses the existing graceful restart only when the protected bridge or publisher
 changes. After a live update, an exact-identity two-phase handoff transfers the
 renderer binding and coordinator lock, verifies the successor heartbeat, and
 restores the predecessor automatically if startup fails. ChatGPT remains open.
 The upgrade from v1.5.83 changes that handoff protocol and therefore performs
-one automatic graceful restart; later compatible updates use the live transfer.
+one automatic graceful restart; later updates use the live transfer.
 Each platform keeps one unversioned per-user installation
 root and one immediate updater rollback. See the
 [feature guide](FEATURES.md) for behavior and validation limits.
+
+On Windows, a verified desktop-app update that is blocked specifically because
+the current user cannot install its packaged service no longer prevents launch
+of the unchanged healthy Store package. The helper does not elevate or bypass
+AppX policy. Device projects also uses explicit project-membership authority
+from current publishers, and removes stale loading indicators from empty
+offline project rows.
+
+Windows startup does not allowlist ChatGPT versions, executable hashes, ASAR
+hashes, UI text, or minifier layouts. It selects the native or legacy bridge
+from installed runtime capabilities and accepts the session only after the live
+renderer proves readiness. Proxy preparation discovers the required network
+hooks semantically in the installed runtime. Release manifests and private-copy
+hashes remain integrity checks for files the helper downloads or copies; they
+do not decide whether an installed ChatGPT build is supported.
+Lifecycle recovery also requires the exact helper-owned main-process identity;
+it never stops an adopted or unrelated ChatGPT process by executable path.
 
 On macOS, the Dock shortcut shows a native AppKit startup window while it
 recovers and checks updates, prepares maintenance, launches ChatGPT, and waits
@@ -74,8 +91,13 @@ launching the special session. The updater validates the
 OpenAI package identity, publisher, x64 manifest and Windows signature, stages
 the file in per-user temp, refuses equal versions, downgrades, ambiguous mixed
 identities and running `ChatGPT.exe`, then uses current-user
-`Add-AppxPackage`. It does not self-elevate, provision all users, or bypass a
-corporate AppX/MSIX policy. Use `-WhatIf` for a verified install preview. The
+`Add-AppxPackage`. When Windows rejects that update with deployment error
+`0x80073D28`, the launcher revalidates and opens only the unchanged healthy
+Store package; other installation failures remain fatal. The exact candidate
+deferral skips repeated large downloads for at most 24 hours, then retries so a
+resolved Windows policy block can recover automatically. It does not
+self-elevate, provision all users, or bypass a corporate AppX/MSIX policy. Use
+`-WhatIf` for a verified install preview. The
 desktop app has no standalone MSI or Store-independent EXE installer; built-in
 updates may also require access to `persistent.oaistatic.com`, and offline
 license or MDM requirements remain an IT responsibility.
@@ -84,8 +106,8 @@ license or MDM requirements remain an IT responsibility.
 
 These images are from the v1.5.49 renderer in a synthetic browser fixture with
 synthetic demo data. They show the interface and responsive states; they are
-not native Windows or macOS screenshots and do not prove a particular desktop
-app build is compatible.
+not native Windows or macOS screenshots and do not prove the required live
+runtime capabilities on a particular desktop app build.
 
 | Device projects | Settings and update status |
 | --- | --- |
@@ -94,16 +116,16 @@ app build is compatible.
 See the [complete feature guide](FEATURES.md) for defaults, limits, privacy,
 and recovery behavior.
 
-## Install v1.5.92
+## Install v1.5.93
 
 Prerequisites are a supported ChatGPT/Codex desktop app signed in with Remote
 available on the account, Node.js 22 or newer, and a writable folder for the
 downloaded package. Organization policy, account access, MFA, or desktop-app
 policy can still block Remote independently of this helper.
 
-- **[Download Windows 11 x64](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/download/v1.5.92/ChatGPT-Remote-Enabler-Windows-x64-v1.5.92.zip)** and follow the [Windows installation guide](windows/README.md).
-- **[Download macOS Apple Silicon](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/download/v1.5.92/ChatGPT-Remote-Enabler-macOS-arm64-v1.5.92.zip)** and follow the [macOS installation guide](macos/README.md).
-- Use the [v1.5.92 release page](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.92) to inspect release notes and published checksums.
+- **[Download Windows 11 x64](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/download/v1.5.93/ChatGPT-Remote-Enabler-Windows-x64-v1.5.93.zip)** and follow the [Windows installation guide](windows/README.md).
+- **[Download macOS Apple Silicon](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/download/v1.5.93/ChatGPT-Remote-Enabler-macOS-arm64-v1.5.93.zip)** and follow the [macOS installation guide](macos/README.md).
+- Use the [v1.5.93 release page](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.93) to inspect release notes and published checksums.
 
 Both installers run in the current-user context and do not request elevation.
 macOS keeps the package in its fixed per-user Application Support root. On Windows, keep the downloaded

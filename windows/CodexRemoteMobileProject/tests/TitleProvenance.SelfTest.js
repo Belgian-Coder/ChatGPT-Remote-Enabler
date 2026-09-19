@@ -61,10 +61,21 @@ const legacy = parsedThread({ id: "legacy", preview: "private prompt", title: "l
 assert.equal(legacy.title, undefined);
 assert.equal(Object.hasOwn(legacy, "titleSource"), false);
 assert.equal(title.taskFromThread(legacy, "remote").title, "Untitled task");
+const legacyMembership = parsedThread({ cwd: "/fixture/project", id: "legacy-membership", projectId: null }, 52);
+assert.equal(title.taskFromThread(legacyMembership, "remote").isGrouped, true, "older publishers must retain path-based project fallback");
+const currentMembership = parsedThread({ cwd: "/fixture/project", id: "current-membership", projectId: null, projectMembershipKnown: true }, 53);
+assert.equal(title.taskFromThread(currentMembership, "remote").isGrouped, false, "current publishers must preserve authoritative projectless membership");
+assert.equal(parsedThread({ cwd: "/fixture/project", id: "snake-membership", project_id: "snake-project" }, 54).projectId, "snake-project");
+assert.equal(parsedThread({ cwd: "/fixture/project", id: "nested-membership", project: { id: "nested-project" } }, 54).projectId, "nested-project");
 
 const oldAnnotated = parsedThread({ id: "old", title: "old trusted-looking title", titleSource: "app-server-name" }, 52);
 assert.equal(oldAnnotated.title, undefined);
 assert.equal(oldAnnotated.titleSource, "app-server-name");
+
+const previousCurrent = parsedThread({ id: "previous-current", title: "Trusted v53 title", titleSource: "app-server-title" }, 53);
+assert.equal(previousCurrent.title, "Trusted v53 title", "the membership contract bump must not invalidate the existing title provenance contract");
+const relayedCurrentMembership = parsedThread({ cwd: "/fixture/project", id: "relayed-current", projectId: null }, 54);
+assert.equal(title.taskFromThread(relayedCurrentMembership, "remote").isGrouped, false, "a v54 top-level contract must preserve membership authority through an older relay that strips the optional thread field");
 
 for (const titleSource of ["preview", "unknown-source"]) {
   const untrusted = parsedThread({ id: titleSource, title: "private prompt", titleSource }, 53);
@@ -124,7 +135,8 @@ title.mergeTaskTitle(untrustedOnly, { title: "private prompt", titleSource: "unk
 assert.equal(untrustedOnly.title, "Untitled task");
 assert.equal(untrustedOnly.titleSource, "none");
 
-assert.match(originalSource, /publisherVersion: PUBLISHER_VERSION, schemaVersion: 1/);
+assert.match(originalSource, /publisherVersion, schemaVersion: 1/);
+assert.match(originalSource, /const publisherVersion = !currentThreadInventory\.error/);
 assert.match(originalSource, /publisherVersion: inventory\.publisherVersion/);
 const signatureThread = { id: "signature-thread", title: "Before", titleSource: "native-title" };
 const signatureBefore = title.publicationSignature({}, [], [], [signatureThread], 1);

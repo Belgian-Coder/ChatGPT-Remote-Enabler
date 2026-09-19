@@ -65,6 +65,17 @@ if (Test-Path -LiteralPath (Join-Path `$root 'desktop-offline')) {
   [ordered]@{Action='Update';InstalledState='Installed';Installed=[ordered]@{Name='OpenAI.Codex';Version='26.903.9999.0';Architecture='X64';Publisher='CN=50BDFD77-8903-4850-9FFE-6E8522F64D5B';SignatureKind='Store';Status='Ok'};Remote=`$null;Decision='RemoteUnavailableCurrentInstalled';CanInstall=`$false;TransientFailure=`$true} | ConvertTo-Json -Depth 5
   exit 0
 }
+if (Test-Path -LiteralPath (Join-Path `$root 'desktop-deferred')) {
+  `$valid = -not (Test-Path -LiteralPath (Join-Path `$root 'desktop-deferred-invalid'))
+  `$canInstall = Test-Path -LiteralPath (Join-Path `$root 'desktop-deferred-can-install')
+  `$installedVersion = if (Test-Path -LiteralPath (Join-Path `$root 'desktop-deferred-not-newer')) { '26.903.9999.0' } else { '26.903.9000.0' }
+  `$manifestVersion = if (Test-Path -LiteralPath (Join-Path `$root 'desktop-deferred-manifest-version')) { '26.903.9998.0' } else { '26.903.9999.0' }
+  `$manifestName = if (Test-Path -LiteralPath (Join-Path `$root 'desktop-deferred-manifest-name')) { 'OpenAI.Other' } else { 'OpenAI.Codex' }
+  `$signatureKind = if (Test-Path -LiteralPath (Join-Path `$root 'desktop-deferred-signature')) { 'Developer' } else { 'Store' }
+  `$status = if (Test-Path -LiteralPath (Join-Path `$root 'desktop-deferred-status')) { 'Error' } else { 'Ok' }
+  [ordered]@{Action='Update';InstalledState='Installed';Installed=[ordered]@{Name='OpenAI.Codex';Version=`$installedVersion;Architecture='X64';Publisher='CN=50BDFD77-8903-4850-9FFE-6E8522F64D5B';SignatureKind=`$signatureKind;Status=`$status};Remote=[ordered]@{Name='OpenAI.Codex';Version='26.903.9999.0';VersionText='26.903.9999.0'};Manifest=[ordered]@{Name=`$manifestName;Version=`$manifestVersion;VersionText=`$manifestVersion};Decision='UpdateDeferredCurrentInstalled';CanInstall=`$canInstall;InstallDeferred=`$valid} | ConvertTo-Json -Depth 5
+  exit 0
+}
 `$installedVersion = if (Test-Path -LiteralPath (Join-Path `$root 'desktop-newer')) { '26.904.0.0' } else { '26.903.9999.0' }
 `$remoteVersionText = if (Test-Path -LiteralPath (Join-Path `$root 'desktop-newer')) { '26.903.9999.0' } else { '26.903.9999.0' }
 `$remoteVersion = [version]`$remoteVersionText
@@ -113,13 +124,16 @@ if (`$decision -eq 'Installed') { `$proof.Manifest = [ordered]@{Name='OpenAI.Cod
         }
 
         $flowIndex = $sourceText.IndexOf('$recoverTimer = [Diagnostics.Stopwatch]::StartNew()', [StringComparison]::Ordinal)
-        $recoveryIndex = $sourceText.IndexOf('$recovery = Invoke-UpdateRecovery -UpdaterPath', $flowIndex, [StringComparison]::Ordinal)
-        $prelaunchIndex = $sourceText.IndexOf('Invoke-PrelaunchUpdate -UpdaterPath', $recoveryIndex, [StringComparison]::Ordinal)
-        $desktopIndex = $sourceText.IndexOf('Invoke-DesktopAppPrelaunchUpdate -UpdaterPath', $prelaunchIndex, [StringComparison]::Ordinal)
-        $injectionIndex = $sourceText.IndexOf($case.Injection, $prelaunchIndex, [StringComparison]::Ordinal)
-        $reloadIndex = $sourceText.IndexOf('Start-UpdatedEntryPoint -EntryPoint $PSCommandPath', $prelaunchIndex, [StringComparison]::Ordinal)
-        $reloadArgumentIndex = $sourceText.IndexOf('$reloadArguments = @(', $prelaunchIndex, [StringComparison]::Ordinal)
+        $recoveryIndex = if ($flowIndex -ge 0) { $sourceText.IndexOf('$recovery = Invoke-UpdateRecovery -UpdaterPath', $flowIndex, [StringComparison]::Ordinal) } else { -1 }
+        $prelaunchIndex = if ($recoveryIndex -ge 0) { $sourceText.IndexOf('Invoke-PrelaunchUpdate -UpdaterPath', $recoveryIndex, [StringComparison]::Ordinal) } else { -1 }
+        $desktopIndex = if ($prelaunchIndex -ge 0) { $sourceText.IndexOf('Invoke-DesktopAppPrelaunchUpdate -UpdaterPath', $prelaunchIndex, [StringComparison]::Ordinal) } else { -1 }
+        $injectionIndex = if ($prelaunchIndex -ge 0) { $sourceText.IndexOf($case.Injection, $prelaunchIndex, [StringComparison]::Ordinal) } else { -1 }
+        $progressStopIndex = if ($injectionIndex -ge 0) { $sourceText.IndexOf('Stop-StartupProgress', $injectionIndex, [StringComparison]::Ordinal) } else { -1 }
+        $updateSessionIndex = if ($progressStopIndex -ge 0) { $sourceText.IndexOf('$updateSessionLauncher @sessionArguments', $progressStopIndex, [StringComparison]::Ordinal) } else { -1 }
+        $reloadIndex = if ($prelaunchIndex -ge 0) { $sourceText.IndexOf('Start-UpdatedEntryPoint -EntryPoint $PSCommandPath', $prelaunchIndex, [StringComparison]::Ordinal) } else { -1 }
+        $reloadArgumentIndex = if ($prelaunchIndex -ge 0) { $sourceText.IndexOf('$reloadArguments = @(', $prelaunchIndex, [StringComparison]::Ordinal) } else { -1 }
         Assert-Condition ($flowIndex -ge 0 -and $recoveryIndex -gt $flowIndex -and $prelaunchIndex -gt $recoveryIndex -and $desktopIndex -gt $prelaunchIndex -and $injectionIndex -gt $desktopIndex -and $reloadIndex -gt $prelaunchIndex) "$($case.Name) does not perform integrity recovery, Remote Enabler update, then desktop-app update before injection/reload."
+        Assert-Condition ($progressStopIndex -gt $injectionIndex -and $updateSessionIndex -gt $progressStopIndex) "$($case.Name) keeps the startup progress UI open while arming background update monitoring."
         Assert-Condition ($sourceText.Contains('-Action Update -Transport Git') -and -not $sourceText.Contains('-Action Auto -Transport Git')) "$($case.Name) does not require a verified Git update."
         Assert-Condition ($sourceText.Contains("if (`$recovery.recovered -and [string]`$recovery.recoveryMode -cne 'rollback')") -and $sourceText.Contains('if ($RecoveryContinuation)') -and $sourceText.Contains('launch aborted to prevent a reload loop')) "$($case.Name) does not safely reload after forward recovery while retaining rollback compatibility."
         Assert-Condition ($sourceText.Contains('ContinuationParentProcessId') -and $sourceText.Contains('Wait-ForContinuationParent')) "$($case.Name) lacks the continuation handoff contract."
@@ -190,6 +204,26 @@ if (`$decision -eq 'Installed') { `$proof.Manifest = [ordered]@{Name='OpenAI.Cod
         $desktopOffline = Invoke-DesktopAppPrelaunchUpdate -UpdaterPath $fakeDesktopUpdater -ProcessEnumerator { @() }
         Assert-Condition ($desktopOffline.Decision -ceq 'RemoteUnavailableCurrentInstalled') "$($case.Name) did not accept a transient endpoint outage with verified installed-package proof."
         Remove-Item -LiteralPath (Join-Path $temporaryRoot 'desktop-offline') -Force
+
+        New-Item -ItemType File -Path (Join-Path $temporaryRoot 'desktop-deferred') -Force | Out-Null
+        $desktopDeferred = Invoke-DesktopAppPrelaunchUpdate -UpdaterPath $fakeDesktopUpdater -ProcessEnumerator { @() }
+        Assert-Condition ($desktopDeferred.Decision -ceq 'UpdateDeferredCurrentInstalled') "$($case.Name) did not accept a policy-blocked desktop update with unchanged healthy installed-package proof."
+        foreach ($invalidDeferredMarker in @(
+            'desktop-deferred-invalid',
+            'desktop-deferred-can-install',
+            'desktop-deferred-not-newer',
+            'desktop-deferred-manifest-version',
+            'desktop-deferred-manifest-name',
+            'desktop-deferred-signature',
+            'desktop-deferred-status'
+        )) {
+            New-Item -ItemType File -Path (Join-Path $temporaryRoot $invalidDeferredMarker) -Force | Out-Null
+            $invalidDeferredRejected = $false
+            try { [void](Invoke-DesktopAppPrelaunchUpdate -UpdaterPath $fakeDesktopUpdater -ProcessEnumerator { @() }) } catch { $invalidDeferredRejected = $_.Exception.Message -like '*inconsistent deferred-update proof*' }
+            Remove-Item -LiteralPath (Join-Path $temporaryRoot $invalidDeferredMarker) -Force
+            Assert-Condition $invalidDeferredRejected "$($case.Name) accepted malformed deferred-update proof $invalidDeferredMarker."
+        }
+        Remove-Item -LiteralPath (Join-Path $temporaryRoot 'desktop-deferred') -Force
 
         $runningRejected = $false
         try { [void](Invoke-DesktopAppPrelaunchUpdate -UpdaterPath $fakeDesktopUpdater -ProcessEnumerator { ,([pscustomobject]@{ Id = 42 }) }) } catch {

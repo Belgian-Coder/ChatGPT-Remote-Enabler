@@ -38,7 +38,13 @@ foreach ($contract in @(
     '$identityDeadline = [DateTime]::UtcNow.AddSeconds(5)',
     '$identityAttempts -lt 3',
     "-notmatch '(?:^|\s)--type='",
-    'could not resolve the exact ChatGPT process identity'
+    'could not resolve the exact ChatGPT process identity',
+    'Get-CrsProcessIdentity',
+    'Get-CrsOwnedProcessIdentity',
+    'launchProcessOwned',
+    'launchProcessStartTimeFileTimeUtc',
+    'Assert-CrsNoUnownedCodexProcess',
+    'Stop-CrsCodex -Ownership'
 )) {
     if (-not $stableSourceText.Contains($contract)) { throw "Native environment-proxy launch contract is missing: $contract" }
 }
@@ -47,6 +53,9 @@ if ($stableSourceText.Contains('throw "The package-context proxy worker exited b
 }
 if ($stableSourceText.Contains('Reinstall the shortcut without -UseProxy.')) {
     throw 'The controller still rejects proxy mode on native-key builds.'
+}
+if ($stableSourceText.Contains('Stop-CrsCodex -ExecutablePath')) {
+    throw 'The stable controller still contains a path-wide ChatGPT stop call.'
 }
 
 $tokens = $null
@@ -78,7 +87,7 @@ $openPorts = { param([int]$Port) return $Port -in @(24547, 24548) }
 $discovered = Get-CrsDiscoverableSession -Package $package -Processes @($validProcess) -PortTester $openPorts
 if (-not $discovered -or $discovered.rendererPort -ne 24547 -or $discovered.mainPort -ne 24548 -or
     $discovered.launchMethod -ne 'adopted-existing-session') {
-    throw 'A unique audited loopback session was not discovered.'
+    throw 'A unique capability-proven loopback session was not discovered.'
 }
 $nativeProcess = $validProcess.PSObject.Copy()
 $nativeProcess.ProcessId = 4343
@@ -146,11 +155,11 @@ function Wait-ForFixtureWorkerExit {
     try {
         try {
             $workerProcess = [Diagnostics.Process]::GetProcessById([int]$match.Groups[2].Value)
-        } catch [ArgumentException] {
+        } catch {
             return
         }
         $expectedStartTime = [long]$match.Groups[3].Value
-        $actualStartTime = $workerProcess.StartTime.ToUniversalTime().ToFileTimeUtc()
+        try { $actualStartTime = $workerProcess.StartTime.ToUniversalTime().ToFileTimeUtc() } catch { return }
         if ($actualStartTime -ne $expectedStartTime) { return }
         if (-not $workerProcess.WaitForExit($TimeoutSeconds * 1000)) {
             throw "Fixture worker $($workerProcess.Id) did not exit after completing its work."
@@ -481,6 +490,8 @@ try {
         UpdaterCompletesBeforeInjection = $true
         UnknownProxyModeRejected = $true
         DurableProxyModeMatchedStrictly = $true
+        ExactProcessOwnershipRequired = $true
+        PathWideStopRejected = $true
         NonLoopbackRejected = $true
         AmbiguousSessionRejected = $true
         ConcurrentLauncherExitCode = $concurrent.ExitCode
@@ -499,10 +510,16 @@ try {
         foreach ($line in [IO.File]::ReadAllLines($descendantReadyLog)) {
             $parts = $line.Split('|')
             if ($parts.Count -ne 2) { continue }
-            $candidate = Get-Process -Id ([int]$parts[0]) -ErrorAction SilentlyContinue
+            try { $candidate = Get-Process -Id ([int]$parts[0]) -ErrorAction Stop } catch { $candidate = $null }
             if ($candidate) {
                 try {
-                    if ($candidate.StartTime.ToUniversalTime().ToFileTimeUtc() -eq [long]$parts[1]) { Stop-Process -Id $candidate.Id -Force -ErrorAction SilentlyContinue }
+                    try {
+                        $candidateStart = $candidate.StartTime.ToUniversalTime().ToFileTimeUtc()
+                        if ($candidateStart -eq [long]$parts[1]) { Stop-Process -Id $candidate.Id -Force -ErrorAction SilentlyContinue }
+                    } catch {
+                        # The short-lived fixture may exit between enumeration
+                        # and identity read; it is already clean in that case.
+                    }
                 } finally { $candidate.Dispose() }
             }
         }

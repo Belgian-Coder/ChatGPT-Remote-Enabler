@@ -380,6 +380,16 @@ function Invoke-DesktopAppPrelaunchUpdate {
                 throw 'The signed ChatGPT desktop updater returned inconsistent downgrade-refusal proof.'
             }
         }
+        'UpdateDeferredCurrentInstalled' {
+            if ($result.CanInstall -isnot [bool] -or $result.CanInstall -or
+                $result.InstallDeferred -isnot [bool] -or -not $result.InstallDeferred -or
+                $installedVersion -ge $remoteVersion -or $null -eq $result.Manifest -or
+                [string]$result.Manifest.Name -cne [string]$result.Installed.Name -or
+                [version]([string]$result.Manifest.VersionText) -ne $remoteVersion -or
+                [string]$result.Installed.SignatureKind -ine 'Store' -or [string]$result.Installed.Status -ine 'Ok') {
+                throw 'The signed ChatGPT desktop updater returned inconsistent deferred-update proof.'
+            }
+        }
         default { throw "The signed ChatGPT desktop updater returned a non-launchable decision: $($result.Decision)" }
     }
     Assert-DesktopAppNotRunning -ProcessEnumerator $ProcessEnumerator
@@ -662,7 +672,7 @@ switch ($Action) {
                     throw 'Another ChatGPT/Codex process appeared during the update. The verified relaunch was aborted without closing or replacing it.'
                 }
                 if ($appProcesses.Count -gt 0 -and $debugApp.Count -eq 0 -and -not $ReplaceRunningApp) {
-                    throw 'ChatGPT/Codex is already running without the audited debug endpoint. Close it normally, then use ChatGPT Custom; startup will not terminate an active app.'
+                    throw 'ChatGPT/Codex is already running without the managed debug endpoint. Close it normally, then use ChatGPT Remote Enabler; startup will not terminate an active app.'
                 }
                 if ($debugApp.Count -ne 0) {
                     Write-StartupLog "$(Get-Date -Format o) [$computerName] existing debug session found; validating its durable proxy transport before reuse"
@@ -738,6 +748,8 @@ switch ($Action) {
                     Write-StartupLog "$(Get-Date -Format o) [$computerName] publisher heartbeat unavailable: $($_.Exception.Message)"
                 }
 
+                Stop-StartupProgress
+                Write-StartupLog "$(Get-Date -Format o) [$computerName] interactive startup completed; arming background update monitoring"
                 try {
                     $sessionTimer = [Diagnostics.Stopwatch]::StartNew()
                     $sessionArguments = @{
@@ -807,7 +819,7 @@ switch ($Action) {
         $principal = New-ScheduledTaskPrincipal -UserId $TargetUser -LogonType Interactive -RunLevel Limited
         $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
         if ($PSCmdlet.ShouldProcess("$computerName scheduled task '$taskName'", "register for $TargetUser")) {
-            Register-ScheduledTask -TaskName $taskName -Action $taskAction -Trigger $trigger -Principal $principal -Settings $settings -Description 'Starts the audited Codex remote controller and mobile project view after interactive logon.' -Force | Out-Null
+            Register-ScheduledTask -TaskName $taskName -Action $taskAction -Trigger $trigger -Principal $principal -Settings $settings -Description 'Starts the capability-tested Codex remote controller and mobile project view after interactive logon.' -Force | Out-Null
         }
         Get-TaskSummary | ConvertTo-Json -Depth 4
     }

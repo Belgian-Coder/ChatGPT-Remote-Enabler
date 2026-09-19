@@ -31,9 +31,9 @@ $DesktopPath = [IO.Path]::GetFullPath($DesktopPath)
 $StartMenuPath = [IO.Path]::GetFullPath($StartMenuPath)
 $primaryArguments = if ($UseProxy) { '--proxy' } else { '' }
 $primaryDescription = if ($UseProxy) {
-    'Restart ChatGPT/Codex with the audited injection and Remote-control proxy.'
+    'Restart ChatGPT/Codex with the capability-tested injection and Remote-control proxy.'
 } else {
-    'Restart ChatGPT/Codex with the audited remote Mobile projects injection.'
+    'Restart ChatGPT/Codex with the capability-tested remote Mobile projects injection.'
 }
 $primaryShortcutTargets = @(
     [ordered]@{ kind = 'Desktop'; path = Join-Path $DesktopPath 'ChatGPT Remote Enabler.lnk'; arguments = $primaryArguments; description = $primaryDescription },

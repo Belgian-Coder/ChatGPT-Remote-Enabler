@@ -109,6 +109,25 @@ const flush = async () => { for (let i = 0; i < 40; i++) await Promise.resolve()
   assert.equal(model.hosts.find(item => item.id === host).name, "Named workstation", "inventory hostnames must not replace a native device label");
   assert.equal(model.hosts.find(item => item.id === host).available, true);
 
+  const helperInventory = first.f.state.remoteProjectInventories.get(host);
+  const helperProjectTaskId = "00000000-0000-4000-8000-000000000088";
+  const legacyProjectlessPathId = "00000000-0000-4000-8000-000000000087";
+  helperInventory.threads = [
+    {
+      cwd: "/fixture/alpha", id: helperProjectTaskId, projectId: "helper-project-id", projectMembershipKnown: true,
+      status: "idle", title: "Helper project task",
+    },
+    {
+      cwd: "/fixture/alpha", id: legacyProjectlessPathId, status: "idle", title: "Legacy path task", workspaceKind: "projectless",
+    },
+  ];
+  helperInventory.threadsAuthoritative = true;
+  const helperProjectModel = first.f.collectModel();
+  const helperProjectGroup = helperProjectModel.projects.find(project => project.cwd === "/fixture/alpha");
+  assert.ok(helperProjectGroup.tasks.some(task => task.conversationId === helperProjectTaskId), "an authoritative project task must fall back to its path when helper-published projects do not carry native project ids");
+  assert.ok(helperProjectGroup.tasks.some(task => task.conversationId === legacyProjectlessPathId), "a legacy helper row without authoritative membership must retain cwd grouping");
+  helperInventory.threads = [];
+
   // Current direct Codex data must outrank an older helper snapshot. During a
   // staggered upgrade the helper can retain the task's previous project even
   // though the native catalog and thread/list already contain its new home.
@@ -117,7 +136,10 @@ const flush = async () => { for (let i = 0; i < 40; i++) await Promise.resolve()
   const priorThreadInventory = first.f.state.threadInventories.get(host);
   const priorHelperInventory = first.f.state.remoteProjectInventories.get(host);
   const movedId = "00000000-0000-4000-8000-000000000089";
+  const directMissingCwdId = "00000000-0000-4000-8000-000000000086";
+  const directUnknownMembershipId = "00000000-0000-4000-8000-000000000085";
   const orphanId = "00000000-0000-4000-8000-000000000090";
+  const projectlessSamePathId = "00000000-0000-4000-8000-000000000091";
   const directProject = { cwd: "/fixture/new", hostDisplayName: "Named workstation", hostId: host, item: null, label: "New project", projectId: "project-new" };
   first.f.state.localRegisteredProjects = new Map([[directProject.projectId, directProject]]);
   first.f.state.localRegisteredProjectsFetchedAt = Date.now();
@@ -125,7 +147,10 @@ const flush = async () => { for (let i = 0; i < 40; i++) await Promise.resolve()
     error: null, fetchedAt: Date.now(), hostId: host, pages: 1, retryAt: 0, truncated: false,
     threads: [
       { cwd: directProject.cwd, id: movedId, projectId: directProject.projectId, status: "idle", title: "Moved task" },
+      { id: directMissingCwdId, projectId: directProject.projectId, source: "direct", status: "idle", title: "Direct task missing cwd" },
+      { cwd: directProject.cwd, id: directUnknownMembershipId, source: "direct", status: "idle", title: "Direct current title" },
       { cwd: "/fixture/orphan", id: orphanId, projectId: null, status: "idle", title: "Orphan task" },
+      { cwd: directProject.cwd, id: projectlessSamePathId, projectId: null, status: "idle", title: "Projectless task with project cwd" },
     ],
   });
   first.f.state.remoteProjectInventories.set(host, {
@@ -141,6 +166,85 @@ const flush = async () => { for (let i = 0; i < 40; i++) await Promise.resolve()
   assert.equal(movedModel.projects.some(project => project.cwd === "/fixture/old"), false, "stale helper projects must not filter or supplement a current direct catalog");
   assert.ok(movedModel.projects.some(project => project.cwd === directProject.cwd), "the current direct project must remain visible");
   assert.ok(movedModel.recents.some(group => group.tasks.some(task => task.conversationId === orphanId)), "an unmatched task from a complete direct catalog must remain in Recent chats");
+  assert.ok(movedModel.recents.some(group => group.tasks.some(task => task.conversationId === projectlessSamePathId)), "authoritative projectless membership must outrank a matching working directory");
+  first.f.state.remoteProjectInventories.set(host, {
+    error: null, fetchedAt: Date.now(), generatedAt: Date.now(), pending: false,
+    projects: [
+      { cwd: "/fixture/old", name: "Old project", rootPaths: ["/fixture/old"] },
+      { cwd: directProject.cwd, name: directProject.label, rootPaths: [directProject.cwd] },
+    ], tasks: new Map(),
+    threads: [
+      { cwd: "/fixture/old", id: movedId, projectId: "project-old", status: "idle", title: "Older helper title" },
+      { cwd: directProject.cwd, id: directMissingCwdId, projectId: directProject.projectId, source: "helper", status: "idle", title: "Direct task missing cwd" },
+      { cwd: "/fixture/old", id: directUnknownMembershipId, projectId: "project-old", source: "helper", status: "idle", title: "Older unknown-membership title" },
+    ], threadsAuthoritative: true,
+  });
+  first.f.state.localRegisteredProjects = new Map([
+    [directProject.projectId, directProject],
+    ["project-old", { cwd: "/fixture/old", hostDisplayName: "Named workstation", hostId: host, item: null, label: "Old project", projectId: "project-old" }],
+  ]);
+  const freshMergedModel = first.f.collectModel();
+  const freshMergedTask = freshMergedModel.tasks.find(task => task.conversationId === movedId);
+  assert.equal(freshMergedTask.sourceThread.cwd, directProject.cwd, "a fresh helper copy must not replace the authoritative direct source thread");
+  assert.equal(freshMergedTask.title, "Moved task", "a fresh helper copy must not replace the authoritative direct title");
+  const directMissingCwdTask = freshMergedModel.tasks.find(task => task.conversationId === directMissingCwdId);
+  assert.equal(directMissingCwdTask.cwd, directProject.cwd, "fresh helper data must fill a cwd omitted by the direct record");
+  assert.equal(directMissingCwdTask.sourceThread.source, "direct", "helper gap-filling must preserve the authoritative direct source thread");
+  const directUnknownMembershipTask = freshMergedModel.tasks.find(task => task.conversationId === directUnknownMembershipId);
+  assert.equal(directUnknownMembershipTask.projectMembershipKnown, false, "fresh direct data with unknown membership must not inherit stale helper authority");
+  assert.equal(directUnknownMembershipTask.projectId, null, "fresh helper membership must not replace an unknown current direct membership");
+  assert.ok(freshMergedModel.projects.find(project => project.projectId === directProject.projectId).tasks.some(task => task.conversationId === directUnknownMembershipId), "unknown direct membership must prefer its current cwd over a stale helper project id");
+  first.f.state.localRegisteredProjectsFetchedAt = Date.now() - 60 * 60 * 1000;
+  first.f.state.threadInventories.set(host, { error: "offline", fetchedAt: Date.now() - 600000, hostId: host, pages: 1, retryAt: 0, truncated: false, threads: [] });
+  first.f.state.remoteProjectInventories.set(host, {
+    error: "offline", fetchedAt: Date.now() - 600000, generatedAt: Date.now() - 600000, pending: false,
+    projects: [{ cwd: directProject.cwd, name: directProject.label, rootPaths: [directProject.cwd] }], tasks: new Map(), threads: [], threadsAuthoritative: true,
+  });
+  const staleMergedModel = first.f.collectModel();
+  const staleMergedProject = staleMergedModel.projects.find(project => project.projectId === directProject.projectId);
+  assert.equal(staleMergedProject.tasks.length, 0, "the stale registered-project fixture must remain empty");
+  assert.equal(staleMergedProject.inventoryFresh, false, "matching stale helper state must propagate onto an existing registered project group");
+  assert.equal(staleMergedProject.inventoryStale, true);
+  const priorNativeConnectionSnapshot = first.f.state.nativeConnectionSnapshot;
+  const priorHostConnectivity = first.f.state.hostConnectivity.get(host);
+  const priorRemoteRuntime = first.f.state.remoteRuntimeCache.get(host);
+  const priorRemoteRuntimeScannedAt = first.f.state.remoteRuntimeScannedAt;
+  first.f.state.nativeConnectionSnapshot = {
+    ...priorNativeConnectionSnapshot,
+    connections: [{ hostId: host, name: "Named workstation", online: null }],
+  };
+  first.f.state.hostDiscoveryCache = {
+    availability: new Map([[host, false]]),
+    names: new Map([[host, "Named workstation"]]),
+    registeredProjects: new Map(),
+    runtimes: new Map(),
+  };
+  first.f.state.hostDiscoveryDirty = false;
+  first.f.state.hostDiscoveryScannedAt = Date.now();
+  first.f.state.hostConnectivity.set(host, { available: true, checkedAt: Date.now() });
+  first.f.state.remoteRuntimeCache.delete(host);
+  first.f.state.remoteRuntimeScannedAt = 0;
+  first.f.state.hostDiscoveryDirty = false;
+  const helperAvailableNativeUnknown = first.f.collectModel().projects.find(project => project.projectId === directProject.projectId);
+  assert.equal(helperAvailableNativeUnknown.hostAvailabilityKnown, true, "fresh positive helper evidence must remain authoritative while native connectivity is unknown");
+  assert.equal(helperAvailableNativeUnknown.hostAvailable, true);
+  first.f.state.hostConnectivity.set(host, { available: false, checkedAt: Date.now() });
+  const helperOfflineNativeUnknown = first.f.collectModel().projects.find(project => project.projectId === directProject.projectId);
+  assert.equal(helperOfflineNativeUnknown.hostAvailabilityKnown, true, "fresh measured helper failure must remain authoritative while native connectivity is unknown");
+  assert.equal(helperOfflineNativeUnknown.hostAvailable, false);
+  first.f.state.hostConnectivity.set(host, { available: false, checkedAt: Date.now() - 600000 });
+  const unknownAvailabilityModel = first.f.collectModel();
+  const unknownAvailabilityProject = unknownAvailabilityModel.projects.find(project => project.projectId === directProject.projectId);
+  assert.equal(unknownAvailabilityProject.hostAvailabilityKnown, true, "explicit offline discovery must remain usable when the native catalog omits a boolean status");
+  assert.equal(unknownAvailabilityProject.hostAvailable, false);
+  await first.f.scheduleRemoteProjectInventory(new Map(), true);
+  const unknownAfterScheduler = first.f.collectModel().projects.find(project => project.projectId === directProject.projectId);
+  assert.equal(unknownAfterScheduler.hostAvailabilityKnown, true, "inventory scheduling without a runtime must preserve explicit offline discovery evidence");
+  first.f.state.nativeConnectionSnapshot = priorNativeConnectionSnapshot;
+  if (priorHostConnectivity) first.f.state.hostConnectivity.set(host, priorHostConnectivity); else first.f.state.hostConnectivity.delete(host);
+  if (priorRemoteRuntime) first.f.state.remoteRuntimeCache.set(host, priorRemoteRuntime); else first.f.state.remoteRuntimeCache.delete(host);
+  first.f.state.remoteRuntimeScannedAt = priorRemoteRuntimeScannedAt;
+  first.f.state.hostDiscoveryDirty = true;
   first.f.state.localRegisteredProjects = priorRegisteredProjects;
   first.f.state.localRegisteredProjectsFetchedAt = priorRegisteredProjectsFetchedAt;
   if (priorThreadInventory) first.f.state.threadInventories.set(host, priorThreadInventory); else first.f.state.threadInventories.delete(host);
@@ -177,6 +281,8 @@ const flush = async () => { for (let i = 0; i < 40; i++) await Promise.resolve()
   assert.equal(first.f.state.inventoryHydrationError, null, "an offline peer's retained error must not fail refresh aggregation");
   const offlineModel = first.f.collectModel();
   assert.equal(offlineModel.hosts.find(item => item.id === host).available, false, "native disconnect must win immediately over older helper evidence");
+  assert.equal(offlineModel.projects.find(project => project.hostId === host).hostAvailabilityKnown, true);
+  assert.equal(offlineModel.projects.find(project => project.hostId === host).hostAvailable, false);
   assert.equal(first.f.connectionGuidance(offlineModel.hosts.find(item => item.id === host)).code, "disconnected");
   assert.deepEqual([...offlineModel.projects.map(project => project.name)].sort(), ["Empty alpha", "Empty beta"], "offline state must preserve last-known project rows");
 

@@ -304,6 +304,16 @@ function Invoke-DesktopAppPrelaunchUpdate {
                 throw 'The signed ChatGPT desktop updater returned inconsistent downgrade-refusal proof.'
             }
         }
+        'UpdateDeferredCurrentInstalled' {
+            if ($result.CanInstall -isnot [bool] -or $result.CanInstall -or
+                $result.InstallDeferred -isnot [bool] -or -not $result.InstallDeferred -or
+                $installedVersion -ge $remoteVersion -or $null -eq $result.Manifest -or
+                [string]$result.Manifest.Name -cne [string]$result.Installed.Name -or
+                [version]([string]$result.Manifest.VersionText) -ne $remoteVersion -or
+                [string]$result.Installed.SignatureKind -ine 'Store' -or [string]$result.Installed.Status -ine 'Ok') {
+                throw 'The signed ChatGPT desktop updater returned inconsistent deferred-update proof.'
+            }
+        }
         default { throw "The signed ChatGPT desktop updater returned a non-launchable decision: $($result.Decision)" }
     }
     Assert-DesktopAppNotRunning -ProcessEnumerator $ProcessEnumerator
@@ -598,6 +608,8 @@ try {
         }
         $mobileTimer.Stop()
         Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] stage=mobile-readiness durationMs=$($mobileTimer.ElapsedMilliseconds) mounted=$($report.mounted) localRuntimeReady=$($report.localRuntimeReady) authoritativeInventoryReady=$($report.authoritativeInventoryReady) publisherReady=$($report.publisherReady) ready=$($report.ready)"
+        Stop-StartupProgress
+        Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] interactive startup completed; arming background update monitoring"
         try {
             $sessionTimer = [Diagnostics.Stopwatch]::StartNew()
             $sessionArguments = @{

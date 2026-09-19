@@ -62,6 +62,8 @@
   const REQUEST_TIMEOUT_MS = 12000;
   const MAX_THREAD_LIST_PAGES = 200;
   const THREAD_VISIBILITY_CONTRACT_VERSION = 53;
+  const TITLE_PROVENANCE_CONTRACT_VERSION = 53;
+  const PROJECT_MEMBERSHIP_CONTRACT_VERSION = 54;
   const VERIFIED_THREAD_IDS_KEY = "codex-remote-mobile-verified-thread-ids-v2";
   const VERIFIED_THREAD_IDS_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
   const VERIFIED_THREAD_IDS_FUTURE_SKEW_MS = 5 * 60 * 1000;
@@ -77,8 +79,8 @@
     "subAgentOther",
     "unknown",
   ]);
-  const PUBLISHER_VERSION = 53;
-  const VERSION = 91;
+  const PUBLISHER_VERSION = 54;
+  const VERSION = 92;
   // Keep outstanding writes locked across renderer reinjection until the underlying RPC settles.
   const peerWriteLocks = globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ instanceof Map
     ? globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ : (globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ = new Map());
@@ -804,7 +806,7 @@
   }
 
   function parsedThreadTitle(thread, publisherVersion) {
-    if (!Number.isInteger(publisherVersion) || publisherVersion < PUBLISHER_VERSION
+    if (!Number.isInteger(publisherVersion) || publisherVersion < TITLE_PROVENANCE_CONTRACT_VERSION
       || !Object.prototype.hasOwnProperty.call(thread ?? {}, "titleSource")) return { titleSource: "none" };
     return trustedThreadTitle(thread);
   }
@@ -1389,8 +1391,10 @@
           : typeof value.isOnline === "boolean" ? value.isOnline
           : typeof value.online === "boolean" ? value.online
           : typeof value.connected === "boolean" ? value.connected
-          : typeof value.status === "string" ? /^(online|connected|ready|available|active)$/iu.test(value.status)
-          : typeof value.state === "string" ? /^(online|connected|ready|available|active)$/iu.test(value.state)
+          : typeof value.status === "string" ? (/^(online|connected|ready|available|active)$/iu.test(value.status) ? true
+            : /^(offline|disconnected|unavailable|inactive|stopped)$/iu.test(value.status) ? false : null)
+          : typeof value.state === "string" ? (/^(online|connected|ready|available|active)$/iu.test(value.state) ? true
+            : /^(offline|disconnected|unavailable|inactive|stopped)$/iu.test(value.state) ? false : null)
           : null;
         if (explicitAvailability !== null) {
           const seenAtText = value.lastSeenAt ?? value.last_seen_at ?? value.updatedAt ?? value.updated_at;
@@ -1833,12 +1837,21 @@
   }
 
   function remoteHostHasDirectProof(hostId) {
-    if (state.hostConnectivity.get(hostId)?.available === true) return true;
+    const connectivity = state.hostConnectivity.get(hostId);
+    if (connectivity?.available === true) return true;
+    return typeof state.remoteRuntimeCache.get(hostId)?.requestClient?.sendRequest === "function";
+  }
+
+  function remoteHostHasFreshDirectProof(hostId, now = Date.now()) {
+    if (nativeConnectionOnline(hostId) === true) return true;
+    const connectivity = state.hostConnectivity.get(hostId);
+    if (connectivity?.available === true && Number.isFinite(connectivity.checkedAt)
+      && now - connectivity.checkedAt <= REMOTE_INVENTORY_IDLE_TTL_MS) return true;
     return typeof state.remoteRuntimeCache.get(hostId)?.requestClient?.sendRequest === "function";
   }
 
   function directInventoryHasPriority(hostId, inventory, now = Date.now()) {
-    if (!remoteHostHasDirectProof(hostId) || !inventory) return false;
+    if (!remoteHostHasFreshDirectProof(hostId, now) || !inventory) return false;
     if (inventory.pending === true) return true;
     if (inventory.error || inventory.sourcePeerHostId || inventory.sourcePeerCache === true) return false;
     return Number.isFinite(inventory.fetchedAt)
@@ -2157,7 +2170,8 @@
         cwd: canonicalRemotePath(thread?.cwd),
         hasUnreadTurn: typeof thread?.hasUnreadTurn === "boolean" ? thread.hasUnreadTurn : undefined,
         id,
-        projectId: typeof thread?.projectId === "string" ? thread.projectId : null,
+        projectMembershipKnown: thread?.projectMembershipKnown === true || (Number.isInteger(publisherVersion) && publisherVersion >= PROJECT_MEMBERSHIP_CONTRACT_VERSION),
+        projectId: threadProjectId(thread),
         status: typeof thread?.status === "string" ? thread.status : thread?.status && typeof thread.status === "object" ? {
           activeFlags: Array.isArray(thread.status.activeFlags) ? thread.status.activeFlags.filter((flag) => typeof flag === "string").slice(0, 8) : [],
           type: thread.status.type,
@@ -2184,6 +2198,12 @@
   }
 
   function serializePeerInventory(inventory) {
+    const threads = (inventory.threads ?? []).map((thread) => {
+      if (!Number.isInteger(inventory.publisherVersion) || inventory.publisherVersion < PROJECT_MEMBERSHIP_CONTRACT_VERSION) return thread;
+      const serialized = { ...thread };
+      delete serialized.projectMembershipKnown;
+      return serialized;
+    });
     const payload = {
       generatedAt: new Date(inventory.generatedAt).toISOString(),
       hostDisplayName: inventory.hostDisplayName,
@@ -2196,7 +2216,7 @@
       schemaVersion: 1,
       tasks: [...(inventory.tasks ?? new Map())].map(([conversationKey, task]) => ({ activeFlags: task.activeFlags ?? [], conversationKey, statusObservedAt: task.statusObservedAt, statusType: task.statusType, unread: task.unread })),
       threadScope: inventory.threadScope,
-      threads: inventory.threads ?? [],
+      threads,
     };
     if (inventory.publisherHostId) payload.publisherHostId = inventory.publisherHostId;
     const threadScopeGeneratedAt = Number(inventory.threadScopeGeneratedAt ?? inventory.generatedAt);
@@ -2249,7 +2269,11 @@
       if (isCurrentDiscoveryGeneration(operationGeneration) && !runtimes.has(hostId)) {
         // Keep the last known inventory so an unavailable device does not make
         // its projects disappear. Connectivity and freshness carry the truth.
-        state.hostConnectivity.set(hostId, { available: false, checkedAt: now });
+        const nativeConnection = state.nativeConnectionSnapshot?.connections
+          ?.find(connection => connection.hostId === normalizeHostId(hostId));
+        if (!nativeConnection || nativeConnection.online === false) {
+          state.hostConnectivity.set(hostId, { available: false, checkedAt: now });
+        }
       }
     }
     for (const [hostId, runtime] of runtimes) {
@@ -2453,13 +2477,16 @@
     return JSON.stringify(peers, (key, value) => ["generatedAt", "threadScopeGeneratedAt"].includes(key) ? undefined : value);
   }
 
-  function publicationSignature(peers, projects, tasks, threads, threadFetchedAt, deviceAliases = null) {
-    return JSON.stringify({ deviceAliases, peers: peerContentSignature(peers), projects, tasks, threads, threadFetchedAt });
+  function publicationSignature(peers, projects, tasks, threads, threadFetchedAt, deviceAliases = null, publisherVersion = PUBLISHER_VERSION) {
+    return JSON.stringify({ deviceAliases, peers: peerContentSignature(peers), projects, publisherVersion, tasks, threads, threadFetchedAt });
   }
 
   function compactInventoryText(payload) {
     // These nullable fields have identical defaults in schema-v1 readers.
-    return JSON.stringify(payload, (key, value) => value === null && ["projectId", "workspaceKind", "updatedAt", "helperVersion"].includes(key) ? undefined : value);
+    return JSON.stringify(payload, (key, value) => (
+      (value === null && ["projectId", "workspaceKind", "updatedAt", "helperVersion"].includes(key))
+      || (key === "projectMembershipKnown" && value === false)
+    ) ? undefined : value);
   }
 
   function utf8ByteLength(value) {
@@ -2782,6 +2809,10 @@
       .map(metadataFromRow)
       .filter((task) => task.hostId === "local")
       .map((task) => publishedTaskMetadata(task, localThreadsById.get(task.conversationId), currentThreadInventory.fetchedAt));
+    const publisherVersion = !currentThreadInventory.error
+      && (currentThreadInventory.threads ?? []).every(threadProjectMembershipKnown)
+      ? PUBLISHER_VERSION
+      : THREAD_VISIBILITY_CONTRACT_VERSION;
     const threads = (state.threadInventories.get("local")?.threads ?? []).flatMap((thread) => {
       const id = rawConversationId(thread?.id ?? thread?.conversationId ?? "");
       if (!id) return [];
@@ -2790,7 +2821,7 @@
         cwd: canonicalRemotePath(thread?.cwd),
         hasUnreadTurn: thread?.hasUnreadTurn === true,
         id,
-        projectId: typeof thread?.projectId === "string" ? thread.projectId : null,
+        projectId: threadProjectId(thread),
         status: typeof thread?.status === "string" ? thread.status : thread?.status && typeof thread.status === "object" ? {
           activeFlags: Array.isArray(thread.status.activeFlags) ? thread.status.activeFlags.filter((flag) => typeof flag === "string").slice(0, 8) : [],
           type: thread.status.type,
@@ -2799,6 +2830,9 @@
         updatedAt: thread?.updatedAt ?? null,
         workspaceKind: typeof thread?.workspaceKind === "string" ? thread.workspaceKind : null,
       };
+      if (publisherVersion < PROJECT_MEMBERSHIP_CONTRACT_VERSION && threadProjectMembershipKnown(thread)) {
+        publishedThread.projectMembershipKnown = true;
+      }
       if (titleRecord.title) publishedThread.title = titleRecord.title;
       return [publishedThread];
     });
@@ -2811,7 +2845,7 @@
     const localThreadInventory = state.threadInventories.get("local");
     const nativeProjectSnapshot = publishedLocalProjectSnapshot(null);
     const deviceAliases = publishedDeviceAliases();
-    const statusSignature = publicationSignature(boundedPeers, nativeProjectSnapshot.projects, tasks, threads, localThreadInventory?.fetchedAt ?? 0, deviceAliases);
+    const statusSignature = publicationSignature(boundedPeers, nativeProjectSnapshot.projects, tasks, threads, localThreadInventory?.fetchedAt ?? 0, deviceAliases, publisherVersion);
     const publishInterval = inventoryHasWork(tasks, threads) ? REMOTE_INVENTORY_ACTIVE_MS : REMOTE_INVENTORY_IDLE_MS;
     const statusChanged = statusSignature !== state.localInventoryStatusSignature;
     if (!force && !statusChanged && now - state.localInventoryPublishedAt < publishInterval) return;
@@ -2841,7 +2875,7 @@
       const generatedAt = new Date().toISOString();
       const threadScopeGeneratedAt = new Date(currentThreadInventory.fetchedAt).toISOString();
       const localHostIds = [...state.localRuntimeHostIds].filter((hostId) => normalizeHostId(hostId) !== "local");
-      const payload = { generatedAt, hostDisplayName: config.localDisplayName || null, helperVersion: releaseVersion(config.helperVersion), peers: boundedPeers, projects, publisherHostId: localHostIds.length === 1 ? normalizeHostId(localHostIds[0]) : undefined, publisherVersion: PUBLISHER_VERSION, schemaVersion: 1, tasks, threadScope: "user-visible", threadScopeGeneratedAt, threads };
+      const payload = { generatedAt, hostDisplayName: config.localDisplayName || null, helperVersion: releaseVersion(config.helperVersion), peers: boundedPeers, projects, publisherHostId: localHostIds.length === 1 ? normalizeHostId(localHostIds[0]) : undefined, publisherVersion, schemaVersion: 1, tasks, threadScope: "user-visible", threadScopeGeneratedAt, threads };
       if (deviceAliases) payload.deviceAliases = deviceAliases;
       const dataBase64 = encodeText(compactInventoryText(payload));
       return sendRequestWithTimeout(runtime.requestClient, "fs/writeFile", { dataBase64, path: inventoryPath(codexHome) })
@@ -2967,17 +3001,33 @@
     return null;
   }
 
-  function taskFromThread(thread, hostId, statusObservedAt = 0) {
-    const conversationId = rawConversationId(thread?.id ?? thread?.conversationId ?? "");
-    if (!conversationId) return null;
-    const cwd = canonicalRemotePath(thread?.cwd ?? thread?.workingDirectory ?? thread?.workspace?.cwd);
-    const projectId = typeof thread?.projectId === "string" ? thread.projectId
+  function threadProjectId(thread) {
+    return typeof thread?.projectId === "string" ? thread.projectId
       : typeof thread?.project_id === "string" ? thread.project_id
       : typeof thread?.project?.id === "string" ? thread.project.id
       : null;
+  }
+
+  function threadProjectMembershipKnown(thread) {
+    if (!thread || typeof thread !== "object") return false;
+    if (typeof thread.projectId === "string" || thread.projectId === null) return true;
+    if (typeof thread.project_id === "string" || thread.project_id === null) return true;
+    if (Object.prototype.hasOwnProperty.call(thread, "project") && thread.project === null) return true;
+    if (thread.project && typeof thread.project === "object"
+      && (typeof thread.project.id === "string" || thread.project.id === null)) return true;
+    return thread.projectless === true || thread.workspaceKind === "projectless";
+  }
+
+  function taskFromThread(thread, hostId, statusObservedAt = 0, directMembershipKnown = false) {
+    const conversationId = rawConversationId(thread?.id ?? thread?.conversationId ?? "");
+    if (!conversationId) return null;
+    const cwd = canonicalRemotePath(thread?.cwd ?? thread?.workingDirectory ?? thread?.workspace?.cwd);
+    const projectId = threadProjectId(thread);
     const runtimeStatus = typeof thread?.status === "string" ? thread.status : thread?.status?.type;
     const statusKnown = typeof runtimeStatus === "string" && runtimeStatus.length > 0;
     const unreadKnown = typeof thread?.hasUnreadTurn === "boolean" || typeof thread?.unread === "boolean";
+    const projectMembershipKnown = (directMembershipKnown === true && threadProjectMembershipKnown(thread))
+      || thread?.projectMembershipKnown === true;
     const titleRecord = trustedThreadTitle(thread);
     return {
       conversationId,
@@ -2986,10 +3036,13 @@
       hostDisplayName: null,
       hostId,
       hostNames: new Map(),
-      isGrouped: Boolean(projectId || cwd),
-      isProjectless: thread?.projectless === true || thread?.workspaceKind === "projectless" || !cwd,
+      isGrouped: projectMembershipKnown ? Boolean(projectId) : Boolean(projectId || cwd),
+      isProjectless: projectMembershipKnown
+        ? !projectId
+        : (thread?.projectless === true || thread?.workspaceKind === "projectless" || !cwd),
       originalRow: null,
       projectId,
+      projectMembershipKnown,
       projectLabel: typeof thread?.projectLabel === "string" ? thread.projectLabel : null,
       selected: false,
       sourceThread: thread,
@@ -3209,7 +3262,7 @@
         && Number.isFinite(inventory.fetchedAt) && Date.now() - inventory.fetchedAt <= REMOTE_INVENTORY_MAX_AGE_MS;
       const cachedIds = authoritativeIds.get(hostId);
       for (const thread of inventory.threads ?? []) {
-        const task = taskFromThread(thread, hostId, inventory.fetchedAt);
+        const task = taskFromThread(thread, hostId, inventory.fetchedAt, inventoryFresh);
         if (!task) continue;
         if (inventoryFresh ? !cachedIds?.has(task.conversationId) : !Array.isArray(inventory.threads)) continue;
         task.inventoryFresh = inventoryFresh;
@@ -3237,7 +3290,12 @@
             nativeTask.unreadKnown = false;
           }
           if (task.cwd) nativeTask.cwd = task.cwd;
-          if (task.projectId) nativeTask.projectId = task.projectId;
+          if (task.projectMembershipKnown) {
+            nativeTask.projectId = task.projectId;
+            nativeTask.projectMembershipKnown = true;
+            nativeTask.isGrouped = task.isGrouped;
+            nativeTask.isProjectless = task.isProjectless;
+          } else if (task.projectId) nativeTask.projectId = task.projectId;
           if (task.projectLabel) nativeTask.projectLabel = task.projectLabel;
           nativeTask.sourceThread = thread;
           mergeTaskTitle(nativeTask, task);
@@ -3289,7 +3347,8 @@
           // helper data remains useful while direct reads are unavailable, but
           // an older failed helper snapshot must not move a current task back
           // to its previous project or invalidate its current status.
-          if (!task.inventoryFresh && freshDirectThreadInventory(hostId)) continue;
+          const directInventoryFresh = Boolean(freshDirectThreadInventory(hostId));
+          if (!task.inventoryFresh && directInventoryFresh) continue;
           if (!task.inventoryFresh) {
             existing.inventoryFresh = false;
             existing.inventoryStale = true;
@@ -3298,10 +3357,19 @@
             existing.statusKnown = false;
             existing.unreadKnown = false;
           }
-          if (task.cwd) existing.cwd = task.cwd;
-          if (task.projectId) existing.projectId = task.projectId;
-          existing.sourceThread = thread;
-          mergeTaskTitle(existing, task);
+          if (!directInventoryFresh || !existing.cwd) {
+            if (task.cwd) existing.cwd = task.cwd;
+          }
+          if (!directInventoryFresh) {
+            if (task.projectMembershipKnown) {
+              existing.projectId = task.projectId;
+              existing.projectMembershipKnown = true;
+              existing.isGrouped = task.isGrouped;
+              existing.isProjectless = task.isProjectless;
+            } else if (task.projectId) existing.projectId = task.projectId;
+          }
+          if (!directInventoryFresh || !existing.sourceThread) existing.sourceThread = thread;
+          if (!directInventoryFresh || !trustedThreadTitle(existing).title) mergeTaskTitle(existing, task);
           if (task.statusKnown && task.inventoryFresh !== false
             && (!existing.statusKnown || Number(task.statusObservedAt) > Number(existing.statusObservedAt ?? 0))) {
             existing.statusKnown = true;
@@ -3376,6 +3444,10 @@
     }
     const names = new Map(hostDiscovery.names);
     const availability = new Map(hostDiscovery.availability);
+    const nativeAvailabilityUnknown = new Set((state.nativeConnectionSnapshot?.connections ?? [])
+      .filter(connection => typeof connection?.online !== "boolean")
+      .map(connection => normalizeHostId(connection.hostId))
+      .filter(hostId => typeof hostId === "string" && hostId !== "local"));
     for (const [hostId, inventory] of state.remoteProjectInventories) {
       if (!isSyntheticHostName(inventory?.hostDisplayName)) names.set(hostId, inventory.hostDisplayName.trim());
     }
@@ -3386,11 +3458,16 @@
       remoteRuntimes.delete(hostId);
     }
     for (const hostId of new Set([...names.keys(), ...availability.keys(), ...hostDiscovery.registeredProjects.values()].map((item) => typeof item === "string" ? item : item.hostId))) {
-      if (hostId !== "local" && !remoteRuntimes.has(hostId)) availability.set(hostId, false);
+      if (hostId !== "local" && !remoteRuntimes.has(hostId) && !nativeAvailabilityUnknown.has(normalizeHostId(hostId))) {
+        availability.set(hostId, false);
+      }
     }
     for (const [hostId, connectivity] of state.hostConnectivity) {
+      const connectivityFresh = Number.isFinite(connectivity?.checkedAt)
+        && Date.now() - Number(connectivity.checkedAt) <= REMOTE_INVENTORY_IDLE_TTL_MS;
       if (typeof connectivity?.available === "boolean"
-        && (connectivity.available === false || Date.now() - Number(connectivity.checkedAt) <= REMOTE_INVENTORY_IDLE_TTL_MS)) {
+        && !(connectivity.available === false && nativeAvailabilityUnknown.has(normalizeHostId(hostId)) && !connectivityFresh)
+        && (connectivity.available === false || connectivityFresh)) {
         availability.set(hostId, connectivity.available);
       }
     }
@@ -3476,6 +3553,12 @@
       const aliases = [...new Set([project.cwd, ...(project.rootPaths ?? [])].filter(Boolean).map((cwd) => `${project.hostId}::${normalizePath(cwd)}`))];
       const existingGroup = aliases.map((alias) => projectByHostPath.get(alias)).find(Boolean);
       if (existingGroup) {
+        if (project.inventoryFresh === false) {
+          existingGroup.inventoryFresh = false;
+          existingGroup.inventoryStale = true;
+        }
+        if (project.inventoryPending === true) existingGroup.inventoryPending = true;
+        if (project.inventoryError) existingGroup.inventoryError = project.inventoryError;
         for (const alias of aliases) projectByHostPath.set(alias, existingGroup);
         continue;
       }
@@ -3502,8 +3585,11 @@
     }
     for (const task of tasks) {
       const cwdKey = task.cwd ? normalizePath(task.cwd) : `unknown:${task.conversationKey}`;
-      const matchingProject = (task.cwd ? projectByHostPath.get(`${task.hostId}::${cwdKey}`) : null)
-        ?? (task.projectId ? projectByHostId.get(`${task.hostId}::${task.projectId}`) : null);
+      const projectById = task.projectId ? projectByHostId.get(`${task.hostId}::${task.projectId}`) : null;
+      const projectByPath = task.cwd ? projectByHostPath.get(`${task.hostId}::${cwdKey}`) : null;
+      const matchingProject = task.projectMembershipKnown
+        ? (task.projectId ? projectById ?? projectByPath : null)
+        : projectByPath ?? projectById;
       const recent = !matchingProject && (authoritativeProjectPaths.has(task.hostId) || isRecentTask(task));
       const projectKey = task.projectId ? `project:${task.projectId}` : `cwd:${cwdKey}`;
       const key = recent ? `${task.hostId}::recent` : matchingProject?.key ?? `${task.hostId}::${projectKey}`;
@@ -3530,6 +3616,8 @@
       group.tasks.push(task);
     }
     for (const group of groups) {
+      group.hostAvailable = group.hostId === "local" || availability.get(group.hostId) === true;
+      group.hostAvailabilityKnown = group.hostId === "local" || availability.has(group.hostId);
       const remoteInventory = state.remoteProjectInventories.get(group.hostId);
       const directMembershipFresh = Boolean(freshDirectThreadInventory(group.hostId));
       const membershipAuthoritative = authoritativeIds.has(group.hostId)
@@ -5228,6 +5316,14 @@
           ? "loading"
           : statusAuthoritative ? "idle" : fallbackState.type;
       statusState = { type, unread, unreadCount };
+    }
+    if (project.hostId !== "local"
+      && project.hostAvailabilityKnown === true
+      && project.hostAvailable === false
+      && project.inventoryFresh === false
+      && project.tasks.length === 0) {
+      const staleState = normalizeSidebarStatus(statusState);
+      if (staleState.type === "loading") statusState = { ...staleState, type: "idle" };
     }
     const kind = sidebarStatusKind(statusState);
     if (!kind) return null;

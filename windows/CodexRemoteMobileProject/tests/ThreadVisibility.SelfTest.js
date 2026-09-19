@@ -326,6 +326,11 @@ assert.equal(visibility.directInventoryHasPriority(authorityHostId, { ...healthy
 assert.equal(visibility.directInventoryHasPriority(authorityHostId, { ...healthyDirect, fetchedAt: now - 30001 }, now), false);
 assert.equal(visibility.directInventoryHasPriority(authorityHostId, { ...healthyDirect, sourcePeerHostId: "remote-control:test-relay" }, now), false);
 assert.equal(visibility.directInventoryHasPriority(authorityHostId, { ...healthyDirect, sourcePeerCache: true }, now), false);
+visibility.state.hostConnectivity.set(authorityHostId, { available: true, checkedAt: now - 30001 });
+visibility.state.remoteRuntimeCache.delete(authorityHostId);
+assert.equal(visibility.directInventoryHasPriority(authorityHostId, healthyDirect, now), false, "stale positive connectivity without a live runtime must not suppress fresher peer evidence");
+visibility.state.remoteRuntimeCache.set(authorityHostId, { requestClient: { sendRequest() {} } });
+assert.equal(visibility.directInventoryHasPriority(authorityHostId, healthyDirect, now), true, "a live direct runtime must keep fresh direct inventory authoritative when connectivity polling is stale");
 visibility.state.hostConnectivity.set(authorityHostId, { available: false, checkedAt: now });
 visibility.state.remoteRuntimeCache.delete(authorityHostId);
 assert.equal(visibility.directInventoryHasPriority(authorityHostId, healthyDirect, now), false);

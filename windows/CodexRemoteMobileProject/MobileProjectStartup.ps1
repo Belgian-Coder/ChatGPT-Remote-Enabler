@@ -5,7 +5,7 @@ param(
     [string]$TargetUser,
     [ValidateRange(0, 300)]
     [int]$DelaySeconds = 30,
-    [ValidateRange(5, 120)]
+    [ValidateRange(45, 120)]
     [int]$MobileReadyTimeoutSeconds = 45,
     [string]$NodePath,
     [switch]$UseProxy,
@@ -707,6 +707,7 @@ switch ($Action) {
                 $mobileTimer = [Diagnostics.Stopwatch]::StartNew()
                 Set-StartupProgress -Message 'Loading Device projects and remote connections...'
                 $targetWaitMilliseconds = [Math]::Min(30000, $MobileReadyTimeoutSeconds * 1000)
+                Write-StartupLog "$(Get-Date -Format o) [$computerName] stage=mobile-target-discovery configuredReadinessTimeoutSeconds=$MobileReadyTimeoutSeconds requestedTargetWaitMs=$targetWaitMilliseconds effectiveEnableTargetWaitMs=30000"
                 $enableOutput = @(& $mobileController -Action Enable -NodePath $node -TargetWaitMilliseconds $targetWaitMilliseconds -DeferUpdateSession -Confirm:$false 2>&1)
                 Write-CommandOutput $enableOutput
                 $report = Get-MobileReport -Output $enableOutput

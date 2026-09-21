@@ -19,6 +19,12 @@ if (-not $rootEntryText.Contains('-Action Enable -TargetWaitMilliseconds 30000 -
 if (-not $startupEntryText.Contains('-Action Enable -NodePath $node -TargetWaitMilliseconds $targetWaitMilliseconds -DeferUpdateSession')) {
     throw 'The startup launcher does not pass the bounded cold renderer-target wait.'
 }
+if (-not $startupEntryText.Contains('effectiveEnableTargetWaitMs=30000')) {
+    throw 'The startup launcher does not record the effective cold renderer-target wait.'
+}
+if (-not $startupEntryText.Contains('[ValidateRange(45, 120)]')) {
+    throw 'The startup readiness timeout must retain margin beyond cold renderer-target discovery.'
+}
 if (-not $mobileViewText.Contains('[int]$TargetWaitMilliseconds = 0') -or
     -not $mobileViewText.Contains("@('--target-wait-ms', [string]`$TargetWaitMilliseconds)")) {
     throw 'The Windows mobile controller does not forward its renderer-target wait.'

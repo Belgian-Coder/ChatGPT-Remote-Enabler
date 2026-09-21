@@ -13,6 +13,7 @@ const userStateRoot = process.env.LOCALAPPDATA
   || __dirname;
 const STATE_PATH = path.join(userStateRoot, "CodexRemoteFeatures", "mobile-project-session.json");
 const PROBE_TIMEOUT_MS = 10000;
+const ENABLE_TARGET_WAIT_MS = 30000;
 const RETRYABLE_DISCOVERY_CODES = new Set([
   "ECONNREFUSED",
   "ECONNRESET",
@@ -40,6 +41,10 @@ function parseArgs(argv) {
   if (!Number.isSafeInteger(targetWaitMs) || targetWaitMs < 0 || targetWaitMs > 30_000) throw new Error("Invalid target wait");
   if (!["archive-auto-off", "archive-auto-on", "archive-preview", "archive-run", "maintenance-auto-off", "maintenance-auto-on", "maintenance-preview", "maintenance-run", "auto-off", "auto-on", "auto-reconcile", "auto-remove", "enable", "disable", "probe"].includes(values.action)) throw new Error("Invalid action");
   return { action: values.action, localName: values["local-name"] || "Local", port, singleRemoteName: values["single-remote-name"] || null, targetWaitMs };
+}
+
+function rendererTargetWaitMilliseconds(action, requestedWaitMs) {
+  return Math.max(action === "enable" ? ENABLE_TARGET_WAIT_MS : 5000, requestedWaitMs);
 }
 
 function normalizeRegistration(value) {
@@ -237,7 +242,10 @@ function assertCommandResult(result, action) {
 
 async function main(argv = process.argv.slice(2)) {
   const options = parseArgs(argv);
-  const client = await connectRendererTargetWithRetry(options.port, Math.max(5000, options.targetWaitMs));
+  const client = await connectRendererTargetWithRetry(
+    options.port,
+    rendererTargetWaitMilliseconds(options.action, options.targetWaitMs),
+  );
   try {
     if (options.action === "enable") {
       const prior = readSessionState();
@@ -370,5 +378,6 @@ module.exports = {
   persistSessionState,
   readSessionState,
   removeRegistrations,
+  rendererTargetWaitMilliseconds,
   requiredApiCall,
 };

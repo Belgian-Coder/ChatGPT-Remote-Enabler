@@ -850,8 +850,8 @@ async function testProductionRendererReadinessContract() {
   fs.writeFileSync(injector, "// fixture injector\n");
   fs.writeFileSync(path.join(installRoot, "VERSION"), "v2.0.0\n");
   const invocations = [];
-  const adapter = new session.PlatformAdapter(config(), { runCommand: async (command, args) => {
-    invocations.push({ command, args });
+  const adapter = new session.PlatformAdapter(config(), { runCommand: async (command, args, options) => {
+    invocations.push({ command, args, options });
     if (command === process.execPath) {
       return { stdout: `${JSON.stringify({ ok: true, report: { active: true, version: 82, readiness: { ready: true } } })}\n`, stderr: "" };
     }
@@ -862,6 +862,11 @@ async function testProductionRendererReadinessContract() {
     assert.deepEqual(result, { loaded: true, helperVersion: "v2.0.0", rendererVersion: 82, ready: true });
     assert.equal(invocations.filter(item => item.command === process.execPath).length, 1,
       "production-shaped nested readiness must complete on the enable proof");
+    const enable = invocations.find(item => item.command === process.execPath);
+    assert.equal(enable.args[enable.args.indexOf("--target-wait-ms") + 1], "30000",
+      "live enable must retain the cold renderer discovery window");
+    assert.equal(enable.options.timeoutMs, 45_000,
+      "the live enable parent timeout must include margin beyond target discovery");
   } finally {
     fs.writeFileSync(path.join(installRoot, "VERSION"), "v1.0.0\n");
   }

@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.5.94 — 2026-09-21
+
+- Keep cold sidebar enablement waiting for the exact Codex renderer target for
+  30 seconds even when an older launcher or update continuation supplies the
+  former five-second target wait. Default direct probes retain their five-second
+  lookup, live-update commands include an explicit parent-timeout margin, and
+  startup diagnostics record both requested and effective discovery windows.
+
 ## v1.5.93 — 2026-09-19
 
 - Remove the exact ChatGPT build, UI-text, provider-layout, and minifier

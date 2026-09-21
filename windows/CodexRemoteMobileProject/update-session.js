@@ -11,6 +11,8 @@ const { spawn, spawnSync } = require("node:child_process");
 const { BINDING_NAME, CdpTransport, TARGET_URL, bootstrapSource, normalizeUpdateDetails } = require("./update-session-cdp.js");
 
 const UPDATE_INTERVAL_MS = 30 * 60 * 1000;
+const ENABLE_TARGET_WAIT_MS = 30_000;
+const ENABLE_COMMAND_TIMEOUT_MS = 45_000;
 const STATUS_STATES = new Set([
   "checking", "current", "available", "queued", "preparing", "closing",
   "updating", "restarting", "error", "unavailable",
@@ -429,8 +431,10 @@ class PlatformAdapter {
       const args = ["--no-warnings", injector,
         "--action", action, "--port", String(this.config.rendererPort), "--local-name", localName];
       if (singleRemoteName) args.push("--single-remote-name", singleRemoteName);
-      args.push("--target-wait-ms", "10000");
-      const result = await this.run(process.execPath, args, { cwd: sourceRoot, timeoutMs: 30_000 });
+      const targetWaitMs = action === "enable" ? ENABLE_TARGET_WAIT_MS : 10_000;
+      const commandTimeoutMs = action === "enable" ? ENABLE_COMMAND_TIMEOUT_MS : 30_000;
+      args.push("--target-wait-ms", String(targetWaitMs));
+      const result = await this.run(process.execPath, args, { cwd: sourceRoot, timeoutMs: commandTimeoutMs });
       return parseLastJson(result.stdout);
     };
     const rendererReady = (value) => value?.report?.readiness?.ready === true;

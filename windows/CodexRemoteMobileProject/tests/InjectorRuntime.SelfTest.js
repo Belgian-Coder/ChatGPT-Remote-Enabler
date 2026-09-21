@@ -7,6 +7,17 @@ const path = require("node:path");
 const vm = require("node:vm");
 const injector = require("../inject.js");
 
+function testActionSpecificTargetWait() {
+  assert.equal(injector.rendererTargetWaitMilliseconds("enable", 0), 30000,
+    "cold enable must retain the full renderer replacement window without launcher assistance");
+  assert.equal(injector.rendererTargetWaitMilliseconds("enable", 5000), 30000,
+    "an older launcher wait must not shorten cold enable discovery");
+  assert.equal(injector.rendererTargetWaitMilliseconds("probe", 0), 5000,
+    "ordinary probes must retain the short target lookup");
+  assert.equal(injector.rendererTargetWaitMilliseconds("probe", 30000), 30000,
+    "an explicit longer lookup must still be honored");
+}
+
 async function testTransientDiscoveryRetry() {
   let attempts = 0;
   const target = { type: "page", url: "app://-/index.html", webSocketDebuggerUrl: "ws://127.0.0.1/fake" };
@@ -195,13 +206,14 @@ function testInactiveMutationFails() {
 }
 
 async function main() {
+  testActionSpecificTargetWait();
   await testTransientDiscoveryRetry();
   await testTransientConnectRetry();
   await testPersistentCleanupRetention();
   await testDisablePrunesDeadRegistrations();
   testAtomicStateAndLegacyMigration();
   testInactiveMutationFails();
-  process.stdout.write(`${JSON.stringify({ atomicState: true, cleanupRetention: true, disablePrunesDeadRegistrations: true, inactiveMutationFails: true, transientDiscoveryRetry: true, transientConnectRetry: true })}\n`);
+  process.stdout.write(`${JSON.stringify({ actionSpecificTargetWait: true, atomicState: true, cleanupRetention: true, disablePrunesDeadRegistrations: true, inactiveMutationFails: true, transientDiscoveryRetry: true, transientConnectRetry: true })}\n`);
 }
 
 main().catch((error) => {

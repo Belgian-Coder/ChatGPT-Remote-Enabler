@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — 2026-09-22
+## v1.5.95 — 2026-09-22
 
 - Continue Windows startup after an unavailable helper update only when local
   recovery proves the installation intact. Preserve updater exit codes and

@@ -619,7 +619,7 @@ enable_view() {
     fi
     progress_write maintenance 'Preparing local maintenance…'
     local maintenance_started=$EPOCHREALTIME
-    "$node_bin" --no-warnings "$maintenance_helper" --best-effort
+    "$node_bin" --no-warnings "$maintenance_helper" --best-effort --startup
     print "stage=maintenance durationMs=$(( (EPOCHREALTIME - maintenance_started) * 1000 ))"
     progress_write launch 'Launching ChatGPT with Remote enabled…'
     local -a launch_arguments=(--remote-debugging-address=127.0.0.1 --remote-debugging-port="$port")

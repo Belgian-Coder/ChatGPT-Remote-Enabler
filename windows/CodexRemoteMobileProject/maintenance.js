@@ -70,7 +70,7 @@ function safeTemporaryTestRoot(codexHome) {
   }
 }
 
-function optimizeDatabase(DatabaseSync, dbPath, pruneLogs) {
+function optimizeDatabase(DatabaseSync, dbPath, pruneLogs, startup = false) {
   if (!fs.existsSync(dbPath)) return { status: "missing" };
   const beforeBytes = fs.statSync(dbPath).size;
   const db = new DatabaseSync(dbPath);
@@ -112,7 +112,12 @@ function optimizeDatabase(DatabaseSync, dbPath, pruneLogs) {
     const before = databaseStats(db);
     const shouldVacuum = before.freeBytes >= 8 * 1024 * 1024
       || (before.pageCount > 0 && before.freePages / before.pageCount >= 0.02);
-    if (shouldVacuum) db.exec("VACUUM");
+    // Avoid rewriting a large log database at every launch for a few reusable
+    // pages. Still reclaim substantial wasted space automatically at startup.
+    const startupCompactionDue = before.freeBytes >= 64 * 1024 * 1024
+      && before.pageCount > 0 && before.freePages / before.pageCount >= 0.5;
+    const vacuum = shouldVacuum && (!startup || startupCompactionDue);
+    if (vacuum) db.exec("VACUUM");
     db.exec("PRAGMA optimize");
     const after = databaseStats(db);
     return {
@@ -123,7 +128,8 @@ function optimizeDatabase(DatabaseSync, dbPath, pruneLogs) {
       removedByAge,
       removedByCap,
       status: "optimized",
-      vacuumed: shouldVacuum,
+      vacuumed: vacuum,
+      vacuumDeferred: shouldVacuum && !vacuum,
     };
   } catch (error) {
     operationFailed = true;
@@ -140,6 +146,7 @@ function optimizeDatabase(DatabaseSync, dbPath, pruneLogs) {
 function main() {
   const startedAt = process.hrtime.bigint();
   const bestEffort = process.argv.includes("--best-effort");
+  const startup = process.argv.includes("--startup");
   const phases = [];
   const report = { bestEffort, phases };
   let activePhase = "arguments";
@@ -191,7 +198,7 @@ function main() {
       activeDatabase = database.key;
       activePhase = `${database.key}-database`;
       phaseStartedAt = process.hrtime.bigint();
-      report[database.key] = optimizeDatabase(DatabaseSync, path.join(codexHome, database.filename), database.pruneLogs);
+      report[database.key] = optimizeDatabase(DatabaseSync, path.join(codexHome, database.filename), database.pruneLogs, startup);
       phases.push({
         database: database.key,
         durationMs: elapsedMilliseconds(phaseStartedAt),

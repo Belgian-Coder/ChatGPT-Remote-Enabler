@@ -287,7 +287,8 @@ function releaseWriterLock(lock) {
   syncDirectory(path.dirname(lock.lockPath));
 }
 
-function parseManifest(root, verifyFiles = true, allowPreparedMetadata = false) {
+function parseManifest(root, verifyFiles = true, allowPreparedMetadata = false, { allowMissingEntries = false } = {}) {
+  if (allowMissingEntries && !verifyFiles) throw new Error("Incomplete inventories must verify every existing file.");
   assertRealDirectory(root, "Manifest root");
   const manifestPath = path.join(root, "RELEASE-MANIFEST.sha256");
   const manifestDetails = fs.lstatSync(manifestPath);
@@ -304,14 +305,20 @@ function parseManifest(root, verifyFiles = true, allowPreparedMetadata = false) 
     seen.add(key);
     const source = path.resolve(root, ...relative.split("/"));
     if (!isWithin(root, source)) throw new Error(`Release path escapes its root: ${relative}`);
-    const details = fs.lstatSync(source);
+    const hash = match[1].toLowerCase();
+    let details;
+    try { details = fs.lstatSync(source); }
+    catch (error) {
+      if (!allowMissingEntries || error.code !== "ENOENT") throw error;
+      entries.push({ relative, hash, source, exists: false });
+      continue;
+    }
     if (!details.isFile() || details.isSymbolicLink()) throw new Error(`Release file is missing or linked: ${relative}`);
     const realSource = fs.realpathSync(source);
     const realRoot = fs.realpathSync(root);
     if (!isWithin(realRoot, realSource)) throw new Error(`Release file resolves outside its root: ${relative}`);
-    const hash = match[1].toLowerCase();
     if (verifyFiles && sha256File(source) !== hash) throw new Error(`Release manifest hash mismatch: ${relative}`);
-    entries.push({ relative, hash, source });
+    entries.push({ relative, hash, source, exists: true });
   }
   if (entries.length === 0) throw new Error("Release manifest is empty.");
   const allowedMetadata = new Set(["RELEASE-MANIFEST.sha256", PREPARED_METADATA, ".chatgpt-remote-release.zip"]);
@@ -428,8 +435,14 @@ function durableBackup(source, destination, expectedHash, backupRoot) {
 }
 
 function tryInstalledManifest(installRoot) {
-  try { return { valid: true, ...parseManifest(installRoot, true) }; }
-  catch (error) { return { valid: false, entries: [], error: error.message }; }
+  try { return { valid: true, inventoryValid: true, ...parseManifest(installRoot, true) }; }
+  catch (error) {
+    // Missing payloads do not erase ownership of unchanged retired files.
+    // Existing entries and the complete directory inventory remain strict.
+    try {
+      return { valid: false, inventoryValid: true, ...parseManifest(installRoot, true, false, { allowMissingEntries: true }), error: error.message };
+    } catch { return { valid: false, inventoryValid: false, entries: [], error: error.message }; }
+  }
 }
 
 function buildJournal(values) {
@@ -453,9 +466,9 @@ function buildJournal(values) {
     return leftLast - rightLast || left.relative.localeCompare(right.relative);
   });
   const operations = copyEntries.map((entry) => ({ kind: "copy", relative: entry.relative, source: entry.source, hash: entry.hash }));
-  if (previous.valid) {
+  if (previous.inventoryValid) {
     for (const entry of previous.entries) {
-      if (!newKeys.has(pathKey(entry.relative))) operations.push({ kind: "remove", relative: entry.relative });
+      if (entry.exists && !newKeys.has(pathKey(entry.relative))) operations.push({ kind: "remove", relative: entry.relative });
     }
   }
   operations.push({
@@ -569,14 +582,16 @@ function validateJournalPrepared(journal) {
       throw new Error(`Journal source does not match the prepared manifest: ${operation.relative}`);
     }
   }
-  if (!journal.previousIntegrityValid && journal.operations.some((operation) => operation.kind === "remove")) {
-    throw new Error("A transaction from an invalid prior manifest cannot contain removals.");
+  const actualRemovals = journal.operations.filter((operation) => operation.kind === "remove").map((operation) => pathKey(operation.relative));
+  let previous;
+  try {
+    previous = parseManifest(resolved(journal.backupRoot), true, false, { allowMissingEntries: !journal.previousIntegrityValid });
+  } catch (error) {
+    if (journal.previousIntegrityValid || actualRemovals.length) throw error;
   }
-  if (journal.previousIntegrityValid) {
-    const previous = parseManifest(resolved(journal.backupRoot), true);
+  if (previous) {
     const newKeys = new Set(prepared.manifest.entries.map((entry) => pathKey(entry.relative)));
-    const expectedRemovals = new Set(previous.entries.filter((entry) => !newKeys.has(pathKey(entry.relative))).map((entry) => pathKey(entry.relative)));
-    const actualRemovals = journal.operations.filter((operation) => operation.kind === "remove").map((operation) => pathKey(operation.relative));
+    const expectedRemovals = new Set(previous.entries.filter((entry) => entry.exists && !newKeys.has(pathKey(entry.relative))).map((entry) => pathKey(entry.relative)));
     if (actualRemovals.length !== expectedRemovals.size || actualRemovals.some((relative) => !expectedRemovals.has(relative))) {
       throw new Error("Journal removal set does not match the previous manifest.");
     }

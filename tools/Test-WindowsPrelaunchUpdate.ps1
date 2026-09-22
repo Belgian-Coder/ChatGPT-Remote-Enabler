@@ -6,6 +6,7 @@ $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) ('chatgpt-remote-prelaunch-test-' + [guid]::NewGuid().ToString('N'))
 $fakeUpdater = Join-Path $temporaryRoot 'fixture updater with spaces.ps1'
 $fakeLog = Join-Path $temporaryRoot 'updater-calls.log'
+$fakeManifest = Join-Path $temporaryRoot 'RELEASE-MANIFEST.sha256'
 $fakeDesktopUpdater = Join-Path $temporaryRoot 'fixture desktop updater with spaces.ps1'
 $fakeDesktopLog = Join-Path $temporaryRoot 'desktop-updater-calls.log'
 
@@ -43,6 +44,11 @@ if (`$Action -eq 'Recover') {
     exit 0
 }
 if (`$Action -eq 'Update') {
+    if (Test-Path -LiteralPath (Join-Path (Split-Path -Parent `$PSCommandPath) 'fail-after-apply')) {
+        Set-Content -LiteralPath (Join-Path `$InstallRoot 'applied-before-failure') -Value 'new installation'
+        Set-Content -LiteralPath (Join-Path `$InstallRoot 'RELEASE-MANIFEST.sha256') -Value (('b' * 64) + ' *fixture.txt')
+        throw ('fixture: last-check write failed after the transaction journal was removed' + [Environment]::NewLine + ('x' * 400))
+    }
     if (Test-Path -LiteralPath (Join-Path (Split-Path -Parent `$PSCommandPath) 'fail-update')) { Write-Output 'network unavailable'; exit 9 }
     if (Test-Path -LiteralPath (Join-Path (Split-Path -Parent `$PSCommandPath) 'current-update')) { Write-Output '{"updated":false,"latestVersion":"v9.9.9","localVersion":"v9.9.9","archiveSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","method":"verified-git"}'; exit 0 }
     if (Test-Path -LiteralPath (Join-Path (Split-Path -Parent `$PSCommandPath) 'invalid-method')) { Write-Output '{"updated":false,"latestVersion":"v9.9.9","localVersion":"v9.9.9","archiveSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","method":"verified-release"}'; exit 0 }
@@ -107,8 +113,9 @@ if (`$decision -eq 'Installed') { `$proof.Manifest = [ordered]@{Name='OpenAI.Cod
     )
 
     $computerName = 'PRELAUNCH-TEST'
-    function Write-RemoteLauncherLog { param([AllowEmptyString()][string]$Message) }
-    function Write-StartupLog { param([AllowEmptyString()][string]$Message) }
+    $launcherLog = [Collections.Generic.List[string]]::new()
+    function Write-RemoteLauncherLog { param([AllowEmptyString()][string]$Message) [void]$launcherLog.Add($Message) }
+    function Write-StartupLog { param([AllowEmptyString()][string]$Message) [void]$launcherLog.Add($Message) }
     function Write-CommandOutput { param([object[]]$Output) }
 
     foreach ($case in $cases) {
@@ -291,13 +298,39 @@ if (`$decision -eq 'Installed') { `$proof.Manifest = [ordered]@{Name='OpenAI.Cod
             Assert-Condition $invalidProofRejected "$($case.Name) accepted $invalidProof update proof."
         }
 
+        [IO.File]::WriteAllText($fakeManifest, (('a' * 64) + ' *fixture.txt'), [Text.UTF8Encoding]::new($false))
         Set-Content -LiteralPath (Join-Path $temporaryRoot 'fail-update') -Value 'fail' -NoNewline
         Remove-Item -LiteralPath $fakeLog -Force
-        $requiredUpdateRejected = $false
-        try { [void](Invoke-PrelaunchUpdate -UpdaterPath $fakeUpdater -InstallRoot $temporaryRoot) } catch { $requiredUpdateRejected = $_.Exception.Message -like '*required verified Git prelaunch update failed*' }
-        Assert-Condition $requiredUpdateRejected "$($case.Name) continued after the required update failed."
+        $offline = Invoke-PrelaunchUpdate -UpdaterPath $fakeUpdater -InstallRoot $temporaryRoot
+        Assert-Condition ($offline.updateUnavailable -eq $true -and $offline.updated -eq $false -and
+            $offline.recovered -eq $false -and $offline.reloadRequired -eq $false -and
+            $offline.method -ceq 'integrity-recovery') "$($case.Name) did not continue without a reload when the update was unavailable and the validated installation was unchanged."
         $calls = @(Get-Content -LiteralPath $fakeLog)
         Assert-Condition ($calls.Count -eq 2 -and $calls[0] -like 'Update|transport=Git|guard=True' -and $calls[1] -like 'Recover|transport=|guard=True') "$($case.Name) did not prove recovery after the required update failure."
+
+        foreach ($mode in @('complete-forward','rollback','unchanged')) {
+            New-Item -ItemType File -Path (Join-Path $temporaryRoot "recover-$mode") -Force | Out-Null
+            $recoveredOffline = Invoke-PrelaunchUpdate -UpdaterPath $fakeUpdater -InstallRoot $temporaryRoot
+            Assert-Condition ($recoveredOffline.recovered -eq $true -and $recoveredOffline.recoveryMode -ceq $mode -and
+                $recoveredOffline.updateUnavailable -eq $true -and $recoveredOffline.reloadRequired -eq $false) "$($case.Name) did not preserve the coordinator after $mode recovery left the validated contents unchanged."
+            Remove-Item -LiteralPath (Join-Path $temporaryRoot "recover-$mode") -Force
+        }
+        Assert-Condition ($sourceText.Contains('if ($prelaunchUpdate.updated -or $prelaunchUpdate.reloadRequired)')) "$($case.Name) does not use the validated content-change decision for reloads."
+
+        New-Item -ItemType File -Path (Join-Path $temporaryRoot 'fail-after-apply') -Force | Out-Null
+        $postApply = Invoke-PrelaunchUpdate -UpdaterPath $fakeUpdater -InstallRoot $temporaryRoot
+        Assert-Condition ((Test-Path -LiteralPath (Join-Path $temporaryRoot 'applied-before-failure')) -and
+            -not $postApply.recovered -and $postApply.reloadRequired -eq $true) "$($case.Name) continued with old launcher code after an applied update threw without leaving a journal."
+        $fallbackLog = @($launcherLog | Where-Object { $_ -like '*updateUnavailable=true*' })[-1]
+        Assert-Condition ($fallbackLog -like '*reason=fixture: last-check write failed*' -and
+            $fallbackLog -notmatch '[\r\n]') "$($case.Name) lost or split the updater failure reason in its offline startup log."
+        $loggedReason = $fallbackLog.Substring($fallbackLog.IndexOf('reason=') + 'reason='.Length)
+        Assert-Condition ($loggedReason.Length -eq 320) "$($case.Name) did not bound the updater failure detail."
+        Remove-Item -LiteralPath (Join-Path $temporaryRoot 'fail-after-apply'),(Join-Path $temporaryRoot 'applied-before-failure') -Force
+
+        Remove-Item -LiteralPath $fakeManifest -Force
+        $unknownContents = Invoke-PrelaunchUpdate -UpdaterPath $fakeUpdater -InstallRoot $temporaryRoot
+        Assert-Condition ($unknownContents.reloadRequired -eq $true) "$($case.Name) skipped reload without a comparable manifest snapshot."
 
         New-Item -ItemType File -Path (Join-Path $temporaryRoot 'fail-recover') -Force | Out-Null
         $unsafeRejected = $false
@@ -325,7 +358,8 @@ if (`$decision -eq 'Installed') { `$proof.Manifest = [ordered]@{Name='OpenAI.Cod
         RunningAppPreserved = $true
         GitUpdateBeforeInjection = $true
         SuccessfulUpdateRecovery = $true
-        RequiredUpdateFailureStops = $true
+        UnavailableUpdateUsesIntactInstallation = $true
+        RecoveredOfflineInstallationReloads = $true
         RecoveryReloadConverges = $true
         StrictFinalJsonProof = $true
         ExactVersionAndHashProof = $true

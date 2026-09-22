@@ -130,6 +130,45 @@ try { [IO.File]::WriteAllText($SignalPath, 'locked'); Start-Sleep -Seconds 60 } 
         if ($null -ne $originalBytes -and (Test-Path -LiteralPath $stableTaskHost)) { [IO.File]::WriteAllBytes($stableTaskHost, $originalBytes) }
     }
 
+    # Missing helper files must be repairable by setup without deleting the
+    # permanent installation first, while retaining downgrade protection.
+    $previousVersion = 'v1.0.0'
+    Write-Version -Root $stableRoot -Version $previousVersion
+    $retiredHelper = Join-Path $stableRoot 'retired-helper.txt'
+    [IO.File]::WriteAllText($retiredHelper, 'previous release helper')
+    New-ReleaseManifest -Root $stableRoot
+    Remove-Item -LiteralPath $stableTaskHost -Force
+    Remove-Item -LiteralPath (Join-Path $stableRoot 'VERSION') -Force
+    $missingVersionRejected = $false
+    try { [void](Ensure-StableInstallRoot -SourceRoot $packagedSource -StableRoot $stableRoot -UpdaterStateRoot $stateRoot -LockTimeoutSeconds 10) }
+    catch { $missingVersionRejected = $_.Exception.Message -like '*VERSION is missing*' }
+    Assert-Condition ($missingVersionRejected -and -not (Test-Path -LiteralPath $stableTaskHost)) 'Setup repaired a damaged root without known version metadata.'
+    Write-Version -Root $stableRoot -Version 'invalid-version'
+    $invalidVersionRejected = $false
+    try { [void](Ensure-StableInstallRoot -SourceRoot $packagedSource -StableRoot $stableRoot -UpdaterStateRoot $stateRoot -LockTimeoutSeconds 10) }
+    catch { $invalidVersionRejected = $_.Exception.Message -like '*VERSION is invalid*' }
+    Assert-Condition ($invalidVersionRejected -and -not (Test-Path -LiteralPath $stableTaskHost)) 'Setup repaired a damaged root with malformed version metadata.'
+    $newerVersion = 'v999.0.0'
+    Write-Version -Root $stableRoot -Version $newerVersion
+    $downgradeRejected = $false
+    try { [void](Ensure-StableInstallRoot -SourceRoot $packagedSource -StableRoot $stableRoot -UpdaterStateRoot $stateRoot -LockTimeoutSeconds 10) }
+    catch { $downgradeRejected = $_.Exception.Message -like '*cannot repair or replace newer stable installation*' }
+    Assert-Condition $downgradeRejected 'A missing helper bypassed the stable installation downgrade guard.'
+    Write-Version -Root $stableRoot -Version $previousVersion
+    $stableManifest = Join-Path $stableRoot 'RELEASE-MANIFEST.sha256'
+    $manifestBytes = [IO.File]::ReadAllBytes($stableManifest)
+    Remove-Item -LiteralPath $stableManifest -Force
+    $unrecognizedRejected = $false
+    try { [void](Ensure-StableInstallRoot -SourceRoot $packagedSource -StableRoot $stableRoot -UpdaterStateRoot $stateRoot -LockTimeoutSeconds 10) }
+    catch { $unrecognizedRejected = $_.Exception.Message -like '*unrecognized directory*' }
+    Assert-Condition $unrecognizedRejected 'Setup overwrote an incomplete directory without installation metadata.'
+    [IO.File]::WriteAllBytes($stableManifest, $manifestBytes)
+    [void](Ensure-StableInstallRoot -SourceRoot $packagedSource -StableRoot $stableRoot -UpdaterStateRoot $stateRoot -LockTimeoutSeconds 10)
+    Assert-Condition (Test-StablePackage -Root $stableRoot -RequireManifest) 'Setup could not repair a missing required helper.'
+    Assert-Condition (-not (Test-Path -LiteralPath $retiredHelper)) 'Cross-version repair retained a retired manifest-listed helper.'
+    Assert-Condition ((Get-StableVersion -Root $stableRoot) -ceq $currentVersion) 'Cross-version repair did not install the packaged version.'
+    Assert-Condition (@(Get-ChildItem -LiteralPath (Join-Path $stateRoot 'rollback') -Directory -ErrorAction SilentlyContinue).Count -eq 1) 'Missing-file repair retained more than one rollback.'
+
     # Reproduce the historical EPERM: an old task host is still locked inside
     # the install root. The first apply must leave a durable journal, and the
     # next invocation must complete recovery after the handle is released.

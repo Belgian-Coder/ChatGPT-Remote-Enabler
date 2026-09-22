@@ -331,9 +331,9 @@ function Invoke-UpdateRecovery {
     $previousLaunchGuard = [Environment]::GetEnvironmentVariable('CHATGPT_REMOTE_LAUNCH_GUARD_HELD', 'Process')
     try {
         [Environment]::SetEnvironmentVariable('CHATGPT_REMOTE_LAUNCH_GUARD_HELD', '1', 'Process')
-        $LASTEXITCODE = 0
+        $global:LASTEXITCODE = 0
         $output = @(& $UpdaterPath -Action Recover -InstallRoot $InstallRoot -LaunchLockHeld 2>&1)
-        $exitCode = $LASTEXITCODE
+        $exitCode = $global:LASTEXITCODE
     } finally {
         [Environment]::SetEnvironmentVariable('CHATGPT_REMOTE_LAUNCH_GUARD_HELD', $previousLaunchGuard, 'Process')
     }
@@ -350,6 +350,36 @@ function Invoke-UpdateRecovery {
     return $recovery
 }
 
+function Wait-RemoteMobileReadiness {
+    param($Report, [Parameter(Mandatory)][scriptblock]$Probe, [ValidateRange(1, 120)][int]$TimeoutSeconds)
+    Assert-RemoteMobileReport -Report $Report
+    # Enable already has its own renderer-discovery budget. Give the installed
+    # renderer the full readiness window and tolerate a replaced probe target.
+    $timer = [Diagnostics.Stopwatch]::StartNew()
+    $lastProbeError = $null
+    while (-not $Report.ready) {
+        if ($timer.Elapsed.TotalSeconds -ge $TimeoutSeconds) {
+            $message = Get-RemoteMobileReadinessTimeoutMessage -Report $Report -TimeoutSeconds $TimeoutSeconds
+            if ($lastProbeError) { $message += " Last probe error: $lastProbeError" }
+            throw $message
+        }
+        Start-Sleep -Milliseconds 500
+        try {
+            $probeOutput = @(& $Probe)
+        } catch {
+            $lastProbeError = ($_.Exception.Message -replace '[\r\n]+', ' ')
+            if ($lastProbeError.Length -gt 320) { $lastProbeError = $lastProbeError.Substring(0, 320) }
+            try { Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] stage=mobile-readiness probeRetry reason=$lastProbeError" } catch {}
+            continue
+        }
+        # A successful invocation must still return complete boolean proof.
+        $Report = Get-RemoteMobileReport -Output $probeOutput
+        Assert-RemoteMobileReport -Report $Report
+        $lastProbeError = $null
+    }
+    return $Report
+}
+
 function Invoke-PrelaunchUpdate {
     param([string]$UpdaterPath, [string]$InstallRoot, [switch]$UseProxy)
 
@@ -360,12 +390,15 @@ function Invoke-PrelaunchUpdate {
     $timer = [Diagnostics.Stopwatch]::StartNew()
     $result = $null
     $updateError = $null
+    $manifestPath = Join-Path $InstallRoot 'RELEASE-MANIFEST.sha256'
+    $manifestBeforeUpdate = $null
+    try { $manifestBeforeUpdate = [IO.File]::ReadAllText($manifestPath) } catch {}
     $previousLaunchGuard = [Environment]::GetEnvironmentVariable('CHATGPT_REMOTE_LAUNCH_GUARD_HELD', 'Process')
     try {
         [Environment]::SetEnvironmentVariable('CHATGPT_REMOTE_LAUNCH_GUARD_HELD', '1', 'Process')
-        $LASTEXITCODE = 0
+        $global:LASTEXITCODE = 0
         $output = @(& $UpdaterPath -Action Update -Transport Git -InstallRoot $InstallRoot -LaunchLockHeld -UseProxy:$UseProxy 2>&1)
-        $exitCode = $LASTEXITCODE
+        $exitCode = $global:LASTEXITCODE
     } catch {
         $exitCode = 1
         $output = @()
@@ -415,9 +448,36 @@ function Invoke-PrelaunchUpdate {
     }
 
     try {
-        [void](Invoke-UpdateRecovery -UpdaterPath $UpdaterPath -InstallRoot $InstallRoot)
+        $recovered = Invoke-UpdateRecovery -UpdaterPath $UpdaterPath -InstallRoot $InstallRoot
     } catch {
         throw "Prelaunch update failed and recovery could not prove installed-file integrity: $updateError; $($_.Exception.Message)"
+    }
+    if ($exitCode -ne 0) {
+        # A failed download/check must not make an intact installed helper
+        # unusable offline. Successful-but-malformed updater proof still fails.
+        # Strict recovery has verified the installed contents. Equal manifests
+        # avoid an offline respawn and retain the coordinator after rollback.
+        # Changed or unknown contents still require a reload, even at the same
+        # version or when an applied update already removed its journal.
+        $reloadRequired = $true
+        try {
+            $manifestAfterUpdate = [IO.File]::ReadAllText($manifestPath)
+            $reloadRequired = [string]::IsNullOrWhiteSpace($manifestBeforeUpdate) -or
+                [string]::IsNullOrWhiteSpace($manifestAfterUpdate) -or
+                -not [string]::Equals($manifestBeforeUpdate, $manifestAfterUpdate, [StringComparison]::Ordinal)
+        } catch {}
+        $reason = ([string]$updateError -replace '[\r\n]+', ' ')
+        if ($reason.Length -gt 320) { $reason = $reason.Substring(0, 320) }
+        Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] stage=prelaunch-update durationMs=$($timer.ElapsedMilliseconds) updateUnavailable=true recovered=$($recovered.recovered) mode=$($recovered.recoveryMode) reloadRequired=$reloadRequired reason=$reason"
+        return [pscustomobject]@{
+            updated = $false
+            updateUnavailable = $true
+            method = 'integrity-recovery'
+            reloadRequired = [bool]$reloadRequired
+            recovered = [bool]$recovered.recovered
+            recoveryMode = [string]$recovered.recoveryMode
+            version = [string]$recovered.version
+        }
     }
     throw "The required verified Git prelaunch update failed before launch: $updateError"
 }
@@ -457,7 +517,7 @@ function Start-UpdatedEntryPoint {
     # still owns the launch mutex, removing the release-then-spawn race.
     $child = Start-Process -FilePath $powerShell -ArgumentList $childArgumentString -WorkingDirectory (Split-Path -Parent $EntryPoint) -WindowStyle Hidden -PassThru
     $child.Dispose()
-    Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] prelaunch update installed a new helper; reloading updated entry point"
+    Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] reloading the validated on-disk entry point after update or recovery"
 }
 
 function Wait-ForContinuationParent {
@@ -555,7 +615,7 @@ try {
     if (-not $SkipUpdate -and -not $SkipUpdateCheckOnce -and -not $UpdateResume -and -not $skipRemotePrelaunch) {
         Set-StartupProgress -Message 'Checking and updating Remote Enabler...'
         $prelaunchUpdate = Invoke-PrelaunchUpdate -UpdaterPath $updater -InstallRoot $runtimeRoot -UseProxy:$UseProxy
-        if ($prelaunchUpdate.updated) {
+        if ($prelaunchUpdate.updated -or $prelaunchUpdate.reloadRequired) {
             $reloadArguments = @('-SkipPrelaunchUpdateOnce')
             if ($handshakeReady) { $reloadArguments += '-ContinuationAfterAcceptedHandshake' }
             if ($UseProxy) { $reloadArguments += '-UseProxy' }
@@ -594,17 +654,12 @@ try {
     if (-not $SkipMobileProjects) {
         Set-StartupProgress -Message 'Loading Device projects and remote connections...'
         $mobileTimer = [Diagnostics.Stopwatch]::StartNew()
-        $deadline = [DateTime]::UtcNow.AddSeconds(45)
         $enableOutput = @(& $mobile -Action Enable -TargetWaitMilliseconds 30000 -DeferUpdateSession -Confirm:$false 2>&1)
         $enableOutput | ForEach-Object { Write-Host $_ }
         $report = Get-RemoteMobileReport -Output $enableOutput
-        Assert-RemoteMobileReport -Report $report
-        while (-not $report.ready) {
-            if ([DateTime]::UtcNow -ge $deadline) { throw (Get-RemoteMobileReadinessTimeoutMessage -Report $report -TimeoutSeconds 45) }
-            Start-Sleep -Milliseconds 500
+        $report = Wait-RemoteMobileReadiness -Report $report -TimeoutSeconds 45 -Probe {
             $probeOutput = @(& $mobile -Action Probe 2>&1)
-            $report = Get-RemoteMobileReport -Output $probeOutput
-            Assert-RemoteMobileReport -Report $report
+            $probeOutput
         }
         $mobileTimer.Stop()
         Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] stage=mobile-readiness durationMs=$($mobileTimer.ElapsedMilliseconds) mounted=$($report.mounted) localRuntimeReady=$($report.localRuntimeReady) authoritativeInventoryReady=$($report.authoritativeInventoryReady) publisherReady=$($report.publisherReady) ready=$($report.ready)"

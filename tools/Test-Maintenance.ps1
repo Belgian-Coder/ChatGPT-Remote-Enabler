@@ -40,6 +40,13 @@ db.close();
     if ($LASTEXITCODE -ne 0) { throw 'Maintenance fixture creation failed.' }
     $logsBefore = (Get-Item -LiteralPath (Join-Path $testRoot 'logs_2.sqlite')).Length
     $stateBefore = (Get-Item -LiteralPath (Join-Path $testRoot 'state_5.sqlite')).Length
+    $startupReport = & $node --no-warnings $helper --startup --test-temp --codex-home $testRoot | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0 -or $startupReport.status -ne 'completed' -or
+        $startupReport.logs.removedByAge -ne 240 -or $startupReport.logs.vacuumed -or
+        $startupReport.state.vacuumed -or -not $startupReport.logs.vacuumDeferred -or
+        -not $startupReport.state.vacuumDeferred) {
+        throw 'Startup maintenance must retain log cleanup without blocking launch on VACUUM.'
+    }
     $report = & $node --no-warnings $helper --test-temp --codex-home $testRoot | ConvertFrom-Json
     if ($LASTEXITCODE -ne 0 -or $report.status -ne 'completed') {
         throw "Maintenance helper did not complete: $($report | ConvertTo-Json -Compress -Depth 8)"
@@ -55,11 +62,28 @@ db.close();
     Set-Content -LiteralPath $readResultPath -Value $readResult -Encoding UTF8
     $remaining = & $node --no-warnings $readResultPath $testRoot | ConvertFrom-Json
     if ($remaining.rows -ne 20 -or $remaining.estimated -ne 1000000) { throw 'Expired-log retention result is incorrect.' }
-    if ($report.logs.removedByAge -ne 240 -or -not $report.logs.vacuumed) { throw 'Log pruning or vacuum proof failed.' }
+    if ($report.logs.removedByAge -ne 0 -or -not $report.logs.vacuumed) { throw 'Deferred log vacuum proof failed.' }
     if (-not $report.state.vacuumed) { throw 'State-database vacuum proof failed.' }
     if ($report.logs.fileBytesAfter -ge $logsBefore -or $report.state.fileBytesAfter -ge $stateBefore) { throw 'Database files did not shrink.' }
     if ($report.durationMs -lt 0 -or @($report.phases).Count -ne 4 -or @($report.phases | Where-Object { $_.durationMs -lt 0 }).Count) {
         throw 'Maintenance helper did not report privacy-safe phase timing.'
+    }
+
+    $largeFragmentFixture = Join-Path $testRoot 'large-fragment.js'
+    [IO.File]::WriteAllText($largeFragmentFixture, @'
+const { DatabaseSync } = require("node:sqlite");
+const path = require("node:path");
+const db = new DatabaseSync(path.join(process.argv[2], "state_5.sqlite"));
+db.exec("INSERT INTO junk(body) VALUES(zeroblob(70 * 1024 * 1024)); DELETE FROM junk");
+db.close();
+'@, [Text.UTF8Encoding]::new($false))
+    & $node --no-warnings $largeFragmentFixture $testRoot
+    if ($LASTEXITCODE -ne 0) { throw 'Large fragmentation fixture failed.' }
+    $startupCompactionReport = & $node --no-warnings $helper --best-effort --startup --test-temp --codex-home $testRoot | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0 -or $startupCompactionReport.status -ne 'completed' -or
+        -not $startupCompactionReport.state.vacuumed -or $startupCompactionReport.state.vacuumDeferred -or
+        $startupCompactionReport.state.fileBytesAfter -ge $startupCompactionReport.state.fileBytesBefore) {
+        throw 'Startup must automatically reclaim a large, mostly empty database.'
     }
 
     $sqliteBlockerPath = Join-Path $testRoot 'block-sqlite.js'
@@ -137,7 +161,9 @@ childProcess.spawnSync = function() {
         throw 'A temporary-root junction bypassed the maintenance process guard or produced a fatal result.'
     }
     [pscustomobject]@{
-        ExpiredRowsRemoved = [int]$report.logs.removedByAge
+        ExpiredRowsRemoved = [int]$startupReport.logs.removedByAge
+        StartupVacuumDeferred = $true
+        LargeStartupCompactionRemainsAutomatic = $true
         RemainingRows = [int]$remaining.rows
         LogsShrank = $report.logs.fileBytesAfter -lt $logsBefore
         StateShrank = $report.state.fileBytesAfter -lt $stateBefore

@@ -92,13 +92,14 @@ function Stop-TestProcess {
 }
 
 function Invoke-HelperProcess {
-    param([Parameter(Mandatory)][string[]]$Arguments)
+    param([Parameter(Mandatory)][string[]]$Arguments, [hashtable]$Environment = @{})
     $start = [Diagnostics.ProcessStartInfo]::new()
     $start.FileName = $node
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
     $start.RedirectStandardOutput = $true
     $start.RedirectStandardError = $true
+    foreach ($entry in $Environment.GetEnumerator()) { $start.Environment[$entry.Key] = [string]$entry.Value }
     Set-ProcessArguments -StartInfo $start -Arguments (@($helper) + @($Arguments))
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $start
@@ -360,6 +361,37 @@ try {
     if ($integrityWithLegacyStartupRollback.integrityValid -ne $true) { throw 'Installed integrity rejected a rollback filename produced by StartupShortcut.ps1.' }
     Remove-Item -LiteralPath $runtimeRollback -Recurse -Force
 
+    # A missing prior payload must not discard authority to retire unchanged
+    # old release files. Preserve their exact contents in the rollback copy.
+    New-InstalledFixture $install
+    Remove-Item -LiteralPath (Join-Path $install 'payload.txt') -Force
+    $missingBackup = Join-Path $state 'rollback-missing-payload'
+    [void](Invoke-Helper -Arguments @(Get-ApplyArguments $install $prepared $journal $missingBackup $archiveHash))
+    $missingIntegrity = Invoke-Helper -Arguments @('integrity', '--install-root', $install)
+    if (-not $missingIntegrity.integrityValid -or (Test-Path -LiteralPath (Join-Path $install 'removed.txt')) -or
+        (Get-Content -LiteralPath (Join-Path $missingBackup 'removed.txt') -Raw) -cne 'removed after update') {
+        throw 'Missing-payload repair did not retire and back up the old release file.'
+    }
+
+    # An incomplete inventory must still reject changed files and unsafe paths;
+    # neither can grant permission to remove an old manifest entry.
+    foreach ($damage in @('changed-retired-file', 'unsafe-manifest-path')) {
+        New-InstalledFixture $install
+        Remove-Item -LiteralPath (Join-Path $install 'payload.txt') -Force
+        if ($damage -eq 'changed-retired-file') {
+            Write-Utf8File (Join-Path $install 'removed.txt') 'locally changed retired file'
+        } else {
+            Add-Content -LiteralPath (Join-Path $install 'RELEASE-MANIFEST.sha256') -Value (('0' * 64) + ' *../outside.txt')
+        }
+        $refused = Invoke-HelperProcess -Arguments @(Get-ApplyArguments $install $prepared $journal (Join-Path $state "rollback-$damage") $archiveHash)
+        $refusedJournal = Read-JsonSnapshotShared $journal
+        if ($refused.ExitCode -eq 0 -or -not (Test-Path -LiteralPath (Join-Path $install 'removed.txt')) -or
+            @($refusedJournal.operations | Where-Object kind -EQ 'remove').Count -ne 0) {
+            throw "An unsafe incomplete inventory authorized retired-file deletion: $damage"
+        }
+        Remove-Item -LiteralPath $journal -Force
+    }
+
     # Preload instrumentation blocks immediately after the first journal count is durably renamed.
     $hook = Join-Path $temporaryRoot 'pause-after-journal.js'
     Write-Utf8File $hook @'
@@ -415,6 +447,88 @@ fs.mkdirSync = function patchedMkdir(directory) {
         }
         $targetCount++
     } while ($targetCount -le $operationCount)
+
+    New-InstalledFixture $install
+    Remove-Item -LiteralPath (Join-Path $install 'payload.txt') -Force
+    $missingCrash = Start-PausedApply (Get-ApplyArguments $install $prepared $journal (Join-Path $state 'rollback-missing-crash') $archiveHash) $journal $hook 1
+    if ($missingCrash.previousIntegrityValid) { throw 'An incomplete previous installation was marked valid.' }
+    $missingRecovered = Invoke-Helper -Arguments @('recover', '--journal-path', $journal, '--install-root', $install)
+    if (-not $missingRecovered.integrityValid -or $missingRecovered.recoveryMode -cne 'complete-forward' -or
+        (Test-Path -LiteralPath (Join-Path $install 'removed.txt')) -or (Test-Path -LiteralPath $journal)) {
+        throw 'Interrupted missing-payload repair did not complete forward and retire the old file.'
+    }
+
+    # A failed forward repair cannot claim that an already-damaged prior install
+    # is healthy. Preserve its recovery material, restore retired bytes, and retry.
+    New-InstalledFixture $install
+    $retiredBytes = [IO.File]::ReadAllBytes((Join-Path $install 'removed.txt'))
+    Remove-Item -LiteralPath (Join-Path $install 'payload.txt') -Force
+    $blockedBackup = Join-Path $state 'rollback-blocked-repair'
+    $blockedRepair = Start-PausedApply (Get-ApplyArguments $install $prepared $journal $blockedBackup $archiveHash) $journal $hook 0
+    $removeIndex = -1
+    for ($index = 0; $index -lt $blockedRepair.operations.Count; $index++) {
+        if ($blockedRepair.operations[$index].kind -ceq 'remove' -and $blockedRepair.operations[$index].relative -ceq 'removed.txt') { $removeIndex = $index }
+    }
+    if ($blockedRepair.previousIntegrityValid -or $removeIndex -lt 0 -or -not $blockedRepair.operations[$removeIndex].existed) {
+        throw 'Blocked repair fixture did not contain an invalid-prior retirement.'
+    }
+    [void](Start-PausedApply @('recover', '--journal-path', $journal, '--install-root', $install) $journal $hook ($removeIndex + 1))
+    if (Test-Path -LiteralPath (Join-Path $install 'removed.txt')) { throw 'Retired file was not removed before the injected repair failure.' }
+    $forwardBlocker = Join-Path $temporaryRoot 'block forward manifest.js'
+    Write-Utf8File $forwardBlocker @'
+const fs = require("node:fs");
+const path = require("node:path");
+const originalCopy = fs.copyFileSync;
+const normalize = (value) => path.resolve(String(value)).toLowerCase();
+let injected = false;
+fs.copyFileSync = function(source, destination) {
+  if (!injected && normalize(source) === normalize(process.env.CHATGPT_REMOTE_TEST_PREPARED_MANIFEST)
+      && normalize(destination).startsWith(normalize(process.env.CHATGPT_REMOTE_TEST_INSTALL_MANIFEST) + ".update-tmp-")) {
+    injected = true;
+    const error = new Error("fixture forward manifest copy blocked");
+    error.code = "EIO";
+    throw error;
+  }
+  return originalCopy.apply(this, arguments);
+};
+'@
+    $blockedResult = Invoke-HelperProcess -Arguments @('recover', '--journal-path', $journal, '--install-root', $install) -Environment @{
+        NODE_OPTIONS = "--require=`"$($forwardBlocker.Replace('\', '/'))`""
+        CHATGPT_REMOTE_TEST_PREPARED_MANIFEST = Join-Path $prepared 'RELEASE-MANIFEST.sha256'
+        CHATGPT_REMOTE_TEST_INSTALL_MANIFEST = Join-Path $install 'RELEASE-MANIFEST.sha256'
+    }
+    if ($blockedResult.ExitCode -eq 0 -or $blockedResult.StandardError -notmatch 'fixture forward manifest copy blocked' -or
+        $blockedResult.StandardError -notmatch 'previous installation was already invalid' -or
+        -not (Test-Path -LiteralPath $journal) -or (Test-Path -LiteralPath (Join-Path $install 'payload.txt'))) {
+        throw 'Blocked repair did not retain its journal after restoring the invalid prior installation.'
+    }
+    foreach ($retiredCopy in @((Join-Path $install 'removed.txt'), (Join-Path $blockedBackup 'removed.txt'))) {
+        if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($retiredCopy)) -cne [Convert]::ToBase64String($retiredBytes)) {
+            throw 'Blocked repair did not preserve the exact retired-file bytes.'
+        }
+    }
+    [void](Invoke-Helper -Arguments @('validate-prepared', '--prepared-root', $prepared, '--platform', 'Windows-x64', '--version', 'v2.0.0', '--archive-sha256', $archiveHash))
+    $unblockedRepair = Invoke-Helper -Arguments @('recover', '--journal-path', $journal, '--install-root', $install)
+    if (-not $unblockedRepair.integrityValid -or $unblockedRepair.recoveryMode -cne 'complete-forward' -or
+        (Test-Path -LiteralPath $journal) -or (Test-Path -LiteralPath (Join-Path $install 'removed.txt'))) {
+        throw 'Repair did not complete forward after the transient blocker cleared.'
+    }
+
+    # Older schema-1 writers omitted all removals when the previous payload was
+    # incomplete. An already-absent retired file must not prevent forward recovery.
+    New-InstalledFixture $install
+    Remove-Item -LiteralPath (Join-Path $install 'payload.txt'), (Join-Path $install 'removed.txt') -Force
+    $legacyCrash = Start-PausedApply (Get-ApplyArguments $install $prepared $journal (Join-Path $state 'rollback-legacy-missing') $archiveHash) $journal $hook 1
+    $legacyCrash.operations = @($legacyCrash.operations | Where-Object { $_.kind -ne 'remove' })
+    if ($legacyCrash.schemaVersion -ne 1 -or $legacyCrash.previousIntegrityValid) {
+        throw 'Legacy incomplete-install fixture does not represent a schema-1 journal.'
+    }
+    Write-Utf8File $journal ($legacyCrash | ConvertTo-Json -Depth 20)
+    $legacyRecovered = Invoke-Helper -Arguments @('recover', '--journal-path', $journal, '--install-root', $install)
+    if (-not $legacyRecovered.integrityValid -or $legacyRecovered.recoveryMode -cne 'complete-forward' -or
+        (Test-Path -LiteralPath (Join-Path $install 'removed.txt')) -or (Test-Path -LiteralPath $journal)) {
+        throw 'Legacy incomplete-install journal did not complete forward with an already-absent retired file.'
+    }
 
     # Killing only the PowerShell parent must not expose the orphan Node writer.
     New-InstalledFixture $install
@@ -633,6 +747,9 @@ server.listen(Number(process.env.CHATGPT_REMOTE_TEST_PORT), "127.0.0.1", () => {
     [pscustomobject]@{
         PreparedArchiveTamperRejected = $true
         NormalApplyIntegrity = $true
+        MissingPayloadRetiredFileRepair = $true
+        UnsafeIncompleteInventoryCannotRemove = $true
+        InterruptedMissingPayloadRepair = $true
         HardKillCompleteForwardBoundaries = $operationCount + 1
         ParentOnlyKillWriterGuard = $true
         ConcurrentStaleReclaimSerialized = $true

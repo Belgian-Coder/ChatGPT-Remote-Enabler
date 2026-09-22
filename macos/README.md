@@ -189,8 +189,10 @@ skipped. Use `disable-auto-maintenance`, `preview-auto-maintenance`, or
 `run-auto-maintenance` to control it.
 
 Before starting ChatGPT, the packaged launcher prunes diagnostic logs older than
-seven days (96 MiB cap), checkpoints WAL files, optimizes, and vacuums materially
-fragmented SQLite databases. It skips physical maintenance while ChatGPT/Codex
+seven days (96 MiB cap), checkpoints WAL files, and optimizes SQLite. Startup
+runs VACUUM only when at least 64 MiB and half the database are free. Below that
+threshold, free pages remain available for database reuse without a full rewrite.
+It skips physical maintenance while ChatGPT/Codex
 is running. Maintenance failures are reported separately; the launcher's
 best-effort maintenance does not prevent startup. Direct maintenance commands
 return a failing exit status on database errors. Permanent chat deletion

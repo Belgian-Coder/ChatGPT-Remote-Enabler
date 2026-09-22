@@ -183,7 +183,9 @@ no task IDs or paths.
 
 Before startup, the launcher performs best-effort local maintenance: it prunes
 diagnostic logs older than seven days within a 96 MiB cap, checkpoints WAL
-files, optimizes SQLite, and vacuums materially fragmented databases. It
+files, and optimizes SQLite. Startup compacts a database only when at least
+64 MiB and half its pages are free. Below that threshold, free pages remain
+available for database reuse without a full rewrite. It
 skips physical maintenance while ChatGPT/Codex is running. Maintenance errors
 are reported separately and do not block ordinary launch.
 

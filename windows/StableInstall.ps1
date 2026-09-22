@@ -252,15 +252,21 @@ function Ensure-StableInstallRoot {
         $stableValid = $stableBasicValid -and (Test-StablePackage -Root $StableRoot -RequireManifest:$sourceIsPackaged)
         $sourceVersion = ConvertTo-StableSemanticVersion (Get-StableVersion -Root $SourceRoot)
         $stableVersion = $null
-        if ($stableBasicValid) {
+        if (Test-Path -LiteralPath $StableRoot) {
+            # Missing helper files must not prevent a packaged setup repair.
+            # Read VERSION independently so damage cannot bypass downgrade
+            # protection; an unknown version still requires explicit recovery.
             $stableVersion = ConvertTo-StableSemanticVersion (Get-StableVersion -Root $StableRoot)
             if ($sourceVersion -le $stableVersion -and $stableValid) { return $StableRoot }
             if ($sourceVersion -lt $stableVersion) { throw "A package at $((Get-StableVersion -Root $SourceRoot)) cannot repair or replace newer stable installation $((Get-StableVersion -Root $StableRoot))." }
         }
 
         if (Test-Path -LiteralPath $StableRoot) {
-            if (-not $stableBasicValid) { throw "The canonical stable installation is present but failed validation: $StableRoot" }
             if (-not $sourceIsPackaged) { throw 'Updating an existing stable installation requires a packaged source with RELEASE-MANIFEST.sha256.' }
+            Assert-StableNoReparsePath -Path $StableRoot -StopAt ([IO.Path]::GetPathRoot($StableRoot))
+            if (-not $stableBasicValid -and -not (Test-Path -LiteralPath (Join-Path $StableRoot 'RELEASE-MANIFEST.sha256') -PathType Leaf)) {
+                throw 'The incomplete stable installation has no release manifest; refusing to overwrite an unrecognized directory.'
+            }
             if (-not $nodePath) { $nodePath = Resolve-StableTransactionNode }
             $safeVersion = (Get-StableVersion -Root $SourceRoot) -replace '[^A-Za-z0-9._-]', '_'
             $preparedParent = Join-Path $UpdaterStateRoot 'prepared'

@@ -39,6 +39,14 @@ do not decide whether an installed ChatGPT build is supported.
 Lifecycle recovery also requires the exact helper-owned main-process identity;
 it never stops an adopted or unrelated ChatGPT process by executable path.
 
+If the Windows helper update is unavailable, startup can use the installed
+helper after local recovery verifies its files. A failed recovery or malformed
+updater success response still stops launch. Renderer discovery and readiness
+have separate time budgets, and temporary readiness-probe failures are retried.
+Packaged setup can repair missing helper files without removing the permanent
+installation, provided its installed version is readable and the package is
+not older. The existing one-rollback policy remains in effect.
+
 On macOS, the Dock shortcut shows a native AppKit startup window while it
 recovers and checks updates, prepares maintenance, launches ChatGPT, and waits
 for renderer readiness. It launches the exact desktop binary without Apple

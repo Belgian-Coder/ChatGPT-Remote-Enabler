@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased — 2026-09-22
+
+- Continue Windows startup after an unavailable helper update only when local
+  recovery proves the installation intact. Preserve updater exit codes and
+  reload changed files before launch; malformed success proof still stops.
+  An unchanged, recovered installation continues without a launcher respawn.
+- Give renderer readiness its full timeout after target discovery, and retry
+  temporary probe failures without restarting ChatGPT.
+- Keep automatic seven-day/96 MiB log retention at startup on both platforms.
+  Run startup VACUUM only when at least 64 MiB and half the database are free,
+  avoiding repeated full rewrites while still reclaiming substantial waste.
+- Repair missing Windows helper files from a valid setup package through the
+  existing transaction, including retirement of verified older files during
+  cross-version repair, retaining downgrade protection and one rollback.
+  Preserve recovery of older transaction journals when retired files were
+  already absent before the update.
+
 ## v1.5.94 — 2026-09-21
 
 - Keep cold sidebar enablement waiting for the exact Codex renderer target for

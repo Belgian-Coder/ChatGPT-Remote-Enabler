@@ -382,8 +382,10 @@ known path under the local managed archive directory and an exclusive
 cross-window lock; missing evidence is reported as skipped.
 `PreviewAutoMaintenance` reports archive/delete eligibility without changing
 anything. Before launching ChatGPT, the packaged launcher also prunes diagnostic
-logs older than seven days (96 MiB cap), checkpoints WAL files, optimizes, and
-vacuums materially fragmented SQLite databases. It skips physical maintenance
+logs older than seven days (96 MiB cap), checkpoints WAL files, and optimizes
+SQLite. Startup runs VACUUM only when at least 64 MiB and half the database
+are free. Below that threshold, free pages remain available for database reuse
+without a full rewrite. It skips physical maintenance
 when any ChatGPT/Codex process is already running. The launcher uses
 best-effort maintenance: failures are logged separately and launch continues.
 Direct maintenance runs return a failing exit status on database errors.

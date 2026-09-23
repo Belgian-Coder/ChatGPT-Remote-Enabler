@@ -13,7 +13,7 @@ const {
 
 // Bump this when the preparation algorithm or its marker contract changes.
 // Product/package versions intentionally do not participate in this identity.
-const PATCH_SCHEMA = 5;
+const PATCH_SCHEMA = 6;
 const FUSE_SENTINEL = Buffer.from("dL7pKGdnNz796PbbjQWNKmHXBZaB9tsX", "ascii");
 const ENABLE_EMBEDDED_ASAR_INTEGRITY_VALIDATION = 4;
 const REMOTE_CONTROL_CLIENT_PATH = "/codex/remote/control/client";
@@ -266,6 +266,7 @@ function findValidatorFunction(tokens, pairs, bodyOpen) {
 function findValidatorNames(tokens, bodyOpen, bodyClose) {
   let targetName = null;
   let urlName = null;
+  let urlInputName = null;
   let protocolName = null;
   for (let index = bodyOpen + 1; index < bodyClose; index += 1) {
     if (tokens[index].value === "targetOrigin" || tokens[index].value === "targetPath") {
@@ -278,6 +279,7 @@ function findValidatorNames(tokens, bodyOpen, bodyClose) {
         const close = tokens[index + 4]?.value === ")" ? index + 4 : null;
         if (close != null && tokens[index - 1]?.value === "=" && tokens[index - 2]?.type === "identifier") {
           urlName = tokens[index - 2].value;
+          urlInputName = candidate.value;
         }
       }
     }
@@ -291,17 +293,16 @@ function findValidatorNames(tokens, bodyOpen, bodyClose) {
     break;
   }
   if (!targetName || !protocolName) return null;
-  return { protocolName, targetName, urlName };
+  return { protocolName, targetName, urlName, urlInputName };
 }
 
 function buildValidatorReplacement(source, tokens, validator, body, names) {
   const bodySource = source.slice(tokens[body.open].start, tokens[body.close].end);
-  if (bodySource.includes("CRWU")) return null;
-  // Replacing the complete validator body avoids relying on spare whitespace
-  // in a minified package. URL.protocol's ws -> http mapping is equivalent for
-  // the only accepted schemes and keeps the replacement shorter than the
-  // original nested conditional and null check.
-  return `{let ${names.urlName}=new URL(process.env.CRWU),${names.protocolName}=${names.urlName}.protocol.replace(\`ws\`,\`http\`);return ${names.targetName}.targetOrigin===\`\${${names.protocolName}}//\${${names.urlName}.host}\`&&${names.targetName}.targetPath===${names.urlName}.pathname}`;
+  if (bodySource.includes("/crv.cjs")) return null;
+  // Keep the function/method/arrow declaration intact. A separate verified
+  // helper leaves enough room for the complete mapping and validation rules
+  // without growing the minified ASAR entry.
+  return `{return require(process.resourcesPath+\`/crv.cjs\`)(${names.targetName},${names.urlInputName})}`;
 }
 
 function findChallengeTargetPatchInWindow(contents, baseOffset = 0) {
@@ -331,7 +332,7 @@ function findChallengeTargetPatchInWindow(contents, baseOffset = 0) {
       alreadyPatched: replacement == null,
       end: tokens[body.close].end + baseOffset,
       kind: "legacy-challenge-validator",
-      start: validator.start + baseOffset,
+      start: tokens[body.open].start + baseOffset,
       replacement,
     });
     index = close;
@@ -380,16 +381,13 @@ function patchAsar(file, features) {
   let challenge = null;
   let provider = null;
   if (features.proxyEnabled) {
-    // Discover the complete coherent plan before mutating any byte. This is
-    // especially important for modern handshake builds: after the URL RHS is
-    // replaced, an unrelated legacy validator elsewhere in the bundle must
-    // not become a required post-patch capability.
+    // Discover both transport selection and challenge target validation before
+    // mutating any byte. Both controller layouts need the exact loopback-to-
+    // public target mapping while preserving the server's signed challenge.
     controller = findControllerWebSocketPatch(contents);
     if (!controller) fail("This ChatGPT build does not expose one unambiguous Remote-control WebSocket capability.");
-    if (controller.kind !== "modern-handshake") {
-      challenge = findChallengeTargetPatch(contents);
-      if (!challenge) fail("This ChatGPT build does not expose one unambiguous challenge/API target capability.");
-    }
+    challenge = findChallengeTargetPatch(contents);
+    if (!challenge) fail("This ChatGPT build does not expose one unambiguous challenge/API target capability.");
   }
   if (features.legacyDeviceKeys) {
     provider = findDeviceKeyProvider(contents);
@@ -397,13 +395,7 @@ function patchAsar(file, features) {
   }
   if (features.proxyEnabled) {
     if (controller.replacement) patchSpanInPlace(contents, controller.start, controller.end, controller.replacement, "Remote-control WebSocket");
-    if (controller.kind === "modern-handshake") {
-      // The modern controller calculates challenge targetOrigin/targetPath
-      // through its API-base environment capability. No source rewrite is
-      // needed: CODEX_API_BASE_URL is consumed by that calculation at runtime.
-    } else {
-      if (challenge.replacement) patchSpanInPlace(contents, challenge.start, challenge.end, challenge.replacement, "challenge/API target");
-    }
+    if (challenge.replacement) patchSpanInPlace(contents, challenge.start, challenge.end, challenge.replacement, "challenge/API target");
   }
   if (features.legacyDeviceKeys) patchDeviceKeyLoader(contents, provider);
   if (features.proxyEnabled) {
@@ -411,7 +403,7 @@ function patchAsar(file, features) {
     if (!controllerText.includes("CHATGPT_REMOTE_WS_URL")) fail("The Remote-control WebSocket semantic patch did not apply.");
     if (challenge) {
       const challengeText = contents.subarray(challenge.start, challenge.end).toString("utf8");
-      if (!challengeText.includes("CRWU")) fail("The challenge/API target semantic patch did not apply.");
+      if (!challengeText.includes("/crv.cjs")) fail("The challenge/API target semantic patch did not apply.");
     }
   }
   if (provider) {
@@ -427,6 +419,9 @@ function isCurrent(destination, expected) {
     const marker = JSON.parse(fs.readFileSync(markerPath, "utf8"));
     return marker.patchSchema === PATCH_SCHEMA &&
       marker.proxyEnabled === expected.proxyEnabled &&
+      (!expected.proxyEnabled ||
+        (marker.challengeValidatorSha256 === expected.challengeValidatorSha256 &&
+          sha256(path.join(destination, "resources", "crv.cjs")) === expected.challengeValidatorSha256)) &&
       marker.legacyDeviceKeys === expected.legacyDeviceKeys &&
       (!expected.legacyDeviceKeys ||
         (sha256(path.join(destination, "resources", "crk.cjs")) === expected.compatibilityLoaderSha256 &&
@@ -490,6 +485,7 @@ function main() {
     packageVersion,
     proxyEnabled,
     legacyDeviceKeys,
+    challengeValidatorSha256: proxyEnabled ? sha256(path.join(__dirname, "remote-control-target.cjs")) : null,
     compatibilityLoaderSha256: legacyDeviceKeys ? sha256(path.join(__dirname, "legacy-device-key-compat.cjs")) : null,
     compatibilityServiceSha256: legacyDeviceKeys ? sha256(path.join(__dirname, "main-payload.js")) : null,
     sourceAppAsarSha256: sha256(sourceAsar),
@@ -497,7 +493,7 @@ function main() {
   };
   const compatibilityIdentity = legacyDeviceKeys
     ? `-k${expected.compatibilityLoaderSha256.slice(0, 8)}${expected.compatibilityServiceSha256.slice(0, 8)}` : "";
-  const identity = `${expected.sourceAppAsarSha256.slice(0, 12)}-${expected.sourceChromeSha256.slice(0, 12)}-p${PATCH_SCHEMA}${proxyEnabled ? "-proxy" : ""}${compatibilityIdentity}`;
+  const identity = `${expected.sourceAppAsarSha256.slice(0, 12)}-${expected.sourceChromeSha256.slice(0, 12)}-p${PATCH_SCHEMA}${proxyEnabled ? `-proxy-v${expected.challengeValidatorSha256.slice(0, 12)}` : ""}${compatibilityIdentity}`;
   const destination = path.join(safeRoot, `proxy-runtime-${identity}`);
   assertSafeDestination(destination, safeRoot);
   fs.mkdirSync(safeRoot, { recursive: true });
@@ -519,6 +515,7 @@ function main() {
     const stagedAsar = path.join(staging, "resources", "app.asar");
     const stagedChrome = path.join(staging, "chrome.dll");
     patchAsar(stagedAsar, expected);
+    if (proxyEnabled) fs.copyFileSync(path.join(__dirname, "remote-control-target.cjs"), path.join(staging, "resources", "crv.cjs"));
     if (legacyDeviceKeys) {
       fs.copyFileSync(path.join(__dirname, "legacy-device-key-compat.cjs"), path.join(staging, "resources", "crk.cjs"));
       fs.copyFileSync(path.join(__dirname, "main-payload.js"), path.join(staging, "resources", "crks.cjs"));
@@ -528,6 +525,7 @@ function main() {
       patchSchema: PATCH_SCHEMA,
       proxyEnabled,
       legacyDeviceKeys,
+      challengeValidatorSha256: expected.challengeValidatorSha256,
       compatibilityLoaderSha256: expected.compatibilityLoaderSha256,
       compatibilityServiceSha256: expected.compatibilityServiceSha256,
       packageVersion,
@@ -585,9 +583,7 @@ function describeCapabilities(controller, challenge, provider) {
   return {
     challengeTarget: {
       ...describePatch(challenge),
-      mode: controller?.kind === "modern-handshake"
-        ? "api-base-environment"
-        : challenge?.kind === "modern-api-target" ? "api-base-environment" : "validator-override",
+      mode: "verified-transport-target-mapping",
     },
     controllerWebSocket: describePatch(controller),
     deviceKeyProvider: describeDeviceKeyProvider(provider),
@@ -597,7 +593,7 @@ function describeCapabilities(controller, challenge, provider) {
 function analyzeProxyCapabilities(contents) {
   if (!Buffer.isBuffer(contents)) throw new TypeError("Proxy capability analysis requires a Buffer.");
   const controller = findControllerWebSocketPatch(contents);
-  const challenge = controller?.kind === "modern-handshake" ? null : findChallengeTargetPatch(contents);
+  const challenge = findChallengeTargetPatch(contents);
   const provider = findDeviceKeyProvider(contents);
   return describeCapabilities(controller, challenge, provider);
 }
@@ -668,7 +664,7 @@ function analyzeProxyFile(file) {
   }
   const controller = controllerCandidates.size === 1 ? [...controllerCandidates.values()][0] : null;
   const challengeCandidates = new Map();
-  if (controller?.kind !== "modern-handshake") {
+  {
     for (const anchorName of ["targetPath", "targetOrigin"]) {
       const anchorLength = Buffer.byteLength(anchorName, "utf8");
       for (const anchorOffset of anchors.get(anchorName)) {

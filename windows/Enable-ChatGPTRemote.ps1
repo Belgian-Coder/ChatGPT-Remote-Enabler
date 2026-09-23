@@ -47,6 +47,7 @@ $mobile = Join-Path $runtimeRoot 'CodexRemoteMobileProject\MobileProjectView.ps1
 $desktopAppUpdater = Join-Path $runtimeRoot 'Update-ChatGPTDesktop.ps1'
 $updater = Join-Path $runtimeRoot 'Update-ChatGPTRemote.ps1'
 $updateSessionLauncher = Join-Path $runtimeRoot 'CodexRemoteMobileProject\UpdateSessionLauncher.ps1'
+$publisherHeartbeatHelper = Join-Path $runtimeRoot 'CodexRemoteMobileProject\publisher-heartbeat.js'
 $startupProgressHelper = Join-Path $runtimeRoot 'CodexRemoteMobileProject\StartupProgress.ps1'
 $proxyModule = Join-Path $runtimeRoot 'CodexRemoteMobileProject\ProxyConfiguration.psm1'
 if (-not (Test-Path -LiteralPath $startupProgressHelper -PathType Leaf)) { throw "Startup progress helper is missing: $startupProgressHelper" }
@@ -109,6 +110,66 @@ function Get-RemoteMobileReadinessTimeoutMessage {
         $message += " Last readiness error: $($Report.error)"
     }
     return $message
+}
+
+function Resolve-RemoteBackgroundNode {
+    $command = Get-Command node.exe -ErrorAction SilentlyContinue
+    foreach ($candidate in @(
+        $(if ($command) { $command.Source }),
+        (Join-Path $env:USERPROFILE '.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe'),
+        (Join-Path $env:LOCALAPPDATA 'Programs\nodejs\node.exe'),
+        (Join-Path $env:ProgramFiles 'nodejs\node.exe')
+    ) | Where-Object { $_ } | Select-Object -Unique) {
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
+        & $candidate -e 'process.exit(parseInt(process.versions.node) >= 22 && globalThis.WebSocket ? 0 : 1)' 2>$null
+        if ($LASTEXITCODE -eq 0) { return [IO.Path]::GetFullPath($candidate) }
+    }
+    throw 'Node.js 22 or newer was not found for the background Remote services.'
+}
+
+function Start-RemoteMobileBackgroundServices {
+    param([Parameter(Mandatory)][string]$NodePath)
+
+    try {
+        $stableStatePath = Join-Path $logRoot 'codexremote-simple-session.json'
+        $stableState = Get-Content -LiteralPath $stableStatePath -Raw | ConvertFrom-Json -ErrorAction Stop
+        $heartbeatPort = [int]$stableState.rendererPort
+        $heartbeatParent = [int]$stableState.launchProcessId
+        if ($heartbeatPort -lt 1 -or $heartbeatPort -gt 65535 -or $heartbeatParent -lt 1) {
+            throw 'The stable session did not report a valid heartbeat target.'
+        }
+        $heartbeatProcess = [Diagnostics.Process]::GetProcessById($heartbeatParent)
+        try {
+            $heartbeatStartToken = $heartbeatProcess.StartTime.ToUniversalTime().ToFileTimeUtc().ToString([Globalization.CultureInfo]::InvariantCulture)
+            $heartbeatExecutable = [IO.Path]::GetFullPath($heartbeatProcess.MainModule.FileName)
+        } finally { $heartbeatProcess.Dispose() }
+        if (-not [string]::Equals($heartbeatExecutable, [IO.Path]::GetFullPath([string]$stableState.executablePath), [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'The stable session heartbeat process identity changed.'
+        }
+        $heartbeatLock = Join-Path $logRoot "publisher-heartbeat-$heartbeatPort.lock"
+        $heartbeatArguments = '--no-warnings "{0}" --port {1} --parent-pid {2} --parent-start-token "{3}" --lock-path "{4}"' -f $publisherHeartbeatHelper, $heartbeatPort, $heartbeatParent, $heartbeatStartToken, $heartbeatLock
+        Start-Process -FilePath $NodePath -ArgumentList $heartbeatArguments -WindowStyle Hidden | Out-Null
+        Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] publisher heartbeat started for the exact renderer session"
+    } catch {
+        Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] publisher heartbeat unavailable: $($_.Exception.Message)"
+    }
+
+    Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] renderer enabled; arming background update monitoring before readiness polling"
+    try {
+        $sessionTimer = [Diagnostics.Stopwatch]::StartNew()
+        $sessionArguments = @{
+            InstallRoot = $runtimeRoot
+            EntryPointRelative = 'Enable-ChatGPTRemote.ps1'
+            NodePath = $NodePath
+            UseProxy = [bool]$UseProxy
+            SkipInitialCheck = [bool]($SkipUpdate -or $SkipUpdateCheckOnce)
+        }
+        & $updateSessionLauncher @sessionArguments | ForEach-Object { Write-RemoteLauncherLog ([string]$_) }
+        $sessionTimer.Stop()
+        Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] stage=update-session durationMs=$($sessionTimer.ElapsedMilliseconds)"
+    } catch {
+        Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] update-session launch unavailable: $($_.Exception.Message)"
+    }
 }
 
 function Write-RemoteRelaunchHandoff {
@@ -654,31 +715,19 @@ try {
     if (-not $SkipMobileProjects) {
         Set-StartupProgress -Message 'Loading Device projects and remote connections...'
         $mobileTimer = [Diagnostics.Stopwatch]::StartNew()
-        $enableOutput = @(& $mobile -Action Enable -TargetWaitMilliseconds 30000 -DeferUpdateSession -Confirm:$false 2>&1)
+        $node = Resolve-RemoteBackgroundNode
+        $enableOutput = @(& $mobile -Action Enable -TargetWaitMilliseconds 30000 -DeferUpdateSession -NodePath $node -Confirm:$false 2>&1)
         $enableOutput | ForEach-Object { Write-Host $_ }
         $report = Get-RemoteMobileReport -Output $enableOutput
+        Start-RemoteMobileBackgroundServices -NodePath $node
         $report = Wait-RemoteMobileReadiness -Report $report -TimeoutSeconds 45 -Probe {
-            $probeOutput = @(& $mobile -Action Probe 2>&1)
+            $probeOutput = @(& $mobile -Action Probe -NodePath $node 2>&1)
             $probeOutput
         }
         $mobileTimer.Stop()
         Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] stage=mobile-readiness durationMs=$($mobileTimer.ElapsedMilliseconds) mounted=$($report.mounted) localRuntimeReady=$($report.localRuntimeReady) authoritativeInventoryReady=$($report.authoritativeInventoryReady) publisherReady=$($report.publisherReady) ready=$($report.ready)"
         Stop-StartupProgress
-        Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] interactive startup completed; arming background update monitoring"
-        try {
-            $sessionTimer = [Diagnostics.Stopwatch]::StartNew()
-            $sessionArguments = @{
-                InstallRoot = $runtimeRoot
-                EntryPointRelative = 'Enable-ChatGPTRemote.ps1'
-                UseProxy = [bool]$UseProxy
-                SkipInitialCheck = [bool]($SkipUpdate -or $SkipUpdateCheckOnce)
-            }
-            & $updateSessionLauncher @sessionArguments | ForEach-Object { Write-RemoteLauncherLog ([string]$_) }
-            $sessionTimer.Stop()
-            Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] stage=update-session durationMs=$($sessionTimer.ElapsedMilliseconds)"
-        } catch {
-            Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] update-session launch unavailable: $($_.Exception.Message)"
-        }
+        Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] interactive startup completed"
         Write-RemoteRelaunchHandoff
     }
 

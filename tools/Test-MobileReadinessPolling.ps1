@@ -14,6 +14,13 @@ $cases = @(
         AssertFunction = 'Assert-MobileReport'
         TimeoutFunction = 'Get-MobileReadinessTimeoutMessage'
         WaitFunction = 'Wait-MobileReadiness'
+        BackgroundFunction = 'Start-MobileBackgroundServices'
+        EnableMarker = '$enableOutput = @(& $mobileController -Action Enable'
+        ReportMarker = '$report = Get-MobileReport -Output $enableOutput'
+        BackgroundMarker = 'Start-MobileBackgroundServices -NodePath $node'
+        WaitMarker = '$report = Wait-MobileReadiness -Report $report'
+        ReadyMarker = 'stage=mobile-readiness durationMs='
+        HandoffMarker = 'Write-RelaunchHandoff'
     },
     [pscustomobject]@{
         Path = 'windows\Enable-ChatGPTRemote.ps1'
@@ -21,21 +28,41 @@ $cases = @(
         AssertFunction = 'Assert-RemoteMobileReport'
         TimeoutFunction = 'Get-RemoteMobileReadinessTimeoutMessage'
         WaitFunction = 'Wait-RemoteMobileReadiness'
+        BackgroundFunction = 'Start-RemoteMobileBackgroundServices'
+        EnableMarker = '$enableOutput = @(& $mobile -Action Enable'
+        ReportMarker = '$report = Get-RemoteMobileReport -Output $enableOutput'
+        BackgroundMarker = 'Start-RemoteMobileBackgroundServices -NodePath $node'
+        WaitMarker = '$report = Wait-RemoteMobileReadiness -Report $report'
+        ReadyMarker = 'stage=mobile-readiness durationMs='
+        HandoffMarker = 'Write-RemoteRelaunchHandoff'
     }
 )
 
 foreach ($case in $cases) {
+    $sourcePath = Join-Path $root $case.Path
+    $sourceText = Get-Content -LiteralPath $sourcePath -Raw
     $tokens = $null
     $parseErrors = $null
-    $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $root $case.Path), [ref]$tokens, [ref]$parseErrors)
+    $ast = [Management.Automation.Language.Parser]::ParseFile($sourcePath, [ref]$tokens, [ref]$parseErrors)
     if ($parseErrors.Count) { throw "Controller parse failed: $($case.Path) - $($parseErrors[0].Message)" }
-    foreach ($functionName in @($case.GetFunction, $case.AssertFunction, $case.TimeoutFunction, $case.WaitFunction)) {
+    foreach ($functionName in @($case.GetFunction, $case.AssertFunction, $case.TimeoutFunction, $case.WaitFunction, $case.BackgroundFunction)) {
         $definition = $ast.FindAll({
             param($node)
             $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $functionName
         }, $true) | Select-Object -First 1
         if ($null -eq $definition) { throw "Missing readiness function $functionName in $($case.Path)." }
         Invoke-Expression $definition.Extent.Text
+    }
+
+    $enableIndex = $sourceText.IndexOf($case.EnableMarker, [StringComparison]::Ordinal)
+    $reportIndex = $sourceText.IndexOf($case.ReportMarker, $enableIndex, [StringComparison]::Ordinal)
+    $backgroundIndex = $sourceText.IndexOf($case.BackgroundMarker, $reportIndex, [StringComparison]::Ordinal)
+    $waitIndex = $sourceText.IndexOf($case.WaitMarker, $backgroundIndex, [StringComparison]::Ordinal)
+    $readyIndex = $sourceText.IndexOf($case.ReadyMarker, $waitIndex, [StringComparison]::Ordinal)
+    $handoffIndex = $sourceText.IndexOf($case.HandoffMarker, $readyIndex, [StringComparison]::Ordinal)
+    if ($enableIndex -lt 0 -or $reportIndex -lt $enableIndex -or $backgroundIndex -lt $reportIndex -or
+        $waitIndex -lt $backgroundIndex -or $readyIndex -lt $waitIndex -or $handoffIndex -lt $readyIndex) {
+        throw "Background services are not attached before readiness polling while success evidence remains gated in $($case.Path)."
     }
 
     $transient = [pscustomobject]@{
@@ -113,8 +140,80 @@ foreach ($case in $cases) {
     if (-not $malformedRejected) { throw 'Malformed successful probe output was treated as a transient error.' }
 }
 
+$fixtureRoot = Join-Path ([IO.Path]::GetTempPath()) ('chatgpt-remote-readiness-services-' + [guid]::NewGuid().ToString('N'))
+$sequencePath = Join-Path $fixtureRoot 'sequence.log'
+$sessionLauncher = Join-Path $fixtureRoot 'UpdateSessionLauncher.ps1'
+$previousSequencePath = [Environment]::GetEnvironmentVariable('CHATGPT_REMOTE_READINESS_TEST_SEQUENCE', 'Process')
+try {
+    New-Item -ItemType Directory -Path $fixtureRoot | Out-Null
+    $sessionSource = @'
+[CmdletBinding()]
+param(
+    [string]$InstallRoot,
+    [string]$EntryPointRelative,
+    [string]$NodePath,
+    [switch]$UseProxy,
+    [switch]$ReplaceRunningApp,
+    [switch]$SkipInitialCheck
+)
+[IO.File]::AppendAllText($env:CHATGPT_REMOTE_READINESS_TEST_SEQUENCE, "update$([Environment]::NewLine)")
+'{"started":true}'
+'@
+    [IO.File]::WriteAllText($sessionLauncher, $sessionSource, [Text.UTF8Encoding]::new($false))
+    [Environment]::SetEnvironmentVariable('CHATGPT_REMOTE_READINESS_TEST_SEQUENCE', $sequencePath, 'Process')
+    function Start-Process {
+        param([string]$FilePath, [object]$ArgumentList, [object]$WindowStyle)
+        [IO.File]::AppendAllText($env:CHATGPT_REMOTE_READINESS_TEST_SEQUENCE, "heartbeat$([Environment]::NewLine)")
+    }
+    function Write-CommandOutput { param([object[]]$Output) foreach ($item in $Output) { Write-StartupLog ([string]$item) } }
+
+    $currentProcess = [Diagnostics.Process]::GetCurrentProcess()
+    try {
+        $stableState = [ordered]@{
+            rendererPort = 9222
+            launchProcessId = $PID
+            executablePath = $currentProcess.MainModule.FileName
+        }
+    } finally { $currentProcess.Dispose() }
+    $logRoot = $fixtureRoot
+    [IO.File]::WriteAllText((Join-Path $logRoot 'codexremote-simple-session.json'), ($stableState | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
+    $publisherHeartbeatHelper = Join-Path $fixtureRoot 'publisher-heartbeat.js'
+    $updateSessionLauncher = $sessionLauncher
+    $runtimeRoot = $fixtureRoot
+    $bundleParent = $fixtureRoot
+    $computerName = 'FIXTURE'
+    $UseProxy = $false
+    $ReplaceRunningApp = $false
+    $SkipUpdate = $false
+    $SkipUpdateCheckOnce = $false
+
+    foreach ($case in $cases) {
+        Remove-Item -LiteralPath $sequencePath -Force -ErrorAction SilentlyContinue
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $root $case.Path), [ref]$tokens, [ref]$parseErrors)
+        $definition = $ast.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $case.BackgroundFunction
+        }, $true) | Select-Object -First 1
+        Invoke-Expression $definition.Extent.Text
+        & $case.BackgroundFunction -NodePath (Join-Path $fixtureRoot 'node.exe')
+        $sequence = @(Get-Content -LiteralPath $sequencePath)
+        if ($sequence.Count -ne 2 -or $sequence[0] -cne 'heartbeat' -or $sequence[1] -cne 'update') {
+            throw "Background services were not attached heartbeat-first for $($case.Path): $($sequence -join ', ')"
+        }
+    }
+} finally {
+    Remove-Item Function:\Start-Process -ErrorAction SilentlyContinue
+    Remove-Item Function:\Write-CommandOutput -ErrorAction SilentlyContinue
+    [Environment]::SetEnvironmentVariable('CHATGPT_REMOTE_READINESS_TEST_SEQUENCE', $previousSequencePath, 'Process')
+    Remove-Item -LiteralPath $fixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 [pscustomobject]@{
     Controllers = $cases.Count
+    BackgroundServicesBeforeReadiness = $true
+    HeartbeatStartsBeforeUpdate = $true
     NestedRendererEnvelope = $true
     LegacyFlatEnvelope = $true
     TransientErrorsRetried = $true

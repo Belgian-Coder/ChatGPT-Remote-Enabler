@@ -14,6 +14,7 @@ $javascript = @(
     'windows\CodexRemoteSimple\runtime\main-payload.js',
     'windows\CodexRemoteSimple\runtime\api-proxy-bridge.js',
     'windows\CodexRemoteSimple\runtime\prepare-proxy-runtime.js',
+    'windows\CodexRemoteSimple\runtime\remote-control-target.cjs',
     'windows\CodexRemoteMobileProject\update-session.js',
     'windows\CodexRemoteMobileProject\update-session-cdp.js',
     'windows\update-transaction.js',
@@ -243,6 +244,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Stable renderer self-test failed.' }
 foreach ($relative in @(
     'windows\CodexRemoteSimple\tests\RuntimeTransport.SelfTest.js',
     'windows\CodexRemoteSimple\tests\ProxyBridge.SelfTest.js',
+    'windows\CodexRemoteSimple\tests\ProxyChallengeTarget.SelfTest.cjs',
     'windows\CodexRemoteMobileProject\tests\InjectorRuntime.SelfTest.js',
     'windows\CodexRemoteMobileProject\tests\UpdateSessionCdp.SelfTest.js'
 )) {

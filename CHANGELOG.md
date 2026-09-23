@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.5.96 — 2026-09-23
+
+- Fix Windows proxy Remote authentication for both controller layouts. Map the
+  exact per-launch loopback transport back to its public WebSocket target for
+  the native device-key challenge comparison; keep signed challenge data,
+  enrollment, and account authorization unchanged. Prepare a new private
+  runtime on the next app launch; this change requires reopening the app.
+- Attach the publisher heartbeat and automatic updater immediately after
+  renderer injection, before waiting for sidebar readiness, in both Windows
+  launch paths. A slowly mounting sidebar no longer leaves a recovered app
+  without its background update service.
+
 ## v1.5.95 — 2026-09-22
 
 - Continue Windows startup after an unavailable helper update only when local

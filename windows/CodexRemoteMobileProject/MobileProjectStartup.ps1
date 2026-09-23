@@ -456,6 +456,52 @@ function Wait-MobileReadiness {
     return $Report
 }
 
+function Start-MobileBackgroundServices {
+    param([Parameter(Mandatory)][string]$NodePath)
+
+    try {
+        $stableStatePath = Join-Path $logRoot 'codexremote-simple-session.json'
+        $stableState = Get-Content -LiteralPath $stableStatePath -Raw | ConvertFrom-Json -ErrorAction Stop
+        $heartbeatPort = [int]$stableState.rendererPort
+        $heartbeatParent = [int]$stableState.launchProcessId
+        if ($heartbeatPort -lt 1 -or $heartbeatPort -gt 65535 -or $heartbeatParent -lt 1) {
+            throw 'The stable session did not report a valid heartbeat target.'
+        }
+        $heartbeatProcess = [Diagnostics.Process]::GetProcessById($heartbeatParent)
+        try {
+            $heartbeatStartToken = $heartbeatProcess.StartTime.ToUniversalTime().ToFileTimeUtc().ToString([Globalization.CultureInfo]::InvariantCulture)
+            $heartbeatExecutable = [IO.Path]::GetFullPath($heartbeatProcess.MainModule.FileName)
+        } finally { $heartbeatProcess.Dispose() }
+        if (-not [string]::Equals($heartbeatExecutable, [IO.Path]::GetFullPath([string]$stableState.executablePath), [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'The stable session heartbeat process identity changed.'
+        }
+        $heartbeatLock = Join-Path $logRoot "publisher-heartbeat-$heartbeatPort.lock"
+        $heartbeatArguments = '--no-warnings "{0}" --port {1} --parent-pid {2} --parent-start-token "{3}" --lock-path "{4}"' -f $publisherHeartbeatHelper, $heartbeatPort, $heartbeatParent, $heartbeatStartToken, $heartbeatLock
+        Start-Process -FilePath $NodePath -ArgumentList $heartbeatArguments -WindowStyle Hidden | Out-Null
+        Write-StartupLog "$(Get-Date -Format o) [$computerName] publisher heartbeat started for the exact renderer session"
+    } catch {
+        Write-StartupLog "$(Get-Date -Format o) [$computerName] publisher heartbeat unavailable: $($_.Exception.Message)"
+    }
+
+    Write-StartupLog "$(Get-Date -Format o) [$computerName] renderer enabled; arming background update monitoring before readiness polling"
+    try {
+        $sessionTimer = [Diagnostics.Stopwatch]::StartNew()
+        $sessionArguments = @{
+            InstallRoot = $bundleParent
+            EntryPointRelative = 'CodexRemoteMobileProject\MobileProjectStartup.ps1'
+            NodePath = $NodePath
+            UseProxy = [bool]$UseProxy
+            ReplaceRunningApp = [bool]$ReplaceRunningApp
+            SkipInitialCheck = [bool]$SkipUpdateCheckOnce
+        }
+        Write-CommandOutput @(& $updateSessionLauncher @sessionArguments 2>&1)
+        $sessionTimer.Stop()
+        Write-StartupLog "$(Get-Date -Format o) [$computerName] stage=update-session durationMs=$($sessionTimer.ElapsedMilliseconds)"
+    } catch {
+        Write-StartupLog "$(Get-Date -Format o) [$computerName] update-session launch unavailable: $($_.Exception.Message)"
+    }
+}
+
 function Invoke-PrelaunchUpdate {
     param([string]$UpdaterPath, [string]$InstallRoot, [switch]$UseProxy)
 
@@ -770,6 +816,7 @@ switch ($Action) {
                 $enableOutput = @(& $mobileController -Action Enable -NodePath $node -TargetWaitMilliseconds $targetWaitMilliseconds -DeferUpdateSession -Confirm:$false 2>&1)
                 Write-CommandOutput $enableOutput
                 $report = Get-MobileReport -Output $enableOutput
+                Start-MobileBackgroundServices -NodePath $node
                 $report = Wait-MobileReadiness -Report $report -TimeoutSeconds $MobileReadyTimeoutSeconds -Probe {
                     $probeOutput = @(& $mobileController -Action Probe -NodePath $node 2>&1)
                     Write-CommandOutput $probeOutput
@@ -777,49 +824,8 @@ switch ($Action) {
                 }
                 $mobileTimer.Stop()
                 Write-StartupLog "$(Get-Date -Format o) [$computerName] stage=mobile-readiness durationMs=$($mobileTimer.ElapsedMilliseconds) mounted=$($report.mounted) localRuntimeReady=$($report.localRuntimeReady) authoritativeInventoryReady=$($report.authoritativeInventoryReady) publisherReady=$($report.publisherReady) ready=$($report.ready)"
-
-                try {
-                    $stableStatePath = Join-Path $logRoot 'codexremote-simple-session.json'
-                    $stableState = Get-Content -LiteralPath $stableStatePath -Raw | ConvertFrom-Json -ErrorAction Stop
-                    $heartbeatPort = [int]$stableState.rendererPort
-                    $heartbeatParent = [int]$stableState.launchProcessId
-                    if ($heartbeatPort -lt 1 -or $heartbeatPort -gt 65535 -or $heartbeatParent -lt 1) {
-                        throw 'The stable session did not report a valid heartbeat target.'
-                    }
-                    $heartbeatProcess = [Diagnostics.Process]::GetProcessById($heartbeatParent)
-                    try {
-                        $heartbeatStartToken = $heartbeatProcess.StartTime.ToUniversalTime().ToFileTimeUtc().ToString([Globalization.CultureInfo]::InvariantCulture)
-                        $heartbeatExecutable = [IO.Path]::GetFullPath($heartbeatProcess.MainModule.FileName)
-                    } finally { $heartbeatProcess.Dispose() }
-                    if (-not [string]::Equals($heartbeatExecutable, [IO.Path]::GetFullPath([string]$stableState.executablePath), [StringComparison]::OrdinalIgnoreCase)) {
-                        throw 'The stable session heartbeat process identity changed.'
-                    }
-                    $heartbeatLock = Join-Path $logRoot "publisher-heartbeat-$heartbeatPort.lock"
-                    $heartbeatArguments = '--no-warnings "{0}" --port {1} --parent-pid {2} --parent-start-token "{3}" --lock-path "{4}"' -f $publisherHeartbeatHelper, $heartbeatPort, $heartbeatParent, $heartbeatStartToken, $heartbeatLock
-                    Start-Process -FilePath $node -ArgumentList $heartbeatArguments -WindowStyle Hidden | Out-Null
-                    Write-StartupLog "$(Get-Date -Format o) [$computerName] publisher heartbeat started for the exact renderer session"
-                } catch {
-                    Write-StartupLog "$(Get-Date -Format o) [$computerName] publisher heartbeat unavailable: $($_.Exception.Message)"
-                }
-
                 Stop-StartupProgress
-                Write-StartupLog "$(Get-Date -Format o) [$computerName] interactive startup completed; arming background update monitoring"
-                try {
-                    $sessionTimer = [Diagnostics.Stopwatch]::StartNew()
-                    $sessionArguments = @{
-                        InstallRoot = $bundleParent
-                        EntryPointRelative = 'CodexRemoteMobileProject\MobileProjectStartup.ps1'
-                        NodePath = $node
-                        UseProxy = [bool]$UseProxy
-                        ReplaceRunningApp = [bool]$ReplaceRunningApp
-                        SkipInitialCheck = [bool]$SkipUpdateCheckOnce
-                    }
-                    Write-CommandOutput @(& $updateSessionLauncher @sessionArguments 2>&1)
-                    $sessionTimer.Stop()
-                    Write-StartupLog "$(Get-Date -Format o) [$computerName] stage=update-session durationMs=$($sessionTimer.ElapsedMilliseconds)"
-                } catch {
-                    Write-StartupLog "$(Get-Date -Format o) [$computerName] update-session launch unavailable: $($_.Exception.Message)"
-                }
+                Write-StartupLog "$(Get-Date -Format o) [$computerName] interactive startup completed"
                 Write-RelaunchHandoff
                 Write-StartupLog "$(Get-Date -Format o) [$computerName] startup run completed"
             } catch {

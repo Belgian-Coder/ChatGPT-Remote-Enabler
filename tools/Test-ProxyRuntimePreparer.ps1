@@ -109,10 +109,21 @@ try {
     }
     if ((Get-Item -LiteralPath $patchedAsarPath).Length -ne $sourceAsarLength) { throw 'The in-place proxy patch changed ASAR length.' }
     Assert-FuseDisabled (Join-Path ([string]$first.runtimeRoot) 'chrome.dll') $sentinel
+    if ((Get-Sha256 (Join-Path ([string]$first.runtimeRoot) 'resources\crv.cjs')) -ne
+        (Get-Sha256 (Join-Path $root 'windows\CodexRemoteSimple\runtime\remote-control-target.cjs'))) {
+        throw 'The proxy runtime omitted the verified challenge target helper.'
+    }
 
     $second = Invoke-Preparer $node $preparer $source 'renamed-build'
     if ($second.reused -ne $true -or [string]$second.runtimeRoot -ne [string]$first.runtimeRoot) {
         throw 'Changing only the diagnostic package version incorrectly changed runtime identity.'
+    }
+    [IO.File]::WriteAllText((Join-Path ([string]$first.runtimeRoot) 'resources\crv.cjs'), 'tampered fixture', [Text.UTF8Encoding]::new($false))
+    $repairedValidator = Invoke-Preparer $node $preparer $source 'validator-repair'
+    if ($repairedValidator.reused -ne $false -or
+        (Get-Sha256 (Join-Path ([string]$repairedValidator.runtimeRoot) 'resources\crv.cjs')) -ne
+        (Get-Sha256 (Join-Path $root 'windows\CodexRemoteSimple\runtime\remote-control-target.cjs'))) {
+        throw 'A tampered challenge target helper was reused or not repaired.'
     }
 
     $keyOnly = Invoke-Preparer $node $preparer $source 'key-build' $false $true
@@ -144,8 +155,8 @@ try {
     $modern = Invoke-Preparer $node $preparer $modernSource 'modern-build'
     $modernPatched = [IO.File]::ReadAllText([string]$modern.appAsarPath)
     if ($modernPatched.Contains($modernController) -or -not $modernPatched.Contains('process.env.CHATGPT_REMOTE_WS_URL') -or
-        -not $modernPatched.Contains($challenge)) {
-        throw 'The modern getHandshake plan was not patched coherently or incorrectly required a legacy challenge rewrite.'
+        $modernPatched.Contains($challenge) -or -not $modernPatched.Contains('/crv.cjs')) {
+        throw 'The modern getHandshake transport and signed challenge targets were not patched together.'
     }
 
     $variantSource = Join-Path $temporaryRoot 'variant-installed-app'
@@ -194,6 +205,7 @@ try {
         AmbiguousProviderRejected = $true
         MalformedChallengeRejected = $true
         HelpersVerified = $true
+        ChallengeHelperTamperRepaired = $true
     } | ConvertTo-Json -Compress
 } finally {
     $env:LOCALAPPDATA = $previousLocalAppData

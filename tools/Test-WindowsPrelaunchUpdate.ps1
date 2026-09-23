@@ -103,12 +103,18 @@ if (`$decision -eq 'Installed') { `$proof.Manifest = [ordered]@{Name='OpenAI.Cod
             Path = 'windows\Enable-ChatGPTRemote.ps1'
             Injection = '& $stable @stableArguments'
             RecoveryCall = '& $UpdaterPath -Action Recover'
+            MobileReport = '$report = Get-RemoteMobileReport -Output $enableOutput'
+            BackgroundServices = 'Start-RemoteMobileBackgroundServices -NodePath $node'
+            ReadinessWait = '$report = Wait-RemoteMobileReadiness -Report $report'
         },
         [pscustomobject]@{
             Name = 'MobileProjectStartup'
             Path = 'windows\CodexRemoteMobileProject\MobileProjectStartup.ps1'
             Injection = '& $stableController @stableArguments'
             RecoveryCall = '& $UpdaterPath -Action Recover'
+            MobileReport = '$report = Get-MobileReport -Output $enableOutput'
+            BackgroundServices = 'Start-MobileBackgroundServices -NodePath $node'
+            ReadinessWait = '$report = Wait-MobileReadiness -Report $report'
         }
     )
 
@@ -135,12 +141,15 @@ if (`$decision -eq 'Installed') { `$proof.Manifest = [ordered]@{Name='OpenAI.Cod
         $prelaunchIndex = if ($recoveryIndex -ge 0) { $sourceText.IndexOf('Invoke-PrelaunchUpdate -UpdaterPath', $recoveryIndex, [StringComparison]::Ordinal) } else { -1 }
         $desktopIndex = if ($prelaunchIndex -ge 0) { $sourceText.IndexOf('Invoke-DesktopAppPrelaunchUpdate -UpdaterPath', $prelaunchIndex, [StringComparison]::Ordinal) } else { -1 }
         $injectionIndex = if ($prelaunchIndex -ge 0) { $sourceText.IndexOf($case.Injection, $prelaunchIndex, [StringComparison]::Ordinal) } else { -1 }
-        $progressStopIndex = if ($injectionIndex -ge 0) { $sourceText.IndexOf('Stop-StartupProgress', $injectionIndex, [StringComparison]::Ordinal) } else { -1 }
-        $updateSessionIndex = if ($progressStopIndex -ge 0) { $sourceText.IndexOf('$updateSessionLauncher @sessionArguments', $progressStopIndex, [StringComparison]::Ordinal) } else { -1 }
+        $mobileReportIndex = if ($injectionIndex -ge 0) { $sourceText.IndexOf($case.MobileReport, $injectionIndex, [StringComparison]::Ordinal) } else { -1 }
+        $backgroundServicesIndex = if ($mobileReportIndex -ge 0) { $sourceText.IndexOf($case.BackgroundServices, $mobileReportIndex, [StringComparison]::Ordinal) } else { -1 }
+        $readinessWaitIndex = if ($backgroundServicesIndex -ge 0) { $sourceText.IndexOf($case.ReadinessWait, $backgroundServicesIndex, [StringComparison]::Ordinal) } else { -1 }
+        $progressStopIndex = if ($readinessWaitIndex -ge 0) { $sourceText.IndexOf('Stop-StartupProgress', $readinessWaitIndex, [StringComparison]::Ordinal) } else { -1 }
         $reloadIndex = if ($prelaunchIndex -ge 0) { $sourceText.IndexOf('Start-UpdatedEntryPoint -EntryPoint $PSCommandPath', $prelaunchIndex, [StringComparison]::Ordinal) } else { -1 }
         $reloadArgumentIndex = if ($prelaunchIndex -ge 0) { $sourceText.IndexOf('$reloadArguments = @(', $prelaunchIndex, [StringComparison]::Ordinal) } else { -1 }
         Assert-Condition ($flowIndex -ge 0 -and $recoveryIndex -gt $flowIndex -and $prelaunchIndex -gt $recoveryIndex -and $desktopIndex -gt $prelaunchIndex -and $injectionIndex -gt $desktopIndex -and $reloadIndex -gt $prelaunchIndex) "$($case.Name) does not perform integrity recovery, Remote Enabler update, then desktop-app update before injection/reload."
-        Assert-Condition ($progressStopIndex -gt $injectionIndex -and $updateSessionIndex -gt $progressStopIndex) "$($case.Name) keeps the startup progress UI open while arming background update monitoring."
+        Assert-Condition ($mobileReportIndex -gt $injectionIndex -and $backgroundServicesIndex -gt $mobileReportIndex -and
+            $readinessWaitIndex -gt $backgroundServicesIndex -and $progressStopIndex -gt $readinessWaitIndex) "$($case.Name) does not attach background services before strict readiness polling while keeping startup progress open until readiness succeeds."
         Assert-Condition ($sourceText.Contains('-Action Update -Transport Git') -and -not $sourceText.Contains('-Action Auto -Transport Git')) "$($case.Name) does not require a verified Git update."
         Assert-Condition ($sourceText.Contains("if (`$recovery.recovered -and [string]`$recovery.recoveryMode -cne 'rollback')") -and $sourceText.Contains('if ($RecoveryContinuation)') -and $sourceText.Contains('launch aborted to prevent a reload loop')) "$($case.Name) does not safely reload after forward recovery while retaining rollback compatibility."
         Assert-Condition ($sourceText.Contains('ContinuationParentProcessId') -and $sourceText.Contains('Wait-ForContinuationParent')) "$($case.Name) lacks the continuation handoff contract."

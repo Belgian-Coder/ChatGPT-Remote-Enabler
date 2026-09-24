@@ -102,11 +102,11 @@ function Test-RepairCoordinatorCommandLine {
     return $false
 }
 
-function Get-RepairDescendantProcessIds {
-    param([Parameter(Mandatory)][int]$ProcessId)
+function Get-RepairDescendantProcessEvidence {
+    param([Parameter(Mandatory)]$Context)
     $processes = @(Get-CimInstance Win32_Process -ErrorAction Stop | Select-Object ProcessId,ParentProcessId)
     $parents = [Collections.Generic.HashSet[int]]::new()
-    [void]$parents.Add($ProcessId)
+    [void]$parents.Add([int]$Context.CoordinatorProcessId)
     $descendants = [Collections.Generic.HashSet[int]]::new()
     do {
         $added = $false
@@ -120,7 +120,33 @@ function Get-RepairDescendantProcessIds {
             }
         }
     } while ($added)
-    return @($descendants | Sort-Object)
+    $evidence = [Collections.Generic.List[object]]::new()
+    foreach ($processId in @($descendants | Sort-Object)) {
+        $cim = Get-CimInstance Win32_Process -Filter "ProcessId=$processId" -ErrorAction Stop
+        $process = $null
+        $parent = $null
+        try {
+            $process = [Diagnostics.Process]::GetProcessById([int]$processId)
+            $parent = [Diagnostics.Process]::GetProcessById([int]$cim.ParentProcessId)
+            $directChildren = @($processes | Where-Object { [int]$_.ParentProcessId -eq [int]$processId })
+            [void]$evidence.Add([pscustomobject][ordered]@{
+                ProcessId = [int]$process.Id
+                StartTimeFileTimeUtc = [long]$process.StartTime.ToUniversalTime().ToFileTimeUtc()
+                ExecutablePath = Get-RepairNormalizedPath $process.MainModule.FileName
+                CommandLine = [string]$cim.CommandLine
+                ParentProcessId = [int]$cim.ParentProcessId
+                ParentStartTimeFileTimeUtc = [long]$parent.StartTime.ToUniversalTime().ToFileTimeUtc()
+                SessionId = [int]$process.SessionId
+                ParentSessionId = [int]$parent.SessionId
+                MainWindowHandle = [long]$process.MainWindowHandle
+                DirectChildCount = @($directChildren).Count
+            })
+        } finally {
+            if ($parent) { $parent.Dispose() }
+            if ($process) { $process.Dispose() }
+        }
+    }
+    return @($evidence)
 }
 
 function Get-RepairSnapshot {
@@ -132,6 +158,7 @@ function Get-RepairSnapshot {
     $state = Get-RepairJson $Context.StatePath
     $owner = $lockText | ConvertFrom-Json -ErrorAction Stop
     $process = Get-CimInstance Win32_Process -Filter "ProcessId=$($Context.CoordinatorProcessId)" -ErrorAction Stop
+    $descendantProcesses = @(Get-RepairDescendantProcessEvidence $Context | ForEach-Object { $_ })
     return [pscustomobject][ordered]@{
         CapturedAtUnixMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
         Config = $config
@@ -143,7 +170,8 @@ function Get-RepairSnapshot {
         HistoryExists = [bool]$historyEvidence.Exists
         HistoryText = $historyEvidence.Text
         CommandLine = [string]$process.CommandLine
-        DescendantProcessIds = @(Get-RepairDescendantProcessIds $Context.CoordinatorProcessId)
+        DescendantProcesses = $descendantProcesses
+        DescendantProcessEvidenceText = ConvertTo-Json -InputObject $descendantProcesses -Depth 4 -Compress
     }
 }
 
@@ -189,7 +217,23 @@ function Assert-RepairSnapshot {
     if (-not (Test-RepairCoordinatorCommandLine -CommandLine $Snapshot.CommandLine -ScriptPath $Context.CoordinatorScriptPath -ConfigPath $Context.ConfigPath)) {
         throw 'The exact process command line is not the owned coordinator invocation.'
     }
-    if (@($Snapshot.DescendantProcessIds).Count -ne 0) { throw 'The legacy coordinator still owns a child process.' }
+    $descendantProcesses = @($Snapshot.DescendantProcesses | ForEach-Object { $_ })
+    if ($descendantProcesses.Count -ne 0) {
+        if ($descendantProcesses.Count -ne 1) { throw 'The legacy coordinator still owns a blocking child process.' }
+        $child = $descendantProcesses[0]
+        $trustedConsoleHost = Get-RepairNormalizedPath $Context.TrustedConsoleHostPath
+        $expectedCommand = '^' + [regex]::Escape("\??\$trustedConsoleHost") + '\s+0x[0-9a-f]+$'
+        $creationDelta = [long]$child.StartTimeFileTimeUtc - [long]$child.ParentStartTimeFileTimeUtc
+        if ([int]$child.ProcessId -le 0 -or [int]$child.ProcessId -eq $Context.CoordinatorProcessId -or
+            [int]$child.ParentProcessId -ne $Context.CoordinatorProcessId -or
+            [long]$child.ParentStartTimeFileTimeUtc -ne $Context.CoordinatorStartTimeFileTimeUtc -or
+            $creationDelta -lt 0 -or $creationDelta -gt [TimeSpan]::FromSeconds(5).Ticks -or
+            -not [string]::Equals((Get-RepairNormalizedPath ([string]$child.ExecutablePath)), $trustedConsoleHost, [StringComparison]::OrdinalIgnoreCase) -or
+            [string]$child.CommandLine -notmatch $expectedCommand -or [int]$child.DirectChildCount -ne 0 -or
+            [long]$child.MainWindowHandle -ne 0 -or [int]$child.SessionId -ne [int]$child.ParentSessionId) {
+            throw 'The legacy coordinator still owns a blocking child process.'
+        }
+    }
     $observedHistoryStates = @('checked', 'current', 'available', 'unavailable')
     $mutatingHistoryStates = @('preparing', 'queued', 'updating', 'closing', 'restarting')
     $terminalHistoryStates = @('error', 'cancelled', 'hot-reload-confirmed', 'restart-confirmed')
@@ -235,8 +279,9 @@ function Assert-RepairSnapshot {
     if ($null -ne $Baseline) {
         if ($Snapshot.ConfigText -cne $Baseline.ConfigText -or $Snapshot.LockText -cne $Baseline.LockText -or
             [bool]$Snapshot.HistoryExists -ne [bool]$Baseline.HistoryExists -or
-            $Snapshot.HistoryText -cne $Baseline.HistoryText) {
-            throw 'Coordinator configuration, lock ownership, or durable history changed during repair.'
+            $Snapshot.HistoryText -cne $Baseline.HistoryText -or
+            $Snapshot.DescendantProcessEvidenceText -cne $Baseline.DescendantProcessEvidenceText) {
+            throw 'Coordinator configuration, lock ownership, durable history, or child identity changed during repair.'
         }
     }
     return $true
@@ -617,6 +662,8 @@ function New-RepairContext {
         throw 'The coordinator configuration has an invalid ChatGPT identity.'
     }
     $appExecutable = Get-RepairNormalizedPath ([string]$config.app.executablePath)
+    $trustedConsoleHost = Get-RepairNormalizedPath (Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::System)) 'conhost.exe')
+    if (-not (Test-RepairPlainFile $trustedConsoleHost)) { throw 'The trusted Windows console host is unavailable.' }
     $statePath = Join-Path $sessionDirectory 'coordinator-state.json'
     $historyPath = Join-Path $sessionDirectory 'update-history-v1.json'
     $identity = "win32`0$appPid`0$([string]$appStart)"
@@ -640,6 +687,7 @@ function New-RepairContext {
         AppProcessId = $appPid
         AppStartTimeFileTimeUtc = $appStart
         AppExecutablePath = $appExecutable
+        TrustedConsoleHostPath = $trustedConsoleHost
         RendererPort = $rendererPort
         CdpPath = $cdpPath
         CdpText = Get-RepairFileText $cdpPath

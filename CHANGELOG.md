@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.5.100 — 2026-09-24
+
+- Recognize an exactly identified, direct Windows console-host child as console infrastructure during legacy updater recovery. Continue blocking actual child work or uncertain ownership; preserve the running ChatGPT session.
+
 ## v1.5.99 — 2026-09-24
 
 - Reconnect a lost local update bridge automatically; probe renderer health instead

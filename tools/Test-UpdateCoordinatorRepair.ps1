@@ -31,6 +31,7 @@ $configPath = Join-Path $sessionDirectory 'session.json'
 $nodePath = 'C:\fixture\node.exe'
 $scriptPath = 'C:\fixture\update-sessions\bundles\aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\update-session.js'
 $appPath = 'C:\fixture\ChatGPT.exe'
+$trustedConsoleHostPath = 'C:\WINDOWS\System32\conhost.exe'
 
 $context = [pscustomobject][ordered]@{
     ConfigPath = $configPath
@@ -46,6 +47,7 @@ $context = [pscustomobject][ordered]@{
     AppProcessId = 202
     AppStartTimeFileTimeUtc = 2002L
     AppExecutablePath = $appPath
+    TrustedConsoleHostPath = $trustedConsoleHostPath
     RendererPort = 9222
     TransactionJournalPath = 'C:\fixture\update\transaction.json'
     GitTransactionJournalPath = 'C:\fixture\update\git-transaction.json'
@@ -80,7 +82,7 @@ function New-Snapshot {
         [string]$LockText = 'lock-text',
         [string]$HistoryText = 'history-text',
         [switch]$HistoryMissing,
-        [int[]]$Descendants = @()
+        [object[]]$DescendantProcesses = @()
     )
     $state = [pscustomobject][ordered]@{
         schemaVersion = 1
@@ -117,7 +119,35 @@ function New-Snapshot {
         HistoryExists = -not $HistoryMissing
         HistoryText = if ($HistoryMissing) { $null } else { $HistoryText }
         CommandLine = '"C:\fixture\node.exe" --no-warnings "{0}" --config "{1}" --best-effort' -f $scriptPath,$configPath
-        DescendantProcessIds = @($Descendants)
+        DescendantProcesses = @($DescendantProcesses | ForEach-Object { $_ })
+        DescendantProcessEvidenceText = ConvertTo-Json -InputObject @($DescendantProcesses | ForEach-Object { $_ }) -Depth 4 -Compress
+    }
+}
+
+function New-ConsoleHostEvidence {
+    param(
+        [int]$ProcessId = 303,
+        [long]$StartTimeFileTimeUtc = 50001L,
+        [string]$ExecutablePath = $trustedConsoleHostPath,
+        [string]$CommandLine = '\??\C:\WINDOWS\System32\conhost.exe 0x4',
+        [int]$ParentProcessId = 101,
+        [long]$ParentStartTimeFileTimeUtc = 1001L,
+        [int]$SessionId = 1,
+        [int]$ParentSessionId = 1,
+        [long]$MainWindowHandle = 0L,
+        [int]$DirectChildCount = 0
+    )
+    return [pscustomobject][ordered]@{
+        ProcessId = $ProcessId
+        StartTimeFileTimeUtc = $StartTimeFileTimeUtc
+        ExecutablePath = $ExecutablePath
+        CommandLine = $CommandLine
+        ParentProcessId = $ParentProcessId
+        ParentStartTimeFileTimeUtc = $ParentStartTimeFileTimeUtc
+        SessionId = $SessionId
+        ParentSessionId = $ParentSessionId
+        MainWindowHandle = $MainWindowHandle
+        DirectChildCount = $DirectChildCount
     }
 }
 
@@ -176,14 +206,54 @@ $outOfOrderHistory = New-Snapshot
 $outOfOrderHistory.History = @([pscustomobject]@{ at = 2L; state = 'checked' }, [pscustomobject]@{ at = 1L; state = 'current' })
 Assert-Rejected { Assert-RepairSnapshot -Context $context -Snapshot $outOfOrderHistory } `
     '*out-of-order*' 'An out-of-order history was accepted.'
-Assert-Rejected { Assert-RepairSnapshot -Context $context -Snapshot (New-Snapshot -Descendants @(303)) } `
-    '*child process*' 'A coordinator with an owned child was accepted.'
+$stableConsoleHost = New-ConsoleHostEvidence
+$consoleBaseline = New-Snapshot -DescendantProcesses @($stableConsoleHost)
+Assert-Condition (Assert-RepairSnapshot -Context $context -Snapshot $consoleBaseline) 'A stable exact Windows console host was rejected.'
+Assert-Condition (Assert-RepairSnapshot -Context $context -Snapshot (New-Snapshot -DescendantProcesses @($stableConsoleHost)) -Baseline $consoleBaseline) `
+    'An unchanged exact Windows console host failed the frozen-snapshot proof.'
+Assert-Rejected { Assert-RepairSnapshot -Context $context -Snapshot (New-Snapshot -DescendantProcesses @(
+    (New-ConsoleHostEvidence -ExecutablePath 'C:\fixture\conhost.exe' -CommandLine '\??\C:\fixture\conhost.exe 0x4')
+)) } '*blocking child process*' 'A same-name console host outside System32 was accepted.'
+Assert-Rejected { Assert-RepairSnapshot -Context $context -Snapshot (New-Snapshot -DescendantProcesses @(
+    (New-ConsoleHostEvidence -ExecutablePath 'C:\WINDOWS\System32\conhost-malicious.exe' -CommandLine '\??\C:\WINDOWS\System32\conhost-malicious.exe 0x4')
+)) } '*blocking child process*' 'A maliciously named executable inside System32 was accepted as the console host.'
+Assert-Rejected { Assert-RepairSnapshot -Context $context -Snapshot (New-Snapshot -DescendantProcesses @(
+    (New-ConsoleHostEvidence -CommandLine '\??\C:\fixture\conhost.exe 0x4')
+)) } '*blocking child process*' 'A trusted-image console host with a spoofed command path was accepted.'
+Assert-Rejected { Assert-RepairSnapshot -Context $context -Snapshot (New-Snapshot -DescendantProcesses @(
+    (New-ConsoleHostEvidence -DirectChildCount 1)
+)) } '*blocking child process*' 'A console host with a descendant was accepted.'
+Assert-Rejected { Assert-RepairSnapshot -Context $context -Snapshot (New-Snapshot -DescendantProcesses @(
+    (New-ConsoleHostEvidence -StartTimeFileTimeUtc ([TimeSpan]::FromSeconds(6).Ticks + 1001L))
+)) } '*blocking child process*' 'A late unrelated console host was accepted as startup infrastructure.'
+Assert-Rejected { Assert-RepairSnapshot -Context $context -Snapshot (New-Snapshot -DescendantProcesses @(
+    (New-ConsoleHostEvidence -ParentProcessId 999)
+)) } '*blocking child process*' 'A console host owned by another parent PID was accepted.'
+Assert-Rejected { Assert-RepairSnapshot -Context $context -Snapshot (New-Snapshot -DescendantProcesses @(
+    (New-ConsoleHostEvidence -ParentStartTimeFileTimeUtc 1002)
+)) } '*blocking child process*' 'A console host with a reused parent identity was accepted.'
+Assert-Rejected { Assert-RepairSnapshot -Context $context -Snapshot (New-Snapshot -DescendantProcesses @(
+    (New-ConsoleHostEvidence -StartTimeFileTimeUtc 1000)
+)) } '*blocking child process*' 'A console host created before the coordinator was accepted.'
+Assert-Rejected { Assert-RepairSnapshot -Context $context -Snapshot (New-Snapshot -DescendantProcesses @(
+    (New-ConsoleHostEvidence -MainWindowHandle 1)
+)) } '*blocking child process*' 'A window-owning console host was accepted as hidden startup infrastructure.'
+Assert-Rejected { Assert-RepairSnapshot -Context $context -Snapshot (New-Snapshot -DescendantProcesses @(
+    (New-ConsoleHostEvidence -SessionId 2)
+)) } '*blocking child process*' 'A console host from another session was accepted.'
+Assert-Rejected { Assert-RepairSnapshot -Context $context -Snapshot (New-Snapshot -DescendantProcesses @(
+    $stableConsoleHost,
+    (New-ConsoleHostEvidence -ProcessId 304 -StartTimeFileTimeUtc 50002 -ExecutablePath 'C:\fixture\worker.exe' -CommandLine 'C:\fixture\worker.exe')
+)) } '*blocking child process*' 'An additional unknown child was accepted beside the console host.'
+$changedConsoleHost = New-ConsoleHostEvidence -ProcessId 304 -StartTimeFileTimeUtc 50002
+Assert-Rejected { Assert-RepairSnapshot -Context $context -Snapshot (New-Snapshot -DescendantProcesses @($changedConsoleHost)) -Baseline $consoleBaseline } `
+    '*child identity changed*' 'A changed console-host identity survived the frozen-snapshot proof.'
 Assert-Rejected { Assert-RepairSnapshot -Context $context -Snapshot (New-Snapshot -WithRendererHealth) } `
     '*renderer-health proof*' 'A health-aware coordinator was accepted as legacy.'
 Assert-Rejected { Assert-RepairSnapshot -Context $context -Snapshot (New-Snapshot -HistoryText 'changed') -Baseline $baseline } `
-    '*durable history changed*' 'A history change across the freeze boundary was accepted.'
+    '*durable history*changed*' 'A history change across the freeze boundary was accepted.'
 Assert-Rejected { Assert-RepairSnapshot -Context $context -Snapshot (New-Snapshot -HistoryMissing) -Baseline $baseline } `
-    '*durable history changed*' 'A history disappearance across the freeze boundary was accepted.'
+    '*durable history*changed*' 'A history disappearance across the freeze boundary was accepted.'
 Assert-Rejected { Assert-RepairBridgeProof -Context $context -Proof (New-BridgeProof -PublicMissing $false) } `
     '*failure proof is incomplete*' 'A present public bridge was accepted as failed.'
 Assert-Rejected { Assert-RepairBridgeProof -Context $context -Proof (New-BridgeProof -SampledAt ($now - 20000)) } `
@@ -233,9 +303,30 @@ Assert-Rejected {
     Invoke-RepairCore -Context $context -CaptureSnapshot $captureChangingSnapshot -CaptureBridgeProof $captureProof `
         -AcquireGuards $acquire -FreezeCoordinator $freeze -ResumeCoordinator $resume -TerminateCoordinator $terminate `
         -WaitCoordinatorExit $wait -ReleaseGuards $release -ProofIntervalMilliseconds 1
-} '*durable history changed*' 'A changed frozen proof did not abort repair.'
+} '*durable history*changed*' 'A changed frozen proof did not abort repair.'
 Assert-Condition ($events.Contains('frozen') -and $events.Contains('resumed') -and $events.Contains('guards-released')) 'A frozen abort did not resume the coordinator and release both guards.'
 Assert-Condition (-not $events.Contains('terminated')) 'A failed frozen proof terminated the coordinator.'
+
+$events.Clear()
+$snapshotCount = 0
+$proofCount = 0
+$captureChangingChildSnapshot = {
+    param($value)
+    $script:snapshotCount += 1
+    [void]$events.Add("snapshot-$script:snapshotCount")
+    if ($script:snapshotCount -eq 3) {
+        return New-Snapshot -DescendantProcesses @((New-ConsoleHostEvidence -ProcessId 304 -StartTimeFileTimeUtc 50002))
+    }
+    return New-Snapshot -DescendantProcesses @($stableConsoleHost)
+}
+Assert-Rejected {
+    Invoke-RepairCore -Context $context -CaptureSnapshot $captureChangingChildSnapshot -CaptureBridgeProof $captureProof `
+        -AcquireGuards $acquire -FreezeCoordinator $freeze -ResumeCoordinator $resume -TerminateCoordinator $terminate `
+        -WaitCoordinatorExit $wait -ReleaseGuards $release -ProofIntervalMilliseconds 1
+} '*child identity changed*' 'A child identity change while frozen did not abort repair.'
+Assert-Condition ($events.Contains('frozen') -and $events.Contains('resumed') -and $events.Contains('guards-released')) `
+    'A frozen child-identity abort did not resume the coordinator and release both guards.'
+Assert-Condition (-not $events.Contains('terminated')) 'A frozen child-identity change terminated the coordinator.'
 
 function Resolve-TestNode {
     $command = Get-Command node.exe -ErrorAction SilentlyContinue

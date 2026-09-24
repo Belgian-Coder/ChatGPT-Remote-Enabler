@@ -80,7 +80,7 @@
     "unknown",
   ]);
   const PUBLISHER_VERSION = 54;
-  const VERSION = 92;
+  const VERSION = 93;
   // Keep outstanding writes locked across renderer reinjection until the underlying RPC settles.
   const peerWriteLocks = globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ instanceof Map
     ? globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ : (globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ = new Map());
@@ -1031,6 +1031,15 @@
       }
     }
     const hostId = normalizeHostId(row.getAttribute("data-app-action-sidebar-thread-host-id") || "local");
+    const projectContainer = row.closest('[data-sidebar-project-kind][role="listitem"]');
+    const nativeProject = projectContainer ? metadataFromNativeProject(projectContainer) : null;
+    const nativeProjectMembershipKnown = Boolean(nativeProject?.projectId && nativeProject.hostId === hostId);
+    if (nativeProjectMembershipKnown) {
+      projectId = nativeProject.projectId;
+      projectLabel = nativeProject.label;
+      isGrouped = true;
+      isProjectless = false;
+    }
     const hostContainer = row.closest('[role="listitem"][aria-label]');
     const hostDisplayName = hostContainer && !hostContainer.hasAttribute("data-sidebar-project-kind")
       ? hostContainer.getAttribute("aria-label") || null
@@ -1040,7 +1049,7 @@
     const title = row.getAttribute("data-app-action-sidebar-thread-title") || "Untitled task";
     const selected = row.getAttribute("data-app-action-sidebar-thread-selected") === "true";
     const statusObservedAt = nativeTaskStatusObservedAt(hostId, conversationId, nativeStatus);
-    return { conversationId, conversationKey, cwd, hostDisplayName, hostId, hostNames, isGrouped, isProjectless, originalRow: row, projectId, projectLabel, selected, statusKnown: true, statusObservedAt, statusType, threadStatusKnown: false, title, titleSource: title === "Untitled task" ? "none" : "native-dom", unread, unreadKnown: true, unreadObservedAt: statusObservedAt, unreadCount: nativeStatus?.statusState?.unreadCount ?? 0, nativeStatusState: nativeStatus?.statusState ?? null, needsAttention: nativeStatus?.needsAttention === true, attentionLabel: nativeStatus?.attentionLabel ?? null, attentionKind: nativeStatus?.attentionKind ?? null };
+    return { conversationId, conversationKey, cwd, hostDisplayName, hostId, hostNames, isGrouped, isProjectless, nativeProjectMembershipKnown, originalRow: row, projectId, projectLabel, selected, statusKnown: true, statusObservedAt, statusType, threadStatusKnown: false, title, titleSource: title === "Untitled task" ? "none" : "native-dom", unread, unreadKnown: true, unreadObservedAt: statusObservedAt, unreadCount: nativeStatus?.statusState?.unreadCount ?? 0, nativeStatusState: nativeStatus?.statusState ?? null, needsAttention: nativeStatus?.needsAttention === true, attentionLabel: nativeStatus?.attentionLabel ?? null, attentionKind: nativeStatus?.attentionKind ?? null };
   }
 
   function commonAncestor(elements) {
@@ -2804,10 +2813,12 @@
       const id = rawConversationId(thread?.id ?? thread?.conversationId ?? "");
       return id ? [[id, thread]] : [];
     }));
-    const tasks = [...document.querySelectorAll(ROW_SELECTOR)]
+    const nativeLocalTasks = [...document.querySelectorAll(ROW_SELECTOR)]
       .filter((row) => !row.closest(`#${PANEL_ID}`))
       .map(metadataFromRow)
-      .filter((task) => task.hostId === "local")
+      .filter((task) => task.hostId === "local");
+    const nativeLocalTasksById = new Map(nativeLocalTasks.map((task) => [task.conversationId, task]));
+    const tasks = nativeLocalTasks
       .map((task) => publishedTaskMetadata(task, localThreadsById.get(task.conversationId), currentThreadInventory.fetchedAt));
     const publisherVersion = !currentThreadInventory.error
       && (currentThreadInventory.threads ?? []).every(threadProjectMembershipKnown)
@@ -2821,7 +2832,7 @@
         cwd: canonicalRemotePath(thread?.cwd),
         hasUnreadTurn: thread?.hasUnreadTurn === true,
         id,
-        projectId: threadProjectId(thread),
+        projectId: publishedThreadProjectId(thread, nativeLocalTasksById.get(id)),
         status: typeof thread?.status === "string" ? thread.status : thread?.status && typeof thread.status === "object" ? {
           activeFlags: Array.isArray(thread.status.activeFlags) ? thread.status.activeFlags.filter((flag) => typeof flag === "string").slice(0, 8) : [],
           type: thread.status.type,
@@ -3006,6 +3017,11 @@
       : typeof thread?.project_id === "string" ? thread.project_id
       : typeof thread?.project?.id === "string" ? thread.project.id
       : null;
+  }
+
+  function publishedThreadProjectId(thread, nativeTask) {
+    const directProjectId = threadProjectId(thread);
+    return directProjectId ?? (nativeTask?.nativeProjectMembershipKnown === true ? nativeTask.projectId : null);
   }
 
   function threadProjectMembershipKnown(thread) {
@@ -3290,7 +3306,7 @@
             nativeTask.unreadKnown = false;
           }
           if (task.cwd) nativeTask.cwd = task.cwd;
-          if (task.projectMembershipKnown) {
+          if (task.projectMembershipKnown && (task.projectId !== null || !nativeTask.nativeProjectMembershipKnown)) {
             nativeTask.projectId = task.projectId;
             nativeTask.projectMembershipKnown = true;
             nativeTask.isGrouped = task.isGrouped;

@@ -142,7 +142,7 @@ foreach ($pair in @(
 }
 $renderer = Get-Content -LiteralPath $windowsRenderer -Raw
 $requiredContracts = @(
-    'const VERSION = 92;',
+    'const VERSION = 93;',
     'NATIVE_CONNECTION_CATALOG_REFRESH_MS',
     'refresh-remote-control-connections',
     'hostDisplayName: config.localDisplayName || null',

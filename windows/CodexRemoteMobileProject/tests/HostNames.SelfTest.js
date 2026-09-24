@@ -9,7 +9,7 @@ const rendererPath = path.join(__dirname, "..", "renderer-mobile-project-view.js
 const originalSource = fs.readFileSync(rendererPath, "utf8").replace(/\r\n/gu, "\n");
 const testSource = originalSource
   .replace("(() => {", "globalThis.__hostFlowTest = (() => {")
-  .replace("  return installWhenDocumentReady(api, state, install, probe);\n})();", "  return { collectModel, discoverHostNames, hostName, metadataFromRow, state, uninstall };\n})();");
+  .replace("  return installWhenDocumentReady(api, state, install, probe);\n})();", "  return { collectModel, discoverHostNames, hostName, metadataFromRow, publishedThreadProjectId, state, uninstall };\n})();");
 assert.notEqual(testSource, originalSource, "full renderer test adapter must replace the production entrypoint");
 
 class FixtureElement {
@@ -21,7 +21,13 @@ class FixtureElement {
     if (group || Object.keys(props).length) this.__reactFiber$fixture = { memoizedProps: { group, ...props }, memoizedState: null, return: null, updateQueue: null };
   }
   get isConnected() { return true; }
-  closest() { return null; }
+  closest(selector) {
+    if (selector !== '[data-sidebar-project-kind][role="listitem"]') return null;
+    for (let element = this; element; element = element.parentElement) {
+      if (element.hasAttribute("data-sidebar-project-kind") && element.getAttribute("role") === "listitem") return element;
+    }
+    return null;
+  }
   contains(candidate) { return candidate === this || this.children.includes(candidate); }
   getAttribute(name) { return this.attributes[name] ?? (name === "aria-label" ? this.ariaLabel ?? null : null); }
   hasAttribute(name) { return Object.prototype.hasOwnProperty.call(this.attributes, name); }
@@ -198,6 +204,26 @@ flow.state.threadInventories.set("local", { error: null, fetchedAt: Date.now(), 
 let projectlessModel = flow.collectModel();
 assert.equal(projectlessModel.projects.find((project) => project.projectId === "local-project")?.tasks.some(task => task.conversationId === localThreadId) ?? false, false, "an explicit nested null project must remove stale native project ownership");
 assert.equal(projectlessModel.recents.some(group => group.tasks.some(task => task.conversationId === localThreadId)), true, "an explicit nested null project must classify the thread as projectless");
+nativeProjects[0].attributes["data-sidebar-project-kind"] = "local";
+nativeProjects[0].attributes.role = "listitem";
+nativeTasks[0].parentElement = nativeProjects[0];
+const nativeMembership = flow.metadataFromRow(nativeTasks[0]);
+assert.equal(nativeMembership.projectId, "local-project", "a native project container must identify the task's actual project");
+assert.equal(nativeMembership.nativeProjectMembershipKnown, true);
+assert.equal(flow.publishedThreadProjectId({ projectId: null }, nativeMembership), "local-project", "publisher must share native project membership when thread/list reports null");
+assert.equal(flow.publishedThreadProjectId({ projectId: "direct-project" }, nativeMembership), "direct-project", "a non-null direct project ID remains authoritative");
+assert.equal(flow.publishedThreadProjectId({ projectId: null }, { projectId: "stale-project" }), null, "publisher must not infer membership without a current native group");
+const nativeGroupedModel = flow.collectModel();
+assert.ok(nativeGroupedModel.projects.find(project => project.projectId === "local-project").tasks.some(task => task.conversationId === localThreadId), "thread/list projectId=null must not erase a current native project container");
+assert.equal(nativeGroupedModel.recents.some(group => group.tasks.some(task => task.conversationId === localThreadId)), false);
+nativeTasks[0].parentElement = null;
+assert.ok(flow.collectModel().recents.some(group => group.tasks.some(task => task.conversationId === localThreadId)), "a task outside a native project container must still respect explicit projectless membership");
+const remoteContainer = new FixtureElement({ projectKind: "remote", hostId, projectId: "remote-project", label: "Remote project" }, {}, { "data-sidebar-project-kind": "remote", role: "listitem" });
+const remoteRow = new FixtureElement(null, {}, { "data-app-action-sidebar-thread-host-id": hostId, "data-app-action-sidebar-thread-id": "remote-native-project-task" });
+remoteRow.parentElement = remoteContainer;
+assert.equal(flow.metadataFromRow(remoteRow).projectId, "remote-project", "native remote project membership must be recognized for the correct host");
+remoteContainer.__reactFiber$fixture.memoizedProps.group.hostId = olderHostId;
+assert.equal(flow.metadataFromRow(remoteRow).nativeProjectMembershipKnown, false, "a container from another host must not claim remote project membership");
 flow.state.threadInventories.set("local", { error: "temporary listing failure", fetchedAt: Date.now(), truncated: false, threads: [{ ...localThread("completed", false), projectId: null }] });
 flow.state.verifiedThreadIds.set("local", { ids: new Set([localThreadId]), verifiedAt: Date.now() });
 assert.equal(flow.metadataFromRow(nativeTasks[0]).projectId, "local-project", "the fixture must expose current native project membership");

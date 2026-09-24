@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.5.98 — 2026-09-24
+
+- Preserve Codex's native project membership when its direct `thread/list`
+  response reports a null project ID. Project chats stay in their native
+  folders instead of being misclassified as projectless Recents.
+- Publish that native membership in the device inventory so peers can group
+  the same chats correctly. Explicit non-null IDs from `thread/list` still
+  take precedence; ungrouped chats remain projectless.
+- This renderer-only change can be loaded into a running injected session.
+
 ## v1.5.97 — 2026-09-24
 
 - Defer Windows desktop-app updates when package resources are still in use

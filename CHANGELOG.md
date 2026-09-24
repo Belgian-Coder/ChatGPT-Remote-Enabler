@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.5.97 — 2026-09-24
+
+- Defer Windows desktop-app updates when package resources are still in use
+  (`0x80073D02`), allowing Remote Enabler to launch and inject the unchanged
+  healthy installation. Reuse the existing bounded update deferral; do not
+  force-close applications or bypass deployment policy. Recognize native,
+  wrapped, and text-only deployment errors.
+- No renderer or macOS runtime changes. An already running ordinary ChatGPT
+  session still needs a user-approved restart through Remote Enabler to gain
+  the debugger connection required for injection.
+
 ## v1.5.96 — 2026-09-23
 
 - Fix Windows proxy Remote authentication for both controller layouts. Map the

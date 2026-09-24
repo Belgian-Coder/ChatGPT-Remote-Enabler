@@ -10,7 +10,7 @@ device filters, native project grouping and ordering, empty remote projects,
 project-hover new-chat actions, and working/unread indicators. The original
 **Native sidebar** remains available, with its grouping preference preserved.
 
-v1.5.96 loads verified Remote Enabler releases into the current renderer without
+v1.5.97 loads verified Remote Enabler releases into the current renderer without
 closing ChatGPT. It validates the prepared renderer before replacing files and
 uses the existing graceful restart only when the protected bridge or publisher
 changes. After a live update, an exact-identity two-phase handoff transfers the
@@ -22,8 +22,8 @@ Each platform keeps one unversioned per-user installation
 root and one immediate updater rollback. See the
 [feature guide](FEATURES.md) for behavior and validation limits.
 
-On Windows, a verified desktop-app update that is blocked specifically because
-the current user cannot install its packaged service no longer prevents launch
+On Windows, a verified desktop-app update blocked because its package resources
+are still in use or the current user cannot install its packaged service no longer prevents launch
 of the unchanged healthy Store package. The helper does not elevate or bypass
 AppX policy. Device projects also uses explicit project-membership authority
 from current publishers, and removes stale loading indicators from empty
@@ -100,7 +100,7 @@ OpenAI package identity, publisher, x64 manifest and Windows signature, stages
 the file in per-user temp, refuses equal versions, downgrades, ambiguous mixed
 identities and running `ChatGPT.exe`, then uses current-user
 `Add-AppxPackage`. When Windows rejects that update with deployment error
-`0x80073D28`, the launcher revalidates and opens only the unchanged healthy
+`0x80073D02` (package resources in use) or `0x80073D28`, the launcher revalidates and opens only the unchanged healthy
 Store package; other installation failures remain fatal. The exact candidate
 deferral skips repeated large downloads for at most 24 hours, then retries so a
 resolved Windows policy block can recover automatically. It does not
@@ -124,16 +124,16 @@ runtime capabilities on a particular desktop app build.
 See the [complete feature guide](FEATURES.md) for defaults, limits, privacy,
 and recovery behavior.
 
-## Install v1.5.96
+## Install v1.5.97
 
 Prerequisites are a supported ChatGPT/Codex desktop app signed in with Remote
 available on the account, Node.js 22 or newer, and a writable folder for the
 downloaded package. Organization policy, account access, MFA, or desktop-app
 policy can still block Remote independently of this helper.
 
-- **[Download Windows 11 x64](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/download/v1.5.96/ChatGPT-Remote-Enabler-Windows-x64-v1.5.96.zip)** and follow the [Windows installation guide](windows/README.md).
-- **[Download macOS Apple Silicon](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/download/v1.5.96/ChatGPT-Remote-Enabler-macOS-arm64-v1.5.96.zip)** and follow the [macOS installation guide](macos/README.md).
-- Use the [v1.5.96 release page](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.96) to inspect release notes and published checksums.
+- **[Download Windows 11 x64](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/download/v1.5.97/ChatGPT-Remote-Enabler-Windows-x64-v1.5.97.zip)** and follow the [Windows installation guide](windows/README.md).
+- **[Download macOS Apple Silicon](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/download/v1.5.97/ChatGPT-Remote-Enabler-macOS-arm64-v1.5.97.zip)** and follow the [macOS installation guide](macos/README.md).
+- Use the [v1.5.97 release page](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.97) to inspect release notes and published checksums.
 
 Both installers run in the current-user context and do not request elevation.
 macOS keeps the package in its fixed per-user Application Support root. On Windows, keep the downloaded

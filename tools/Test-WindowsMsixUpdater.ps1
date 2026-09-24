@@ -243,6 +243,19 @@ try {
     Assert-Condition ([string]$deferred.Installed.Version -ceq '26.903.9000.0' -and [string]$deferred.Manifest.VersionText -ceq '26.903.9999.0') 'Deferred update proof did not retain exact installed and verified candidate versions.'
     Assert-Condition (Test-Path -LiteralPath $deferredStatePath -PathType Leaf) 'A policy-blocked verified candidate was not recorded for bounded subsequent startup.'
 
+    foreach ($inUseInstaller in @(
+        { param($path) throw [Runtime.InteropServices.COMException]::new('Package resources are in use.', -2147009278) },
+        { param($path) throw [InvalidOperationException]::new('Wrapped deployment failure', [Runtime.InteropServices.COMException]::new('Package resources are in use.', -2147009278)) },
+        { param($path) throw 'Deployment failed with HRESULT: 0x80073D02, resources are currently in use.' }
+    )) {
+        $inUseResult = Invoke-ChatGPTDesktopMsixUpdater -Action Update -PackageUri 'https://persistent.oaistatic.com/codex-app-prod/ChatGPT-x64.msix' -PackagePath $fixture -HeadRequester $head -PackageEnumerator { ,$blockedPackage } -ProcessEnumerator { @() } -SignatureReader { param($path) [pscustomobject]@{ Status = 'Valid'; SignerCertificate = 'fixture' } } -DeferredStatePath $fixtureDeferredStatePath -Installer $inUseInstaller
+        Assert-Condition ($inUseResult.Decision -ceq 'UpdateDeferredCurrentInstalled' -and $inUseResult.InstallDeferred -and [string]$inUseResult.Installed.Version -ceq '26.903.9000.0') 'Package-in-use failure blocked launch of the unchanged installation.'
+    }
+    foreach ($longCode in @('0x80073D020', '0x80073D02A')) {
+        $inUseError = [Management.Automation.ErrorRecord]::new([Exception]::new($longCode), 'fixture', [Management.Automation.ErrorCategory]::NotSpecified, $null)
+        Assert-Condition (-not (Test-CurrentUserAppxInstallBlocked -ErrorRecord $inUseError)) 'A longer hexadecimal token was mistaken for package-in-use.'
+    }
+
     foreach ($registrationChange in @(
         @{ Label = 'package-full-name'; Package = (New-FixturePackage -Version '26.903.9000.0' -PackageFullName 'OpenAI.Codex_26.903.9000.0_x64__changed') },
         @{ Label = 'install-location'; Package = (New-FixturePackage -Version '26.903.9000.0' -InstallLocation 'C:\Program Files\WindowsApps\fixture-moved') }

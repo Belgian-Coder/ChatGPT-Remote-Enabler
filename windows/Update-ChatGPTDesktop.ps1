@@ -117,11 +117,14 @@ function Test-CurrentUserAppxInstallBlocked {
 
     for ($exception = $ErrorRecord.Exception; $null -ne $exception; $exception = $exception.InnerException) {
         $unsignedHResult = [BitConverter]::ToUInt32([BitConverter]::GetBytes([int]$exception.HResult), 0)
-        if ($unsignedHResult -eq [uint32]2147958056) { return $true }
+        # Windows can still hold package resources after ChatGPT.exe exits.
+        # Defer that update just like a current-user deployment restriction;
+        # never force application shutdown to release the package.
+        if ($unsignedHResult -in @([uint32]2147958018, [uint32]2147958056)) { return $true }
     }
     # PowerShell may wrap the deployment exception and expose the native code
     # only in the fully formatted error text.
-    return [string]$ErrorRecord -match '(?i)(?<![0-9A-F])0x80073D28(?![0-9A-F])'
+    return [string]$ErrorRecord -match '(?i)(?<![0-9A-F])0x80073D(?:02|28)(?![0-9A-F])'
 }
 
 function Read-CurlResponseHeaders {

@@ -792,17 +792,23 @@ function sameCoordinatorProcessIdentity(left, right, platform = process.platform
 
 function coordinatorStateFile(directory) { return path.join(directory, "coordinator-state.json"); }
 
-function writeCoordinatorState(config, phase) {
+function writeCoordinatorState(config, phase, transportHealth = null) {
   const file = coordinatorStateFile(config.sessionDirectory);
   const temporary = `${file}.${process.pid}.tmp`;
+  const now = Date.now();
+  const proofAt = transportHealth?.rendererProofAtUnixMs;
+  const rendererHealthy = transportHealth?.connected === true && Number.isSafeInteger(proofAt) &&
+    proofAt > 0 && proofAt <= now && now - proofAt <= 10_000;
   const value = {
     schemaVersion: 1,
     sessionId: path.basename(config.sessionDirectory),
     bundleHash: path.basename(path.dirname(config.updaterPath)),
     coordinatorPid: process.pid,
     coordinatorIdentity: config.coordinatorProcessIdentity,
-    phase,
-    heartbeatAtUnixMs: Date.now(),
+    phase: phase === "active" && !rendererHealthy ? "degraded" : phase,
+    heartbeatAtUnixMs: now,
+    rendererConnected: rendererHealthy,
+    rendererProofAtUnixMs: rendererHealthy ? proofAt : null,
   };
   fs.writeFileSync(temporary, `${JSON.stringify(value)}\n`, { encoding: "utf8", mode: 0o600 });
   fs.renameSync(temporary, file);
@@ -823,7 +829,7 @@ function pruneUpdateSessionState(config, sessionLimit = 2, bundleLimit = 2) {
       try {
         const value = JSON.parse(fs.readFileSync(path.join(directory, "session.json"), "utf8"));
         const coordinator = JSON.parse(fs.readFileSync(coordinatorStateFile(directory), "utf8"));
-        live = ["starting", "active"].includes(coordinator?.phase) &&
+        live = ["starting", "active", "degraded"].includes(coordinator?.phase) &&
           Number.isSafeInteger(coordinator?.heartbeatAtUnixMs) && Date.now() - coordinator.heartbeatAtUnixMs <= 10_000 &&
           processAlive(coordinator?.coordinatorPid);
         const candidate = path.dirname(path.resolve(String(value?.updaterPath ?? "")));
@@ -867,11 +873,7 @@ class UpdateSessionController {
     this.canHotReload = dependencies.canHotReload ?? ((directory) => hotReloadCompatibility(config, directory));
     this.status = canonicalStatus({ state: "unavailable", message: "Update status is starting." });
     this.release = null;
-    this.installedVersion = null;
-    try {
-      const version = fs.readFileSync(path.join(config.installRoot, "VERSION"), "utf8").trim();
-      if (validVersion(version)) this.installedVersion = version;
-    } catch {}
+    this.refreshInstalledVersion();
     this.lastCheckedAt = null;
     this.history = readUpdateHistory(config);
     this.lastCheckedAt = this.history.findLast(entry => entry.state === "checked")?.at ?? null;
@@ -886,6 +888,15 @@ class UpdateSessionController {
     this.stopping = false;
     this.lastStrictProbeAt = 0;
     this.monitorPromise = null;
+    this.transport.setStatusProvider?.(() => this.snapshotStatus());
+  }
+
+  refreshInstalledVersion() {
+    this.installedVersion = null;
+    try {
+      const version = fs.readFileSync(path.join(this.config.installRoot, "VERSION"), "utf8").trim();
+      if (validVersion(version)) this.installedVersion = version;
+    } catch {}
   }
 
   recordHistory(state, version = null) {
@@ -894,7 +905,14 @@ class UpdateSessionController {
     catch { this.historyAvailable = false; }
   }
 
-  async setStatus(value, record = true) {
+  snapshotStatus(value = this.status, record = false) {
+    this.refreshInstalledVersion();
+    if (value.state === "current" && !this.installedVersion) {
+      value = { ...value, state: "unavailable", version: null, canQueue: false,
+        message: "The installed helper version is not available. Check again after installation completes." };
+    } else if (value.state === "current" && value.version !== this.installedVersion) {
+      value = { ...value, version: this.installedVersion, message: "The installed helper changed. Check for updates." };
+    }
     const key = `${value.state}:${value.version ?? ""}`;
     if (record && key !== this.historyStateKey && value.state !== "checking") {
       this.recordHistory(value.state, value.version);
@@ -907,6 +925,11 @@ class UpdateSessionController {
       historyAvailable: this.historyAvailable,
       history: this.history,
     } });
+    return this.status;
+  }
+
+  async setStatus(value, record = true) {
+    this.snapshotStatus(value, record);
     try { await this.transport.publish(this.status); }
     catch (error) {
       if (!this.closingInitiated) throw error;
@@ -923,8 +946,8 @@ class UpdateSessionController {
     if (this.checkPromise) return this.checkPromise;
     if (["closing", "updating", "restarting"].includes(this.status.state)) return this.status;
     this.checkPromise = (async () => {
-      await this.setStatus({ state: "checking", message: "Checking for an update…" });
       try {
+        await this.setStatus({ state: "checking", message: "Checking for an update…" });
         const result = await this.updater.check();
         if (typeof result?.available !== "boolean" || !validVersion(result.localVersion) ||
             (result.available && (!validVersion(result.latestVersion) || !validSha256(result.archiveSha256)))) {
@@ -1421,8 +1444,8 @@ async function main() {
     await transport.attach();
     await transport.publish(controller.status);
     writeLaunchReceipt(config, configSha256);
-    writeCoordinatorState(config, "active");
-    coordinatorHeartbeatTimer = setInterval(() => { try { writeCoordinatorState(config, "active"); } catch {} }, config.processPollMs ?? 1000);
+    writeCoordinatorState(config, "active", transport.getHealth());
+    coordinatorHeartbeatTimer = setInterval(() => { try { writeCoordinatorState(config, "active", transport.getHealth()); } catch {} }, config.processPollMs ?? 1000);
     config.log("coordinator-ready", { pid: process.pid });
     if (config.autoCheckEnabled === true && config.skipInitialCheck !== true) {
       controller.check(false).catch(() => {});
@@ -1488,6 +1511,7 @@ module.exports = {
   safeRemovePrepared,
   sameCoordinatorProcessIdentity,
   testWritable,
+  writeCoordinatorState,
 };
 
 if (require.main === module) {

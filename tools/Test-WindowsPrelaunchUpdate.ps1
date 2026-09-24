@@ -3,6 +3,7 @@ param()
 
 $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+. (Join-Path $root 'windows/CodexRemoteMobileProject/StartupProgress.ps1')
 $temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) ('chatgpt-remote-prelaunch-test-' + [guid]::NewGuid().ToString('N'))
 $fakeUpdater = Join-Path $temporaryRoot 'fixture updater with spaces.ps1'
 $fakeLog = Join-Path $temporaryRoot 'updater-calls.log'
@@ -28,7 +29,7 @@ function Assert-Condition {
 try {
     New-Item -ItemType Directory -Path $temporaryRoot -Force | Out-Null
     $fakeUpdaterSource = @"
-param([string]`$Action, [string]`$Transport, [string]`$InstallRoot, [switch]`$LaunchLockHeld)
+param([string]`$Action, [string]`$Transport, [string]`$InstallRoot, [switch]`$LaunchLockHeld, [switch]`$RecoverPendingOnly)
 Add-Content -LiteralPath '$($fakeLog.Replace("'", "''"))' -Value ("`$Action|transport=`$Transport|guard=`$LaunchLockHeld")
 if (`$Action -eq 'Recover') {
     if (Test-Path -LiteralPath (Join-Path (Split-Path -Parent `$PSCommandPath) 'fail-recover')) { Write-Output 'recovery failed'; exit 7 }
@@ -137,7 +138,7 @@ if (`$decision -eq 'Installed') { `$proof.Manifest = [ordered]@{Name='OpenAI.Cod
         }
 
         $flowIndex = $sourceText.IndexOf('$recoverTimer = [Diagnostics.Stopwatch]::StartNew()', [StringComparison]::Ordinal)
-        $recoveryIndex = if ($flowIndex -ge 0) { $sourceText.IndexOf('$recovery = Invoke-UpdateRecovery -UpdaterPath', $flowIndex, [StringComparison]::Ordinal) } else { -1 }
+        $recoveryIndex = if ($flowIndex -ge 0) { $sourceText.IndexOf('Invoke-UpdateRecovery -UpdaterPath', $flowIndex, [StringComparison]::Ordinal) } else { -1 }
         $prelaunchIndex = if ($recoveryIndex -ge 0) { $sourceText.IndexOf('Invoke-PrelaunchUpdate -UpdaterPath', $recoveryIndex, [StringComparison]::Ordinal) } else { -1 }
         $desktopIndex = if ($prelaunchIndex -ge 0) { $sourceText.IndexOf('Invoke-DesktopAppPrelaunchUpdate -UpdaterPath', $prelaunchIndex, [StringComparison]::Ordinal) } else { -1 }
         $injectionIndex = if ($prelaunchIndex -ge 0) { $sourceText.IndexOf($case.Injection, $prelaunchIndex, [StringComparison]::Ordinal) } else { -1 }
@@ -166,7 +167,7 @@ if (`$decision -eq 'Installed') { `$proof.Manifest = [ordered]@{Name='OpenAI.Cod
                 $sessionArgumentsBlock.Contains('UseProxy = [bool]$UseProxy')) 'Root launcher worker does not preserve proxy mode through update and update-session relaunch handoffs.'
         }
         Invoke-Expression (Get-FunctionDefinitionText -Ast $ast -Name 'Wait-ForContinuationParent')
-        $exitedParent = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') -ArgumentList '-NoProfile -NonInteractive -Command "exit 0"' -WindowStyle Hidden -PassThru
+        $exitedParent = Start-StartupBackgroundProcess -FilePath (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') -ArgumentList '-NoProfile -NonInteractive -Command "exit 0"'
         $ContinuationParentProcessId = $exitedParent.Id
         $ContinuationParentProcessStartTimeFileTimeUtc = $exitedParent.StartTime.ToUniversalTime().ToFileTimeUtc()
         $exitedParent.WaitForExit()

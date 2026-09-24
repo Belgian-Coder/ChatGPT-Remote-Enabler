@@ -152,9 +152,14 @@ switch ($Action) {
             throw 'Startup shortcut installation did not pass its exact commit probe; rollback copies were retained.'
         }
         Complete-StartupBackups -Paths $backups
+        # Keep the exact shortcut commit probe above before cleanup can remove
+        # the Startup entry when an enabled task is the primary launcher. The
+        # cleanup result must never be reported as the pre-cleanup summary.
+        $legacyMigration = @(Invoke-StableLegacyCleanup -StableRoot $stableRootResolved -ShortcutPaths (@($shortcutPath) + @($legacyStartupPaths)) -TaskNames @('Codex Remote Mobile Features at Logon') -StartupPath $StartupPath -MigrateEntryPoints)
+        $result = Get-StartupSummary
         $result.backupPaths = @()
         $result.stableRoot = $stableRootResolved
-        $result.legacyMigration = @(Invoke-StableLegacyCleanup -StableRoot $stableRootResolved -ShortcutPaths (@($shortcutPath) + @($legacyStartupPaths)) -TaskNames @('Codex Remote Mobile Features at Logon') -MigrateEntryPoints)
+        $result.legacyMigration = $legacyMigration
         $result | ConvertTo-Json -Depth 4
     }
     'Remove' {

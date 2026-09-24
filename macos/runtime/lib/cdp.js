@@ -4,6 +4,13 @@
 "use strict";
 
 const http = require("node:http");
+const {
+  ELECTRON_ATTACH_TARGET_MARKER,
+  ELECTRON_TARGET_URL,
+  buildDiscoveryExpression,
+  connectElectronTarget,
+  isElectronAttachTarget,
+} = require("./electron-attach.js");
 
 function transportError(code, message) {
   const error = new Error(message);
@@ -83,19 +90,83 @@ function getJson(port, pathname, timeoutMs) {
 }
 
 async function discoverTargets(port, timeoutMs) {
+  const discoveryTimeoutMs = timeoutMs ?? 10_000;
+  const discoveryDeadline = Date.now() + discoveryTimeoutMs;
+  const remainingDiscoveryMs = () => Math.max(1, discoveryDeadline - Date.now());
   let value;
   try {
-    value = await getJson(port, "/json/list", timeoutMs);
+    value = await getJson(port, "/json/list", remainingDiscoveryMs());
   } catch (firstError) {
     if (firstError?.code !== "DISCOVERY_HTTP_STATUS") {
       throw firstError;
     }
-    value = await getJson(port, "/json", timeoutMs);
+    value = await getJson(port, "/json", remainingDiscoveryMs());
   }
   if (!Array.isArray(value)) {
     throw transportError("DISCOVERY_INVALID_SHAPE", "Debugger discovery did not return a target list");
   }
-  return value.filter((target) => target && typeof target.webSocketDebuggerUrl === "string");
+  const targets = value.filter((target) => target && typeof target.webSocketDebuggerUrl === "string");
+  const electronTargets = await discoverElectronTargets(
+    targets,
+    port,
+    remainingDiscoveryMs(),
+  );
+  return [...targets, ...electronTargets];
+}
+
+async function discoverElectronTargets(rawTargets, port, timeoutMs) {
+  const mainTarget = rawTargets.find(
+    (target) => target?.type === "node" && typeof target.webSocketDebuggerUrl === "string",
+  );
+  if (!mainTarget) return [];
+
+  let parsed;
+  try {
+    parsed = forceLoopbackWebSocketUrl(mainTarget.webSocketDebuggerUrl, port);
+  } catch {
+    return [];
+  }
+  const client = new JsonRpcWebSocket(parsed, { timeoutMs });
+  try {
+    await client.connect();
+    const response = await client.call(
+      "Runtime.evaluate",
+      {
+        awaitPromise: true,
+        expression: buildDiscoveryExpression(),
+        generatePreview: false,
+        returnByValue: true,
+        userGesture: false,
+      },
+      timeoutMs,
+    );
+    if (response?.exceptionDetails || response?.result?.value?.ok !== true) return [];
+    const discovery = response.result.value;
+    if (!Number.isInteger(discovery.pid) || !Array.isArray(discovery.targets)) return [];
+    return discovery.targets
+      .filter((candidate) => candidate && Number.isInteger(candidate.id) && candidate.url === ELECTRON_TARGET_URL)
+      .map((candidate) => ({
+        description: "Electron webContents renderer attached through the ChatGPT main debugger",
+        devtoolsFrontendUrl: "",
+        id: `${mainTarget.id ?? "node"}-electron-${candidate.id}`,
+        title: "ChatGPT",
+        type: "page",
+        url: ELECTRON_TARGET_URL,
+        webSocketDebuggerUrl: mainTarget.webSocketDebuggerUrl,
+        _codexElectronAttachTarget: ELECTRON_ATTACH_TARGET_MARKER,
+        codexElectronAttach: true,
+        webContentsId: candidate.id,
+        electronWebContentsId: candidate.id,
+        expectedPid: discovery.pid,
+        expectedUrl: ELECTRON_TARGET_URL,
+        mainWebSocketDebuggerUrl: mainTarget.webSocketDebuggerUrl,
+      }));
+  } catch {
+    // Discovery of Electron's private API is best effort. Raw targets remain usable.
+    return [];
+  } finally {
+    client.close();
+  }
 }
 
 function forceLoopbackWebSocketUrl(reportedUrl, port) {
@@ -287,6 +358,12 @@ class JsonRpcWebSocket {
 }
 
 async function connectTarget(target, port, timeoutMs) {
+  if (isElectronAttachTarget(target)) {
+    return connectElectronTarget(target, port, timeoutMs, {
+      createMainClient: (url, options) => new JsonRpcWebSocket(url, options),
+      forceLoopbackWebSocketUrl,
+    });
+  }
   const url = forceLoopbackWebSocketUrl(target.webSocketDebuggerUrl, port);
   const client = new JsonRpcWebSocket(url, { timeoutMs });
   await client.connect();

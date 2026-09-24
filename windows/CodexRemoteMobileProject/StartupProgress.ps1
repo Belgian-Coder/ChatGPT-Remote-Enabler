@@ -11,6 +11,24 @@ $script:StartupProgressProcess = $null
 $script:StartupProgressStatePath = $null
 $script:StartupProgressHelperPath = [IO.Path]::GetFullPath($MyInvocation.MyCommand.Path)
 
+function Start-StartupBackgroundProcess {
+    param(
+        [Parameter(Mandatory)][string]$FilePath,
+        [Parameter(Mandatory)][string]$ArgumentList,
+        [string]$WorkingDirectory
+    )
+    # Hidden window state alone still permits console allocation. These workers
+    # have no interactive console; the optional progress form owns its own UI.
+    $start = [Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = $FilePath
+    $start.Arguments = $ArgumentList
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
+    if ($WorkingDirectory) { $start.WorkingDirectory = $WorkingDirectory }
+    return [Diagnostics.Process]::Start($start)
+}
+
 function Get-StartupProgressRoot {
     $localData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
     if ([string]::IsNullOrWhiteSpace($localData)) { throw 'Local application data is unavailable.' }
@@ -102,7 +120,7 @@ function Start-StartupProgress {
         Write-StartupProgressState -Message $Message
         $powerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
         $arguments = '-NoLogo -NoProfile -NonInteractive -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}" -ProgressWorker -ProgressStatePath "{1}" -ProgressOwnerProcessId {2}' -f $script:StartupProgressHelperPath,$script:StartupProgressStatePath,$PID
-        $script:StartupProgressProcess = Start-Process -FilePath $powerShell -ArgumentList $arguments -WindowStyle Hidden -PassThru
+        $script:StartupProgressProcess = Start-StartupBackgroundProcess -FilePath $powerShell -ArgumentList $arguments
     } catch {
         $script:StartupProgressProcess = $null
         if ($script:StartupProgressStatePath -and [IO.File]::Exists($script:StartupProgressStatePath)) { [IO.File]::Delete($script:StartupProgressStatePath) }

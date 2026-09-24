@@ -222,6 +222,48 @@ try {
     Assert-Condition ($runningCalls -eq 0) 'Running ChatGPT fixture still reached the installer.'
 
     $blockedPackage = New-FixturePackage -Version '26.903.9000.0'
+    # Deployment can report a package resource held by another process or
+    # session even after our ChatGPT process checks succeeded.
+    foreach ($busyErrorKind in @('native', 'inner', 'text')) {
+        $busyStatePath = Join-Path $fixtureRoot ("desktop-update-busy-$busyErrorKind.json")
+        $busyCalls = @{ Install = 0; Enumerate = 0 }
+        $busyInstaller = {
+            $busyCalls.Install++
+            if ($busyErrorKind -eq 'text') { throw 'Deployment failed with HRESULT: 0x80073D02, resources are currently in use.' }
+            $nativeBusy = [Runtime.InteropServices.COMException]::new('Package resources are in use.', -2147009278)
+            if ($busyErrorKind -eq 'inner') { throw [InvalidOperationException]::new('Deployment failed.', $nativeBusy) }
+            throw $nativeBusy
+        }
+        $originalSaveMsix = (Get-Item Function:\Save-MsixToPerUserTemp).ScriptBlock
+        try {
+            Set-Item Function:\Save-MsixToPerUserTemp -Value { return $fixture }
+            $busyResult = Invoke-ChatGPTDesktopMsixUpdater -Action Update -PackageUri 'https://persistent.oaistatic.com/codex-app-prod/ChatGPT-x64.msix' -HeadRequester $head -PackageEnumerator { $busyCalls.Enumerate++; ,$blockedPackage } -ProcessEnumerator { @() } -DeferredStatePath $busyStatePath -SignatureReader { [pscustomobject]@{ Status = 'Valid'; SignerCertificate = 'fixture' } } -Installer $busyInstaller
+            Assert-Condition ($busyResult.Decision -ceq 'UpdateDeferredCurrentInstalled' -and $busyResult.InstallDeferred -and $busyResult.DeferralCached -and $busyCalls.Enumerate -eq 2 -and $busyCalls.Install -eq 1 -and $busyResult.Installed.Version -eq $blockedPackage.Version) "The $busyErrorKind resource-in-use error did not defer with unchanged installed-package proof."
+            Set-Item Function:\Save-MsixToPerUserTemp -Value { throw 'Busy candidate must not be downloaded again during bounded deferral.' }
+            $busyCached = Invoke-ChatGPTDesktopMsixUpdater -Action Update -PackageUri 'https://persistent.oaistatic.com/codex-app-prod/ChatGPT-x64.msix' -HeadRequester $head -PackageEnumerator { ,$blockedPackage } -ProcessEnumerator { @() } -DeferredStatePath $busyStatePath -Installer $busyInstaller
+            Assert-Condition ($busyCached.DeferredFromCache -and $busyCalls.Install -eq 1) 'Busy package was attempted again on the next launch.'
+        } finally { Set-Item Function:\Save-MsixToPerUserTemp -Value $originalSaveMsix }
+    }
+    foreach ($unrelatedBusyText in @('resources are currently in use', '0x80073D020', '0x80073D02A', 'A0x80073D02')) {
+        try { throw $unrelatedBusyText } catch { $unrelatedBusyError = $_ }
+        Assert-Condition (-not (Test-CurrentUserAppxInstallBlocked -ErrorRecord $unrelatedBusyError)) "An unrelated message or longer code was treated as an in-use deferral: $unrelatedBusyText"
+    }
+    foreach ($afterBusy in @('removed', 'version', 'location', 'unhealthy', 'fresh')) {
+        $busyEnumerations = @{ Count = 0 }
+        Assert-Throws {
+            Invoke-ChatGPTDesktopMsixUpdater -Action Update -PackageUri 'https://persistent.oaistatic.com/codex-app-prod/ChatGPT-x64.msix' -PackagePath $fixture -HeadRequester $head -PackageEnumerator {
+                $busyEnumerations.Count++
+                if ($afterBusy -eq 'fresh') { return @() }
+                if ($busyEnumerations.Count -eq 1) { return ,$blockedPackage }
+                switch ($afterBusy) {
+                    'removed' { return @() }
+                    'version' { return ,(New-FixturePackage -Version '26.903.9001.0') }
+                    'location' { return ,(New-FixturePackage -Version '26.903.9000.0' -InstallLocation 'C:\different') }
+                    'unhealthy' { return ,(New-FixturePackage -Version '26.903.9000.0' -Status 'Modified') }
+                }
+            } -ProcessEnumerator { @() } -SignatureReader { [pscustomobject]@{ Status = 'Valid'; SignerCertificate = 'fixture' } } -Installer { throw [Runtime.InteropServices.COMException]::new('Package resources are in use.', -2147009278) }
+        } 'MSIX current-user installation failed'
+    }
     $blockedEnumerations = @{ Count = 0 }
     $deferredStatePath = Join-Path $fixtureRoot 'desktop-update-deferred.json'
     $blockedInstallerCalls = @{ Count = 0 }

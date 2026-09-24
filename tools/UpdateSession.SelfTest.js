@@ -57,6 +57,7 @@ assert.throws(() => session.ensureConfig(config({ sessionDirectory: tempRoot }))
 assert.throws(() => session.safeRemovePrepared(config(), tempRoot), /outside the update-session prepared root/u);
 
 function harness(options = {}) {
+  fs.writeFileSync(path.join(installRoot, "VERSION"), "v1.0.0\n");
   const statuses = [];
   const calls = { apply: 0, check: 0, close: 0, closingExpected: [], handoff: 0, hotReload: 0, hotReloadVersions: [], isAlive: 0, notify: 0, prepare: 0, probe: 0, recover: 0, relaunch: 0, removed: [] };
   const release = { version: "v1.5.32", archiveSha256: "b".repeat(64) };
@@ -81,6 +82,7 @@ function harness(options = {}) {
       calls.appliedRelease = { ...actual };
       calls.appliedDirectory = directory;
       if (options.applyError) throw options.applyError;
+      fs.writeFileSync(path.join(installRoot, "VERSION"), `${actual.version}\n`);
       return { updated: true, version: actual.version, archiveSha256: actual.archiveSha256 };
     },
     async recover() {
@@ -118,6 +120,38 @@ function harness(options = {}) {
 async function waitOperation(controller) {
   while (controller.queueRequestPromise) await controller.queueRequestPromise;
   if (controller.operationPromise) await controller.operationPromise;
+}
+
+async function testCheckRecoversAfterBridgeFailure() {
+  const h = harness();
+  const publish = h.controller.transport.publish;
+  h.controller.transport.publish = async () => { throw new Error("renderer bridge disconnected"); };
+  await assert.rejects(h.controller.check(true), /renderer bridge disconnected/u);
+  assert.equal(h.controller.checkPromise, null, "a failed initial status publication must release the check single-flight guard");
+  assert.equal(h.calls.check, 0, "the failed bridge operation must not be reported as a GitHub failure");
+  h.controller.transport.publish = publish;
+  await h.controller.check(true);
+  assert.equal(h.calls.check, 1, "a restored bridge must permit a later update check");
+  assert.equal(h.controller.status.state, "available");
+}
+
+function testCoordinatorTransportHealth() {
+  const statePath = path.join(sessionDirectory, "coordinator-state.json");
+  const now = Date.now();
+  for (const health of [null, { connected: false, rendererProofAtUnixMs: now },
+    { connected: true, rendererProofAtUnixMs: now - 20_000 },
+    { connected: true, rendererProofAtUnixMs: now + 60_000 }]) {
+    session.writeCoordinatorState(config(), "active", health);
+    const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    assert.equal(state.phase, "degraded", "process liveness without fresh renderer proof must not claim active");
+    assert.equal(state.rendererConnected, false);
+  }
+  session.writeCoordinatorState(config(), "active", { connected: true, rendererProofAtUnixMs: Date.now() });
+  const healthy = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(healthy.phase, "active");
+  assert.equal(healthy.rendererConnected, true);
+  session.writeCoordinatorState(config(), "stopped");
+  assert.equal(JSON.parse(fs.readFileSync(statePath, "utf8")).phase, "stopped");
 }
 
 function testPersistentHistory() {
@@ -169,6 +203,27 @@ async function testReadOnlyHistoryRefresh() {
   const status = await h.controller.request("history", "history-late");
   assert.ok(status.details.history.some(entry => entry.version === late.version));
   assert.equal(fs.readFileSync(historyPath, "utf8"), before, "refresh must not write history");
+  for (const key of ["check", "prepare", "apply", "close", "relaunch"]) assert.equal(h.calls[key], 0);
+}
+
+async function testInstalledVersionRefresh() {
+  const h = harness();
+  await h.controller.setStatus({ state: "current", version: "v1.0.0", message: "The installed version is current." }, false);
+  assert.equal(h.controller.status.details.installedVersion, "v1.0.0");
+  fs.writeFileSync(path.join(installRoot, "VERSION"), "v1.5.99\n");
+  await h.controller.request("history", "version-after-install");
+  assert.equal(h.controller.status.details.installedVersion, "v1.5.99", "a retained coordinator must report the current disk installation");
+  assert.equal(h.controller.status.version, "v1.5.99");
+  for (const invalid of ["not-a-version", ""]) {
+    fs.writeFileSync(path.join(installRoot, "VERSION"), invalid);
+    await h.controller.setStatus({ state: "current", version: "v1.5.99" }, false);
+    assert.equal(h.controller.status.details.installedVersion, null, "an unreadable or invalid installation must not report the stale version");
+    assert.equal(h.controller.status.version, null);
+    assert.equal(h.controller.status.state, "unavailable");
+  }
+  fs.unlinkSync(path.join(installRoot, "VERSION"));
+  await h.controller.request("history", "version-unavailable");
+  assert.equal(h.controller.status.details.installedVersion, null);
   for (const key of ["check", "prepare", "apply", "close", "relaunch"]) assert.equal(h.calls[key], 0);
 }
 
@@ -266,6 +321,12 @@ function testCoordinatorAwareRetention() {
   const newest = new Date(Date.now() + 1000);
   fs.utimesSync(orphanBundle, newest, newest);
   const currentDirectory = path.join(sessionsRoot, ids[4]);
+  const degradedStatePath = path.join(sessionsRoot, ids[0], "coordinator-state.json");
+  fs.writeFileSync(degradedStatePath, JSON.stringify({ phase: "degraded", coordinatorPid: process.pid, heartbeatAtUnixMs: Date.now() }));
+  session.pruneUpdateSessionState({ stateRoot: retentionRoot, sessionDirectory: currentDirectory }, 2, 2);
+  assert.ok(fs.existsSync(path.join(sessionsRoot, ids[0])), "a live coordinator repairing its bridge must retain its session");
+  assert.ok(fs.existsSync(path.join(bundlesRoot, hashes[0])), "bridge degradation must not permit deleting a live coordinator's dependencies");
+  fs.writeFileSync(degradedStatePath, JSON.stringify({ phase: "stopped", coordinatorPid: process.pid, heartbeatAtUnixMs: Date.now() }));
   session.pruneUpdateSessionState({ stateRoot: retentionRoot, sessionDirectory: currentDirectory }, 2, 2);
   assert.deepEqual(fs.readdirSync(sessionsRoot).sort(), ids.slice(3).sort(), "retention must keep the active coordinator and one prior session");
   assert.deepEqual(fs.readdirSync(bundlesRoot).sort(), hashes.slice(3).sort(), "retention must keep only the current and previous bundles");
@@ -954,7 +1015,10 @@ async function testActualWindowsCheck() {
 (async () => {
   try {
     testPersistentHistory();
+    testCoordinatorTransportHealth();
+    await testCheckRecoversAfterBridgeFailure();
     await testReadOnlyHistoryRefresh();
+    await testInstalledVersionRefresh();
     await testPinnedIdleFlow();
     await testPinnedHotReloadFlow();
     await testCoordinatorActivationFailureKeepsAppOpen();

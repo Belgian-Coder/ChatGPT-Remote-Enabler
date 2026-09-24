@@ -520,8 +520,8 @@ start_update_session() {
   local state_root="$HOME/Library/Application Support/ChatGPTRemoteEnabler/update-sessions"
   local source name fingerprint="" bundle_hash bundle session_directory config_path local_name
   local_name="$(computer_name)"
-  local -a names=(update-session.js update-session-cdp.js coordinator-handoff.js UpdateSessionPlatform.sh cdp.js Update-ChatGPTRemote.sh update-transaction.js git-release.js git-checkout-update.js ProxyConfiguration.sh)
-  local -a sources=("$update_session_source" "$update_session_cdp_source" "$coordinator_handoff_source" "$update_session_platform_source" "$cdp_source" "$updater" "$update_transaction_source" "$git_release_source" "$git_checkout_update_source" "$proxy_configuration")
+  local -a names=(update-session.js update-session-cdp.js coordinator-handoff.js UpdateSessionPlatform.sh cdp.js electron-attach.js Update-ChatGPTRemote.sh update-transaction.js git-release.js git-checkout-update.js ProxyConfiguration.sh)
+  local -a sources=("$update_session_source" "$update_session_cdp_source" "$coordinator_handoff_source" "$update_session_platform_source" "$cdp_source" "$bundle_root/runtime/lib/electron-attach.js" "$updater" "$update_transaction_source" "$git_release_source" "$git_checkout_update_source" "$proxy_configuration")
   for source in "${sources[@]}"; do [[ -f "$source" && ! -L "$source" ]] || { print -u2 "Update-session dependency is missing: $source"; return 1; }; done
   local index
   for (( index=1; index<=${#sources[@]}; index++ )); do

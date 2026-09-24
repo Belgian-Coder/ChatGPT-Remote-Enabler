@@ -9,7 +9,7 @@ const rendererPath = path.join(__dirname, "..", "renderer-mobile-project-view.js
 const originalSource = fs.readFileSync(rendererPath, "utf8").replace(/\r\n/gu, "\n");
 const testSource = originalSource
   .replace("(() => {", "globalThis.__hostFlowTest = (() => {")
-  .replace("  return installWhenDocumentReady(api, state, install, probe);\n})();", "  return { collectModel, discoverHostNames, hostName, metadataFromRow, publishedThreadProjectId, state, uninstall };\n})();");
+  .replace("  return installWhenDocumentReady(api, state, install, probe);\n})();", "  return { collectModel, discoverHostNames, hostName, metadataFromRow, resolvedThreadProjectMembership, state, uninstall };\n})();");
 assert.notEqual(testSource, originalSource, "full renderer test adapter must replace the production entrypoint");
 
 class FixtureElement {
@@ -199,23 +199,44 @@ flow.state.threadInventories.set("local", { error: null, fetchedAt: Date.now(), 
 localProject = flow.collectModel().projects.find((project) => project.projectId === "local-project");
 assert.equal(localProject.tasks[0].cwd, "C:\\Fixture\\Local", "native cwd must survive when an authoritative direct thread omits cwd");
 assert.equal(localProject.tasks[0].isProjectless, false, "an authoritative project id without cwd must not mark a project thread as projectless");
+const ambiguousFlatNullMembership = { ...freshThreadWithoutMembership, projectId: null };
+flow.state.threadInventories.set("local", { error: null, fetchedAt: Date.now(), truncated: false, threads: [ambiguousFlatNullMembership] });
+localProject = flow.collectModel().projects.find((project) => project.projectId === "local-project");
+assert.equal(localProject.tasks[0].projectId, "local-project", "a nullable direct membership field must not erase current native project ownership");
+assert.equal(flow.collectModel().recents.some(group => group.tasks.some(task => task.conversationId === localThreadId)), false, "a nullable direct membership field must not move a grouped native task into Recents");
 const explicitNestedProjectless = { ...freshThreadWithoutMembership, project: null };
 flow.state.threadInventories.set("local", { error: null, fetchedAt: Date.now(), truncated: false, threads: [explicitNestedProjectless] });
 let projectlessModel = flow.collectModel();
 assert.equal(projectlessModel.projects.find((project) => project.projectId === "local-project")?.tasks.some(task => task.conversationId === localThreadId) ?? false, false, "an explicit nested null project must remove stale native project ownership");
 assert.equal(projectlessModel.recents.some(group => group.tasks.some(task => task.conversationId === localThreadId)), true, "an explicit nested null project must classify the thread as projectless");
+const explicitNestedIdProjectless = { ...freshThreadWithoutMembership, project: { id: null } };
+flow.state.threadInventories.set("local", { error: null, fetchedAt: Date.now(), truncated: false, threads: [explicitNestedIdProjectless] });
+projectlessModel = flow.collectModel();
+assert.equal(projectlessModel.recents.some(group => group.tasks.some(task => task.conversationId === localThreadId)), true, "an explicit nested null project id must remain authoritative projectless membership");
 nativeProjects[0].attributes["data-sidebar-project-kind"] = "local";
 nativeProjects[0].attributes.role = "listitem";
 nativeTasks[0].parentElement = nativeProjects[0];
 const nativeMembership = flow.metadataFromRow(nativeTasks[0]);
 assert.equal(nativeMembership.projectId, "local-project", "a native project container must identify the task's actual project");
 assert.equal(nativeMembership.nativeProjectMembershipKnown, true);
-assert.equal(flow.publishedThreadProjectId({ projectId: null }, nativeMembership), "local-project", "publisher must share native project membership when thread/list reports null");
-assert.equal(flow.publishedThreadProjectId({ projectId: "direct-project" }, nativeMembership), "direct-project", "a non-null direct project ID remains authoritative");
-assert.equal(flow.publishedThreadProjectId({ projectId: null }, { projectId: "stale-project" }), null, "publisher must not infer membership without a current native group");
+const ambiguousNativeMembership = flow.resolvedThreadProjectMembership({ projectId: null }, nativeMembership);
+assert.equal(ambiguousNativeMembership.known, true);
+assert.equal(ambiguousNativeMembership.projectId, "local-project", "publisher must share current native project membership when thread/list reports an ambiguous null");
+const directMembership = flow.resolvedThreadProjectMembership({ projectId: "direct-project" }, nativeMembership);
+assert.equal(directMembership.known, true);
+assert.equal(directMembership.projectId, "direct-project", "a non-null direct project ID remains authoritative");
+const staleMembership = flow.resolvedThreadProjectMembership({ projectId: null }, { projectId: "stale-project" });
+assert.equal(staleMembership.known, false, "publisher must not claim membership without a current native row");
+assert.equal(staleMembership.projectId, null, "publisher must not infer membership without a current native row");
+const explicitProjectlessMembership = flow.resolvedThreadProjectMembership({ project: null }, nativeMembership);
+assert.equal(explicitProjectlessMembership.known, true);
+assert.equal(explicitProjectlessMembership.projectId, null, "explicit projectlessness must override current native grouping");
+flow.state.threadInventories.set("local", { error: null, fetchedAt: Date.now(), truncated: false, threads: [ambiguousFlatNullMembership] });
 const nativeGroupedModel = flow.collectModel();
 assert.ok(nativeGroupedModel.projects.find(project => project.projectId === "local-project").tasks.some(task => task.conversationId === localThreadId), "thread/list projectId=null must not erase a current native project container");
 assert.equal(nativeGroupedModel.recents.some(group => group.tasks.some(task => task.conversationId === localThreadId)), false);
+flow.state.threadInventories.set("local", { error: null, fetchedAt: Date.now(), truncated: false, threads: [explicitNestedProjectless] });
+assert.ok(flow.collectModel().recents.some(group => group.tasks.some(task => task.conversationId === localThreadId)), "explicit projectlessness must override a current native project container");
 nativeTasks[0].parentElement = null;
 assert.ok(flow.collectModel().recents.some(group => group.tasks.some(task => task.conversationId === localThreadId)), "a task outside a native project container must still respect explicit projectless membership");
 const remoteContainer = new FixtureElement({ projectKind: "remote", hostId, projectId: "remote-project", label: "Remote project" }, {}, { "data-sidebar-project-kind": "remote", role: "listitem" });

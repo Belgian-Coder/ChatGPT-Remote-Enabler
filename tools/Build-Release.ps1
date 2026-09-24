@@ -162,10 +162,11 @@ try {
               'CodexRemoteMobileProject/coordinator-handoff.js',
               'CodexRemoteMobileProject/ProxyConfiguration.psm1',
               'CodexRemoteMobileProject/UpdateSessionSurvivorLauncher.ps1', 'CodexRemoteMobileProject/UpdateSessionTaskHost.exe',
-              'CodexRemoteMobileProject/UpdateSessionPlatform.ps1', 'CodexRemoteSimple/runtime/lib/cdp.js')
+              'CodexRemoteMobileProject/UpdateSessionPlatform.ps1', 'CodexRemoteMobileProject/RepairUpdateCoordinator.ps1', 'CodexRemoteSimple/runtime/lib/cdp.js',
+              'CodexRemoteSimple/runtime/lib/electron-attach.js', 'CodexRemoteSimple/runtime/attach-existing.cjs')
         } else {
             @('Update-ChatGPTRemote.sh', 'update-transaction.js', 'git-release.js', 'git-checkout-update.js', 'update-session.js', 'update-session-cdp.js', 'coordinator-handoff.js',
-              'publisher-heartbeat.js', 'UpdateSessionPlatform.sh', 'runtime/lib/cdp.js', 'ProxyConfiguration.sh')
+              'publisher-heartbeat.js', 'UpdateSessionPlatform.sh', 'runtime/lib/cdp.js', 'runtime/lib/electron-attach.js', 'ProxyConfiguration.sh')
         }
         foreach ($required in $requiredUpdateFiles) {
             if (-not (Test-Path -LiteralPath (Join-Path $stageRoot $required) -PathType Leaf)) {

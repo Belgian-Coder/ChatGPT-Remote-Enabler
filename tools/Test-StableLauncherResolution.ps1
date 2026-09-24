@@ -5,6 +5,7 @@ $ErrorActionPreference = 'Stop'
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $stableModulePath = Join-Path $repositoryRoot 'windows\StableInstall.ps1'
 . $stableModulePath
+. (Join-Path $repositoryRoot 'windows\CodexRemoteMobileProject\StartupProgress.ps1')
 
 function Assert-Condition {
     param([bool]$Condition, [string]$Message)
@@ -89,6 +90,8 @@ try {
     Assert-Condition ($noncanonicalCleanup.Count -eq 1 -and $noncanonicalCleanup[0].reason -eq 'noncanonical-stable-root') 'A noncanonical fixture root was allowed to scan or migrate live entry points.'
     $noncanonicalTask = @(Invoke-StableTaskMigration -StableRoot $stableRoot)
     Assert-Condition ($noncanonicalTask.Count -eq 1 -and $noncanonicalTask[0].reason -eq 'noncanonical-stable-root') 'A noncanonical fixture root was allowed to migrate the durable logon task.'
+    $unsafeShortcutMigration = @(Invoke-StableShortcutMigration -StableRoot $stableRoot -StartupPath (Join-Path $fixtureRoot 'Startup'))
+    Assert-Condition ($unsafeShortcutMigration.Count -eq 1 -and $unsafeShortcutMigration[0].reason -eq 'noncanonical-root-requires-explicit-shortcut-folders') 'A noncanonical migration was allowed to default to real shortcut folders.'
     Copy-StablePackageContents -SourceRoot (Join-Path $repositoryRoot 'windows') -DestinationRoot $packagedSource
     Write-Version -Root $packagedSource -Version $currentVersion
     New-ReleaseManifest -Root $packagedSource
@@ -108,7 +111,8 @@ param([string]$Path, [string]$SignalPath)
 $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
 try { [IO.File]::WriteAllText($SignalPath, 'locked'); Start-Sleep -Seconds 60 } finally { $stream.Dispose() }
 '@, [Text.UTF8Encoding]::new($false))
-    $locker = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') -WindowStyle Hidden -PassThru -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$lockScript,'-Path',$detachedTaskHost,'-SignalPath',$lockSignal)
+    $lockArguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -Path "{1}" -SignalPath "{2}"' -f $lockScript,$detachedTaskHost,$lockSignal
+    $locker = Start-StartupBackgroundProcess -FilePath (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') -ArgumentList $lockArguments
     try {
         $lockDeadline = [DateTime]::UtcNow.AddSeconds(5)
         while (-not (Test-Path -LiteralPath $lockSignal -PathType Leaf) -and [DateTime]::UtcNow -lt $lockDeadline) { Start-Sleep -Milliseconds 50 }
@@ -218,10 +222,26 @@ try { [IO.File]::WriteAllText($SignalPath, 'locked'); Start-Sleep -Seconds 60 } 
     $shell = New-Object -ComObject WScript.Shell
     $legacyDesktop = Join-Path $desktopPath 'ChatGPT Custom.lnk'
     $legacyRemote = Join-Path $desktopPath 'ChatGPT Remote Enabler.lnk'
+    $legacyMenuCustom = Join-Path $startMenuPath 'ChatGPT Custom.lnk'
+    $legacyMenuProxyTest = Join-Path $startMenuPath 'ChatGPT Custom (Proxy Test).lnk'
+    $foreignMenuProxy = Join-Path $startMenuPath 'ChatGPT Custom (Proxy).lnk'
+    $legacyMenuRemote = Join-Path $startMenuPath 'ChatGPT Remote Enabler.lnk'
+    $canonicalStartup = Join-Path $startupPath 'ChatGPT Remote Enabler Startup.lnk'
     $legacyStartup = Join-Path $startupPath 'ChatGPT Custom Startup.lnk'
+    $desktopCanonical = $shell.CreateShortcut($legacyRemote)
+    $desktopCanonical.TargetPath = Join-Path $stableRoot 'ChatGPT Remote Enabler.exe'
+    $desktopCanonical.Arguments = ''
+    $desktopCanonical.WorkingDirectory = $stableRoot
+    $desktopCanonical.Save()
+    $menuCanonical = $shell.CreateShortcut($legacyMenuRemote)
+    $menuCanonical.TargetPath = Join-Path $stableRoot 'ChatGPT Remote Enabler.exe'
+    $menuCanonical.Arguments = ''
+    $menuCanonical.WorkingDirectory = $stableRoot
+    $menuCanonical.Save()
     foreach ($entry in @(
         [ordered]@{ Path = $legacyDesktop; Target = Join-Path $legacyRoot 'CodexRemoteMobileProject\ChatGPT Custom.exe'; Arguments = '--proxy' },
-        [ordered]@{ Path = $legacyRemote; Target = Join-Path $legacyRoot 'ChatGPT Remote Enabler.exe'; Arguments = '' },
+        [ordered]@{ Path = $legacyMenuCustom; Target = Join-Path $legacyRoot 'CodexRemoteMobileProject\ChatGPT Custom.exe'; Arguments = '--proxy' },
+        [ordered]@{ Path = $legacyMenuProxyTest; Target = Join-Path $legacyRoot 'CodexRemoteMobileProject\ChatGPT Custom.exe'; Arguments = '--proxy' },
         [ordered]@{ Path = $legacyStartup; Target = Join-Path $legacyRoot 'CodexRemoteMobileProject\ChatGPT Custom.exe'; Arguments = '--proxy' }
     )) {
         $shortcut = $shell.CreateShortcut($entry.Path)
@@ -230,16 +250,39 @@ try { [IO.File]::WriteAllText($SignalPath, 'locked'); Start-Sleep -Seconds 60 } 
         $shortcut.WorkingDirectory = $legacyRoot
         $shortcut.Save()
     }
+    $foreignRoot = Join-Path $fixtureRoot 'foreign-user-files'
+    New-Item -ItemType Directory -Path $foreignRoot -Force | Out-Null
+    $foreignExecutable = Join-Path $foreignRoot 'ChatGPT Custom.exe'
+    [IO.File]::WriteAllText($foreignExecutable, 'foreign user executable', [Text.UTF8Encoding]::new($false))
+    $foreignShortcut = $shell.CreateShortcut($foreignMenuProxy)
+    $foreignShortcut.TargetPath = $foreignExecutable
+    $foreignShortcut.Arguments = '--proxy'
+    $foreignShortcut.Save()
     $migration = @(Invoke-StableShortcutMigration -StableRoot $stableRoot -DesktopPath $desktopPath -StartMenuPath $startMenuPath -StartupPath $startupPath)
-    $desktopCustom = $shell.CreateShortcut($legacyDesktop)
     $desktopRemote = $shell.CreateShortcut($legacyRemote)
-    $startupCustom = $shell.CreateShortcut($legacyStartup)
-    Assert-Condition ([string]::Equals($desktopCustom.TargetPath, (Join-Path $stableRoot 'CodexRemoteMobileProject\ChatGPT Custom.exe'), [StringComparison]::OrdinalIgnoreCase)) 'Legacy ChatGPT Custom desktop alias was not migrated to the canonical root.'
-    Assert-Condition ([string]::Equals($desktopRemote.TargetPath, (Join-Path $stableRoot 'ChatGPT Remote Enabler.exe'), [StringComparison]::OrdinalIgnoreCase)) 'Legacy ChatGPT Remote Enabler alias was not migrated to the canonical root.'
-    Assert-Condition ($desktopCustom.Arguments -match '--proxy') 'Desktop proxy argument was not preserved.'
-    Assert-Condition ($startupCustom.Arguments -match '--proxy' -and $startupCustom.Arguments -match '--startup') 'Startup proxy/startup arguments were not preserved.'
-    Assert-Condition (@($migration | Where-Object migrated).Count -ge 3) 'Expected all fixture aliases to migrate.'
-    $argumentOnlyAlias = Join-Path $startMenuPath 'ChatGPT Custom (Proxy).lnk'
+    $desktopCustom = $shell.CreateShortcut($legacyDesktop)
+    $menuRemote = $shell.CreateShortcut($legacyMenuRemote)
+    $menuCustom = $shell.CreateShortcut($legacyMenuCustom)
+    $startupCanonical = $shell.CreateShortcut($canonicalStartup)
+    Assert-Condition ([string]::Equals($desktopRemote.TargetPath, (Join-Path $stableRoot 'ChatGPT Remote Enabler.exe'), [StringComparison]::OrdinalIgnoreCase) -and [string]::IsNullOrWhiteSpace($desktopRemote.Arguments) -and [string]::Equals($desktopCustom.TargetPath, (Join-Path $stableRoot 'CodexRemoteMobileProject\ChatGPT Custom.exe'), [StringComparison]::OrdinalIgnoreCase) -and $desktopCustom.Arguments -match '--proxy') 'Mixed desktop modes did not retain the canonical direct entry and one proxy alias.'
+    Assert-Condition ([string]::Equals($menuRemote.TargetPath, (Join-Path $stableRoot 'ChatGPT Remote Enabler.exe'), [StringComparison]::OrdinalIgnoreCase) -and [string]::IsNullOrWhiteSpace($menuRemote.Arguments) -and [string]::Equals($menuCustom.TargetPath, (Join-Path $stableRoot 'CodexRemoteMobileProject\ChatGPT Custom.exe'), [StringComparison]::OrdinalIgnoreCase) -and $menuCustom.Arguments -match '--proxy' -and -not (Test-Path -LiteralPath $legacyMenuProxyTest)) 'Mixed Start-menu modes did not retain the canonical direct entry and consolidate proxy duplicates.'
+    Assert-Condition (Test-Path -LiteralPath $foreignMenuProxy -PathType Leaf) 'A foreign same-name Start-menu shortcut was removed.'
+    Assert-Condition ([string]::Equals($startupCanonical.TargetPath, (Join-Path $stableRoot 'CodexRemoteMobileProject\ChatGPT Custom.exe'), [StringComparison]::OrdinalIgnoreCase) -and $startupCanonical.Arguments -match '--proxy' -and $startupCanonical.Arguments -match '--startup' -and -not (Test-Path -LiteralPath $legacyStartup -PathType Leaf)) 'Startup migration did not consolidate to one canonical proxy/startup entry.'
+    Assert-Condition (@($migration | Where-Object { $_.removed -and $_.reason -eq 'owned-legacy-shortcut-consolidated' }).Count -eq 1) 'Expected only same-mode manual aliases to be consolidated.'
+    $danglingTrustedTarget = Join-Path (Get-StableMachineInstallRoot) 'CodexRemoteMobileProject\ChatGPT Custom.exe'
+    $danglingWrongRelativeTarget = Join-Path (Get-StableMachineInstallRoot) 'arbitrary\ChatGPT Custom.exe'
+    $danglingForeignTarget = Join-Path $foreignRoot 'CodexRemoteMobileProject\ChatGPT Custom.exe'
+    Assert-Condition (Test-StableOwnedLauncherPath -TargetPath $danglingTrustedTarget -StableRoot $stableRoot) 'A dangling launcher in a trusted ProgramData install path was rejected as foreign.'
+    Assert-Condition (-not (Test-StableOwnedLauncherPath -TargetPath $danglingWrongRelativeTarget -StableRoot $stableRoot)) 'A same-name launcher with the wrong relative path beneath a trusted root was accepted as owned.'
+    Assert-Condition (-not (Test-StableOwnedLauncherPath -TargetPath $danglingForeignTarget -StableRoot $stableRoot)) 'A dangling same-name launcher in an arbitrary user path was accepted as owned.'
+    $danglingShortcut = $shell.CreateShortcut($legacyDesktop)
+    $danglingShortcut.TargetPath = $danglingTrustedTarget
+    $danglingShortcut.Arguments = '--proxy'
+    $danglingShortcut.Save()
+    [void](Invoke-StableShortcutMigration -StableRoot $stableRoot -DesktopPath $desktopPath -StartMenuPath $startMenuPath -StartupPath $startupPath)
+    $migratedDangling = $shell.CreateShortcut($legacyDesktop)
+    Assert-Condition ([string]::Equals($migratedDangling.TargetPath, (Join-Path $stableRoot 'CodexRemoteMobileProject\ChatGPT Custom.exe'), [StringComparison]::OrdinalIgnoreCase) -and $migratedDangling.Arguments -match '--proxy') 'A trusted dangling legacy launcher was not migrated while preserving proxy mode.'
+    $argumentOnlyAlias = Join-Path $startMenuPath 'Argument Only.lnk'
     $argumentOnlyShortcut = $shell.CreateShortcut($argumentOnlyAlias)
     $argumentOnlyShortcut.TargetPath = Join-Path $newerLegacyRoot 'CodexRemoteMobileProject\ChatGPT Custom.exe'
     $argumentOnlyShortcut.WorkingDirectory = $newerLegacyRoot
@@ -250,15 +293,41 @@ try { [IO.File]::WriteAllText($SignalPath, 'locked'); Start-Sleep -Seconds 60 } 
 
     $referenced = [pscustomobject]@{ ExecutablePath = (Join-Path $legacyRoot 'UpdateSessionTaskHost.exe'); CommandLine = '' }
     $approvedReleaseParent = Join-Path $fixtureRoot 'releases'
-    $retained = @(Invoke-StableLegacyCleanup -StableRoot $stableRoot -UpdaterStateRoot $stateRoot -LegacyRoots @($legacyRoot) -ApprovedLegacyParents @($approvedReleaseParent) -ShortcutPaths @($legacyDesktop,$legacyRemote,$legacyStartup) -ProcessEnumerator { @($referenced) })
+    $retained = @(Invoke-StableLegacyCleanup -StableRoot $stableRoot -UpdaterStateRoot $stateRoot -LegacyRoots @($legacyRoot) -ApprovedLegacyParents @($approvedReleaseParent) -ShortcutPaths @($legacyDesktop,$legacyRemote,$legacyStartup,$foreignMenuProxy) -ProcessEnumerator { @($referenced) })
     Assert-Condition (Test-Path -LiteralPath $legacyRoot -PathType Container) 'A legacy root referenced by a live detached task host was removed.'
     Assert-Condition ($retained[0].reason -eq 'live-or-entrypoint-reference') 'Referenced-root cleanup did not fail closed.'
 
-    $cleaned = @(Invoke-StableLegacyCleanup -StableRoot $stableRoot -UpdaterStateRoot $stateRoot -LegacyRoots @($legacyRoot) -ApprovedLegacyParents @($approvedReleaseParent) -ShortcutPaths @($legacyDesktop,$legacyRemote,$legacyStartup) -ProcessEnumerator { @() })
+    $cleaned = @(Invoke-StableLegacyCleanup -StableRoot $stableRoot -UpdaterStateRoot $stateRoot -LegacyRoots @($legacyRoot) -ApprovedLegacyParents @($approvedReleaseParent) -ShortcutPaths @($legacyDesktop,$legacyRemote,$legacyStartup,$foreignMenuProxy) -ProcessEnumerator { @() })
     Assert-Condition (-not (Test-Path -LiteralPath $legacyRoot -PathType Container)) 'A verified unreferenced legacy root was not cleaned up.'
     $recoveryRoot = @(Get-ChildItem -LiteralPath (Join-Path $stateRoot 'legacy-recovery') -Directory -Force)[0].FullName
     Assert-Condition (Test-Path -LiteralPath (Join-Path $recoveryRoot 'root-rollback\transaction.json') -PathType Leaf) 'Legacy root rollback material was not durably copied outside the removed root.'
     Assert-Condition (Test-Path -LiteralPath (Join-Path $recoveryRoot 'mobile-rollback\mobile.json') -PathType Leaf) 'Nested mobile rollback material was not durably copied outside the removed root.'
+
+    # Exercise the production default parent policy, redirecting only its data
+    # directory joins into this disposable fixture. Never create a test release
+    # beneath the user's real installation or change live entry points.
+    & {
+        $realLocalData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+        $realCommonData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
+        $fixtureLocalData = Join-Path $fixtureRoot 'local-data'
+        $fixtureCommonData = Join-Path $fixtureRoot 'common-data'
+        $localLegacyRoot = Join-Path $fixtureLocalData 'CodexRemoteFeatures\releases\ChatGPT-Remote-Enabler-Windows-x64-v1.5.18'
+        New-Item -ItemType Directory -Path $localLegacyRoot -Force | Out-Null
+        Copy-StablePackageContents -SourceRoot (Join-Path $repositoryRoot 'windows') -DestinationRoot $localLegacyRoot
+        Write-Version -Root $localLegacyRoot -Version 'v1.5.18'
+        New-ReleaseManifest -Root $localLegacyRoot
+        function Join-Path {
+            param([string[]]$Path, [string]$ChildPath)
+            $mappedPaths = @($Path | ForEach-Object {
+                if ([string]::Equals($_, $realLocalData, [StringComparison]::OrdinalIgnoreCase)) { $fixtureLocalData }
+                elseif ([string]::Equals($_, $realCommonData, [StringComparison]::OrdinalIgnoreCase)) { $fixtureCommonData }
+                else { $_ }
+            })
+            Microsoft.PowerShell.Management\Join-Path -Path $mappedPaths -ChildPath $ChildPath
+        }
+        $localCleaned = @(Invoke-StableLegacyCleanup -StableRoot $stableRoot -UpdaterStateRoot $stateRoot -LegacyRoots @($localLegacyRoot) -ProcessEnumerator { @() })
+        Assert-Condition ($localCleaned.Count -eq 1 -and $localCleaned[0].cleaned -and -not (Test-Path -LiteralPath $localLegacyRoot)) 'Default cleanup policy did not retire a verified unreferenced LocalAppData releases package.'
+    }
 
     $newerResult = @(Invoke-StableLegacyCleanup -StableRoot $stableRoot -UpdaterStateRoot $stateRoot -LegacyRoots @($newerLegacyRoot) -ApprovedLegacyParents @($approvedReleaseParent) -ProcessEnumerator { @() })
     Assert-Condition ((Test-Path -LiteralPath $newerLegacyRoot -PathType Container) -and $newerResult[0].reason -eq 'newer-legacy-version-retained' -and -not $newerResult[0].cleaned) 'A newer legacy root was incorrectly removed or mislabeled as cleaned.'
@@ -344,12 +413,14 @@ try { [IO.File]::WriteAllText($SignalPath, 'locked'); Start-Sleep -Seconds 60 } 
     Assert-Condition ([string]::Equals($ensured, $migratedRoot, [StringComparison]::OrdinalIgnoreCase) -and (Test-StablePackage -Root $migratedRoot)) 'Initial legacy-root consolidation did not produce one stable root.'
 
     $sourceText = Get-Content -LiteralPath (Join-Path $repositoryRoot 'windows\Update-ChatGPTRemote.ps1') -Raw
+    $stableSource = Get-Content -LiteralPath (Join-Path $repositoryRoot 'windows\StableInstall.ps1') -Raw
     $customSource = Get-Content -LiteralPath (Join-Path $repositoryRoot 'windows\CodexRemoteMobileProject\ChatGPTCustomLauncher.cs') -Raw
     $rootSource = Get-Content -LiteralPath (Join-Path $repositoryRoot 'windows\ChatGPTRemoteLauncher.cs') -Raw
     $survivorSource = Get-Content -LiteralPath (Join-Path $repositoryRoot 'windows\CodexRemoteMobileProject\UpdateSessionSurvivorLauncher.ps1') -Raw
     Assert-Condition ($sourceText.Contains('legacyInstallRoot') -and $sourceText.Contains('Invoke-StableLegacyCleanup') -and $sourceText.Contains('Invoke-PendingRecovery')) 'Interrupted legacy transaction recovery and post-update cleanup contracts are missing.'
     Assert-Condition ($customSource.Contains('PrepareDetachedTaskHost') -and $rootSource.Contains('PrepareDetachedTaskHost') -and $survivorSource.Contains('Copy-DetachedTaskHost')) 'Launch/update task hosts are still sourced from the replaceable stable root.'
     Assert-Condition (-not ($sourceText -match '(?i)junction|stable pointer')) 'The Windows design must not reintroduce a versioned pointer or junction.'
+    Assert-Condition ($stableSource.Contains('$action.Path = $startupLauncher') -and $stableSource.Contains('foreign-canonical-shortcut-retained')) 'Stable migration lost the windowless logon launcher or foreign shortcut protection.'
     Assert-Condition (-not ($rootSource -match '(?i)Stop-Process.*ChatGPT|Kill.*ChatGPT') -and -not ($customSource -match '(?i)Stop-Process.*ChatGPT|Kill.*ChatGPT')) 'Launcher source contains an unauthorized ChatGPT lifecycle action.'
 
     [pscustomobject][ordered]@{
@@ -361,7 +432,7 @@ try { [IO.File]::WriteAllText($SignalPath, 'locked'); Start-Sleep -Seconds 60 } 
         BoundedRollbackRetention = $true
         LockedDetachedHostDoesNotBlockStableUpdate = $true
         DetachedTaskHostLockRegression = $true
-        LegacyAliasesMigrated = $true
+        LegacyAliasesConsolidated = $true
         StartupArgumentsPreserved = $true
         ReferencedLegacyRootRetained = $true
         LiveCoordinatorReferenceRetained = $true

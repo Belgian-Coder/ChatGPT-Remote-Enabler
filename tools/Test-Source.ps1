@@ -9,6 +9,8 @@ $javascript = @(
     'windows\CodexRemoteMobileProject\inject.js',
     'windows\CodexRemoteSimple\runtime\renderer-payload.js',
     'windows\CodexRemoteSimple\runtime\orchestrator.js',
+    'windows\CodexRemoteSimple\runtime\attach-existing.cjs',
+    'windows\CodexRemoteSimple\runtime\lib\electron-attach.js',
     'windows\CodexRemoteSimple\runtime\legacy-device-key-compat.cjs',
     'windows\CodexRemoteSimple\runtime\device-key-provider-contract.cjs',
     'windows\CodexRemoteSimple\runtime\main-payload.js',
@@ -48,6 +50,9 @@ $powershell = @(
     'windows\CodexRemoteMobileProject\UpdateSessionLauncher.ps1',
     'windows\CodexRemoteMobileProject\UpdateSessionSurvivorLauncher.ps1',
     'windows\CodexRemoteMobileProject\UpdateSessionPlatform.ps1',
+    'windows\CodexRemoteMobileProject\RepairUpdateCoordinator.ps1',
+    'tools\Test-UpdateCoordinatorRepair.ps1',
+    'tools\Test-PublisherHandoff.ps1',
     'tools\Test-UpdateSessionLauncherBundleRoot.ps1',
     'tools\Test-UpdateSessionWindows.ps1',
     'tools\Test-UpdateSessionTaskHostTemp.ps1',
@@ -134,7 +139,8 @@ foreach ($pair in @(
     @('windows\CodexRemoteMobileProject\update-session.js', 'macos\update-session.js'),
     @('windows\CodexRemoteMobileProject\update-session-cdp.js', 'macos\update-session-cdp.js'),
     @('windows\update-transaction.js', 'macos\update-transaction.js'),
-    @('windows\CodexRemoteSimple\runtime\lib\cdp.js', 'macos\runtime\lib\cdp.js')
+    @('windows\CodexRemoteSimple\runtime\lib\cdp.js', 'macos\runtime\lib\cdp.js'),
+    @('windows\CodexRemoteSimple\runtime\lib\electron-attach.js', 'macos\runtime\lib\electron-attach.js')
 )) {
     if ((Get-FileHash -LiteralPath (Join-Path $root $pair[0])).Hash -ne (Get-FileHash -LiteralPath (Join-Path $root $pair[1])).Hash) {
         throw "Shared source parity failed: $($pair[0])"
@@ -142,7 +148,7 @@ foreach ($pair in @(
 }
 $renderer = Get-Content -LiteralPath $windowsRenderer -Raw
 $requiredContracts = @(
-    'const VERSION = 93;',
+    'const VERSION = 95;',
     'NATIVE_CONNECTION_CATALOG_REFRESH_MS',
     'refresh-remote-control-connections',
     'hostDisplayName: config.localDisplayName || null',
@@ -243,6 +249,8 @@ if ($LASTEXITCODE -ne 0) { throw 'Stable renderer self-test failed.' }
 
 foreach ($relative in @(
     'windows\CodexRemoteSimple\tests\RuntimeTransport.SelfTest.js',
+    'windows\CodexRemoteSimple\tests\AttachExisting.SelfTest.cjs',
+    'windows\CodexRemoteSimple\tests\ElectronAttach.SelfTest.js',
     'windows\CodexRemoteSimple\tests\ProxyBridge.SelfTest.js',
     'windows\CodexRemoteSimple\tests\ProxyChallengeTarget.SelfTest.cjs',
     'windows\CodexRemoteMobileProject\tests\InjectorRuntime.SelfTest.js',
@@ -258,7 +266,10 @@ if ($LASTEXITCODE -ne 0) { throw 'Windows package compatibility self-test failed
 $packageCompatibilityTest = Join-Path $root 'tools\Test-WindowsPackageCompatibility.ps1'
 $crossHostPowerShellTests = @(
     (Join-Path $root 'tools\Test-WindowsMsixUpdater.ps1'),
-    (Join-Path $root 'tools\Test-WindowsPrelaunchUpdate.ps1')
+    (Join-Path $root 'tools\Test-WindowsPrelaunchUpdate.ps1'),
+    (Join-Path $root 'tools\Test-ExistingSessionAttach.ps1')
+    (Join-Path $root 'tools\Test-WindowlessStartupTask.ps1')
+    (Join-Path $root 'tools\Test-PendingStartupRecovery.ps1')
 )
 foreach ($hostCommand in @('powershell.exe', 'pwsh.exe')) {
     $hostPath = (Get-Command $hostCommand -ErrorAction SilentlyContinue).Source
@@ -302,6 +313,12 @@ if ($LASTEXITCODE -ne 0) { throw 'Windows update-session task-host temp self-tes
 
 & (Join-Path $root 'tools\Test-UpdateSessionLauncherBundleRoot.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Update-session bundle-root self-test failed.' }
+
+& (Join-Path $root 'tools\Test-UpdateCoordinatorRepair.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Update-coordinator repair self-test failed.' }
+
+& (Join-Path $root 'tools\Test-PublisherHandoff.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Publisher handoff self-test failed.' }
 
 & (Join-Path $root 'tools\Test-UpdateSessionSurvivalWindows.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Native Windows detached update-session survival self-test failed.' }

@@ -172,7 +172,7 @@ const testSource = originalSource
   probe = () => ({});
   nativeThreadAction = () => null;
   return { appendEmptyProjectState, appendGroup, canDirectArchiveTask, commonAncestor, emptyInventoryMessage, ensureStyle, freshDirectDeviceInventory, freshDirectThreadInventory, install, inventoryLabel, nativeFolderIcon, nativeListContainer, nativeListContainers, plainFolderIcon, reactRootFibers, render, sidebarMountAnchor, state,
-    useModel(model) { collectModel = () => model; }
+    config, useModel(model) { collectModel = () => model; }
   };
 })();`);
 assert.notEqual(testSource, originalSource, "test entrypoint extraction must succeed");
@@ -365,6 +365,28 @@ let updateControl = layout.state.panel.querySelector(".crmp-update-control");
 assert.equal(updateControl.textContent, "Update available · v1.5.33", "the canonical available state must be visible in Native views");
 updateControl.click();
 assert.deepEqual(updateActions, ["queue"], "the renderer must only ask the updater to queue an available release");
+const attachedUpdater = context.__CHATGPT_REMOTE_UPDATE__;
+layout.config.helperVersion = "v1.5.97";
+updateStatus = { ...updateStatus, details: { installedVersion: "v1.5.96", availableVersion: "v1.5.98", history: [] } };
+layout.render();
+assert.match(layout.state.panel.querySelector(".crmp-version").textContent, /v1\.5\.96/u, "installed updater metadata must take precedence over dynamically loaded code");
+const knownInstalledStatus = updateStatus;
+updateStatus = { state: "current", version: "v1.5.96", details: { installedVersion: null, history: [] } };
+layout.render();
+assert.match(layout.state.panel.querySelector(".crmp-version").textContent, /v1\.5\.97 \(loaded\)/u, "explicit unknown installation metadata must not fall back to the old current version");
+assert.match(layout.state.panel.textContent, /Installed helper: not reported/u, "history details must not label loaded code as installed");
+updateStatus = knownInstalledStatus;
+layout.render();
+delete context.__CHATGPT_REMOTE_UPDATE__;
+layout.render();
+assert.equal(layout.state.updateStatus.state, "unavailable", "a disappeared bridge must invalidate cached available status");
+assert.equal(layout.state.panel.querySelector(".crmp-update-control").textContent, "Update service disconnected", "a missing local service must not imply that releases or GitHub are unavailable");
+assert.match(layout.state.panel.querySelector(".crmp-version").textContent, /v1\.5\.97 \(loaded\)/u, "a loaded version without installed metadata must be labelled explicitly");
+assert.doesNotMatch(layout.state.panel.textContent, /Fully quit/u, "bridge loss must not instruct users to close ChatGPT");
+context.__CHATGPT_REMOTE_UPDATE__ = attachedUpdater;
+layout.render();
+assert.equal(layout.state.updateStatus.state, "available", "reattaching the updater must restore live update status");
+delete layout.config.helperVersion;
 layout.useModel({ rows: [], nativeProjectItems: [opened, closed], hosts: [], remoteRuntimes: [], projects: [], recents: [] });
 layout.render();
 assert.equal(layout.state.nativeContainer, nativeContainer, "an empty recent-task inventory must keep the whole native list mounted consistently");

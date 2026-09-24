@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param([string]$ScreenshotPath, [string]$PackageRoot)
 $ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 if (-not $PackageRoot) { $PackageRoot = Join-Path $root 'windows' }
 $source = Get-Content -LiteralPath (Join-Path $PackageRoot 'Setup-ChatGPTRemote.ps1') -Raw
@@ -32,9 +33,9 @@ if (-not (Test-Path -LiteralPath $expectedShortcut) -or -not (Test-Path -Literal
 $shell = New-Object -ComObject WScript.Shell
 if ($shell.CreateShortcut($expectedShortcut).Arguments -notmatch '--proxy') { throw 'Setup lost the existing proxy preference.' }
 if ($shell.CreateShortcut($expectedStartup).Arguments -notmatch '--proxy') { throw 'Startup did not inherit the proxy preference.' }
-if (-not (Test-Path -LiteralPath (Join-Path $DesktopPath 'ChatGPT Custom.lnk'))) { throw 'Setup removed a legacy shortcut.' }
-$migratedLegacy = $shell.CreateShortcut((Join-Path $DesktopPath 'ChatGPT Custom.lnk'))
-if ($migratedLegacy.TargetPath -notlike '*stable-root*\CodexRemoteMobileProject\ChatGPT Custom.exe') { throw 'Setup did not migrate the legacy shortcut to the stable root.' }
+if (Test-Path -LiteralPath (Join-Path $DesktopPath 'ChatGPT Custom.lnk')) { throw 'Setup retained an owned legacy desktop shortcut.' }
+$consolidatedManual = $shell.CreateShortcut($expectedShortcut)
+if ($consolidatedManual.TargetPath -notlike '*stable-root*\ChatGPT Remote Enabler.exe') { throw 'Setup did not consolidate the owned desktop shortcut to the stable root.' }
 $form.Dispose()
 '@
 if (-not $source.Contains('[void]$form.ShowDialog()')) { throw 'Setup entry point changed; update the form construction test.' }
@@ -58,10 +59,63 @@ try {
     # Exercise real form actions against an isolated package and shortcut directories.
     & ([scriptblock]::Create($source)) -Action Show -DesktopPath $fixtureDesktop -StartMenuPath $fixtureMenu -StartupPath $fixtureStartup -StableRoot $fixtureStableRoot -RollbackRoot $fixtureRollbackRoot
     if (Test-Path -LiteralPath $fixtureRollbackRoot) { throw 'Successful setup retained auxiliary shortcut rollback.' }
+
+    # Task-primary migration removes the Startup shortcut. Exercise the real
+    # status function with an in-memory scheduler so only one enabled,
+    # canonical stable launcher action is reported as installed.
+    $setupPath = Join-Path $fixturePackage 'Setup-ChatGPTRemote.ps1'
+    $tokens = $null
+    $parseErrors = $null
+    $setupAst = [Management.Automation.Language.Parser]::ParseFile($setupPath, [ref]$tokens, [ref]$parseErrors)
+    if ($parseErrors.Count) { throw "Setup status fixture parse failed: $($parseErrors[0].Message)" }
+    $statusDefinition = $setupAst.Find({
+        param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-SetupStatus'
+    }, $true)
+    if (-not $statusDefinition) { throw 'Get-SetupStatus is missing.' }
+    $taskStatusStartup = Join-Path $fixture 'task-status-startup'
+    New-Item -ItemType Directory -Path $taskStatusStartup | Out-Null
+    $taskStatuses = & {
+        param($DefinitionText, $FixturePackage, $FixtureStableRoot, $FixtureDesktop, $FixtureStartup)
+        $StableRoot = $FixtureStableRoot
+        $DesktopPath = $FixtureDesktop
+        $StartupPath = $FixtureStartup
+        $probeTask = $null
+        function Get-AppxPackage { return @() }
+        function Test-StablePackage { param([string]$Root) return $true }
+        function Get-ScheduledTask { param($TaskName, $ErrorAction) return $probeTask }
+        function New-StatusTask {
+            param([string]$Execute, [string]$Arguments, [bool]$Enabled = $true, [string]$WorkingDirectory = (Join-Path $FixtureStableRoot 'CodexRemoteMobileProject'))
+            [pscustomobject]@{
+                State = $(if ($Enabled) { 'Ready' } else { 'Disabled' })
+                Settings = [pscustomobject]@{ Enabled = $Enabled }
+                Actions = @([pscustomobject]@{ Execute = $Execute; Arguments = $Arguments; WorkingDirectory = $WorkingDirectory })
+            }
+        }
+        . ([scriptblock]::Create($DefinitionText))
+        $canonicalLauncher = Join-Path $FixtureStableRoot 'CodexRemoteMobileProject\ChatGPT Custom.exe'
+        $probeTask = New-StatusTask -Execute $canonicalLauncher -Arguments '--startup'
+        $direct = (Get-SetupStatus -Root $FixturePackage -CanonicalRoot $FixtureStableRoot).Startup
+        $probeTask = New-StatusTask -Execute $canonicalLauncher -Arguments '--proxy --startup'
+        $proxy = (Get-SetupStatus -Root $FixturePackage -CanonicalRoot $FixtureStableRoot).Startup
+        $probeTask = New-StatusTask -Execute $canonicalLauncher -Arguments '--startup' -Enabled:$false
+        $disabled = (Get-SetupStatus -Root $FixturePackage -CanonicalRoot $FixtureStableRoot).Startup
+        $probeTask = New-StatusTask -Execute (Join-Path $FixturePackage 'CodexRemoteMobileProject\ChatGPT Custom.exe') -Arguments '--startup'
+        $foreign = (Get-SetupStatus -Root $FixturePackage -CanonicalRoot $FixtureStableRoot).Startup
+        $probeTask = New-StatusTask -Execute $canonicalLauncher -Arguments '--startup --extra'
+        $unexpectedArguments = (Get-SetupStatus -Root $FixturePackage -CanonicalRoot $FixtureStableRoot).Startup
+        [pscustomobject]@{ Direct = $direct; Proxy = $proxy; Disabled = $disabled; Foreign = $foreign; UnexpectedArguments = $unexpectedArguments }
+    } $statusDefinition.Extent.Text $fixturePackage $fixtureStableRoot $fixtureDesktop $taskStatusStartup
+    if ($taskStatuses.Direct -notlike 'Installed via enabled logon task*' -or
+        $taskStatuses.Proxy -notlike '*proxy mode*' -or
+        $taskStatuses.Disabled -cne 'Not installed' -or $taskStatuses.Foreign -cne 'Not installed' -or
+        $taskStatuses.UnexpectedArguments -cne 'Not installed') {
+        throw "Setup task-primary status classification failed: $($taskStatuses | ConvertTo-Json -Compress)"
+    }
 } finally {
     $resolved = [IO.Path]::GetFullPath($fixture)
     $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
     if (-not $resolved.StartsWith($tempRoot,[StringComparison]::OrdinalIgnoreCase) -or (Split-Path -Leaf $resolved) -notlike 'remote-setup-ui-*') { throw 'Unsafe setup fixture cleanup path.' }
     if (Test-Path -LiteralPath $resolved) { Remove-Item -LiteralPath $resolved -Recurse -Force }
 }
-[pscustomobject]@{ NativeFormConstruction = $true; OptionsInitiallyUnchecked = $true; DpiScaling = $true; RequiredActions = $true; SelectedOptionsApplied = $true; ProxyPreferencePreserved = $true; LegacyShortcutPreserved = $true } | ConvertTo-Json -Compress
+[pscustomobject]@{ NativeFormConstruction = $true; OptionsInitiallyUnchecked = $true; DpiScaling = $true; RequiredActions = $true; SelectedOptionsApplied = $true; ProxyPreferencePreserved = $true; LegacyShortcutConsolidated = $true; TaskPrimaryStatus = $true } | ConvertTo-Json -Compress

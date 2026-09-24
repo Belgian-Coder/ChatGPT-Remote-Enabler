@@ -892,7 +892,7 @@ function Invoke-ChatGPTDesktopMsixUpdater {
                     DeferredFromCache = $false
                     DeferralCached = $deferralCached
                     DeferralCacheReason = $deferralCacheReason
-                    Message = 'Windows did not allow the verified desktop update in the current-user context. Launching the unchanged healthy Store installation; Windows or the Store can apply the desktop update later.'
+                    Message = 'Windows deferred the verified desktop update because of current-user installation restrictions or package resources in use. Launching the unchanged healthy Store installation; Windows or the Store can apply the desktop update later.'
                 }
             }
             throw "MSIX current-user installation failed; Windows or corporate AppX policy may have blocked it. No policy bypass was attempted. $($installError.Exception.Message)"

@@ -34,9 +34,15 @@ class FixtureDate extends Date {
 }
 
 class FixtureElement {
-  constructor() { this.nodeType = 1; }
+  constructor(props = null, attributes = {}) {
+    this.nodeType = 1;
+    this.attributes = attributes;
+    if (props) this.__reactFiber$fixture = { memoizedProps: props, memoizedState: null, return: null, updateQueue: null };
+  }
   closest() { return null; }
   contains(candidate) { return candidate === this || candidate?.insideFixturePanel === true; }
+  getAttribute(name) { return this.attributes[name] ?? null; }
+  hasAttribute(name) { return Object.prototype.hasOwnProperty.call(this.attributes, name); }
   matches() { return false; }
   querySelector() { return null; }
 }
@@ -61,11 +67,12 @@ function flushAnimationFrames() {
   for (const [, callback] of pending) callback(clock);
 }
 
+let nativeTasks = [];
 const document = {
   addEventListener() {},
   getElementById: () => null,
   querySelector(selector) { return selector === '[aria-label="Project sidebar options"]' ? new FixtureElement() : null; },
-  querySelectorAll: () => [],
+  querySelectorAll: selector => selector === '[data-app-action-sidebar-thread-row]' ? nativeTasks : [],
   removeEventListener() {},
 };
 
@@ -222,7 +229,7 @@ async function advanceTo(target) {
         if (failThreadLists) throw new Error("fixture listing rejection");
         const page = params.cursor ? Number(params.cursor.slice(1)) : 0;
         return {
-          data: [{ id: `thread-${page}`, project_id: page === 0 ? "fixture-project" : null, status: "notLoaded", title: `Task ${page}` }],
+          data: [{ id: `thread-${page}`, ...(page === 0 ? { project_id: "fixture-project" } : { project: null }), status: "notLoaded", title: `Task ${page}` }],
           nextCursor: page < 199 || truncateThreadLists ? `p${page + 1}` : null,
         };
       }
@@ -292,17 +299,56 @@ async function advanceTo(target) {
   await reliability.hydrateNativeInventory();
   await drainAsyncWork();
   const recoveredFetchedAt = reliability.state.threadInventories.get("local").fetchedAt;
+  const completeMembershipInventory = reliability.state.threadInventories.get("local");
+  const nativeResolvedThreads = completeMembershipInventory.threads.map(thread => ({ ...thread }));
+  for (const index of [1, 2]) {
+    delete nativeResolvedThreads[index].project;
+    nativeResolvedThreads[index].project_id = null;
+  }
+  reliability.state.threadInventories.set("local", { ...completeMembershipInventory, threads: nativeResolvedThreads });
+  nativeTasks = [
+    new FixtureElement({
+      cwd: "C:\\Fixture\\Grouped",
+      hoverCardProjectId: "native-project",
+      hoverCardProjectLabel: "Native project",
+      isGrouped: true,
+      isProjectlessHoverCard: false,
+    }, {
+      "data-app-action-sidebar-thread-host-id": "local",
+      "data-app-action-sidebar-thread-id": "thread-1",
+      "data-app-action-sidebar-thread-title": "Task 1",
+    }),
+    new FixtureElement({
+      cwd: "C:\\Fixture\\Recent",
+      isGrouped: false,
+      isProjectlessHoverCard: false,
+    }, {
+      "data-app-action-sidebar-thread-host-id": "local",
+      "data-app-action-sidebar-thread-id": "thread-2",
+      "data-app-action-sidebar-thread-title": "Task 2",
+    }),
+  ];
   reliability.scheduleLocalProjectInventoryPublication(true);
   await drainAsyncWork();
   assert.equal(reliability.state.localInventoryPublisherError, null, "publication must recover after a successful direct thread refresh");
   assert.ok(writtenPayload, "the full-source publisher must write a status envelope");
   assert.equal(writtenPayload.publisherVersion, 54, "a recovered complete listing must restore protocol-54 membership authority");
   assert.equal(writtenPayload.threads.find(thread => thread.id === "thread-0").projectId, "fixture-project", "publisher membership authority must normalize alternate app-server project-id shapes");
+  assert.equal(writtenPayload.threads.find(thread => thread.id === "thread-1").projectId, "native-project", "publisher membership authority must preserve current native project ownership when thread/list reports a nullable membership field");
+  assert.equal(Object.prototype.hasOwnProperty.call(writtenPayload.threads.find(thread => thread.id === "thread-2"), "projectId"), false, "a current native Recent chat must remain projectless in the compact publisher payload");
+  assert.equal(reliability.taskFromThread(reliability.parseInventoryPayload(writtenPayload).threads.find(thread => thread.id === "thread-2"), "remote").isProjectless, true, "a current native Recent chat must round-trip as authoritative projectless membership");
   assert.equal(writtenPayload.threadScopeGeneratedAt, new Date(recoveredFetchedAt).toISOString(), "publication must report the recovered successful full-scan timestamp");
 
-  const completeMembershipInventory = reliability.state.threadInventories.get("local");
+  nativeTasks = [];
+  reliability.scheduleLocalProjectInventoryPublication(true);
+  await drainAsyncWork();
+  assert.equal(writtenPayload.publisherVersion, 53, "flat nullable membership without a native row must not claim protocol-54 authority");
+  const nullableRoundTrip = reliability.parseInventoryPayload(writtenPayload).threads.find(thread => thread.id === "thread-1");
+  assert.equal(nullableRoundTrip.projectMembershipKnown, false, "flat nullable membership must remain unknown after publication without a native row");
+
+  reliability.state.threadInventories.set("local", completeMembershipInventory);
   const mixedMembershipThreads = completeMembershipInventory.threads.map(thread => ({ ...thread }));
-  delete mixedMembershipThreads[2].project_id;
+  delete mixedMembershipThreads[2].project;
   reliability.state.threadInventories.set("local", { ...completeMembershipInventory, threads: mixedMembershipThreads });
   reliability.scheduleLocalProjectInventoryPublication(true);
   await drainAsyncWork();

@@ -3,7 +3,10 @@
 
 "use strict";
 
+const crypto = require("node:crypto");
+
 const BINDING_NAME = "__chatgptRemoteUpdateRequest";
+const BINDING_OWNER_PROPERTY = "__chatgptRemoteUpdateOwnerV1";
 const INTERNAL_NAME = "__CHATGPT_REMOTE_UPDATE_INTERNAL__";
 const PUBLIC_NAME = "__CHATGPT_REMOTE_UPDATE__";
 const TARGET_URL = "app://-/index.html";
@@ -14,13 +17,6 @@ const STATUS_STATES = new Set([
   "updating", "restarting", "error", "unavailable",
 ]);
 const REQUEST_ACTIONS = new Set(["check", "queue", "cancel", "history"]);
-const TERMINAL_ATTACH_CODES = new Set([
-  "BOOTSTRAP_FAILED",
-  "PERSISTENT_SCRIPT_INVALID",
-  "TARGET_AMBIGUOUS",
-  "TARGET_INVALID",
-]);
-
 function bridgeError(code, message) {
   const error = new Error(message);
   error.code = code;
@@ -64,8 +60,10 @@ function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-function bootstrapSource(nonce, initialStatus) {
-  const encodedBinding = JSON.stringify(BINDING_NAME);
+function bootstrapSource(nonce, initialStatus, bindingName = BINDING_NAME, bindingOwnerToken = null) {
+  const encodedBinding = JSON.stringify(bindingName);
+  const encodedBindingOwner = JSON.stringify(BINDING_OWNER_PROPERTY);
+  const encodedBindingOwnerToken = JSON.stringify(bindingOwnerToken);
   const encodedInternal = JSON.stringify(INTERNAL_NAME);
   const encodedNonce = JSON.stringify(nonce);
   const encodedPublic = JSON.stringify(PUBLIC_NAME);
@@ -75,6 +73,8 @@ function bootstrapSource(nonce, initialStatus) {
     if (globalThis.top !== globalThis) return { installed:false, topFrame:false };
     if (globalThis.location?.href !== ${encodedTargetUrl}) return { installed:false, topFrame:true };
     const bindingName = ${encodedBinding};
+    const bindingOwner = ${encodedBindingOwner};
+    const bindingOwnerToken = ${encodedBindingOwnerToken};
     const internalName = ${encodedInternal};
     const nonce = ${encodedNonce};
     const publicName = ${encodedPublic};
@@ -82,9 +82,23 @@ function bootstrapSource(nonce, initialStatus) {
     const pending = new Map();
     let disposed = false;
     let status = ${encodedStatus};
+    if (bindingOwnerToken !== null) {
+      const binding = globalThis[bindingName];
+      if (typeof binding !== "function") {
+        return { installed:false, topFrame:true };
+      }
+      const owner = binding[bindingOwner];
+      if (owner !== undefined && owner !== bindingOwnerToken) return { installed:false, topFrame:true };
+      if (owner === undefined) {
+        try { Object.defineProperty(binding, bindingOwner, { configurable:true, value:bindingOwnerToken }); }
+        catch { return { installed:false, topFrame:true }; }
+      }
+      if (binding[bindingOwner] !== bindingOwnerToken) return { installed:false, topFrame:true };
+    }
     const clone = (value) => ({ ...(value.details ? { details: JSON.parse(JSON.stringify(value.details)) } : {}), state: value.state, version: value.version, message: value.message, canCancel: value.canCancel, canQueue: value.canQueue });
     const existing = globalThis[internalName];
-    if (existing?.nonce === nonce && typeof existing.setStatus === "function"
+    if (existing?.nonce === nonce && existing.bindingName === bindingName
+      && existing.bindingOwnerToken === bindingOwnerToken && typeof existing.setStatus === "function"
       && globalThis[publicName] && existing.setStatus(status) === true) {
       return { installed:true, topFrame:true };
     }
@@ -92,6 +106,8 @@ function bootstrapSource(nonce, initialStatus) {
     let api;
     const internal = {
       nonce,
+      bindingName,
+      bindingOwnerToken,
       dispose(reason) {
         if (disposed) return true;
         disposed = true;
@@ -148,6 +164,64 @@ function bootstrapSource(nonce, initialStatus) {
   })()`;
 }
 
+function bindingAvailableSource(bindingName) {
+  return `(() => {
+    try { return globalThis[${JSON.stringify(bindingName)}] === undefined; }
+    catch { return false; }
+  })()`;
+}
+
+function claimBindingSource(bindingName, ownerToken) {
+  return `(() => {
+    try {
+      const binding = globalThis[${JSON.stringify(bindingName)}];
+      if (typeof binding !== "function") return false;
+      const property = ${JSON.stringify(BINDING_OWNER_PROPERTY)};
+      const token = ${JSON.stringify(ownerToken)};
+      const owner = binding[property];
+      if (owner !== undefined && owner !== token) return false;
+      Object.defineProperty(binding, property, { configurable:true, value:token });
+      return binding[property] === token;
+    } catch { return false; }
+  })()`;
+}
+
+function deleteOwnedBindingSource(bindingName, ownerToken) {
+  return `(() => {
+    try {
+      const binding = globalThis[${JSON.stringify(bindingName)}];
+      if (typeof binding !== "function" || binding[${JSON.stringify(BINDING_OWNER_PROPERTY)}] !== ${JSON.stringify(ownerToken)}) return false;
+      return Reflect.deleteProperty(globalThis, ${JSON.stringify(bindingName)});
+    } catch { return false; }
+  })()`;
+}
+
+function healthProofSource(nonce, bindingName, ownerToken) {
+  return `(() => {
+    try {
+      const internal = globalThis[${JSON.stringify(INTERNAL_NAME)}];
+      const api = globalThis[${JSON.stringify(PUBLIC_NAME)}];
+      const binding = globalThis[${JSON.stringify(bindingName)}];
+      return internal?.nonce === ${JSON.stringify(nonce)}
+        && typeof internal?.setStatus === "function"
+        && typeof api?.getStatus === "function"
+        && typeof api?.request === "function"
+        && typeof binding === "function"
+        && binding[${JSON.stringify(BINDING_OWNER_PROPERTY)}] === ${JSON.stringify(ownerToken)};
+    } catch { return false; }
+  })()`;
+}
+
+function callbackSource(nonce, bindingName, ownerToken, method, value) {
+  return `(() => {
+    const internal = globalThis[${JSON.stringify(INTERNAL_NAME)}];
+    if (internal?.nonce !== ${JSON.stringify(nonce)}
+      || internal?.bindingName !== ${JSON.stringify(bindingName)}
+      || internal?.bindingOwnerToken !== ${JSON.stringify(ownerToken)}) return false;
+    return internal?.[${JSON.stringify(method)}]?.(${JSON.stringify(value)}) ?? false;
+  })()`;
+}
+
 class CdpTransport {
   constructor(config, nonce, cdp, options = {}) {
     this.config = config;
@@ -163,18 +237,61 @@ class CdpTransport {
     this.attachPromise = null;
     this.reattachPromise = null;
     this.activityPromise = null;
+    this.healthProbePromise = null;
+    this.healthTimer = null;
+    this.lastHealthProofAtUnixMs = null;
+    this.bindingSequence = 0;
     this.reconnectGeneration = 0;
     this.closingExpected = false;
     this.closed = false;
+    this.reattachInitialDelayMs = options.reattachInitialDelayMs ?? 100;
+    this.reattachMaximumDelayMs = options.reattachMaximumDelayMs ?? 5_000;
+    this.healthIntervalMs = options.healthIntervalMs ?? 5_000;
   }
 
   onRequest(handler) {
     this.requestHandler = handler;
   }
 
+  setStatusProvider(provider) {
+    this.statusProvider = provider;
+  }
+
+  #refreshStatus() {
+    if (this.statusProvider) this.lastStatus = canonicalStatus(this.statusProvider());
+  }
+
   setClosingExpected(expected) {
     this.closingExpected = expected === true;
     if (!this.closingExpected && !this.closed && !this.session) void this.#startReattach();
+  }
+
+  getHealth() {
+    return {
+      connected: this.session !== null && this.closed !== true && this.closingExpected !== true,
+      rendererProofAtUnixMs: Number.isSafeInteger(this.lastHealthProofAtUnixMs) ? this.lastHealthProofAtUnixMs : null,
+    };
+  }
+
+  #startHealthWatchdog() {
+    if (this.healthTimer || this.closed) return;
+    this.healthTimer = setInterval(() => { void this.probeHealth(); }, this.healthIntervalMs);
+    this.healthTimer.unref?.();
+  }
+
+  #stopHealthWatchdog() {
+    if (this.healthTimer) clearInterval(this.healthTimer);
+    this.healthTimer = null;
+  }
+
+  #bindingIdentity() {
+    this.bindingSequence += 1;
+    const safeNonce = String(this.nonce).replace(/[^A-Za-z0-9]/gu, "").slice(0, 24) || "session";
+    const suffix = `${this.bindingSequence.toString(36)}_${crypto.randomBytes(12).toString("hex")}`;
+    return {
+      bindingName: `${BINDING_NAME}_${safeNonce}_${suffix}`,
+      bindingOwnerToken: `${safeNonce}:${suffix}`,
+    };
   }
 
   async attach() {
@@ -186,7 +303,9 @@ class CdpTransport {
     this.attachPromise = this.#attachOnce(deadline).finally(() => {
       this.attachPromise = null;
     });
-    return this.attachPromise;
+    const result = await this.attachPromise;
+    this.#startHealthWatchdog();
+    return result;
   }
 
   #callTimeout(deadline, maximum = this.timeoutMs) {
@@ -244,7 +363,7 @@ class CdpTransport {
     }
     if (
       method === "Runtime.bindingCalled"
-      && params?.name === BINDING_NAME
+      && params?.name === session.bindingName
       && Number.isInteger(params.executionContextId)
       && params.executionContextId === session.mainContextId
     ) {
@@ -281,8 +400,17 @@ class CdpTransport {
     return response.result?.value;
   }
 
-  async #removeBinding(client, timeoutMs) {
-    await client.call("Runtime.removeBinding", { name: BINDING_NAME }, timeoutMs);
+  async #removeBinding(client, bindingName, timeoutMs) {
+    await client.call("Runtime.removeBinding", { name: bindingName }, timeoutMs);
+  }
+
+  async #deleteOwnedBinding(session, timeoutMs) {
+    if (!session?.bindingName || !session?.bindingOwnerToken || !Number.isInteger(session.mainContextId)) return false;
+    return this.#evaluate(
+      session,
+      deleteOwnedBindingSource(session.bindingName, session.bindingOwnerToken),
+      timeoutMs,
+    );
   }
 
   async #removePersistent(client, identifier, timeoutMs) {
@@ -291,8 +419,9 @@ class CdpTransport {
       await client.call("Page.removeScriptToEvaluateOnNewDocument", { identifier }, timeoutMs);
     } catch (error) {
       const alreadyAbsent = error?.code === "CDP_PROTOCOL_ERROR"
-        && error.protocolCode === -32000
-        && /:\s*Script not found\s*$/u.test(error.message ?? "");
+        && ((error.protocolCode == null && error.message === "Script not found")
+          || (String(error.protocolCode) === "-32000"
+            && /(?:^|:\s*)Script not found\s*$/u.test(error.message ?? "")));
       if (!alreadyAbsent) throw error;
     }
   }
@@ -302,6 +431,7 @@ class CdpTransport {
     const target = this.#exactTarget(targets);
     const client = await this.cdp.connectTarget(target, this.config.rendererPort, this.#callTimeout(deadline));
     const session = {
+      ...this.#bindingIdentity(),
       client,
       committed: false,
       contexts: new Map(),
@@ -330,14 +460,30 @@ class CdpTransport {
       await client.call("Runtime.enable", {}, this.#callTimeout(deadline));
       await this.#waitForMainContext(session, deadline);
 
-      await this.#removeBinding(client, this.#callTimeout(deadline));
-      await client.call("Runtime.addBinding", { name: BINDING_NAME }, this.#callTimeout(deadline));
+      const bindingAvailable = await this.#evaluate(
+        session,
+        bindingAvailableSource(session.bindingName),
+        this.#callTimeout(deadline),
+      );
+      if (bindingAvailable !== true) {
+        throw bridgeError("BINDING_BUSY", "The renderer update binding name is already occupied.");
+      }
+      await client.call("Runtime.addBinding", { name: session.bindingName }, this.#callTimeout(deadline));
       bindingInstalled = true;
+      const bindingClaimed = await this.#evaluate(
+        session,
+        claimBindingSource(session.bindingName, session.bindingOwnerToken),
+        this.#callTimeout(deadline),
+      );
+      if (bindingClaimed !== true) {
+        throw bridgeError("BINDING_UNAVAILABLE", "The renderer update binding could not be claimed safely.");
+      }
       if (this.persistentIdentifier) {
         await this.#removePersistent(client, this.persistentIdentifier, this.#callTimeout(deadline));
         this.persistentIdentifier = null;
       }
-      const source = bootstrapSource(this.nonce, this.lastStatus);
+      this.#refreshStatus();
+      const source = bootstrapSource(this.nonce, this.lastStatus, session.bindingName, session.bindingOwnerToken);
       const persistent = await client.call("Page.addScriptToEvaluateOnNewDocument", { source }, this.#callTimeout(deadline));
       if (typeof persistent?.identifier !== "string" || persistent.identifier.length === 0) {
         throw bridgeError("PERSISTENT_SCRIPT_INVALID", "The debugger did not return an update bootstrap identifier.");
@@ -348,12 +494,14 @@ class CdpTransport {
       if (proof?.installed !== true || proof?.topFrame !== true) {
         throw bridgeError("BOOTSTRAP_FAILED", "The update bootstrap did not install in the exact top-frame context.");
       }
+      this.#refreshStatus();
       const statusApplied = await this.#evaluateCallback(session, "setStatus", this.lastStatus, this.#callTimeout(deadline));
       if (statusApplied !== true) throw bridgeError("BOOTSTRAP_FAILED", "The update bootstrap did not accept its initial status.");
       if (this.closed || this.closingExpected) throw bridgeError("ATTACH_CANCELLED", "Renderer attachment was cancelled.");
       session.committed = true;
       this.session = session;
       this.client = client;
+      this.lastHealthProofAtUnixMs = Date.now();
       return;
     } catch (error) {
       session.committed = false;
@@ -365,43 +513,55 @@ class CdpTransport {
         if (session.persistentIdentifier === this.persistentIdentifier) this.persistentIdentifier = null;
       } catch {}
       if (bindingInstalled) {
-        try { await this.#removeBinding(client, 250); } catch {}
+        try { await this.#deleteOwnedBinding(session, 250); } catch {}
+        try { await this.#removeBinding(client, session.bindingName, 250); } catch {}
       }
       client.close();
       throw error;
     }
   }
 
-  #socketClosed(session) {
+  #invalidateSession(session) {
     if (this.session !== session) return;
     session.committed = false;
     session.unsubscribeClose?.();
     session.unsubscribeEvent?.();
     this.session = null;
     this.client = null;
-    if (!this.closed && !this.closingExpected) void this.#startReattach();
+    this.lastHealthProofAtUnixMs = null;
+    void (async () => {
+      try { await this.#evaluateCallback(session, "dispose", "The update controller connection was lost.", 250); } catch {}
+      try {
+        await this.#removePersistent(session.client, session.persistentIdentifier, 250);
+        if (session.persistentIdentifier === this.persistentIdentifier) this.persistentIdentifier = null;
+      } catch {}
+      try { await this.#deleteOwnedBinding(session, 250); } catch {}
+      try { await this.#removeBinding(session.client, session.bindingName, 250); } catch {}
+      try { session.client.close(); } catch {}
+      if (!this.closed && !this.closingExpected) void this.#startReattach();
+    })();
+  }
+
+  #socketClosed(session) {
+    this.#invalidateSession(session);
   }
 
   #startReattach() {
     if (this.session || this.closed || this.closingExpected) return Promise.resolve();
     if (this.reattachPromise) return this.reattachPromise;
     const generation = ++this.reconnectGeneration;
-    const deadline = Date.now() + 30_000;
     this.reattachPromise = (async () => {
-      let lastError = null;
-      while (!this.closed && !this.closingExpected && generation === this.reconnectGeneration && Date.now() < deadline) {
+      let retryDelay = Math.max(1, this.reattachInitialDelayMs);
+      while (!this.closed && !this.closingExpected && generation === this.reconnectGeneration) {
         try {
-          const attemptDeadline = Math.min(deadline, Date.now() + Math.max(this.timeoutMs, 1_000));
+          const attemptDeadline = Date.now() + Math.max(this.timeoutMs, 1_000);
           await this.#attachOnce(attemptDeadline);
+          this.#startHealthWatchdog();
           return;
-        } catch (error) {
-          lastError = error;
-          if (TERMINAL_ATTACH_CODES.has(error?.code)) break;
-          await delay(Math.min(100, Math.max(1, deadline - Date.now())));
+        } catch {
+          await delay(retryDelay);
+          retryDelay = Math.min(this.reattachMaximumDelayMs, Math.max(retryDelay + 1, retryDelay * 2));
         }
-      }
-      if (!this.closed && !this.closingExpected && generation === this.reconnectGeneration) {
-        throw lastError ?? bridgeError("REATTACH_TIMEOUT", "The renderer could not be reattached within 30 seconds.");
       }
     })().finally(() => {
       this.reattachPromise = null;
@@ -413,8 +573,8 @@ class CdpTransport {
   async #requireSession() {
     if (this.session) return this.session;
     if (this.closed || this.closingExpected) return null;
-    if (this.attachPromise) await this.attachPromise;
-    else await this.#startReattach();
+    const pending = this.attachPromise ?? this.#startReattach();
+    await Promise.race([pending, delay(Math.max(this.timeoutMs, 1_000))]);
     return this.session;
   }
 
@@ -441,7 +601,7 @@ class CdpTransport {
   }
 
   async #evaluateCallback(session, method, value, timeoutMs = this.timeoutMs) {
-    const expression = `globalThis[${JSON.stringify(INTERNAL_NAME)}]?.[${JSON.stringify(method)}]?.(${JSON.stringify(value)})`;
+    const expression = callbackSource(this.nonce, session.bindingName, session.bindingOwnerToken, method, value);
     return this.#evaluate(session, expression, timeoutMs);
   }
 
@@ -456,7 +616,10 @@ class CdpTransport {
         while (this.session === session && Date.now() < deadline) {
           if (Number.isInteger(session.mainContextId)) {
             try {
-              if (await this.#evaluateCallback(session, "setStatus", this.lastStatus, Math.min(this.timeoutMs, Math.max(25, deadline - Date.now()))) === true) return;
+              this.#refreshStatus();
+              if (await this.#evaluateCallback(session, "setStatus", this.lastStatus, Math.min(this.timeoutMs, Math.max(25, deadline - Date.now()))) === true) {
+                return;
+              }
             } catch {}
           }
           await delay(Math.min(50, Math.max(1, deadline - Date.now())));
@@ -472,8 +635,40 @@ class CdpTransport {
     this.lastStatus = canonicalStatus(status);
     const session = await this.#requireSession();
     if (!session) throw bridgeError("RENDERER_UNAVAILABLE", "The renderer update bridge is unavailable.");
-    const applied = await this.#evaluateCallback(session, "setStatus", this.lastStatus);
-    if (applied !== true) throw bridgeError("BOOTSTRAP_UNAVAILABLE", "The renderer update bootstrap is unavailable.");
+    try {
+      const applied = await this.#evaluateCallback(session, "setStatus", this.lastStatus);
+      if (applied !== true) throw bridgeError("BOOTSTRAP_UNAVAILABLE", "The renderer update bootstrap is unavailable.");
+    } catch (error) {
+      this.#invalidateSession(session);
+      throw error;
+    }
+  }
+
+  async probeHealth() {
+    if (this.healthProbePromise) return this.healthProbePromise;
+    this.healthProbePromise = (async () => {
+      const session = this.session;
+      if (!session || this.closed || this.closingExpected) {
+        if (!this.closed && !this.closingExpected) void this.#startReattach();
+        return false;
+      }
+      try {
+        const healthy = await this.#evaluate(
+          session,
+          healthProofSource(this.nonce, session.bindingName, session.bindingOwnerToken),
+          Math.min(this.timeoutMs, 2_000),
+        );
+        if (healthy !== true) {
+          throw bridgeError("BOOTSTRAP_UNAVAILABLE", "The renderer update bootstrap health proof failed.");
+        }
+        this.lastHealthProofAtUnixMs = Date.now();
+        return true;
+      } catch {
+        this.#invalidateSession(session);
+        return false;
+      }
+    })().finally(() => { this.healthProbePromise = null; });
+    return this.healthProbePromise;
   }
 
   async queryActivity() {
@@ -500,6 +695,7 @@ class CdpTransport {
   async close() {
     this.closed = true;
     this.closingExpected = true;
+    this.#stopHealthWatchdog();
     this.reconnectGeneration += 1;
     await Promise.allSettled([this.attachPromise, this.reattachPromise].filter(Boolean));
     const session = this.session;
@@ -514,7 +710,8 @@ class CdpTransport {
         await this.#removePersistent(session.client, session.persistentIdentifier, 500);
         if (session.persistentIdentifier === this.persistentIdentifier) this.persistentIdentifier = null;
       } catch {}
-      try { await this.#removeBinding(session.client, 500); } catch {}
+      try { await this.#deleteOwnedBinding(session, 500); } catch {}
+      try { await this.#removeBinding(session.client, session.bindingName, 500); } catch {}
       session.client.close();
     }
   }
@@ -522,4 +719,4 @@ class CdpTransport {
 }
 
 module.exports = {
-  normalizeUpdateDetails, BINDING_NAME, TARGET_URL, CdpTransport, bootstrapSource };
+  normalizeUpdateDetails, BINDING_NAME, TARGET_URL, CdpTransport, bootstrapSource, callbackSource };

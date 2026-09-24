@@ -177,7 +177,7 @@ function Get-FreeTcpPort {
 
 function Start-NativeQuitFixture {
     param(
-        [ValidateSet('quit', 'close-before-response', 'pid-mismatch', 'target-mismatch')]
+        [ValidateSet('quit', 'close-before-response', 'pid-mismatch', 'target-mismatch', 'node-quit', 'node-close-before-response', 'node-pid-mismatch', 'node-target-mismatch')]
         [string]$Mode,
         [string]$ExecutablePath,
         [string]$ScriptPath,
@@ -245,6 +245,7 @@ try {
     New-Item -ItemType Directory -Path $testRoot | Out-Null
     Copy-Item -LiteralPath $platformSource -Destination $platformScript
     Copy-Item -LiteralPath $cdpSource -Destination (Join-Path $testRoot 'cdp.js')
+    Copy-Item -LiteralPath (Join-Path (Split-Path -Parent $cdpSource) 'electron-attach.js') -Destination (Join-Path $testRoot 'electron-attach.js')
     $fixtureSourcePath = Join-Path $testRoot 'InvisibleWindowFixture.cs'
     $fixtureExecutable = Join-Path $testRoot 'InvisibleWindowFixture.exe'
     $fixtureSource = @'
@@ -390,7 +391,43 @@ function consumeFrames(socket, initial, endpoint) {
       if (endpoint === "browser" && message.method === "SystemInfo.getProcessInfo") {
         const id = mode === "pid-mismatch" ? process.pid + 10000 : process.pid;
         sendFrame(socket, { id: message.id, result: { processInfo: [{ type: "browser", id, cpuTime: 0 }] } });
-      } else if (endpoint === "page" && message.method === "Page.getFrameTree") {
+      } else if (endpoint === "node" && message.method === "Runtime.evaluate") {
+        const expression = String(message.params?.expression || "");
+        let value = {};
+        if (expression.includes("webContents.getAllWebContents")) {
+          const targetUrl = mode === "node-target-mismatch" ? "app://-/other.html" : "app://-/index.html";
+          const discoveryPid = mode === "node-pid-mismatch" ? process.pid + 10000 : process.pid;
+          value = { ok: true, pid: discoveryPid, targets: [{ id: 1, url: targetUrl }] };
+        } else if (expression.includes("globalThis[config.bindingName] === undefined")) {
+          value = true;
+        } else if (expression.includes("Object.defineProperty(binding")) {
+          value = true;
+        } else if (expression.includes("Target.attachToTarget")) {
+          value = { ok: true, pid: process.pid, url: "app://-/index.html", targetId: "fixture-target", sessionId: "fixture-session", refs: 1 };
+        } else if (expression.includes("state.release")) {
+          value = { released: true };
+        } else if (expression.includes("delete globalThis")) {
+          value = true;
+        } else if (expression.includes('const method = "Page.getFrameTree"')) {
+          value = { ok: true, result: { frameTree: { frame: { id: "main", url: "app://-/index.html" } } } };
+        } else if (expression.includes('const method = "Runtime.evaluate"')) {
+          fs.writeFileSync(quitPath, "quit-app");
+          value = { ok: true, result: { result: { type: "object", value: { requested: true } } } };
+          if (mode === "node-close-before-response") {
+            socket.destroy();
+            server.close();
+            setTimeout(() => process.exit(0), 25);
+            continue;
+          }
+          sendFrame(socket, { id: message.id, result: { result: { type: "object", value } } });
+          server.close();
+          setTimeout(() => process.exit(0), 100);
+          continue;
+        }
+        sendFrame(socket, { id: message.id, result: { result: { type: "object", value } } });
+        } else if (endpoint === "node") {
+          sendFrame(socket, { id: message.id, result: {} });
+        } else if (endpoint === "page" && message.method === "Page.getFrameTree") {
         sendFrame(socket, { id: message.id, result: { frameTree: { frame: { id: "main", url: "app://-/index.html" } } } });
       } else if (endpoint === "page" && message.method === "Runtime.evaluate") {
         fs.writeFileSync(quitPath, "quit-app");
@@ -416,8 +453,12 @@ const server = http.createServer((request, response) => {
   const host = `127.0.0.1:${port}`;
   response.setHeader("Content-Type", "application/json");
   response.setHeader("Connection", "close");
-  if (request.url === "/json/version") {
+  if (request.url === "/json/version" && !mode.startsWith("node-")) {
     response.end(JSON.stringify({ webSocketDebuggerUrl: `ws://${host}/devtools/browser/fixture` }));
+    return;
+  }
+  if ((request.url === "/json/list" || request.url === "/json") && mode.startsWith("node-")) {
+    response.end(JSON.stringify([{ id: "node-fixture", type: "node", url: "file:///fixture.js", webSocketDebuggerUrl: `ws://${host}/devtools/node/fixture` }]));
     return;
   }
   if (request.url === "/json/list" || request.url === "/json") {
@@ -432,7 +473,7 @@ server.on("upgrade", (request, socket, head) => {
   const key = request.headers["sec-websocket-key"];
   const accept = crypto.createHash("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
   socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
-  consumeFrames(socket, head, request.url.includes("/browser/") ? "browser" : "page");
+  consumeFrames(socket, head, request.url.includes("/browser/") ? "browser" : request.url.includes("/node/") ? "node" : "page");
 });
 server.listen(port, "127.0.0.1", () => fs.writeFileSync(readyPath, String(process.pid)));
 setInterval(() => { if (fs.existsSync(stopPath)) process.exit(0); }, 25).unref();
@@ -547,6 +588,42 @@ setInterval(() => { if (fs.existsSync(stopPath)) process.exit(0); }, 25).unref()
         throw 'A mismatched renderer target reached the native quit command or terminated the exact process.'
     }
 
+    $nodeQuit = Start-NativeQuitFixture -Mode node-quit -ExecutablePath $nativeFixtureExecutable -ScriptPath $nativeFixtureScript -FixtureRecords $nativeFixtureRecords
+    $nodeQuitConfig = New-NativeAdapterConfig -Record $nodeQuit -CoordinatorNodePath $nodeSource -CloseTimeoutMilliseconds 5000
+    $nodeQuitResult = Invoke-PlatformAdapter -Action Close -ConfigPath $nodeQuitConfig -NodePath $nodeSource
+    if (-not $nodeQuitResult.Succeeded -or $nodeQuitResult.Result.closed -ne $true -or
+        $nodeQuitResult.Result.method -cne 'native-renderer-quit' -or
+        -not (Test-Path -LiteralPath $nodeQuit.QuitPath -PathType Leaf) -or
+        -not $nodeQuit.Process.WaitForExit(5000)) {
+        throw "The attached Node inspector did not request the native ChatGPT quit path: $($nodeQuitResult.Error)"
+    }
+
+    $nodeClosedSocket = Start-NativeQuitFixture -Mode node-close-before-response -ExecutablePath $nativeFixtureExecutable -ScriptPath $nativeFixtureScript -FixtureRecords $nativeFixtureRecords
+    $nodeClosedSocketConfig = New-NativeAdapterConfig -Record $nodeClosedSocket -CoordinatorNodePath $nodeSource
+    $nodeClosedSocketResult = Invoke-PlatformAdapter -Action Close -ConfigPath $nodeClosedSocketConfig -NodePath $nodeSource
+    if (-not $nodeClosedSocketResult.Succeeded -or $nodeClosedSocketResult.Result.closed -ne $true -or
+        $nodeClosedSocketResult.Result.method -cne 'native-renderer-quit' -or
+        -not (Test-Path -LiteralPath $nodeClosedSocket.QuitPath -PathType Leaf) -or
+        -not $nodeClosedSocket.Process.WaitForExit(5000)) {
+        throw "An attached Node inspector disconnect was not accepted after the exact process exited: $($nodeClosedSocketResult.Error)"
+    }
+
+    $nodePidMismatch = Start-NativeQuitFixture -Mode node-pid-mismatch -ExecutablePath $nativeFixtureExecutable -ScriptPath $nativeFixtureScript -FixtureRecords $nativeFixtureRecords
+    $nodePidMismatchConfig = New-NativeAdapterConfig -Record $nodePidMismatch -CoordinatorNodePath $nodeSource -CloseTimeoutMilliseconds 1000
+    $nodePidMismatchResult = Invoke-PlatformAdapter -Action Close -ConfigPath $nodePidMismatchConfig -NodePath $nodeSource
+    if ($nodePidMismatchResult.Succeeded -or -not (Test-TrackedFixtureAlive -Record $nodePidMismatch) -or
+        (Test-Path -LiteralPath $nodePidMismatch.QuitPath -PathType Leaf)) {
+        throw 'An attached Node target with a mismatched expected PID reached the native quit command or terminated the exact process.'
+    }
+
+    $nodeTargetMismatch = Start-NativeQuitFixture -Mode node-target-mismatch -ExecutablePath $nativeFixtureExecutable -ScriptPath $nativeFixtureScript -FixtureRecords $nativeFixtureRecords
+    $nodeTargetMismatchConfig = New-NativeAdapterConfig -Record $nodeTargetMismatch -CoordinatorNodePath $nodeSource -CloseTimeoutMilliseconds 1000
+    $nodeTargetMismatchResult = Invoke-PlatformAdapter -Action Close -ConfigPath $nodeTargetMismatchConfig -NodePath $nodeSource
+    if ($nodeTargetMismatchResult.Succeeded -or -not (Test-TrackedFixtureAlive -Record $nodeTargetMismatch) -or
+        (Test-Path -LiteralPath $nodeTargetMismatch.QuitPath -PathType Leaf)) {
+        throw 'An attached Node target with a mismatched renderer URL reached the native quit command or terminated the exact process.'
+    }
+
     $ownerMismatchConfig = New-NativeAdapterConfig -Record $targetMismatch -CoordinatorNodePath $nodeSource -CloseTimeoutMilliseconds 1000 -Name 'native-socket-owner-mismatch'
     $ownerMismatchValue = Get-Content -LiteralPath $ownerMismatchConfig -Raw | ConvertFrom-Json
     $ownerMismatchValue.rendererPort = $pidMismatch.Port
@@ -577,6 +654,10 @@ setInterval(() => { if (fs.existsSync(stopPath)) process.exit(0); }, 25).unref()
         DebuggerOwnerPidMismatchStayedRunning = $true
         DebuggerSocketOwnerMismatchStayedRunning = $true
         RendererTargetMismatchStayedRunning = $true
+        AttachedNodeRendererQuit = $true
+        AttachedNodeRendererSocketCloseAcceptedAfterExit = $true
+        AttachedNodeExpectedPidMismatchStayedRunning = $true
+        AttachedNodeRendererTargetMismatchStayedRunning = $true
     }
 } catch {
     $testFailure = $_
@@ -591,7 +672,7 @@ setInterval(() => { if (fs.existsSync(stopPath)) process.exit(0); }, 25).unref()
 
         if (Test-Path -LiteralPath $resolved -PathType Container) {
             $allowedNames = @('cooperative', 'refusing', 'no-window')
-            $allowedNativeModes = @('quit', 'close-before-response', 'pid-mismatch', 'target-mismatch')
+            $allowedNativeModes = @('quit', 'close-before-response', 'pid-mismatch', 'target-mismatch', 'node-quit', 'node-close-before-response', 'node-pid-mismatch', 'node-target-mismatch')
             foreach ($record in $fixtureRecords) {
                 if ([string]$record.Name -cnotin $allowedNames) { throw 'A tracked fixture name is invalid.' }
                 $expectedStopPath = [IO.Path]::GetFullPath((Join-Path $resolved "$([string]$record.Name).stop"))

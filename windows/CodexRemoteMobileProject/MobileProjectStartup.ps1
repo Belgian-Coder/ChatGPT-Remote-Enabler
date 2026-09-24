@@ -1,6 +1,6 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [ValidateSet('Install', 'Remove', 'Run', 'Probe')]
+    [ValidateSet('Install', 'Remove', 'Run', 'Probe', 'RepairPublisher')]
     [string]$Action = 'Probe',
     [string]$TargetUser,
     [ValidateRange(0, 300)]
@@ -22,7 +22,8 @@ param(
     [int]$ParentProcessId = 0,
     [long]$ParentProcessStartTimeFileTimeUtc = 0,
     [string]$ReadyEventName,
-    [string]$RejectedEventName
+    [string]$RejectedEventName,
+    [string]$LegacyPublisherScriptPath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -48,7 +49,9 @@ $stableModule = Join-Path $sourcePackageRoot 'StableInstall.ps1'
 if (-not (Test-Path -LiteralPath $stableModule -PathType Leaf)) { throw "Stable installation resolver is missing: $stableModule" }
 . $stableModule
 $bundleParent = Get-StableInstallRoot
-if (-not [string]::Equals($sourcePackageRoot, $bundleParent, [StringComparison]::OrdinalIgnoreCase) -and -not (Test-StablePackage -Root $bundleParent)) {
+if (-not [string]::Equals($sourcePackageRoot, $bundleParent, [StringComparison]::OrdinalIgnoreCase)) {
+    # Reconcile an extracted package before calling installed controllers with
+    # new switches. The resolver preserves a healthy same/newer installation.
     $bundleParent = Ensure-StableInstallRoot -SourceRoot $sourcePackageRoot -StableRoot $bundleParent
 }
 $bundleRoot = Join-Path $bundleParent 'CodexRemoteMobileProject'
@@ -200,6 +203,9 @@ if (($SkipDesktopAppUpdateOnce -or $SkipUpdateCheckOnce -or $SkipPrelaunchUpdate
 if ($RecoveryContinuation -and -not $exactContinuationRequested) {
     throw 'RecoveryContinuation requires an exact validated continuation.'
 }
+if ($Action -ne 'RepairPublisher' -and -not [string]::IsNullOrWhiteSpace($LegacyPublisherScriptPath)) {
+    throw 'LegacyPublisherScriptPath is internal to the publisher repair action.'
+}
 
 function Signal-Handshake {
     param([switch]$Rejected)
@@ -306,6 +312,20 @@ function Assert-DesktopAppNotRunning {
     }
 }
 
+function Test-DesktopAppPrelaunchRunningRefusal {
+    param([AllowNull()][string]$Message)
+    $direct = 'ChatGPT.exe is running. Finish active work and close it, then retry. The launch updater will not stop or kill the app.'
+    $updater = 'ChatGPT.exe is running. Finish active work and close it, then retry. This updater will not stop or kill the app.'
+    $normalized = [regex]::Replace([string]$Message, '\s+', ' ').Trim()
+    if ([string]::Equals($normalized, $direct, [StringComparison]::Ordinal)) { return $true }
+    # Windows PowerShell formats native stderr as several ErrorRecord strings
+    # (path, wrapped message, CategoryInfo and FullyQualifiedErrorId). Collapse
+    # only formatting whitespace, then require the complete updater refusal and
+    # its standard terminator. This keeps unrelated updater errors terminal.
+    $formattedRefusal = '(?:^|:\s*)' + [regex]::Escape($updater) + '(?=\s*(?:\+\s+(?:CategoryInfo|FullyQualifiedErrorId)\b|$))'
+    return $normalized -match $formattedRefusal
+}
+
 function Invoke-DesktopAppPrelaunchUpdate {
     param([string]$UpdaterPath, [scriptblock]$ProcessEnumerator, [switch]$UseProxy)
 
@@ -398,8 +418,25 @@ function Invoke-DesktopAppPrelaunchUpdate {
     return $result
 }
 
+function Test-RemoteScriptSupportsParameter {
+    param(
+        [Parameter(Mandatory)][string]$ScriptPath,
+        [Parameter(Mandatory)][string]$ParameterName
+    )
+
+    # Get-Command reads the script metadata without executing the updater or
+    # controller. This keeps startup compatible with an older installed
+    # package while the update transaction is still replacing files.
+    try {
+        $command = Get-Command -Name $ScriptPath -CommandType ExternalScript -ErrorAction Stop
+        return $null -ne $command.Parameters -and $command.Parameters.ContainsKey($ParameterName)
+    } catch {
+        return $false
+    }
+}
+
 function Invoke-UpdateRecovery {
-    param([string]$UpdaterPath, [string]$InstallRoot)
+    param([string]$UpdaterPath, [string]$InstallRoot, [switch]$RecoverPendingOnly)
 
     if (-not (Test-Path -LiteralPath $UpdaterPath -PathType Leaf)) {
         throw "The Remote Enabler updater is missing: $UpdaterPath"
@@ -408,7 +445,15 @@ function Invoke-UpdateRecovery {
     try {
         [Environment]::SetEnvironmentVariable('CHATGPT_REMOTE_LAUNCH_GUARD_HELD', '1', 'Process')
         $global:LASTEXITCODE = 0
-        $output = @(& $UpdaterPath -Action Recover -InstallRoot $InstallRoot -LaunchLockHeld 2>&1)
+        $recoveryArguments = @{
+            Action = 'Recover'
+            InstallRoot = $InstallRoot
+            LaunchLockHeld = $true
+        }
+        $usedRecoverPendingOnly = $RecoverPendingOnly -and
+            (Test-RemoteScriptSupportsParameter -ScriptPath $UpdaterPath -ParameterName 'RecoverPendingOnly')
+        if ($usedRecoverPendingOnly) { $recoveryArguments.RecoverPendingOnly = $true }
+        $output = @(& $UpdaterPath @recoveryArguments 2>&1)
         $exitCode = $global:LASTEXITCODE
     } finally {
         [Environment]::SetEnvironmentVariable('CHATGPT_REMOTE_LAUNCH_GUARD_HELD', $previousLaunchGuard, 'Process')
@@ -416,12 +461,28 @@ function Invoke-UpdateRecovery {
     Write-CommandOutput $output
     if ($exitCode -ne 0) { throw 'Update recovery failed before launch.' }
     $recovery = Get-LastJsonResult -Output $output
-    if ($recovery.recovered -isnot [bool] -or $recovery.integrityValid -isnot [bool] -or -not $recovery.integrityValid -or
+    if ($usedRecoverPendingOnly -and $recovery.recoveryRequired -is [bool] -and -not $recovery.recoveryRequired) {
+        if ($recovery.recovered -isnot [bool] -or $recovery.recovered -or
+            $recovery.integrityValid -isnot [bool] -or $recovery.integrityValid -or
+            $recovery.cleanupDeferred -isnot [bool] -or -not $recovery.cleanupDeferred -or
+            [string]$recovery.version -notmatch '^v\d+\.\d+\.\d+$') {
+            throw 'Pending update recovery returned an incomplete no-journal proof.'
+        }
+    } elseif ($recovery.recovered -isnot [bool] -or $recovery.integrityValid -isnot [bool] -or -not $recovery.integrityValid -or
         [string]$recovery.version -notmatch '^v\d+\.\d+\.\d+$') {
         throw 'Update recovery did not prove installed-file integrity before launch.'
     }
     if ($recovery.recovered -and [string]$recovery.recoveryMode -notin @('complete-forward', 'rollback', 'unchanged')) {
         throw 'Update recovery returned an unsupported recovery mode.'
+    }
+    $migrationProperty = $recovery.PSObject.Properties['entryPointMigration']
+    if ($migrationProperty -and $null -ne $migrationProperty.Value) {
+        $validProperty = $migrationProperty.Value.PSObject.Properties['valid']
+        if (-not $validProperty -or $validProperty.Value -isnot [bool] -or -not $validProperty.Value) {
+            $message = 'Startup entry migration is incomplete. Automatic repair will retry at the next Remote Enabler launch; the current attachment can continue.'
+            Write-StartupLog ("WARNING: " + $message)
+            Write-Warning -Message $message -WarningAction Continue
+        }
     }
     return $recovery
 }
@@ -456,29 +517,434 @@ function Wait-MobileReadiness {
     return $Report
 }
 
+function Get-PublisherProcessProof {
+    param(
+        [Parameter(Mandatory)][int]$ProcessId,
+        [Parameter(Mandatory)][string]$ExpectedExecutablePath,
+        [Parameter(Mandatory)][string[]]$ExpectedScriptPaths,
+        [Parameter(Mandatory)][int]$ParentProcessId,
+        [Parameter(Mandatory)][string]$ParentStartToken,
+        [Parameter(Mandatory)][int]$Port,
+        [Parameter(Mandatory)][string]$LockPath
+    )
+
+    $process = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+    if ($null -eq $process) { return $null }
+    try {
+        if ($process.HasExited) { return $null }
+        $startToken = $process.StartTime.ToUniversalTime().ToFileTimeUtc().ToString([Globalization.CultureInfo]::InvariantCulture)
+        $executablePath = [IO.Path]::GetFullPath($process.MainModule.FileName)
+    } catch {
+        return $null
+    } finally {
+        $process.Dispose()
+    }
+    if (-not [string]::Equals($executablePath, [IO.Path]::GetFullPath($ExpectedExecutablePath), [StringComparison]::OrdinalIgnoreCase)) {
+        return $null
+    }
+
+    $record = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction SilentlyContinue
+    if ($null -eq $record -or [string]::IsNullOrWhiteSpace([string]$record.CommandLine)) { return $null }
+    $commandLine = [string]$record.CommandLine
+    $matchedScriptPath = $null
+    foreach ($candidate in $ExpectedScriptPaths) {
+        $resolvedCandidate = [IO.Path]::GetFullPath($candidate)
+        if ($commandLine.IndexOf(('"' + $resolvedCandidate + '"'), [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            $matchedScriptPath = $resolvedCandidate
+            break
+        }
+    }
+    $quotedLock = '"' + [IO.Path]::GetFullPath($LockPath) + '"'
+    if ([string]::IsNullOrWhiteSpace($matchedScriptPath) -or
+        $commandLine.IndexOf($quotedLock, [StringComparison]::OrdinalIgnoreCase) -lt 0 -or
+        $commandLine -notmatch "(?i)(?:^|\s)--port\s+$Port(?:\s|$)" -or
+        $commandLine -notmatch "(?i)(?:^|\s)--parent-pid\s+$ParentProcessId(?:\s|$)" -or
+        $commandLine -notmatch ("(?i)(?:^|\s)--parent-start-token\s+`"?{0}`"?(?:\s|$)" -f [regex]::Escape($ParentStartToken))) {
+        return $null
+    }
+    return [pscustomobject]@{
+        processId = $ProcessId
+        startToken = $startToken
+        executablePath = $executablePath
+        scriptPath = $matchedScriptPath
+        commandLine = $commandLine
+    }
+}
+
+function Get-PublisherOwnerState {
+    param([Parameter(Mandatory)]$Owner, [scriptblock]$ProcessLookup)
+    $ownerPid = [int]$Owner.pid
+    if ($ownerPid -lt 1) { return 'unknown' }
+    $process = $null
+    try {
+        $process = if ($ProcessLookup) { & $ProcessLookup $ownerPid } else { [Diagnostics.Process]::GetProcessById($ownerPid) }
+        if ($null -eq $process -or $process.HasExited) { return 'retired' }
+        $actualStartToken = $process.StartTime.ToUniversalTime().ToFileTimeUtc().ToString([Globalization.CultureInfo]::InvariantCulture)
+    } catch [ArgumentException] {
+        return 'retired'
+    } catch {
+        return 'unknown'
+    } finally {
+        if ($process -is [IDisposable]) { $process.Dispose() }
+    }
+    if ([int]$Owner.protocolVersion -eq 2 -and [string]$Owner.publisherStartToken -match '^\d+$' -and
+        $actualStartToken -cne [string]$Owner.publisherStartToken) {
+        return 'retired'
+    }
+    return 'alive'
+}
+
+function Get-PublisherHandoffState {
+    param([Parameter(Mandatory)]$Marker)
+    if ([int]$Marker.previousOwner.pid -lt 1 -or [string]$Marker.previousOwner.startToken -notmatch '^\d+$' -or
+        [int]$Marker.requester.pid -lt 1 -or [string]$Marker.requester.startToken -notmatch '^\d+$') {
+        return 'unknown'
+    }
+    $previousState = Get-PublisherOwnerState -Owner ([pscustomobject]@{
+        pid = [int]$Marker.previousOwner.pid
+        protocolVersion = 2
+        publisherStartToken = [string]$Marker.previousOwner.startToken
+    })
+    $requesterState = Get-PublisherOwnerState -Owner ([pscustomobject]@{
+        pid = [int]$Marker.requester.pid
+        protocolVersion = 2
+        publisherStartToken = [string]$Marker.requester.startToken
+    })
+    if ($previousState -ceq 'alive' -or $requesterState -ceq 'alive') { return 'alive' }
+    if ($previousState -ceq 'retired' -and $requesterState -ceq 'retired') { return 'retired' }
+    return 'unknown'
+}
+
+function Read-PublisherLock {
+    param([Parameter(Mandatory)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+    try { return Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop }
+    catch { throw "The publisher lock is unreadable and was left untouched: $Path" }
+}
+
+function Test-PublisherLockSession {
+    param($Lock, [int]$ParentProcessId, [string]$ParentStartToken, [int]$Port)
+    return $null -ne $Lock -and [int]$Lock.parentPid -eq $ParentProcessId -and
+        [string]$Lock.parentStartToken -ceq $ParentStartToken -and [int]$Lock.port -eq $Port -and
+        [string]$Lock.token -match '^[0-9a-f]{32,128}$'
+}
+
+function Open-PublisherLockExclusive {
+    param([Parameter(Mandatory)][string]$Path, [int]$TimeoutMilliseconds = 2000)
+    $timer = [Diagnostics.Stopwatch]::StartNew()
+    do {
+        try { return [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None) }
+        catch [IO.IOException] {
+            if ($timer.ElapsedMilliseconds -ge $TimeoutMilliseconds) { throw }
+            Start-Sleep -Milliseconds 25
+        }
+    } while ($true)
+}
+
+function Publish-PublisherHandoffMarkerAtomically {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)]$Marker,
+        [Parameter(Mandatory)][scriptblock]$ValidateCurrent,
+        [scriptblock]$ReplaceFile
+    )
+    $temporaryPath = "$Path.handoff-$([Guid]::NewGuid().ToString('N')).tmp"
+    $backupPath = "$Path.handoff-backup-$([Guid]::NewGuid().ToString('N')).tmp"
+    $temporaryStream = $null
+    $currentStream = $null
+    try {
+        $payload = [Text.UTF8Encoding]::new($false).GetBytes((($Marker | ConvertTo-Json -Depth 4 -Compress) + [Environment]::NewLine))
+        $temporaryStream = [IO.FileStream]::new(
+            $temporaryPath,
+            [IO.FileMode]::CreateNew,
+            [IO.FileAccess]::Write,
+            [IO.FileShare]::None,
+            4096,
+            [IO.FileOptions]::WriteThrough
+        )
+        $temporaryStream.Write($payload, 0, $payload.Length)
+        $temporaryStream.Flush($true)
+        $temporaryStream.Dispose()
+        $temporaryStream = $null
+
+        $currentStream = Open-PublisherLockExclusive -Path $Path
+        $bytes = New-Object byte[] ([int]$currentStream.Length)
+        [void]$currentStream.Read($bytes, 0, $bytes.Length)
+        $current = [Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json -ErrorAction Stop
+        & $ValidateCurrent $current
+        $currentStream.Dispose()
+        $currentStream = $null
+
+        if ($ReplaceFile) { & $ReplaceFile $temporaryPath $Path }
+        else { [IO.File]::Replace($temporaryPath, $Path, $backupPath, $true) }
+        $published = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+        if ([string]$published.state -cne 'handoff' -or [string]$published.token -cne [string]$Marker.token) {
+            throw 'The publisher handoff marker was not published atomically.'
+        }
+    } finally {
+        if ($temporaryStream) { $temporaryStream.Dispose() }
+        if ($currentStream) { $currentStream.Dispose() }
+        Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Remove-ExactPublisherHandoffMarker {
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Token)
+    $stream = $null
+    try {
+        $stream = Open-PublisherLockExclusive -Path $Path
+        $bytes = New-Object byte[] ([int]$stream.Length)
+        [void]$stream.Read($bytes, 0, $bytes.Length)
+        $current = [Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json -ErrorAction Stop
+        if ([string]$current.state -cne 'handoff' -or [string]$current.token -cne $Token) {
+            throw 'The publisher handoff marker changed while it was being recovered.'
+        }
+    } finally {
+        if ($stream) { $stream.Dispose() }
+    }
+    Remove-Item -LiteralPath $Path -Force -ErrorAction Stop
+}
+
+function Wait-ExactPublisherExit {
+    param([int]$ProcessId, [string]$StartToken, [int]$TimeoutMilliseconds = 30000)
+    $process = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+    if ($null -eq $process) { return $true }
+    try {
+        $actual = $process.StartTime.ToUniversalTime().ToFileTimeUtc().ToString([Globalization.CultureInfo]::InvariantCulture)
+        if ($actual -cne $StartToken) { return $true }
+        return $process.WaitForExit($TimeoutMilliseconds)
+    } catch {
+        return $false
+    } finally {
+        $process.Dispose()
+    }
+}
+
+function Request-PublisherHandoff {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)]$Owner,
+        [Parameter(Mandatory)]$OwnerProof,
+        [Parameter(Mandatory)][string]$ExpectedExecutablePath,
+        [Parameter(Mandatory)][string]$SuccessorScriptPath,
+        [Parameter(Mandatory)][int]$ParentProcessId,
+        [Parameter(Mandatory)][string]$ParentStartToken,
+        [Parameter(Mandatory)][int]$Port
+    )
+
+    $requester = [Diagnostics.Process]::GetCurrentProcess()
+    try {
+        $requesterStartToken = $requester.StartTime.ToUniversalTime().ToFileTimeUtc().ToString([Globalization.CultureInfo]::InvariantCulture)
+        $requesterProcessId = $requester.Id
+    } finally { $requester.Dispose() }
+    $handoffToken = ([Guid]::NewGuid().ToString('N') + [Guid]::NewGuid().ToString('N'))
+    $marker = [ordered]@{
+        protocolVersion = 2
+        state = 'handoff'
+        token = $handoffToken
+        parentPid = $ParentProcessId
+        parentStartToken = $ParentStartToken
+        port = $Port
+        executablePath = [IO.Path]::GetFullPath($ExpectedExecutablePath)
+        scriptPath = [IO.Path]::GetFullPath($SuccessorScriptPath)
+        previousOwner = [ordered]@{
+            pid = [int]$Owner.pid
+            startToken = [string]$OwnerProof.startToken
+            scriptPath = [string]$OwnerProof.scriptPath
+            token = [string]$Owner.token
+        }
+        requester = [ordered]@{
+            pid = $requesterProcessId
+            startToken = $requesterStartToken
+        }
+        createdAtUnixMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    }
+
+    $validateCurrent = {
+        param($current)
+        if (-not (Test-PublisherLockSession -Lock $current -ParentProcessId $ParentProcessId -ParentStartToken $ParentStartToken -Port $Port) -or
+            [int]$current.pid -ne [int]$Owner.pid -or [string]$current.token -cne [string]$Owner.token) {
+            throw 'The publisher lock changed before the handoff request could be written.'
+        }
+        $recheck = Get-PublisherProcessProof -ProcessId ([int]$Owner.pid) -ExpectedExecutablePath $ExpectedExecutablePath -ExpectedScriptPaths @([string]$OwnerProof.scriptPath) -ParentProcessId $ParentProcessId -ParentStartToken $ParentStartToken -Port $Port -LockPath $Path
+        if ($null -eq $recheck -or [string]$recheck.startToken -cne [string]$OwnerProof.startToken -or
+            -not [string]::Equals([string]$recheck.scriptPath, [string]$OwnerProof.scriptPath, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'The publisher process identity changed before the handoff request could be written.'
+        }
+    }
+    Publish-PublisherHandoffMarkerAtomically -Path $Path -Marker $marker -ValidateCurrent $validateCurrent
+
+    if (-not (Wait-ExactPublisherExit -ProcessId ([int]$Owner.pid) -StartToken ([string]$OwnerProof.startToken))) {
+        throw "The exact legacy publisher process $($Owner.pid) did not retire within the handoff timeout; its recoverable marker was retained."
+    }
+    Remove-ExactPublisherHandoffMarker -Path $Path -Token $handoffToken
+}
+
+function Complete-PublisherHandoff {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)]$Marker,
+        [Parameter(Mandatory)][string]$ExpectedExecutablePath,
+        [Parameter(Mandatory)][string]$ExpectedScriptPath,
+        [Parameter(Mandatory)][int]$ParentProcessId,
+        [Parameter(Mandatory)][string]$ParentStartToken,
+        [Parameter(Mandatory)][int]$Port
+    )
+    if ([int]$Marker.protocolVersion -ne 2 -or [string]$Marker.state -cne 'handoff' -or
+        -not (Test-PublisherLockSession -Lock $Marker -ParentProcessId $ParentProcessId -ParentStartToken $ParentStartToken -Port $Port) -or
+        -not [string]::Equals([IO.Path]::GetFullPath([string]$Marker.executablePath), [IO.Path]::GetFullPath($ExpectedExecutablePath), [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([IO.Path]::GetFullPath([string]$Marker.scriptPath), [IO.Path]::GetFullPath($ExpectedScriptPath), [StringComparison]::OrdinalIgnoreCase) -or
+        [int]$Marker.previousOwner.pid -lt 1 -or [string]$Marker.previousOwner.startToken -notmatch '^\d+$' -or
+        [int]$Marker.requester.pid -lt 1 -or [string]$Marker.requester.startToken -notmatch '^\d+$') {
+        throw 'The publisher handoff marker did not contain exact trusted ownership proof.'
+    }
+
+    $current = [Diagnostics.Process]::GetCurrentProcess()
+    try {
+        $currentProcessId = $current.Id
+        $currentStartToken = $current.StartTime.ToUniversalTime().ToFileTimeUtc().ToString([Globalization.CultureInfo]::InvariantCulture)
+    } finally { $current.Dispose() }
+    if ([int]$Marker.requester.pid -ne $currentProcessId -or [string]$Marker.requester.startToken -cne $currentStartToken) {
+        $requester = Get-Process -Id ([int]$Marker.requester.pid) -ErrorAction SilentlyContinue
+        if ($null -ne $requester) {
+            try {
+                $requesterToken = $requester.StartTime.ToUniversalTime().ToFileTimeUtc().ToString([Globalization.CultureInfo]::InvariantCulture)
+                if ($requesterToken -ceq [string]$Marker.requester.startToken) {
+                    throw 'Another exact startup process still owns the publisher handoff.'
+                }
+            } finally { $requester.Dispose() }
+        }
+    }
+    if (-not (Wait-ExactPublisherExit -ProcessId ([int]$Marker.previousOwner.pid) -StartToken ([string]$Marker.previousOwner.startToken))) {
+        throw "The exact legacy publisher process $($Marker.previousOwner.pid) did not finish its prior handoff; the recoverable marker was retained."
+    }
+    Remove-ExactPublisherHandoffMarker -Path $Path -Token ([string]$Marker.token)
+}
+
+function Resolve-TrustedLegacyPublisherScript {
+    param([Parameter(Mandatory)][string]$Path)
+    $resolved = [IO.Path]::GetFullPath($Path)
+    if (-not (Test-Path -LiteralPath $resolved -PathType Leaf) -or
+        [IO.Path]::GetFileName($resolved) -cne 'publisher-heartbeat.js' -or
+        [IO.Path]::GetFileName((Split-Path -Parent $resolved)) -cne 'CodexRemoteMobileProject') {
+        throw 'The legacy publisher path is not an exact Remote Enabler package publisher.'
+    }
+    $packageRoot = Split-Path -Parent (Split-Path -Parent $resolved)
+    foreach ($required in @('Enable-ChatGPTRemote.ps1', 'StableInstall.ps1')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $packageRoot $required) -PathType Leaf)) {
+            throw 'The legacy publisher path is outside a complete Remote Enabler package layout.'
+        }
+    }
+    return $resolved
+}
+
+function Start-PublisherHeartbeat {
+    param(
+        [Parameter(Mandatory)][string]$NodePath,
+        [Parameter(Mandatory)][string]$TrustedLegacyPublisherScriptPath
+    )
+
+    $stableStatePath = Join-Path $logRoot 'codexremote-simple-session.json'
+    $stableState = Get-Content -LiteralPath $stableStatePath -Raw | ConvertFrom-Json -ErrorAction Stop
+    $heartbeatPort = [int]$stableState.rendererPort
+    $heartbeatParent = [int]$stableState.launchProcessId
+    if ($heartbeatPort -lt 1 -or $heartbeatPort -gt 65535 -or $heartbeatParent -lt 1) {
+        throw 'The stable session did not report a valid heartbeat target.'
+    }
+    $heartbeatProcess = [Diagnostics.Process]::GetProcessById($heartbeatParent)
+    try {
+        $heartbeatStartToken = $heartbeatProcess.StartTime.ToUniversalTime().ToFileTimeUtc().ToString([Globalization.CultureInfo]::InvariantCulture)
+        $heartbeatExecutable = [IO.Path]::GetFullPath($heartbeatProcess.MainModule.FileName)
+    } finally { $heartbeatProcess.Dispose() }
+    if (-not [string]::Equals($heartbeatExecutable, [IO.Path]::GetFullPath([string]$stableState.executablePath), [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'The stable session heartbeat process identity changed.'
+    }
+    $heartbeatLock = Join-Path $logRoot "publisher-heartbeat-$heartbeatPort.lock"
+    $nodeExecutable = [IO.Path]::GetFullPath($NodePath)
+    $publisherScript = [IO.Path]::GetFullPath($publisherHeartbeatHelper)
+    $sourcePublisherScript = Resolve-TrustedLegacyPublisherScript -Path $TrustedLegacyPublisherScriptPath
+    $trustedPublisherScripts = @($publisherScript, $sourcePublisherScript) | Select-Object -Unique
+    $startPublisher = $true
+    $existingPublisher = Read-PublisherLock -Path $heartbeatLock
+    if ($null -ne $existingPublisher) {
+        if ([string]$existingPublisher.state -ceq 'handoff') {
+            $currentHandoff = Test-PublisherLockSession -Lock $existingPublisher -ParentProcessId $heartbeatParent -ParentStartToken $heartbeatStartToken -Port $heartbeatPort
+            if ($currentHandoff) {
+                Complete-PublisherHandoff -Path $heartbeatLock -Marker $existingPublisher -ExpectedExecutablePath $nodeExecutable -ExpectedScriptPath $publisherScript -ParentProcessId $heartbeatParent -ParentStartToken $heartbeatStartToken -Port $heartbeatPort
+            } else {
+                $trustedHandoff = [int]$existingPublisher.protocolVersion -eq 2 -and
+                    [string]$existingPublisher.token -match '^[0-9a-f]{32,128}$' -and
+                    [string]::Equals([IO.Path]::GetFullPath([string]$existingPublisher.executablePath), $nodeExecutable, [StringComparison]::OrdinalIgnoreCase) -and
+                    [string]::Equals([IO.Path]::GetFullPath([string]$existingPublisher.scriptPath), $publisherScript, [StringComparison]::OrdinalIgnoreCase)
+                $handoffState = if ($trustedHandoff) { Get-PublisherHandoffState -Marker $existingPublisher } else { 'unknown' }
+                if ($handoffState -cne 'retired') {
+                    throw "The publisher handoff belongs to a different or unverifiable renderer session ($handoffState) and was left untouched."
+                }
+                Remove-ExactPublisherHandoffMarker -Path $heartbeatLock -Token ([string]$existingPublisher.token)
+                Write-StartupLog "$(Get-Date -Format o) [$computerName] retired prior-session publisher handoff cleared for exact successor recovery"
+            }
+        } else {
+            $validActiveLock = [int]$existingPublisher.pid -gt 0 -and [string]$existingPublisher.token -match '^[0-9a-f]{32,128}$' -and
+                ([string]::IsNullOrWhiteSpace([string]$existingPublisher.state) -or [string]$existingPublisher.state -ceq 'active')
+            if (-not $validActiveLock) { throw 'The publisher lock ownership record is invalid and was left untouched.' }
+            $currentSession = Test-PublisherLockSession -Lock $existingPublisher -ParentProcessId $heartbeatParent -ParentStartToken $heartbeatStartToken -Port $heartbeatPort
+            $ownerProof = if ($currentSession) {
+                Get-PublisherProcessProof -ProcessId ([int]$existingPublisher.pid) -ExpectedExecutablePath $nodeExecutable -ExpectedScriptPaths $trustedPublisherScripts -ParentProcessId $heartbeatParent -ParentStartToken $heartbeatStartToken -Port $heartbeatPort -LockPath $heartbeatLock
+            } else { $null }
+            if ($null -eq $ownerProof) {
+                $ownerState = Get-PublisherOwnerState -Owner $existingPublisher
+                if ($ownerState -cne 'retired') {
+                    $reason = if ($currentSession) { 'owner could not be proven' } else { 'lock belongs to a different renderer session' }
+                    throw "The publisher $reason ($ownerState) and was left untouched."
+                }
+                Write-StartupLog "$(Get-Date -Format o) [$computerName] publisher heartbeat owner retired; successor will reclaim the exact stale lock"
+            } else {
+                $currentPublisher = [int]$existingPublisher.protocolVersion -eq 2 -and [string]$existingPublisher.state -ceq 'active' -and
+                    [string]$existingPublisher.publisherStartToken -ceq [string]$ownerProof.startToken -and
+                    [string]::Equals([IO.Path]::GetFullPath([string]$existingPublisher.executablePath), $nodeExecutable, [StringComparison]::OrdinalIgnoreCase) -and
+                    [string]::Equals([IO.Path]::GetFullPath([string]$existingPublisher.scriptPath), $publisherScript, [StringComparison]::OrdinalIgnoreCase) -and
+                    [string]::Equals([string]$ownerProof.scriptPath, $publisherScript, [StringComparison]::OrdinalIgnoreCase)
+                if ($currentPublisher) {
+                    Write-StartupLog "$(Get-Date -Format o) [$computerName] publisher heartbeat reused for the exact renderer session"
+                    $startPublisher = $false
+                } else {
+                    Request-PublisherHandoff -Path $heartbeatLock -Owner $existingPublisher -OwnerProof $ownerProof -ExpectedExecutablePath $nodeExecutable -SuccessorScriptPath $publisherScript -ParentProcessId $heartbeatParent -ParentStartToken $heartbeatStartToken -Port $heartbeatPort
+                }
+            }
+        }
+    }
+    if ($startPublisher) {
+        $heartbeatArguments = '--no-warnings "{0}" --port {1} --parent-pid {2} --parent-start-token "{3}" --lock-path "{4}"' -f $publisherHeartbeatHelper, $heartbeatPort, $heartbeatParent, $heartbeatStartToken, $heartbeatLock
+        $heartbeatWorker = Start-StartupBackgroundProcess -FilePath $NodePath -ArgumentList $heartbeatArguments
+        $heartbeatWorker.Dispose()
+        Write-StartupLog "$(Get-Date -Format o) [$computerName] publisher heartbeat started for the exact renderer session"
+    }
+}
+
+function Invoke-PublisherRepair {
+    param(
+        [Parameter(Mandatory)][string]$NodePath,
+        [Parameter(Mandatory)][string]$TrustedLegacyPublisherScriptPath
+    )
+    $mutex = [Threading.Mutex]::new($false, $launcherMutexName)
+    $acquired = $false
+    try {
+        try { $acquired = $mutex.WaitOne([TimeSpan]::Zero) }
+        catch [Threading.AbandonedMutexException] { $acquired = $true }
+        if (-not $acquired) { throw 'Another ChatGPT Custom or ChatGPT Remote Enabler launch is still running.' }
+        Start-PublisherHeartbeat -NodePath $NodePath -TrustedLegacyPublisherScriptPath $TrustedLegacyPublisherScriptPath
+    } finally {
+        if ($acquired) { $mutex.ReleaseMutex() }
+        $mutex.Dispose()
+    }
+}
+
 function Start-MobileBackgroundServices {
     param([Parameter(Mandatory)][string]$NodePath)
 
     try {
-        $stableStatePath = Join-Path $logRoot 'codexremote-simple-session.json'
-        $stableState = Get-Content -LiteralPath $stableStatePath -Raw | ConvertFrom-Json -ErrorAction Stop
-        $heartbeatPort = [int]$stableState.rendererPort
-        $heartbeatParent = [int]$stableState.launchProcessId
-        if ($heartbeatPort -lt 1 -or $heartbeatPort -gt 65535 -or $heartbeatParent -lt 1) {
-            throw 'The stable session did not report a valid heartbeat target.'
-        }
-        $heartbeatProcess = [Diagnostics.Process]::GetProcessById($heartbeatParent)
-        try {
-            $heartbeatStartToken = $heartbeatProcess.StartTime.ToUniversalTime().ToFileTimeUtc().ToString([Globalization.CultureInfo]::InvariantCulture)
-            $heartbeatExecutable = [IO.Path]::GetFullPath($heartbeatProcess.MainModule.FileName)
-        } finally { $heartbeatProcess.Dispose() }
-        if (-not [string]::Equals($heartbeatExecutable, [IO.Path]::GetFullPath([string]$stableState.executablePath), [StringComparison]::OrdinalIgnoreCase)) {
-            throw 'The stable session heartbeat process identity changed.'
-        }
-        $heartbeatLock = Join-Path $logRoot "publisher-heartbeat-$heartbeatPort.lock"
-        $heartbeatArguments = '--no-warnings "{0}" --port {1} --parent-pid {2} --parent-start-token "{3}" --lock-path "{4}"' -f $publisherHeartbeatHelper, $heartbeatPort, $heartbeatParent, $heartbeatStartToken, $heartbeatLock
-        Start-Process -FilePath $NodePath -ArgumentList $heartbeatArguments -WindowStyle Hidden | Out-Null
-        Write-StartupLog "$(Get-Date -Format o) [$computerName] publisher heartbeat started for the exact renderer session"
+        Start-PublisherHeartbeat -NodePath $NodePath -TrustedLegacyPublisherScriptPath (Join-Path $sourceBundleRoot 'publisher-heartbeat.js')
     } catch {
         Write-StartupLog "$(Get-Date -Format o) [$computerName] publisher heartbeat unavailable: $($_.Exception.Message)"
     }
@@ -637,7 +1103,7 @@ function Start-UpdatedEntryPoint {
     $childArgumentString = ($childArguments | ForEach-Object { ConvertTo-ProcessArgument -Value ([string]$_) }) -join ' '
     # The continuation child waits for this process to exit while this process
     # still owns the launch mutex, removing the release-then-spawn race.
-    $child = Start-Process -FilePath $powerShell -ArgumentList $childArgumentString -WorkingDirectory (Split-Path -Parent $EntryPoint) -WindowStyle Hidden -PassThru
+    $child = Start-StartupBackgroundProcess -FilePath $powerShell -ArgumentList $childArgumentString -WorkingDirectory (Split-Path -Parent $EntryPoint)
     $child.Dispose()
     Write-StartupLog "$(Get-Date -Format o) [$computerName] reloading the validated on-disk entry point after update or recovery"
 }
@@ -706,10 +1172,16 @@ switch ($Action) {
             }
 
             try {
-                Start-StartupProgress -Message 'Checking the installed ChatGPT app...'
+                # Existing sessions skip upgrades and maintenance, but still recover an
+                # interrupted helper installation. The stable
+                # controller validates the exact process, endpoint and requested proxy mode.
+                $appProcesses = @(Get-StartupChatGPTMainProcesses)
+                $attachExistingSession = $appProcesses.Count -gt 0
+                if ($attachExistingSession -and $UpdateResume) { throw 'ChatGPT is already open. Update relaunch was cancelled without changing it.' }
+                if (-not $attachExistingSession -or $ReplaceRunningApp) { Start-StartupProgress -Message 'Checking the installed ChatGPT app...' }
                 Set-StartupProgress -Message 'Recovering any interrupted update...'
                 $recoverTimer = [Diagnostics.Stopwatch]::StartNew()
-                $recovery = Invoke-UpdateRecovery -UpdaterPath $updateController -InstallRoot $bundleParent
+                $recovery = Invoke-UpdateRecovery -UpdaterPath $updateController -InstallRoot $bundleParent -RecoverPendingOnly
                 $recoverTimer.Stop()
                 Write-StartupLog "$(Get-Date -Format o) [$computerName] stage=update-recovery durationMs=$($recoverTimer.ElapsedMilliseconds) recovered=$($recovery.recovered) mode=$($recovery.recoveryMode)"
                 if ($recovery.recovered -and [string]$recovery.recoveryMode -cne 'rollback') {
@@ -739,7 +1211,8 @@ switch ($Action) {
                     Write-StartupLog "$(Get-Date -Format o) [$computerName] protected all-connections proxy configuration loaded"
                 }
 
-                $skipRemotePrelaunch = [bool]$SkipPrelaunchUpdateOnce
+                $attachExistingSession = @(Get-StartupChatGPTMainProcesses).Count -gt 0
+                $skipRemotePrelaunch = [bool]$SkipPrelaunchUpdateOnce -or $attachExistingSession
                 if (-not $SkipUpdateCheckOnce -and -not $UpdateResume -and -not $skipRemotePrelaunch) {
                     Set-StartupProgress -Message 'Checking and updating Remote Enabler...'
                     $prelaunchUpdate = Invoke-PrelaunchUpdate -UpdaterPath $updateController -InstallRoot $bundleParent -UseProxy:$UseProxy
@@ -757,49 +1230,69 @@ switch ($Action) {
                         return
                     }
                 }
-                if (-not $SkipDesktopAppUpdateOnce -and -not $UpdateResume) {
+                $attachExistingSession = @(Get-StartupChatGPTMainProcesses).Count -gt 0
+                $desktopUpdateAttachOnly = $false
+                if (-not $attachExistingSession -and -not $SkipDesktopAppUpdateOnce -and -not $UpdateResume) {
                     Set-StartupProgress -Message 'Checking the installed ChatGPT app...'
-                    [void](Invoke-DesktopAppPrelaunchUpdate -UpdaterPath $desktopAppUpdater -UseProxy:$UseProxy)
+                    try {
+                        [void](Invoke-DesktopAppPrelaunchUpdate -UpdaterPath $desktopAppUpdater -UseProxy:$UseProxy)
+                    } catch {
+                        $desktopUpdateError = [string]$_.Exception.Message
+                        if (-not (Test-DesktopAppPrelaunchRunningRefusal -Message $desktopUpdateError) -or $UpdateResume) { throw }
+                        $attachExistingSession = @(Get-StartupChatGPTMainProcesses).Count -gt 0
+                        if (-not $attachExistingSession) { throw }
+                        $desktopUpdateAttachOnly = $true
+                        Write-StartupLog "$(Get-Date -Format o) [$computerName] desktop-app update observed the app opening during its final running-app check; continuing in refreshed attach mode"
+                    }
                 }
                 Assert-Controllers
                 $node = Resolve-NodePath
                 if ($UseProxy) { Set-StartupProgress -Message 'Preparing the protected all-connections proxy bridge...' }
                 $maintenanceTimer = [Diagnostics.Stopwatch]::StartNew()
                 Set-StartupProgress -Message 'Preparing the local ChatGPT session...'
-                Write-CommandOutput @(& $node --no-warnings $maintenanceHelper --best-effort --startup 2>&1)
+                $attachExistingSession = $desktopUpdateAttachOnly -or @(Get-StartupChatGPTMainProcesses).Count -gt 0
+                if (-not $attachExistingSession) { Write-CommandOutput @(& $node --no-warnings $maintenanceHelper --best-effort --startup 2>&1) }
                 $maintenanceTimer.Stop()
                 Write-StartupLog "$(Get-Date -Format o) [$computerName] stage=maintenance durationMs=$($maintenanceTimer.ElapsedMilliseconds)"
                 # The VS Code extension and other Codex clients run a codex.exe
                 # app-server process. It is not the desktop Electron app and
                 # must not block or be terminated by a ChatGPT Custom launch.
-                $appProcesses = @(Get-CimInstance Win32_Process -Filter "Name='ChatGPT.exe'" -ErrorAction SilentlyContinue)
+                $appProcesses = @(Get-StartupChatGPTMainProcesses)
+                $attachExistingSession = $desktopUpdateAttachOnly -or $appProcesses.Count -gt 0
                 $debugApp = @($appProcesses | Where-Object { $_.CommandLine -match '--remote-debugging-port(?:=|\s)' })
                 if ($UpdateResume -and $appProcesses.Count -gt 0) {
                     throw 'Another ChatGPT/Codex process appeared during the update. The verified relaunch was aborted without closing or replacing it.'
-                }
-                if ($appProcesses.Count -gt 0 -and $debugApp.Count -eq 0 -and -not $ReplaceRunningApp) {
-                    throw 'ChatGPT/Codex is already running without the managed debug endpoint. Close it normally, then use ChatGPT Remote Enabler; startup will not terminate an active app.'
                 }
                 if ($debugApp.Count -ne 0) {
                     Write-StartupLog "$(Get-Date -Format o) [$computerName] existing debug session found; validating its durable proxy transport before reuse"
                 }
                 $stableTimer = [Diagnostics.Stopwatch]::StartNew()
-                Set-StartupProgress -Message 'Launching ChatGPT with Remote enabled...'
+                Set-StartupProgress -Message $(if ($attachExistingSession) { 'Attaching to the running ChatGPT session...' } else { 'Launching ChatGPT with Remote enabled...' })
                 for ($stableAttempt = 1; $stableAttempt -le 2; $stableAttempt++) {
                     try {
+                        $attachExistingSession = if ($desktopUpdateAttachOnly) { $true } else { @(Get-StartupChatGPTMainProcesses).Count -gt 0 }
+                        if ($UpdateResume -and $attachExistingSession) {
+                            throw 'Another ChatGPT/Codex process appeared during the update. The verified relaunch was aborted without closing or replacing it.'
+                        }
                         $stableArguments = @{
                             Action = 'Enable'
                             UseProxy = [bool]$UseProxy
-                            RefuseExistingApp = [bool]$UpdateResume
+                            RefuseExistingApp = $true
                             TimeoutSeconds = [Math]::Min(60, [Math]::Max(20, $MobileReadyTimeoutSeconds))
                             Confirm = $false
+                        }
+                        $supportsAttachOnly = Test-RemoteScriptSupportsParameter -ScriptPath $stableController -ParameterName 'AttachOnly'
+                        if ($supportsAttachOnly) {
+                            $stableArguments.AttachOnly = [bool]$attachExistingSession
+                        } elseif ($attachExistingSession) {
+                            throw 'The installed Remote Enabler controller cannot safely attach to the running ChatGPT session; it does not support AttachOnly and the app was left running.'
                         }
                         if ($UseProxy) { $stableArguments.ProxyServer = $proxyServer }
                         Write-CommandOutput @(& $stableController @stableArguments 2>&1)
                         break
                     } catch {
                         $stableError = $_.Exception.Message
-                        if ($stableAttempt -ge 2) {
+                        if ($stableAttempt -ge 2 -or $UpdateResume -or $stableError -like 'ChatGPT is already open, but a matching Remote Enabler session*' -or $stableError -like 'Runtime inspector hook unavailable:*') {
                             Write-StartupLog "$(Get-Date -Format o) [$computerName] stable bridge failed on attempt ${stableAttempt}: $stableError"
                             throw
                         }
@@ -866,14 +1359,12 @@ switch ($Action) {
             $backupPath = Join-Path $rollbackRoot "startup-task-$computerName-$stamp.xml"
             Export-ScheduledTask -TaskName $taskName | Set-Content -LiteralPath $backupPath -Encoding Unicode
         }
-        $powerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-        if (-not (Test-Path -LiteralPath $powerShell -PathType Leaf)) {
-            throw "Built-in Windows PowerShell was not found: $powerShell"
+        $startupLauncher = Join-Path $bundleRoot 'ChatGPT Custom.exe'
+        if (-not (Test-Path -LiteralPath $startupLauncher -PathType Leaf)) {
+            throw "The windowless startup launcher was not found: $startupLauncher"
         }
-        $startupEntryPoint = Join-Path $bundleRoot 'MobileProjectStartup.ps1'
-        $arguments = "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$startupEntryPoint`" -Action Run"
-        if ($UseProxy) { $arguments += ' -UseProxy' }
-        $taskAction = New-ScheduledTaskAction -Execute $powerShell -Argument $arguments -WorkingDirectory $bundleRoot
+        $arguments = if ($UseProxy) { '--proxy --startup' } else { '--startup' }
+        $taskAction = New-ScheduledTaskAction -Execute $startupLauncher -Argument $arguments -WorkingDirectory $bundleRoot
         $trigger = New-ScheduledTaskTrigger -AtLogOn -User $TargetUser
         if ($DelaySeconds -gt 0) { $trigger.Delay = "PT${DelaySeconds}S" }
         $principal = New-ScheduledTaskPrincipal -UserId $TargetUser -LogonType Interactive -RunLevel Limited
@@ -890,6 +1381,15 @@ switch ($Action) {
             Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
         }
         Get-TaskSummary | ConvertTo-Json -Depth 4
+    }
+    'RepairPublisher' {
+        if ([string]::IsNullOrWhiteSpace($NodePath) -or -not (Test-Path -LiteralPath $NodePath -PathType Leaf)) {
+            throw 'RepairPublisher requires the exact Node.js executable path.'
+        }
+        if ([string]::IsNullOrWhiteSpace($LegacyPublisherScriptPath)) {
+            throw 'RepairPublisher requires the exact invoking package publisher path.'
+        }
+        Invoke-PublisherRepair -NodePath $NodePath -TrustedLegacyPublisherScriptPath $LegacyPublisherScriptPath
     }
     'Probe' {
         Get-TaskSummary | ConvertTo-Json -Depth 4

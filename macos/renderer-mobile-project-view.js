@@ -80,7 +80,7 @@
     "unknown",
   ]);
   const PUBLISHER_VERSION = 54;
-  const VERSION = 93;
+  const VERSION = 95;
   // Keep outstanding writes locked across renderer reinjection until the underlying RPC settles.
   const peerWriteLocks = globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ instanceof Map
     ? globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ : (globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ = new Map());
@@ -2813,26 +2813,29 @@
       const id = rawConversationId(thread?.id ?? thread?.conversationId ?? "");
       return id ? [[id, thread]] : [];
     }));
-    const nativeLocalTasks = [...document.querySelectorAll(ROW_SELECTOR)]
+    const localTasks = [...document.querySelectorAll(ROW_SELECTOR)]
       .filter((row) => !row.closest(`#${PANEL_ID}`))
       .map(metadataFromRow)
       .filter((task) => task.hostId === "local");
-    const nativeLocalTasksById = new Map(nativeLocalTasks.map((task) => [task.conversationId, task]));
-    const tasks = nativeLocalTasks
-      .map((task) => publishedTaskMetadata(task, localThreadsById.get(task.conversationId), currentThreadInventory.fetchedAt));
+    const localTasksById = new Map(localTasks.flatMap((task) => task.conversationId ? [[task.conversationId, task]] : []));
+    const tasks = localTasks.map((task) => publishedTaskMetadata(task, localThreadsById.get(task.conversationId), currentThreadInventory.fetchedAt));
     const publisherVersion = !currentThreadInventory.error
-      && (currentThreadInventory.threads ?? []).every(threadProjectMembershipKnown)
+      && (currentThreadInventory.threads ?? []).every((thread) => {
+        const id = rawConversationId(thread?.id ?? thread?.conversationId ?? "");
+        return resolvedThreadProjectMembership(thread, localTasksById.get(id)).known;
+      })
       ? PUBLISHER_VERSION
       : THREAD_VISIBILITY_CONTRACT_VERSION;
     const threads = (state.threadInventories.get("local")?.threads ?? []).flatMap((thread) => {
       const id = rawConversationId(thread?.id ?? thread?.conversationId ?? "");
       if (!id) return [];
       const titleRecord = publishedThreadTitle(thread, id);
+      const membership = resolvedThreadProjectMembership(thread, localTasksById.get(id));
       const publishedThread = {
         cwd: canonicalRemotePath(thread?.cwd),
         hasUnreadTurn: thread?.hasUnreadTurn === true,
         id,
-        projectId: publishedThreadProjectId(thread, nativeLocalTasksById.get(id)),
+        projectId: membership.projectId,
         status: typeof thread?.status === "string" ? thread.status : thread?.status && typeof thread.status === "object" ? {
           activeFlags: Array.isArray(thread.status.activeFlags) ? thread.status.activeFlags.filter((flag) => typeof flag === "string").slice(0, 8) : [],
           type: thread.status.type,
@@ -2841,7 +2844,7 @@
         updatedAt: thread?.updatedAt ?? null,
         workspaceKind: typeof thread?.workspaceKind === "string" ? thread.workspaceKind : null,
       };
-      if (publisherVersion < PROJECT_MEMBERSHIP_CONTRACT_VERSION && threadProjectMembershipKnown(thread)) {
+      if (publisherVersion < PROJECT_MEMBERSHIP_CONTRACT_VERSION && membership.known) {
         publishedThread.projectMembershipKnown = true;
       }
       if (titleRecord.title) publishedThread.title = titleRecord.title;
@@ -3019,19 +3022,40 @@
       : null;
   }
 
-  function publishedThreadProjectId(thread, nativeTask) {
-    const directProjectId = threadProjectId(thread);
-    return directProjectId ?? (nativeTask?.nativeProjectMembershipKnown === true ? nativeTask.projectId : null);
-  }
-
   function threadProjectMembershipKnown(thread) {
     if (!thread || typeof thread !== "object") return false;
-    if (typeof thread.projectId === "string" || thread.projectId === null) return true;
-    if (typeof thread.project_id === "string" || thread.project_id === null) return true;
+    if (typeof thread.projectId === "string") return true;
+    if (typeof thread.project_id === "string") return true;
     if (Object.prototype.hasOwnProperty.call(thread, "project") && thread.project === null) return true;
     if (thread.project && typeof thread.project === "object"
-      && (typeof thread.project.id === "string" || thread.project.id === null)) return true;
+      && (typeof thread.project.id === "string"
+        || (Object.prototype.hasOwnProperty.call(thread.project, "id") && thread.project.id === null))) return true;
     return thread.projectless === true || thread.workspaceKind === "projectless";
+  }
+
+  function threadExplicitlyProjectless(thread) {
+    return Boolean(thread && typeof thread === "object" && (
+      thread.projectless === true
+      || thread.workspaceKind === "projectless"
+      || (Object.prototype.hasOwnProperty.call(thread, "project") && thread.project === null)
+      || (thread.project && typeof thread.project === "object"
+        && Object.prototype.hasOwnProperty.call(thread.project, "id") && thread.project.id === null)
+    ));
+  }
+
+  function resolvedThreadProjectMembership(thread, nativeTask = null) {
+    const directProjectId = threadProjectId(thread);
+    if (directProjectId) return { known: true, projectId: directProjectId };
+    if (threadExplicitlyProjectless(thread)) return { known: true, projectId: null };
+    if (nativeTask?.originalRow) {
+      if (typeof nativeTask.projectId === "string" && nativeTask.projectId) {
+        return { known: true, projectId: nativeTask.projectId };
+      }
+      if (nativeTask.isGrouped === false || nativeTask.isProjectless === true) {
+        return { known: true, projectId: null };
+      }
+    }
+    return { known: threadProjectMembershipKnown(thread) || thread?.projectMembershipKnown === true, projectId: null };
   }
 
   function taskFromThread(thread, hostId, statusObservedAt = 0, directMembershipKnown = false) {
@@ -3306,11 +3330,12 @@
             nativeTask.unreadKnown = false;
           }
           if (task.cwd) nativeTask.cwd = task.cwd;
-          if (task.projectMembershipKnown && (task.projectId !== null || !nativeTask.nativeProjectMembershipKnown)) {
-            nativeTask.projectId = task.projectId;
+          if (task.projectMembershipKnown) {
+            const membership = resolvedThreadProjectMembership(thread, nativeTask);
+            nativeTask.projectId = membership.projectId;
             nativeTask.projectMembershipKnown = true;
-            nativeTask.isGrouped = task.isGrouped;
-            nativeTask.isProjectless = task.isProjectless;
+            nativeTask.isGrouped = Boolean(membership.projectId);
+            nativeTask.isProjectless = !membership.projectId;
           } else if (task.projectId) nativeTask.projectId = task.projectId;
           if (task.projectLabel) nativeTask.projectLabel = task.projectLabel;
           nativeTask.sourceThread = thread;
@@ -3826,8 +3851,11 @@
 
   function readUpdateStatus() {
     const updater = globalThis[UPDATE_SLOT];
-    if (typeof updater?.getStatus === "function") {
-      try { state.updateStatus = normalizeUpdateStatus(updater.getStatus()); } catch {}
+    if (typeof updater?.getStatus === "function" && typeof updater?.request === "function") {
+      try { state.updateStatus = normalizeUpdateStatus(updater.getStatus()); }
+      catch { state.updateStatus = normalizeUpdateStatus({ state: "unavailable", message: "The local update service is not responding." }); }
+    } else {
+      state.updateStatus = normalizeUpdateStatus({ state: "unavailable", message: "The local update service is disconnected." });
     }
     state.updateStatus ??= normalizeUpdateStatus(null);
     return { ...state.updateStatus };
@@ -3885,7 +3913,7 @@
       updating: "Updating…",
       restarting: "Restarting…",
       error: "Check again",
-      unavailable: "Updates unavailable",
+      unavailable: typeof globalThis[UPDATE_SLOT]?.request === "function" ? "Update check unavailable" : "Update service disconnected",
     };
     if (["queued", "preparing"].includes(status.state) && status.canCancel) {
       const group = document.createElement("span");
@@ -4478,7 +4506,7 @@
     refresh.addEventListener("click", () => { void requestUpdateAction("history"); });
     details.appendChild(refresh);
     if (state.historyRefreshError) helpText(details, state.historyRefreshError);
-    const installed = metadata?.installedVersion || releaseVersion(config.helperVersion) || (status.state === "current" ? releaseVersion(status.version) : null);
+    const installed = metadata ? releaseVersion(metadata.installedVersion) : (status.state === "current" ? releaseVersion(status.version) : null);
     const available = metadata?.availableVersion || (["available", "queued", "preparing"].includes(status.state) ? releaseVersion(status.version) : null);
     helpText(details, `Installed helper: ${installed || "not reported"}. Last reported available release: ${available || "none reported"}.`);
     helpText(details, `Last successful update check: ${timeLabel(metadata?.lastCheckedAt)}.`);
@@ -4649,7 +4677,7 @@
       error: "The update could not complete. Review the details, then check again.",
       unavailable: typeof globalThis[UPDATE_SLOT]?.request === "function"
         ? "Automatic update checks are unavailable. Try a manual check or review the details."
-        : "The update service is not attached. Fully quit the app and launch Remote Enabler from the folder containing the version you installed." })[status.state] || "";
+        : "The local update service is disconnected. Release availability cannot be checked until it reconnects." })[status.state] || "";
   }
 
   function announceUpdate(status) {
@@ -4663,10 +4691,12 @@
     const panel = document.createElement("section");
     panel.className = "crmp-update-panel";
     panel.setAttribute("aria-label", "Remote Enabler update");
-    const installed = releaseVersion(config.helperVersion) || status.details?.installedVersion || (status.state === "current" ? releaseVersion(status.version) : null);
+    const installed = status.details ? releaseVersion(status.details.installedVersion) : (status.state === "current" ? releaseVersion(status.version) : null);
+    const loaded = releaseVersion(config.helperVersion);
+    const displayedVersion = installed || loaded;
     const version = button("crmp-version", "");
-    version.setAttribute("aria-label", `Check Remote Enabler updates${installed ? ` (${installed})` : " (version not reported)"}`);
-    version.title = "Loaded helper version. Check for updates.";
+    version.setAttribute("aria-label", `Check Remote Enabler updates${displayedVersion ? ` (${displayedVersion}${installed ? "" : ", loaded helper"})` : " (version not reported)"}`);
+    version.title = installed ? "Installed helper version. Check for updates." : "Loaded helper version; installed version has not been reported.";
     setFocusKey(version, "update-version");
     version.disabled = !["current", "error", "unavailable"].includes(status.state) || typeof globalThis[UPDATE_SLOT]?.request !== "function";
     version.addEventListener("click", () => { void requestUpdateAction("check"); });
@@ -4677,7 +4707,7 @@
     path.setAttribute("d", "M20 7v5h-5M4 17v-5h5M6.1 7a7 7 0 0 1 11.6-1L20 9M4 15l2.3 3A7 7 0 0 0 17.9 17");
     path.setAttribute("fill", "none"); path.setAttribute("stroke", "currentColor"); path.setAttribute("stroke-width", "1.8");
     path.setAttribute("stroke-linecap", "round"); path.setAttribute("stroke-linejoin", "round"); icon.appendChild(path);
-    const label = document.createElement("span"); label.textContent = `Remote Enabler · ${installed || "version not reported"}`;
+    const label = document.createElement("span"); label.textContent = `Remote Enabler · ${displayedVersion || "version not reported"}${!installed && loaded ? " (loaded)" : ""}`;
     version.append(icon, label); panel.appendChild(version);
     panel.appendChild(updateStatusControl());
     const explanation = document.createElement("p");

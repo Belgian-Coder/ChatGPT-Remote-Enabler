@@ -1,5 +1,56 @@
 # Changelog
 
+## v1.5.99 — 2026-09-24
+
+- Reconnect a lost local update bridge automatically; probe renderer health instead
+  of treating a live helper process as a working connection. Clear failed check
+  promises so future checks can retry. Report a disconnected local service
+  separately from release availability, and distinguish installed from loaded versions.
+- Repair an eligible idle legacy updater after repeated exact-session failure
+  proofs without closing ChatGPT. Cooperatively retire an owned legacy publisher
+  before starting its replacement, preserving one active owner.
+- Isolate renderer callback ownership across reconnections and remove owned
+  bindings on cleanup, preventing stale callbacks and accumulating bridge functions.
+
+- Keep native project membership when merging task inventories, and publish that
+  membership to other devices so grouped chats do not fall into Recent chats.
+  Treat ambiguous null membership as unknown for chats without a rendered row;
+  preserve explicit projectless chats and current project-path matching.
+- Defer Windows desktop updates rejected with package-resources-in-use
+  (`0x80073D02`) when the installed package remains unchanged and healthy.
+  Reuse the existing bounded candidate cache to avoid repeated downloads.
+- Attach and inject into an already-running Windows ChatGPT instance at sign-in
+  or manual launch, including ordinary instances with a registered runtime
+  inspector hook. Preserve the process and active work; reuse compatible managed
+  sessions. Separate renderer sessions carry publisher and updater events.
+  Wait within the attachment timeout for a cold app's renderer to become ready.
+  Existing apps skip upgrades and maintenance while retaining interrupted-update
+  recovery. Unsupported hooks or startup-only connection changes report a specific
+  error without closing the app or bypassing a requested proxy.
+  Preserve recoverable inspector-probe failures under Windows PowerShell 5.1
+  instead of aborting before the attachment fallback can run.
+  Reuse a healthy updater coordinator for the exact session instead of waiting
+  for a duplicate worker to time out; report its retained dependency snapshot.
+  Re-inject a lost native-renderer bridge into a verified managed session without
+  closing ChatGPT, while refusing mismatched process identities or connection modes.
+- Normal startup checks for interrupted-update journals under the updater lock.
+  With no journal and a structurally complete package, it skips full installed-file hashing and heavy cleanup, while
+  still migrating owned legacy startup entries to the windowless launcher;
+  actual update recovery and failed-update validation retain their full checks.
+  Report incomplete startup-entry migration and retry it on the next launch
+  without blocking attachment to the running app.
+- Consolidate duplicate owned shortcuts while preserving distinct proxy modes,
+  repair recognized dangling entries, and retain one effective owned sign-in
+  entry. Route logon tasks through the windowless GUI launcher. Keep the official
+  ChatGPT entry and unrelated shortcuts intact.
+- Promote a newer extracted helper package before calling installed controllers,
+  so manual recovery does not pass new switches to an older installed copy.
+- Start progress, recovery-continuation, heartbeat, proxy-worker and detached
+  task-host cleanup helpers without allocating consoles, in addition to
+  requesting hidden windows.
+- Use the native timestamp index for log retention while retaining the seven-day and
+  96 MiB limits. Startup database work still requires the app to be closed.
+
 ## v1.5.98 — 2026-09-24
 
 - Preserve Codex's native project membership when its direct `thread/list`

@@ -70,6 +70,23 @@ function safeTemporaryTestRoot(codexHome) {
   }
 }
 
+function logOrdering(db) {
+  let hasNanosecondTimestamp = false;
+  for (const column of db.prepare("PRAGMA table_info(logs)").iterate()) {
+    if (String(column.name ?? "").toLowerCase() === "ts_nanos") {
+      hasNanosecondTimestamp = true;
+      break;
+    }
+  }
+  return hasNanosecondTimestamp
+    ? {
+      oldestFirst: "ts ASC, ts_nanos ASC, id ASC",
+    }
+    : {
+      oldestFirst: "ts ASC, id ASC",
+    };
+}
+
 function optimizeDatabase(DatabaseSync, dbPath, pruneLogs, startup = false) {
   if (!fs.existsSync(dbPath)) return { status: "missing" };
   const beforeBytes = fs.statSync(dbPath).size;
@@ -85,12 +102,13 @@ function optimizeDatabase(DatabaseSync, dbPath, pruneLogs, startup = false) {
       try {
         const ageResult = db.prepare("DELETE FROM logs WHERE ts < ?").run(cutoff);
         removedByAge = Number(ageResult.changes ?? 0);
+        const ordering = logOrdering(db);
         const estimated = Number(db.prepare("SELECT COALESCE(SUM(estimated_bytes), 0) AS bytes FROM logs").get().bytes ?? 0);
         if (!Number.isFinite(estimated) || estimated < 0) throw new Error("Log size estimate is invalid; refusing cap pruning");
         if (estimated > LOG_CAP_BYTES) {
           let accumulated = 0;
           let rows = 0;
-          for (const row of db.prepare("SELECT estimated_bytes FROM logs ORDER BY ts, id").iterate()) {
+          for (const row of db.prepare(`SELECT estimated_bytes FROM logs ORDER BY ${ordering.oldestFirst}`).iterate()) {
             const rowBytes = Number(row.estimated_bytes ?? 0);
             if (!Number.isFinite(rowBytes) || rowBytes < 0) throw new Error("A log row has an invalid size estimate; refusing cap pruning");
             accumulated += rowBytes;
@@ -98,7 +116,7 @@ function optimizeDatabase(DatabaseSync, dbPath, pruneLogs, startup = false) {
             if (accumulated >= estimated - LOG_CAP_BYTES) break;
           }
           if (rows > 0) {
-            const capResult = db.prepare("DELETE FROM logs WHERE id IN (SELECT id FROM logs ORDER BY ts, id LIMIT ?)").run(rows);
+            const capResult = db.prepare(`DELETE FROM logs WHERE id IN (SELECT id FROM logs ORDER BY ${ordering.oldestFirst} LIMIT ?)`).run(rows);
             removedByCap = Number(capResult.changes ?? 0);
           }
         }

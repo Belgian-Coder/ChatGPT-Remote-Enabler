@@ -114,7 +114,18 @@ Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
 '@
     [IO.File]::WriteAllText($cleanupPath, $cleanupSource, [Text.UTF8Encoding]::new($false))
     $powerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    Start-Process -FilePath $powerShell -WindowStyle Hidden -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$cleanupPath,'-ProcessId',$ProcessId,'-ExecutablePath',$ExecutablePath,'-Directory',(Split-Path -Parent $ExecutablePath)) | Out-Null
+    $cleanupDirectory = Split-Path -Parent $ExecutablePath
+    foreach ($path in @($cleanupPath, $ExecutablePath, $cleanupDirectory)) {
+        Assert-PlainLaunchPath -Path $path -Label 'A detached cleanup path'
+    }
+    $cleanupStart = [Diagnostics.ProcessStartInfo]::new()
+    $cleanupStart.FileName = $powerShell
+    $cleanupStart.Arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -ProcessId {1} -ExecutablePath "{2}" -Directory "{3}"' -f $cleanupPath, $ProcessId, $ExecutablePath, $cleanupDirectory
+    $cleanupStart.UseShellExecute = $false
+    $cleanupStart.CreateNoWindow = $true
+    $cleanupStart.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
+    $cleanupProcess = [Diagnostics.Process]::Start($cleanupStart)
+    if ($cleanupProcess) { $cleanupProcess.Dispose() }
 }
 
 function Test-ExactCoordinator {

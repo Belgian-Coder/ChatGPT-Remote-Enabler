@@ -1,6 +1,6 @@
 # Windows 11: install for your user without administrator access
 
-Release v1.5.98 keeps the permanent helper in the current user's unversioned
+Release v1.5.99 keeps the permanent helper in the current user's unversioned
 LocalAppData root and migrates the v1.5.60 ProgramData root as legacy. Automatic
 updates therefore replace files owned by the same limited user that owns the
 shortcuts and updater state. Successful updates retain only the immediate prior
@@ -27,11 +27,37 @@ Renderer v92 also keeps authoritative projectless tasks in Recent chats and
 removes stale activity indicators from empty devices known to be offline. Its
 protocol 54 membership marker survives older relays during staggered upgrades.
 
+Sign-in and manual launches attach to an already-running ChatGPT instance and
+inject Device projects without closing or restarting it. On Windows, an ordinary
+instance can expose its registered Node inspector hook at runtime; separate
+renderer debugging sessions carry injection, publisher, and updater traffic.
+Repeated launches reuse a compatible active session. Attachment checks runtime
+capabilities and exact process identity, without a build-version allowlist.
+They also reuse a healthy updater coordinator after verifying its process,
+session, settings, heartbeat, and lock ownership. The coordinator can retain its
+immutable dependency snapshot while the installed files and renderer are newer;
+launch results report that distinction. A normal app exit or the updater's
+existing coordinated handoff replaces that worker without spawning duplicates.
+If the app is still loading, attachment waits within its startup timeout for the
+renderer instead of requiring another manual launch.
+An app that disables this hook, or needs different startup-only proxy or legacy
+key settings, is left running with a specific attachment error. The helper never
+silently downgrades protected proxy mode. The inspector stays on loopback for the
+attached session; like a renderer debugger, it is accessible to local processes.
+Owned logon tasks use the windowless GUI launcher, and migration removes
+duplicate owned sign-in entries while retaining existing proxy choices.
+Normal startup checks for pending update journals under the update lock. It runs
+full recovery and cleanup when a journal exists, rather than rehashing the entire
+helper and repeating heavy cleanup at every launch. Entry-point repair still runs
+on the fast attach path so older logon tasks become windowless automatically.
+Failed-update recovery still
+validates installed files before continuing.
+
 You need Windows 11 x64, the ChatGPT/Codex desktop app signed in with Remote available on your account, and Node.js 22 or newer. The special launcher can install or update the supported current-user desktop package from OpenAI's signed stable x64 MSIX while the app is closed; it does not unlock account features or bypass AppX policy.
 
 ## 1. Download and extract
 
-1. Download **ChatGPT-Remote-Enabler-Windows-x64-v1.5.98.zip** from [v1.5.98 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.98). Read the verification limitations.
+1. Download **ChatGPT-Remote-Enabler-Windows-x64-v1.5.99.zip** from [v1.5.99 downloads](https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/releases/tag/v1.5.99). Read the verification limitations.
 2. Right-click the ZIP in File Explorer, choose **Properties**, select **Unblock** if offered, and click **OK**. Then choose **Extract All**.
 3. Enter `%LOCALAPPDATA%\Programs` in File Explorer's address bar. Create a **ChatGPTRemoteEnabler** folder and copy the extracted package contents into it.
 4. **ChatGPT Remote Enabler.exe**, **README.md**, and **CodexRemoteMobileProject** must be directly inside that folder. Keep the whole package together.
@@ -159,7 +185,7 @@ built-in updater may also need HTTPS access to `persistent.oaistatic.com`.
 | What you see | What to do |
 | --- | --- |
 | Node.js missing | Check the location in step 2; `node.exe` must be directly inside `nodejs`. |
-| No enhanced sidebar | Finish work, quit the ordinary app, and launch **ChatGPT Remote Enabler**. Read any compatibility error. |
+| No enhanced sidebar | Open **ChatGPT Remote Enabler**; it can attach to a compatible ordinary app that is already running. Read any compatibility error. Startup-only proxy or legacy settings are not applied automatically to the running app and may require a later explicit restart after active tasks are safe. |
 | Stable install cannot write | Rerun Setup from a writable per-user staging folder. The permanent root is under your LocalAppData and requires no administrator access. |
 | Startup does nothing | Allow the initial delay; an ordinary running app is left alone. |
 | Update stays queued | Finish active tasks or Cancel. Unknown activity also keeps it queued. |
@@ -281,8 +307,8 @@ future clicks recover and verify Remote Enabler, update the signed desktop
 package, perform the required verified-Git helper update, and only then load
 the injected view. Use
 `-UseProxy` only when this device needs proxy mode; it configures those same
-shortcuts with `--proxy`. The installer never creates a separate proxy
-shortcut and recoverably removes obsolete proxy entries. First import the
+shortcuts with `--proxy`. Existing distinct direct/proxy choices are retained;
+only redundant owned entries are consolidated. First import the
 existing User-scope proxy into DPAPI-protected local storage:
 
 ```powershell
@@ -424,11 +450,11 @@ Settings now provides per-device connection findings, next steps, explicit evide
 
 ## Version or update icon missing
 
-Check the target of **ChatGPT Custom** in the Start menu (open its file location, then shortcut Properties). Setup preserves legacy shortcuts, so one may still launch a different, older folder. Downloading a ZIP into a new folder does not retarget that shortcut.
+Check the target of **ChatGPT Remote Enabler** in the Start menu (open its file location, then shortcut Properties). Setup and update recovery migrate recognized helper shortcuts to the permanent installation and consolidate duplicates while preserving distinct proxy choices. Downloading a ZIP alone does not run that migration.
 
-Fully quit the app when your work is safe, then use **ChatGPT Remote Enabler.exe** in the newly extracted folder, or the new **ChatGPT Remote Enabler** shortcut created by that folder's setup assistant. Open Settings to see the loaded helper version and update controls in either view. A missing update service shows recovery instructions there.
+Open **ChatGPT Remote Enabler.exe** or its canonical shortcut. It attaches to a compatible running ChatGPT session without closing it. The update service monitors its own renderer connection and retries automatically if that connection is lost. Settings distinguishes a disconnected local service from an unavailable release check and labels a renderer-only version as loaded when the installed version is unknown.
 
-v1.5.98 is a normal release and is discoverable by the existing automatic updater. The first Windows upgrade from v1.5.31 attaches the new update helper even through the legacy launcher.
+v1.5.99 is a normal release and is discoverable by the existing automatic updater. The first Windows upgrade from v1.5.31 attaches the new update helper even through the legacy launcher.
 
 
 ### Existing enrollment keys after a Codex update

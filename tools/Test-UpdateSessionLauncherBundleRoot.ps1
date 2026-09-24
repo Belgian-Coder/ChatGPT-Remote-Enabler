@@ -29,9 +29,11 @@ try {
         'update-session-cdp.js' = 'candidate:update-session-cdp.js'
         'UpdateSessionPlatform.ps1' = 'candidate:UpdateSessionPlatform.ps1'
         'coordinator-handoff.js' = 'candidate:coordinator-handoff.js'
+        'RepairUpdateCoordinator.ps1' = 'candidate:RepairUpdateCoordinator.ps1'
     }
     $dependencyPaths = [ordered]@{
         'cdp.js' = 'CodexRemoteSimple\runtime\lib\cdp.js'
+        'electron-attach.js' = 'CodexRemoteSimple\runtime\lib\electron-attach.js'
         'Update-ChatGPTRemote.ps1' = 'Update-ChatGPTRemote.ps1'
         'StableInstall.ps1' = 'StableInstall.ps1'
         'update-transaction.js' = 'update-transaction.js'
@@ -54,12 +56,69 @@ try {
         throw 'The update-session launcher execution boundary changed.'
     }
     $fixtureLauncher = Join-Path $candidateMobileRoot 'UpdateSessionLauncher.ps1'
-    $fixtureTail = @'
+$fixtureTail = @'
 $bundle = Copy-ImmutableUpdateSessionBundle -Node 'unused'
+$reuse = $null
+$commandLinePositive = Test-CoordinatorCommandLine -CommandLine ('node.exe "{0}" --config "{1}"' -f (Join-Path $bundle 'update-session.js'), (Join-Path $env:TEMP 'session.json')) -ScriptPath (Join-Path $bundle 'update-session.js') -ConfigPath (Join-Path $env:TEMP 'session.json')
+$commandLineNegative = Test-CoordinatorCommandLine -CommandLine ('node.exe "{0}.sibling" --config "{1}"' -f (Join-Path $bundle 'update-session.js'), (Join-Path $env:TEMP 'session.json')) -ScriptPath (Join-Path $bundle 'update-session.js') -ConfigPath (Join-Path $env:TEMP 'session.json')
+if ($env:TEST_UPDATE_SESSION_REUSE_SCENARIO) {
+    $scenario = [string]$env:TEST_UPDATE_SESSION_REUSE_SCENARIO
+    $stateRoot = Join-Path $env:LOCALAPPDATA 'ChatGPTRemoteEnabler\update-sessions'
+    $sessionDirectory = Join-Path (Join-Path $stateRoot 'sessions') ([guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $sessionDirectory -Force | Out-Null
+    $app = [pscustomobject][ordered]@{ pid = 14304; startTimeFileTimeUtc = '134000000000000000'; executablePath = 'C:\fixture\ChatGPT.exe'; rendererPort = 9229 }
+    $coordinatorProcess = $null
+    try {
+        $coordinatorExecutable = [IO.Path]::GetFullPath((Get-Process -Id $PID).MainModule.FileName)
+        $sessionPath = Join-Path $sessionDirectory 'session.json'
+        $retainedBundle = $bundle
+        if ($scenario -ceq 'retained') {
+            $retainedBundle = Join-Path (Join-Path $stateRoot 'bundles') ('a' * 64)
+            Copy-Item -LiteralPath $bundle -Destination $retainedBundle -Recurse -Force
+        }
+        $coordinatorScript = Join-Path $retainedBundle 'update-session.js'
+        $processStartInfo = New-Object Diagnostics.ProcessStartInfo
+        $processStartInfo.FileName = $coordinatorExecutable
+        $processStartInfo.Arguments = '-NoLogo -NoProfile -NonInteractive -NoExit -Command "Start-Sleep -Seconds 60" "' + $coordinatorScript + '" --config "' + $sessionPath + '"'
+        $processStartInfo.UseShellExecute = $false
+        $processStartInfo.CreateNoWindow = $true
+        $coordinatorProcess = [Diagnostics.Process]::Start($processStartInfo)
+        Start-Sleep -Milliseconds 150
+        $coordinatorProcess.Refresh()
+        $coordinatorStart = $coordinatorProcess.StartTime.ToUniversalTime().ToFileTimeUtc().ToString([Globalization.CultureInfo]::InvariantCulture)
+        $config = [ordered]@{
+            schemaVersion = 1; platform = 'win32'; installRoot = $InstallRoot; stateRoot = $stateRoot; sessionDirectory = $sessionDirectory
+            updaterPath = Join-Path $retainedBundle 'Update-ChatGPTRemote.ps1'; platformHelperPath = Join-Path $retainedBundle 'UpdateSessionPlatform.ps1'; rendererPort = $app.rendererPort
+            autoCheckEnabled = $scenario -cne 'auto-mismatch'; skipInitialCheck = $true; relaunch = [ordered]@{ entryPointRelative = 'Enable-ChatGPTRemote.ps1'; useProxy = [bool]($scenario -in @('mismatch', 'legacy-mismatch')); replaceRunningApp = $false }
+            app = $app; launchReceipt = [ordered]@{ path = Join-Path $sessionDirectory 'coordinator-ready.json'; identityPath = Join-Path $sessionDirectory 'coordinator-identity.json' }
+        }
+        $state = [ordered]@{ schemaVersion = 1; sessionId = [IO.Path]::GetFileName($sessionDirectory); bundleHash = [IO.Path]::GetFileName($retainedBundle); coordinatorPid = $coordinatorProcess.Id; coordinatorIdentity = [ordered]@{ pid = $coordinatorProcess.Id; startToken = $coordinatorStart; executablePath = $coordinatorExecutable }; phase = 'active'; heartbeatAtUnixMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() }
+        if ($scenario -ceq 'stale') { $state.heartbeatAtUnixMs = [DateTimeOffset]::UtcNow.AddSeconds(-20).ToUnixTimeMilliseconds() }
+        if ($scenario -cnotin @('legacy-health', 'legacy-mismatch')) {
+            $state.rendererConnected = $true
+            $state.rendererProofAtUnixMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+        }
+        if ($scenario -ceq 'stale-renderer') { $state.rendererProofAtUnixMs = [DateTimeOffset]::UtcNow.AddSeconds(-20).ToUnixTimeMilliseconds() }
+        if ($scenario -ceq 'degraded') { $state.phase = 'degraded'; $state.rendererConnected = $false }
+        [IO.File]::WriteAllText($sessionPath, (($config | ConvertTo-Json -Depth 8) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText((Join-Path $sessionDirectory 'coordinator-state.json'), (($state | ConvertTo-Json -Depth 8) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+        $lockPath = Get-UpdateSessionLockPath -StateRoot $stateRoot -App $app
+        New-Item -ItemType Directory -Path (Split-Path -Parent $lockPath) -Force | Out-Null
+        $owner = [ordered]@{ pid = $coordinatorProcess.Id; startToken = $coordinatorStart; executablePath = $coordinatorExecutable }
+        if ($scenario -ceq 'foreign') { $owner = [ordered]@{ pid = $PID; startToken = (Get-Process -Id $PID).StartTime.ToUniversalTime().ToFileTimeUtc().ToString([Globalization.CultureInfo]::InvariantCulture); executablePath = [IO.Path]::GetFullPath((Get-Process -Id $PID).MainModule.FileName) } }
+        [IO.File]::WriteAllText($lockPath, (($owner | ConvertTo-Json -Compress) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+        $reuse = Find-ReusableUpdateSession -StateRoot $stateRoot -InstallRoot $InstallRoot -BundleRoot $bundle -Identity $app -EntryPointRelative 'Enable-ChatGPTRemote.ps1' -UseProxy:$false -ReplaceRunningApp:$false -AutoCheckEnabled:$true
+    } finally {
+        if ($coordinatorProcess) { try { if (-not $coordinatorProcess.HasExited) { $coordinatorProcess.Kill() } } catch {} ; $coordinatorProcess.Dispose() }
+    }
+}
 [pscustomobject][ordered]@{
     bundlePath = $bundle
     bundleRoot = $BundleRoot
     installRoot = $InstallRoot
+    commandLinePositive = $commandLinePositive
+    commandLineNegative = $commandLineNegative
+    reuse = $reuse
 } | ConvertTo-Json -Compress
 '@
     Write-FixtureFile -Path $fixtureLauncher -Value ($launcherText.Substring(0, $tailIndex) + $fixtureTail)
@@ -97,6 +156,45 @@ $bundle = Copy-ImmutableUpdateSessionBundle -Node 'unused'
     }
     if ([string]::Equals([string]$defaultResult.bundlePath, [string]$explicitResult.bundlePath, [StringComparison]::OrdinalIgnoreCase)) {
         throw 'Different dependency engines unexpectedly produced the same immutable bundle.'
+    }
+    if (-not $defaultResult.commandLinePositive -or $defaultResult.commandLineNegative) {
+        throw 'Coordinator command-line binding did not distinguish the immutable script and session configuration.'
+    }
+    $reuseScenarios = [ordered]@{}
+    foreach ($scenario in @('healthy', 'retained', 'stale', 'foreign', 'mismatch', 'auto-mismatch', 'legacy-health', 'legacy-mismatch', 'stale-renderer', 'degraded')) {
+        $previousScenario = $env:TEST_UPDATE_SESSION_REUSE_SCENARIO
+        try {
+            $env:TEST_UPDATE_SESSION_REUSE_SCENARIO = $scenario
+            $reuseScenarios[$scenario] = & $fixtureLauncher -InstallRoot $installRoot -EntryPointRelative 'Enable-ChatGPTRemote.ps1' | ConvertFrom-Json
+        } finally { $env:TEST_UPDATE_SESSION_REUSE_SCENARIO = $previousScenario }
+    }
+    if (-not $reuseScenarios.healthy.reuse.Compatible -or
+        -not $reuseScenarios.retained.reuse.Compatible -or
+        $reuseScenarios.retained.reuse.BundleMatchesRequested -or
+        $null -ne $reuseScenarios.stale.reuse -or
+        $null -ne $reuseScenarios.foreign.reuse -or
+        $reuseScenarios.mismatch.reuse.Compatible -or
+        [string]$reuseScenarios.mismatch.reuse.Reason -cne 'active-coordinator-context-mismatch' -or
+        $reuseScenarios.'auto-mismatch'.reuse.Compatible -or
+        [string]$reuseScenarios.'auto-mismatch'.reuse.Reason -cne 'active-coordinator-context-mismatch') {
+        throw 'Coordinator reuse did not fail closed for stale, foreign, or incompatible ownership.'
+    }
+    foreach ($scenario in @('legacy-health', 'stale-renderer', 'degraded')) {
+        $candidate = $reuseScenarios[$scenario].reuse
+        if ($null -eq $candidate -or $candidate.Compatible -or $candidate.Reason -cne 'active-coordinator-bridge-unhealthy') {
+            throw "An owned $scenario coordinator must report its unhealthy bridge without being bypassed by a duplicate."
+        }
+    }
+    if ($reuseScenarios.'legacy-mismatch'.reuse.Compatible -or
+        $reuseScenarios.'legacy-mismatch'.reuse.ContextMatches -or
+        [string]$reuseScenarios.'legacy-mismatch'.reuse.Reason -cne 'active-coordinator-context-mismatch') {
+        throw 'A context-mismatched legacy coordinator was incorrectly treated as compatible.'
+    }
+    if (-not $reuseScenarios.'legacy-health'.reuse.LegacyRepairEligible -or
+        -not $reuseScenarios.'legacy-mismatch'.reuse.LegacyRepairEligible -or
+        $reuseScenarios.'stale-renderer'.reuse.LegacyRepairEligible -or
+        $reuseScenarios.degraded.reuse.LegacyRepairEligible) {
+        throw 'Legacy repair eligibility did not remain limited to an owned active coordinator without renderer-health fields or became tied to relaunch context.'
     }
     Write-FixtureFile -Path (Join-Path $candidateRoot 'git-release.js') -Value 'candidate:git-release.js:changed'
     $helperChangedResult = & $fixtureLauncher -InstallRoot $installRoot -EntryPointRelative 'Enable-ChatGPTRemote.ps1' -BundleRoot $candidateRoot | ConvertFrom-Json
@@ -150,6 +248,11 @@ $bundle = Copy-ImmutableUpdateSessionBundle -Node 'unused'
         DetachedUpdaterResolvesRealGitHelper = $true
         DistinctImmutableBundles = $true
         MixedExplicitRootRejected = $true
+        CoordinatorCommandLineBinding = $true
+        HealthyCoordinatorReuse = $true
+        RetainedBundleReuseReported = $true
+        StaleAndForeignCoordinatorRejected = $true
+        IncompatibleCoordinatorReported = $true
     } | ConvertTo-Json -Compress
 } finally {
     $env:LOCALAPPDATA = $previousLocalAppData

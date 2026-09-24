@@ -140,6 +140,7 @@ const flush = async () => { for (let i = 0; i < 40; i++) await Promise.resolve()
   const directUnknownMembershipId = "00000000-0000-4000-8000-000000000085";
   const orphanId = "00000000-0000-4000-8000-000000000090";
   const projectlessSamePathId = "00000000-0000-4000-8000-000000000091";
+  const flatNullableSamePathId = "00000000-0000-4000-8000-000000000092";
   const directProject = { cwd: "/fixture/new", hostDisplayName: "Named workstation", hostId: host, item: null, label: "New project", projectId: "project-new" };
   first.f.state.localRegisteredProjects = new Map([[directProject.projectId, directProject]]);
   first.f.state.localRegisteredProjectsFetchedAt = Date.now();
@@ -150,7 +151,8 @@ const flush = async () => { for (let i = 0; i < 40; i++) await Promise.resolve()
       { id: directMissingCwdId, projectId: directProject.projectId, source: "direct", status: "idle", title: "Direct task missing cwd" },
       { cwd: directProject.cwd, id: directUnknownMembershipId, source: "direct", status: "idle", title: "Direct current title" },
       { cwd: "/fixture/orphan", id: orphanId, projectId: null, status: "idle", title: "Orphan task" },
-      { cwd: directProject.cwd, id: projectlessSamePathId, projectId: null, status: "idle", title: "Projectless task with project cwd" },
+      { cwd: directProject.cwd, id: flatNullableSamePathId, project_id: null, status: "idle", title: "Nullable membership with project cwd" },
+      { cwd: directProject.cwd, id: projectlessSamePathId, project: null, projectId: null, status: "idle", title: "Projectless task with project cwd" },
     ],
   });
   first.f.state.remoteProjectInventories.set(host, {
@@ -166,6 +168,9 @@ const flush = async () => { for (let i = 0; i < 40; i++) await Promise.resolve()
   assert.equal(movedModel.projects.some(project => project.cwd === "/fixture/old"), false, "stale helper projects must not filter or supplement a current direct catalog");
   assert.ok(movedModel.projects.some(project => project.cwd === directProject.cwd), "the current direct project must remain visible");
   assert.ok(movedModel.recents.some(group => group.tasks.some(task => task.conversationId === orphanId)), "an unmatched task from a complete direct catalog must remain in Recent chats");
+  const flatNullableTask = movedModel.tasks.find(task => task.conversationId === flatNullableSamePathId);
+  assert.equal(flatNullableTask.projectMembershipKnown, false, "a flat nullable direct membership field must remain unknown without a native row");
+  assert.ok(movedModel.projects.find(project => project.projectId === directProject.projectId).tasks.some(task => task.conversationId === flatNullableSamePathId), "unknown flat nullable membership must fall back to the current project path");
   assert.ok(movedModel.recents.some(group => group.tasks.some(task => task.conversationId === projectlessSamePathId)), "authoritative projectless membership must outrank a matching working directory");
   first.f.state.remoteProjectInventories.set(host, {
     error: null, fetchedAt: Date.now(), generatedAt: Date.now(), pending: false,

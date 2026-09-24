@@ -143,6 +143,7 @@ foreach ($case in $cases) {
 $fixtureRoot = Join-Path ([IO.Path]::GetTempPath()) ('chatgpt-remote-readiness-services-' + [guid]::NewGuid().ToString('N'))
 $sequencePath = Join-Path $fixtureRoot 'sequence.log'
 $sessionLauncher = Join-Path $fixtureRoot 'UpdateSessionLauncher.ps1'
+$publisherRepair = Join-Path $fixtureRoot 'CodexRemoteMobileProject\MobileProjectStartup.ps1'
 $previousSequencePath = [Environment]::GetEnvironmentVariable('CHATGPT_REMOTE_READINESS_TEST_SEQUENCE', 'Process')
 try {
     New-Item -ItemType Directory -Path $fixtureRoot | Out-Null
@@ -160,12 +161,34 @@ param(
 '{"started":true}'
 '@
     [IO.File]::WriteAllText($sessionLauncher, $sessionSource, [Text.UTF8Encoding]::new($false))
+    New-Item -ItemType Directory -Path (Split-Path -Parent $publisherRepair) -Force | Out-Null
+    $publisherRepairSource = @'
+[CmdletBinding()]
+param(
+    [string]$Action,
+    [string]$NodePath,
+    [string]$LegacyPublisherScriptPath
+)
+if ($Action -cne 'RepairPublisher' -or [string]::IsNullOrWhiteSpace($NodePath) -or [string]::IsNullOrWhiteSpace($LegacyPublisherScriptPath)) {
+    throw 'Publisher repair fixture received incomplete arguments.'
+}
+[IO.File]::AppendAllText($env:CHATGPT_REMOTE_READINESS_TEST_SEQUENCE, "heartbeat$([Environment]::NewLine)")
+'@
+    [IO.File]::WriteAllText($publisherRepair, $publisherRepairSource, [Text.UTF8Encoding]::new($false))
     [Environment]::SetEnvironmentVariable('CHATGPT_REMOTE_READINESS_TEST_SEQUENCE', $sequencePath, 'Process')
-    function Start-Process {
-        param([string]$FilePath, [object]$ArgumentList, [object]$WindowStyle)
+    function Start-StartupBackgroundProcess {
+        param([string]$FilePath, [object]$ArgumentList)
         [IO.File]::AppendAllText($env:CHATGPT_REMOTE_READINESS_TEST_SEQUENCE, "heartbeat$([Environment]::NewLine)")
+        return [IO.MemoryStream]::new()
     }
     function Write-CommandOutput { param([object[]]$Output) foreach ($item in $Output) { Write-StartupLog ([string]$item) } }
+    function Start-PublisherHeartbeat {
+        param([string]$NodePath, [string]$TrustedLegacyPublisherScriptPath)
+        if ([string]::IsNullOrWhiteSpace($NodePath) -or [string]::IsNullOrWhiteSpace($TrustedLegacyPublisherScriptPath)) {
+            throw 'Publisher wrapper fixture received incomplete arguments.'
+        }
+        [IO.File]::AppendAllText($env:CHATGPT_REMOTE_READINESS_TEST_SEQUENCE, "heartbeat$([Environment]::NewLine)")
+    }
 
     $currentProcess = [Diagnostics.Process]::GetCurrentProcess()
     try {
@@ -181,6 +204,8 @@ param(
     $updateSessionLauncher = $sessionLauncher
     $runtimeRoot = $fixtureRoot
     $bundleParent = $fixtureRoot
+    $sourceBundleRoot = Join-Path $fixtureRoot 'CodexRemoteMobileProject'
+    $sourcePackageRoot = $fixtureRoot
     $computerName = 'FIXTURE'
     $UseProxy = $false
     $ReplaceRunningApp = $false
@@ -204,7 +229,8 @@ param(
         }
     }
 } finally {
-    Remove-Item Function:\Start-Process -ErrorAction SilentlyContinue
+    Remove-Item Function:\Start-StartupBackgroundProcess -ErrorAction SilentlyContinue
+    Remove-Item Function:\Start-PublisherHeartbeat -ErrorAction SilentlyContinue
     Remove-Item Function:\Write-CommandOutput -ErrorAction SilentlyContinue
     [Environment]::SetEnvironmentVariable('CHATGPT_REMOTE_READINESS_TEST_SEQUENCE', $previousSequencePath, 'Process')
     Remove-Item -LiteralPath $fixtureRoot -Recurse -Force -ErrorAction SilentlyContinue

@@ -381,13 +381,12 @@ function Invoke-UserWorker {
         $legacyShortcutObject.Arguments = '--proxy'
         $legacyShortcutObject.Save()
         $desktopInstall = (& $desktopScript -Action Install -StableRoot $stableRoot -DesktopPath $desktopPath -StartMenuPath $startMenuPath -RollbackRoot $shortcutRollbackRoot -Confirm:$false | ConvertFrom-Json)
-        $migratedLegacy = (New-Object -ComObject WScript.Shell).CreateShortcut($legacyShortcut)
-        Assert-Condition ([string]::Equals([IO.Path]::GetFullPath([string]$migratedLegacy.TargetPath), $launcherPath, [StringComparison]::OrdinalIgnoreCase) -and $migratedLegacy.Arguments -match '--proxy') 'Installing the new shortcut did not migrate the legacy alias to the stable root while preserving proxy mode.'
+        Assert-Condition (-not (Test-Path -LiteralPath $legacyShortcut -PathType Leaf)) 'Installing the new shortcut retained an owned legacy alias.'
         Assert-Condition ($desktopInstall.launcherPresent -and @($desktopInstall.shortcuts).Count -eq 2) 'Desktop/Start-menu install did not report the expected launcher and two shortcuts.'
         foreach ($shortcut in @($desktopInstall.shortcuts)) {
             Assert-Condition ($shortcut.installed) "$($shortcut.kind) shortcut was not installed."
-            Assert-Condition ([string]::Equals([IO.Path]::GetFullPath([string]$shortcut.targetPath), $launcherPath, [StringComparison]::OrdinalIgnoreCase)) "$($shortcut.kind) shortcut target is incorrect."
-            Assert-Condition ([string]::IsNullOrWhiteSpace([string]$shortcut.arguments)) "$($shortcut.kind) shortcut has unexpected arguments."
+            Assert-Condition ([string]::Equals([IO.Path]::GetFullPath([string]$shortcut.targetPath), (Join-Path $stableRoot 'ChatGPT Remote Enabler.exe'), [StringComparison]::OrdinalIgnoreCase)) "$($shortcut.kind) shortcut target is incorrect."
+            Assert-Condition ([string]$shortcut.arguments -match '--proxy') "$($shortcut.kind) shortcut did not preserve the configured proxy mode."
         }
         $desktopProbe = (& $desktopScript -Action Probe -StableRoot $stableRoot -DesktopPath $desktopPath -StartMenuPath $startMenuPath | ConvertFrom-Json)
         Assert-Condition ((@($desktopProbe.shortcuts | Where-Object installed)).Count -eq 2) 'Desktop/Start-menu probe did not find both shortcuts.'
@@ -414,7 +413,7 @@ function Invoke-UserWorker {
         Assert-Condition ($portableResolverResults.Count -eq 3) 'Not all three production portable Node resolvers were exercised.'
 
         $setupActions = (& (Join-Path $PSScriptRoot 'Test-SetupAssistant.ps1') -PackageRoot $releaseRoot | ConvertFrom-Json)
-        Assert-Condition ($setupActions.SelectedOptionsApplied -and $setupActions.ProxyPreferencePreserved -and $setupActions.LegacyShortcutPreserved) 'Medium-token setup actions failed.'
+        Assert-Condition ($setupActions.SelectedOptionsApplied -and $setupActions.ProxyPreferencePreserved -and $setupActions.LegacyShortcutConsolidated) 'Medium-token setup actions failed.'
         $setupProbe = (& (Join-Path $releaseRoot 'Setup-ChatGPTRemote.ps1') -Action Probe | ConvertFrom-Json)
         Assert-Condition ($setupProbe.Folder -eq 'Writable for this user') 'Setup assistant failed its medium-token write/rename check.'
         Assert-Condition ($setupProbe.Node -like 'Compatible*') 'Setup assistant did not detect the compatible runtime.'
@@ -452,7 +451,7 @@ function Invoke-UserWorker {
             WritableFilesRenamed = $writableFiles
             ReleaseManifestRenamed = $manifestWritable
             PortableNodeResolvers = @($portableResolverResults)
-            LegacyShortcutPreserved = $true
+            LegacyShortcutConsolidated = $true
             SetupAssistantActions = $setupActions
             SetupAssistantProbe = $setupProbe
             DesktopStartMenuInstallProbeRemove = $true
@@ -465,7 +464,6 @@ function Invoke-UserWorker {
                 CopiedNodeVersion = [string]$copiedNodeVersion
                 Classification = [string]$probe[0].Classification
                 BridgeMode = [string]$probe[0].BridgeMode
-                AppAsarSha256 = [string]$probe[0].AppAsarSha256
                 MainProcessesBefore = @($mainBefore)
                 MainProcessesAfter = @($mainAfter)
                 ProcessIdentityUnchanged = $true
@@ -680,7 +678,7 @@ try {
     WritableFilesRenamed = $workerResult.WritableFilesRenamed
     ReleaseManifestRenamed = $workerResult.ReleaseManifestRenamed
     PortableNodeResolvers = @($workerResult.PortableNodeResolvers)
-    LegacyShortcutPreserved = $workerResult.LegacyShortcutPreserved
+    LegacyShortcutConsolidated = $workerResult.LegacyShortcutConsolidated
     SetupAssistantActions = $workerResult.SetupAssistantActions
     SetupAssistantProbe = $workerResult.SetupAssistantProbe
     DesktopStartMenuInstallProbeRemove = $workerResult.DesktopStartMenuInstallProbeRemove

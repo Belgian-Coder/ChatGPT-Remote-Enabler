@@ -126,6 +126,7 @@ function Request-NativeRendererQuit {
 const cdp = require(process.argv[2]);
 const port = Number(process.argv[3]);
 const expectedPid = Number(process.argv[4]);
+const expectedUrl = "app://-/index.html";
 const timeoutMs = 3000;
 async function getJson(pathname) {
   const response = await fetch(`http://127.0.0.1:${port}${pathname}`, {
@@ -135,27 +136,11 @@ async function getJson(pathname) {
   if (!response.ok) throw new Error(`Debugger discovery returned HTTP ${response.status}`);
   return response.json();
 }
-(async () => {
-  const version = await getJson("/json/version");
-  const browser = new cdp.JsonRpcWebSocket(cdp.forceLoopbackWebSocketUrl(version.webSocketDebuggerUrl, port), { timeoutMs });
-  await browser.connect();
-  try {
-    const system = await browser.call("SystemInfo.getProcessInfo", {}, timeoutMs);
-    const owners = (system.processInfo || []).filter((entry) => entry.type === "browser");
-    if (owners.length !== 1 || owners[0].id !== expectedPid) {
-      throw new Error("The debugger listener is not owned by the exact ChatGPT process.");
-    }
-  } finally {
-    browser.close();
-  }
-  const targets = await cdp.discoverTargets(port, timeoutMs);
-  const matches = targets.filter((target) => target.type === "page" && target.url === "app://-/index.html");
-  if (matches.length !== 1) throw new Error(`Expected one exact ChatGPT renderer target; found ${matches.length}.`);
-  const page = await cdp.connectTarget(matches[0], port, timeoutMs);
+async function requestRendererQuit(page) {
   let dispatched = false;
   try {
     const tree = await page.call("Page.getFrameTree", {}, timeoutMs);
-    if (tree?.frameTree?.frame?.url !== "app://-/index.html") {
+    if (tree?.frameTree?.frame?.url !== expectedUrl) {
       throw new Error("The debugger target main frame is not the exact ChatGPT renderer.");
     }
     dispatched = true;
@@ -187,6 +172,53 @@ async function getJson(pathname) {
   } finally {
     page.close();
   }
+}
+async function requestAttachedElectronQuit() {
+  let targets;
+  try {
+    targets = await cdp.discoverTargets(port, timeoutMs);
+  } catch {
+    return false;
+  }
+  const nodeTargets = targets.filter((target) => target?.type === "node" && typeof target.webSocketDebuggerUrl === "string");
+  if (nodeTargets.length === 0) return false;
+  const candidates = targets.filter((target) =>
+    target?.type === "page" &&
+    target?._codexElectronAttachTarget === "codex-electron-attach-v1" &&
+    target?.codexElectronAttach === true,
+  );
+  const matches = candidates.filter((target) =>
+    target.url === expectedUrl &&
+    target.expectedUrl === expectedUrl &&
+    target.expectedPid === expectedPid &&
+    Number.isInteger(target.webContentsId),
+  );
+  if (matches.length !== 1) {
+    throw new Error(`Expected one exact attached ChatGPT renderer target; found ${matches.length}.`);
+  }
+  const page = await cdp.connectTarget(matches[0], port, timeoutMs);
+  await requestRendererQuit(page);
+  return true;
+}
+(async () => {
+  if (await requestAttachedElectronQuit()) return;
+  const version = await getJson("/json/version");
+  const browser = new cdp.JsonRpcWebSocket(cdp.forceLoopbackWebSocketUrl(version.webSocketDebuggerUrl, port), { timeoutMs });
+  await browser.connect();
+  try {
+    const system = await browser.call("SystemInfo.getProcessInfo", {}, timeoutMs);
+    const owners = (system.processInfo || []).filter((entry) => entry.type === "browser");
+    if (owners.length !== 1 || owners[0].id !== expectedPid) {
+      throw new Error("The debugger listener is not owned by the exact ChatGPT process.");
+    }
+  } finally {
+    browser.close();
+  }
+  const targets = await cdp.discoverTargets(port, timeoutMs);
+  const matches = targets.filter((target) => target.type === "page" && target.url === "app://-/index.html");
+  if (matches.length !== 1) throw new Error(`Expected one exact ChatGPT renderer target; found ${matches.length}.`);
+  const page = await cdp.connectTarget(matches[0], port, timeoutMs);
+  await requestRendererQuit(page);
 })().catch((error) => {
   console.error(String(error?.message || error).replace(/[\r\n\0]+/gu, " ").slice(0, 240));
   process.exitCode = 1;

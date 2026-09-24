@@ -11,6 +11,8 @@ param(
 
     [switch]$RefuseExistingApp,
 
+    [switch]$AttachOnly,
+
     [ValidateRange(5, 60)]
     [int]$TimeoutSeconds = 20
 )
@@ -348,6 +350,20 @@ function Test-CrsExpectedDebugProcess {
         $commandLine -match "(?:^|\s)--remote-debugging-port(?:=|\s+)$ExpectedPort(?:\s|$)"
 }
 
+function Test-CrsOwnedRendererEndpoint {
+    param([int]$ProcessId, [int]$Port)
+
+    if ($ProcessId -le 0 -or $Port -lt 1 -or $Port -gt 65535) { return $false }
+    try {
+        $listeners = @(Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort $Port -State Listen -ErrorAction Stop)
+        return @($listeners | Where-Object { [int]$_.OwningProcess -eq $ProcessId }).Count -eq 1
+    } catch {
+        # A port that cannot be tied to this exact process is never accepted as
+        # repair evidence, including on systems where the TCP cmdlet is absent.
+        return $false
+    }
+}
+
 function Get-CrsOwnedProcessIdentity {
     param($Ownership)
 
@@ -421,7 +437,7 @@ function Assert-CrsNoExistingAppForReplacement {
     }
     foreach ($executablePath in @($executablePaths | Select-Object -Unique)) {
         if (@(Get-CrsCodexProcesses -ExecutablePath $executablePath).Count -ne 0) {
-            throw 'ChatGPT/Codex appeared while update resume was preparing the replacement session. It was left running and the resumed update was aborted.'
+            throw 'ChatGPT/Codex appeared while the replacement session was preparing. It was left running and the launch was aborted.'
         }
     }
 }
@@ -619,7 +635,13 @@ function Start-CrsPackagedCodex {
             $powerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
             if (-not (Test-Path -LiteralPath $powerShell -PathType Leaf)) { throw 'Windows PowerShell was not found.' }
             $workerArguments = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}" -PayloadBase64 "{1}"' -f $script:PackageProcessWorker,$payloadBase64
-            $proxyWorker = Start-Process -FilePath $powerShell -ArgumentList $workerArguments -WindowStyle Hidden -PassThru
+            $workerStart = [Diagnostics.ProcessStartInfo]::new()
+            $workerStart.FileName = $powerShell
+            $workerStart.Arguments = $workerArguments
+            $workerStart.UseShellExecute = $false
+            $workerStart.CreateNoWindow = $true
+            $workerStart.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
+            $proxyWorker = [Diagnostics.Process]::Start($workerStart)
 
             $deadline = [DateTime]::UtcNow.AddMilliseconds($PortTimeoutMilliseconds)
             $portReady = $ExpectedPort -le 0
@@ -967,16 +989,293 @@ function Invoke-CrsBridge {
     return $result
 }
 
+function Open-CrsInspectorHook {
+    param([Diagnostics.Process]$Process, [ValidateRange(0, 5000)][int]$WaitMilliseconds = 3000)
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($WaitMilliseconds)
+    do {
+        if ($Process.HasExited) { throw 'ChatGPT exited while its attachment hook was being prepared. No replacement was started.' }
+        try {
+            return [IO.MemoryMappedFiles.MemoryMappedFile]::OpenExisting("node-debug-handler-$($Process.Id)", [IO.MemoryMappedFiles.MemoryMappedFileRights]::Read)
+        } catch [IO.FileNotFoundException] {
+            if ([DateTime]::UtcNow -ge $deadline) {
+                throw 'Runtime inspector hook unavailable: this ChatGPT process does not expose the attachment hook. It was left running.'
+            }
+            Start-Sleep -Milliseconds 100
+        } catch [UnauthorizedAccessException] {
+            throw 'Runtime inspector hook unavailable: access to this ChatGPT process was denied. It was left running.'
+        }
+    } while ($true)
+}
+
+function Invoke-CrsManagedNativeSessionRepair {
+    param(
+        $Package,
+        $Node,
+        $State,
+        $Compatibility,
+        [bool]$ProxyMode,
+        [string]$ProxyFingerprint,
+        [bool]$LegacyDeviceKeysRequired
+    )
+
+    $result = [ordered]@{
+        Attempted = $false
+        Repaired = $false
+        Probe = $null
+        Reason = $null
+    }
+    # Only a state record for a helper-owned packaged session is eligible. An
+    # ordinary process remains on the existing attachment path, and an
+    # attached-existing-process record has no helper-owned renderer endpoint.
+    if ($null -eq $State -or
+        $null -eq $State.PSObject.Properties['launchProcessOwned'] -or
+        $State.launchProcessOwned -isnot [bool] -or -not [bool]$State.launchProcessOwned -or
+        $null -eq $State.PSObject.Properties['launchMethod'] -or
+        [string]$State.launchMethod -notin @('PackageContextEnvironmentProxy', 'ApplicationActivationManager', 'Invoke-CommandInDesktopPackage')) {
+        return [pscustomobject]$result
+    }
+    # A retained record from an exited or replaced app is not authoritative
+    # for the current instance. Let ordinary attachment identify that instance.
+    if ($null -eq (Get-CrsOwnedProcessIdentity -Ownership $State)) {
+        return [pscustomobject]$result
+    }
+    $result.Attempted = $true
+
+    if ($null -eq $Compatibility -or [string]$Compatibility.bridgeMode -cne 'native-renderer' -or
+        $null -eq $State.PSObject.Properties['bridgeMode'] -or [string]$State.bridgeMode -cne 'native-renderer') {
+        $result.Reason = 'The saved session is not a native-renderer session.'
+        return [pscustomobject]$result
+    }
+    if (-not (Test-CrsProxyModeProof -State $State -RequestedProxyMode $ProxyMode -RequestedProxyFingerprint $ProxyFingerprint)) {
+        $result.Reason = 'The saved session connection mode does not match the requested proxy mode.'
+        return [pscustomobject]$result
+    }
+    if (-not (Test-CrsLegacyDeviceKeyModeProof -State $State -Required $LegacyDeviceKeysRequired)) {
+        $result.Reason = 'The saved session legacy device-key mode could not be proved.'
+        return [pscustomobject]$result
+    }
+    $savedLegacyMode = $false
+    if ($null -ne $State.PSObject.Properties['legacyDeviceKeyCompatibility']) {
+        if ($State.legacyDeviceKeyCompatibility -isnot [bool]) {
+            $result.Reason = 'The saved session legacy device-key mode is invalid.'
+            return [pscustomobject]$result
+        }
+        $savedLegacyMode = [bool]$State.legacyDeviceKeyCompatibility
+    }
+    if ($savedLegacyMode -ne $LegacyDeviceKeysRequired) {
+        $result.Reason = 'The saved session legacy device-key mode does not match the requested mode.'
+        return [pscustomobject]$result
+    }
+
+    $expectedExecutablePath = $null
+    $savedExecutablePath = $null
+    try {
+        $expectedExecutablePath = [IO.Path]::GetFullPath([string]$Package.ExecutablePath)
+        $savedExecutablePath = [IO.Path]::GetFullPath([string]$State.executablePath)
+    } catch {
+        $result.Reason = 'The saved session executable identity is invalid.'
+        return [pscustomobject]$result
+    }
+    $privateRuntimeSession = $ProxyMode -or $savedLegacyMode
+    if ($privateRuntimeSession) {
+        $privateRoot = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'ChatGPTRemoteEnabler\patched-chatgpt')).TrimEnd('\') + '\'
+        if (-not $savedExecutablePath.StartsWith($privateRoot, [StringComparison]::OrdinalIgnoreCase) -or
+            [IO.Path]::GetFileName($savedExecutablePath) -ine 'ChatGPT.exe') {
+            $result.Reason = 'The saved proxy session executable is outside the managed private runtime.'
+            return [pscustomobject]$result
+        }
+    } elseif (-not [string]::Equals($savedExecutablePath, $expectedExecutablePath, [StringComparison]::OrdinalIgnoreCase)) {
+        $result.Reason = 'The saved session executable does not match the installed package.'
+        return [pscustomobject]$result
+    }
+
+    $processId = 0
+    $savedStartTime = 0L
+    $rendererPort = 0
+    if ($null -eq $State.PSObject.Properties['launchProcessId'] -or
+        -not [int]::TryParse([string]$State.launchProcessId, [ref]$processId) -or $processId -le 0 -or
+        $null -eq $State.PSObject.Properties['launchProcessStartTimeFileTimeUtc'] -or
+        -not [long]::TryParse([string]$State.launchProcessStartTimeFileTimeUtc, [ref]$savedStartTime) -or $savedStartTime -le 0 -or
+        $null -eq $State.PSObject.Properties['rendererPort'] -or
+        -not [int]::TryParse([string]$State.rendererPort, [ref]$rendererPort) -or $rendererPort -lt 1024 -or $rendererPort -gt 65535) {
+        $result.Reason = 'The saved session does not contain a complete process or renderer endpoint identity.'
+        return [pscustomobject]$result
+    }
+
+    $identity = Get-CrsProcessIdentity -ProcessId $processId -ExecutablePath $savedExecutablePath
+    if ($null -eq $identity -or [int]$identity.ProcessId -ne $processId -or
+        [long]$identity.StartTimeFileTimeUtc -ne $savedStartTime -or
+        -not [string]::Equals([string]$identity.ExecutablePath, $savedExecutablePath, [StringComparison]::OrdinalIgnoreCase)) {
+        $result.Reason = 'The saved process identity no longer matches; no app was launched or stopped.'
+        return [pscustomobject]$result
+    }
+
+    # Listening on a port is not ownership evidence. Require both the exact
+    # ChatGPT command line and the kernel listener owner for this endpoint.
+    if (-not (Test-CrsExpectedDebugProcess -ProcessId $processId -ExecutablePath $savedExecutablePath -ExpectedPort $rendererPort) -or
+        -not (Test-CrsOwnedRendererEndpoint -ProcessId $processId -Port $rendererPort)) {
+        $result.Reason = 'The saved renderer endpoint is not owned by the exact ChatGPT process.'
+        return [pscustomobject]$result
+    }
+
+    $process = $null
+    try {
+        $process = [Diagnostics.Process]::GetProcessById($processId)
+        [void]$process.Handle
+        if ($process.HasExited) { throw 'The saved ChatGPT process exited before repair.' }
+        $identityAfterAttach = Get-CrsProcessIdentity -ProcessId $processId -ExecutablePath $savedExecutablePath
+        if ($null -eq $identityAfterAttach -or [long]$identityAfterAttach.StartTimeFileTimeUtc -ne $savedStartTime -or
+            -not [string]::Equals([string]$identityAfterAttach.ExecutablePath, $savedExecutablePath, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'The ChatGPT process identity changed during repair.'
+        }
+        $bridge = Invoke-CrsBridge -Node $Node -RendererPort $rendererPort -MainPort $null -BridgeMode 'native-renderer'
+        if ($null -eq $bridge -or $bridge.ok -isnot [bool] -or -not $bridge.ok -or
+            $bridge.renderer.probe.proof -isnot [bool] -or -not $bridge.renderer.probe.proof) {
+            throw 'The native-renderer bridge did not return complete repair proof.'
+        }
+        if ($process.HasExited) { throw 'ChatGPT exited during repair; no replacement was started.' }
+
+        # Preserve the existing launch method and lifecycle ownership. Repair
+        # only re-injects the bridge into the verified live process.
+        $launch = [pscustomobject]@{
+            Method = [string]$State.launchMethod
+            ProcessId = $processId
+            ProcessOwned = $true
+            ProcessStartTimeFileTimeUtc = $savedStartTime
+        }
+        $statePackage = $Package
+        if (-not [string]::Equals($savedExecutablePath, $expectedExecutablePath, [StringComparison]::OrdinalIgnoreCase)) {
+            # Proxy and legacy-compatible sessions run from a retained private
+            # runtime. Keep that exact executable and its recorded package
+            # metadata when refreshing the state record.
+            $statePackage = [pscustomobject]@{
+                FullName = if ($null -ne $State.PSObject.Properties['packageFullName']) { [string]$State.packageFullName } else { [string]$Package.FullName }
+                Version = if ($null -ne $State.PSObject.Properties['packageVersion']) { [string]$State.packageVersion } else { [string]$Package.Version }
+                ExecutablePath = $savedExecutablePath
+            }
+        }
+        Write-CrsState -Package $statePackage -RendererPort $rendererPort -MainPort $null -Probe $Compatibility -Launch $launch -ProxyMode $ProxyMode -BridgeMode 'native-renderer' -ProxyFingerprint $ProxyFingerprint -LegacyDeviceKeyCompatibility $LegacyDeviceKeysRequired
+        $result.Repaired = $true
+        $result.Probe = $bridge
+        return [pscustomobject]$result
+    } catch {
+        $result.Reason = $_.Exception.Message
+        return [pscustomobject]$result
+    } finally {
+        if ($null -ne $process) { $process.Dispose() }
+    }
+}
+
+function Connect-CrsExistingApp {
+    param($Package, $Node, $Compatibility, [bool]$ProxyMode, [bool]$LegacyDeviceKeysRequired)
+
+    # Activating an existing process never grants lifecycle ownership. The
+    # process handle remains open until injection completes, preventing PID reuse.
+    if ($Compatibility.bridgeMode -cne 'native-renderer') {
+        throw 'This running app does not expose the native renderer capability needed for live attachment. It was left running.'
+    }
+    if ($ProxyMode -or $LegacyDeviceKeysRequired) {
+        throw 'The running ordinary app cannot acquire startup-only proxy or legacy-key settings through attachment. It was left running; no connection settings were changed.'
+    }
+    $candidates = @(Get-CimInstance Win32_Process -Filter "Name='ChatGPT.exe'" -ErrorAction Stop | Where-Object {
+        [string]::Equals([string]$_.ExecutablePath, [string]$Package.ExecutablePath, [StringComparison]::OrdinalIgnoreCase) -and
+        [string]$_.CommandLine -notmatch '(?:^|\s)--type='
+    })
+    if ($candidates.Count -ne 1) { throw 'Live attachment requires exactly one matching ChatGPT main process. No app was launched or stopped.' }
+    $candidate = $candidates[0]
+    if ([string]$candidate.CommandLine -match '--remote-debugging-port(?:=|\s)') { return $false }
+    $inspectorPort = 9229
+    $portMatch = [regex]::Match([string]$candidate.CommandLine, '(?:^|\s)--inspect(?:-port)?=(?<value>\S+)')
+    if ($portMatch.Success) {
+        if ($portMatch.Groups['value'].Value -notmatch '^(?:127\.0\.0\.1:)?(?<port>\d+)$') {
+            throw 'The running app has a non-loopback or unsupported inspector address. No activation was attempted.'
+        }
+        $inspectorPort = [int]$Matches.port
+    }
+    if ($inspectorPort -lt 1024 -or $inspectorPort -gt 65535) { throw 'The running app has an unsupported inspector port.' }
+    $process = [Diagnostics.Process]::GetProcessById([int]$candidate.ProcessId)
+    $mapping = $null
+    try {
+        [void]$process.Handle
+        $started = $process.StartTime.ToUniversalTime().ToFileTimeUtc()
+        if ($process.HasExited -or -not [string]::Equals($process.MainModule.FileName, [string]$Package.ExecutablePath, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'ChatGPT changed during attachment discovery. It was left untouched.'
+        }
+        # A loopback listener that merely answers is not evidence that this
+        # process owns the Node inspector. Refuse a foreign listener before
+        # sending any inspector command or activation request.
+        if ((Test-CrsPortOpen -Port $inspectorPort) -and
+            -not (Test-CrsOwnedRendererEndpoint -ProcessId $process.Id -Port $inspectorPort)) {
+            throw 'The running app inspector port is owned by a different local process. No activation was attempted.'
+        }
+        # This is the runtime's registered Windows activation hook, not a
+        # version/signature allowlist or a patched executable.
+        $mapping = Open-CrsInspectorHook -Process $process
+        $attachmentScript = Join-Path $script:RuntimeRoot 'attach-existing.cjs'
+        $previousErrorPreference = $ErrorActionPreference
+        try {
+            # Windows PowerShell 5.1 turns redirected native stderr into error
+            # records. Inspect the exit code before applying our own failure policy.
+            $ErrorActionPreference = 'Continue'
+            $output = @(& $Node.Path $attachmentScript ([string]$process.Id) ([string]$Package.ExecutablePath) ([string]$inspectorPort) '--attach' ([string]($TimeoutSeconds * 1000)) 2>&1)
+            $attachmentExitCode = $LASTEXITCODE
+        } finally { $ErrorActionPreference = $previousErrorPreference }
+        if ($attachmentExitCode -ne 0 -or $output.Count -ne 1) { throw "Live attachment failed: $($output -join ' ')" }
+        $attached = [string]$output[0] | ConvertFrom-Json -ErrorAction Stop
+        if ($attached.pid -ne $process.Id -or $attached.rendererPort -ne $inspectorPort -or $attached.transport -cne 'electron-main-inspector-v1' -or $process.HasExited) {
+            throw 'Live attachment did not prove the expected running app.'
+        }
+        if (-not (Test-CrsOwnedRendererEndpoint -ProcessId $process.Id -Port $inspectorPort)) {
+            throw 'The running app inspector endpoint changed ownership during attachment. No bridge or state was written.'
+        }
+        [void](Invoke-CrsBridge -Node $Node -RendererPort $inspectorPort -MainPort $null -BridgeMode 'native-renderer')
+        if ($process.HasExited) { throw 'ChatGPT exited during attachment; no replacement was started.' }
+        $launch = [pscustomobject]@{ Method = 'attached-existing-process'; ProcessId = $process.Id; ProcessOwned = $false; ProcessStartTimeFileTimeUtc = $started }
+        Write-CrsState -Package $Package -RendererPort $inspectorPort -MainPort $null -Probe $Compatibility -Launch $launch -ProxyMode $false -BridgeMode 'native-renderer'
+        Write-Host 'Attached and injected into the already-running ChatGPT window without restarting it.' -ForegroundColor Green
+        return $true
+    } finally {
+        if ($mapping) { $mapping.Dispose() }
+        $process.Dispose()
+    }
+}
+
 function Invoke-CrsProbeExisting {
     param($Node, $State)
 
     if ($null -eq $State -or -not (Test-CrsPortOpen -Port ([int]$State.rendererPort))) { return $null }
+    if ($null -ne $State.PSObject.Properties['launchMethod'] -and $State.launchMethod -ceq 'attached-existing-process') {
+        # Bind the saved inspector endpoint to the local process before
+        # trusting any PID/path values returned by the Node service.
+        if (-not (Test-CrsOwnedRendererEndpoint -ProcessId ([int]$State.launchProcessId) -Port ([int]$State.rendererPort))) { return $null }
+        $identity = Get-CrsProcessIdentity -ProcessId ([int]$State.launchProcessId) -ExecutablePath ([string]$State.executablePath)
+        if ($null -eq $identity -or $null -eq $State.PSObject.Properties['launchProcessStartTimeFileTimeUtc'] -or
+            $identity.StartTimeFileTimeUtc -ne $State.launchProcessStartTimeFileTimeUtc) { return $null }
+        # A surviving app process alone does not prove this port still belongs
+        # to it. Verify the inspector identity before reusing the saved endpoint.
+        $previousErrorPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            $identityProbe = @(& $Node.Path (Join-Path $script:RuntimeRoot 'attach-existing.cjs') ([string]$State.launchProcessId) ([string]$State.executablePath) ([string]$State.rendererPort) '--verify-only' 2>&1)
+            $probeExitCode = $LASTEXITCODE
+        } finally { $ErrorActionPreference = $previousErrorPreference }
+        if ($probeExitCode -ne 0) { return $null }
+        if (-not (Test-CrsOwnedRendererEndpoint -ProcessId ([int]$State.launchProcessId) -Port ([int]$State.rendererPort))) { return $null }
+    }
     $orchestrator = Join-Path $script:RuntimeRoot 'orchestrator.js'
     $arguments = @($orchestrator, '--mode', $(if ($State.bridgeMode -ceq 'native-renderer') { 'probe-renderer' } else { 'probe' }), '--renderer-port', ([string]$State.rendererPort))
     if ($State.bridgeMode -ceq 'legacy-main-shim') { $arguments += @('--main-port', ([string]$State.mainPort)) }
     $arguments += @('--timeout-ms', '3000')
-    $output = @(& $Node.Path @arguments 2>&1)
-    if ($LASTEXITCODE -ne 0 -or $output.Count -ne 1) { return $null }
+    $previousErrorPreference = $ErrorActionPreference
+    try {
+        # Windows PowerShell 5.1 promotes redirected native stderr to an
+        # exception under Stop. Capture the exit code and restore the caller's
+        # policy so a failed probe remains an unknown session instead.
+        $ErrorActionPreference = 'Continue'
+        $output = @(& $Node.Path @arguments 2>&1)
+        $probeExitCode = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $previousErrorPreference }
+    if ($probeExitCode -ne 0 -or $output.Count -ne 1) { return $null }
     try { return ([string]$output[0] | ConvertFrom-Json -ErrorAction Stop) } catch { return $null }
 }
 
@@ -1121,7 +1420,24 @@ switch ($Action) {
                 Write-Host 'The local Control other devices bridge is already active in the requested proxy mode.' -ForegroundColor Green
                 break
             }
-            Write-Host 'The requested connection compatibility differs from the active session; ChatGPT will be relaunched.' -ForegroundColor Yellow
+            if (-not $AttachOnly) { Write-Host 'The requested connection compatibility differs from the active session; ChatGPT will be relaunched.' -ForegroundColor Yellow }
+        }
+        if ($AttachOnly) {
+            if ($null -eq $existing -or -not $existing.ok -or -not $existing.renderer.probe.proof) {
+                $repair = Invoke-CrsManagedNativeSessionRepair -Package $package -Node $node -State $state -Compatibility $compatibility -ProxyMode ([bool]$UseProxy) -ProxyFingerprint $requestedProxyFingerprint -LegacyDeviceKeysRequired $legacyDeviceKeyCompatibilityNeeded
+                if ($repair.Attempted) {
+                    if ($repair.Repaired) {
+                        Write-Host 'Re-injected the native-renderer bridge into the already-running managed ChatGPT session without restarting it.' -ForegroundColor Green
+                        break
+                    }
+                    throw "The managed ChatGPT session could not be repaired without restarting it: $($repair.Reason)"
+                }
+            }
+            if (($null -eq $existing -or -not $existing.ok -or -not $existing.renderer.probe.proof) -and
+                (Connect-CrsExistingApp -Package $package -Node $node -Compatibility $compatibility -ProxyMode ([bool]$UseProxy) -LegacyDeviceKeysRequired $legacyDeviceKeyCompatibilityNeeded)) {
+                break
+            }
+            throw 'ChatGPT is already open, but a matching Remote Enabler session is not available for attachment. The running app was left untouched. Remote Enabler can attach to sessions launched with its local endpoint and matching connection settings.'
         }
         if (-not $PSCmdlet.ShouldProcess('the current OpenAI Codex session', 'Close it, relaunch with loopback debug ports, and enable the capability-tested bridge')) {
             break

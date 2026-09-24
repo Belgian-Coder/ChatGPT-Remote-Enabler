@@ -9,6 +9,7 @@ $nodeTemp = (& $node -p 'process.env.TEMP || process.env.TMP').Trim()
 if ($LASTEXITCODE -ne 0 -or -not $nodeTemp) { throw 'Node temporary directory discovery failed.' }
 $nodeTemp = [IO.Path]::GetFullPath($nodeTemp).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
 $testRoot = Join-Path $nodeTemp ('chatgpt-remote-maintenance-test-' + [guid]::NewGuid().ToString('N'))
+$capRoot = Join-Path $nodeTemp ('chatgpt-remote-maintenance-test-' + [guid]::NewGuid().ToString('N'))
 $strictFailureRoot = Join-Path $nodeTemp ('chatgpt-remote-maintenance-test-' + [guid]::NewGuid().ToString('N'))
 $bestEffortFailureRoot = Join-Path $nodeTemp ('chatgpt-remote-maintenance-test-' + [guid]::NewGuid().ToString('N'))
 $lookalikeRoot = "$testRoot-sibling"
@@ -67,6 +68,53 @@ db.close();
     if ($report.logs.fileBytesAfter -ge $logsBefore -or $report.state.fileBytesAfter -ge $stateBefore) { throw 'Database files did not shrink.' }
     if ($report.durationMs -lt 0 -or @($report.phases).Count -ne 4 -or @($report.phases | Where-Object { $_.durationMs -lt 0 }).Count) {
         throw 'Maintenance helper did not report privacy-safe phase timing.'
+    }
+
+    New-Item -ItemType Directory -Path $capRoot | Out-Null
+    $createCapFixture = @'
+const { DatabaseSync } = require("node:sqlite");
+const path = require("node:path");
+const root = process.argv[2];
+const db = new DatabaseSync(path.join(root, "logs_2.sqlite"));
+db.exec("CREATE TABLE logs(id INTEGER PRIMARY KEY, ts INTEGER, ts_nanos INTEGER, estimated_bytes INTEGER, body TEXT); CREATE INDEX idx_logs_ts ON logs(ts DESC, ts_nanos DESC, id DESC);");
+const insert = db.prepare("INSERT INTO logs(ts, ts_nanos, estimated_bytes, body) VALUES(?, ?, ?, ?)");
+const now = Math.floor(Date.now() / 1000);
+const mib = 1024 * 1024;
+// IDs 2 and 4 tie on ts/ts_nanos; id 2 is the oldest row and must be pruned first.
+for (const [tsNanos, estimatedBytes] of [[300, 40 * mib], [100, 40 * mib], [200, 40 * mib], [100, 1 * mib]]) {
+  insert.run(now, tsNanos, estimatedBytes, "fixture");
+}
+const plan = [...db.prepare("EXPLAIN QUERY PLAN SELECT estimated_bytes FROM logs ORDER BY ts ASC, ts_nanos ASC, id ASC").iterate()]
+  .map((row) => String(row.detail ?? ""));
+if (plan.some((detail) => /USE TEMP B-TREE/i.test(detail)) || !plan.some((detail) => /idx_logs_ts/i.test(detail))) {
+  throw new Error(`Native log-order fixture lost its native index: ${plan.join(" | ")}`);
+}
+db.close();
+'@
+    $createCapFixturePath = Join-Path $capRoot 'create-cap-fixture.js'
+    Set-Content -LiteralPath $createCapFixturePath -Value $createCapFixture -Encoding UTF8
+    & $node --no-warnings $createCapFixturePath $capRoot
+    if ($LASTEXITCODE -ne 0) { throw 'Native log-order fixture creation failed.' }
+    $capReport = & $node --no-warnings $helper --test-temp --codex-home $capRoot | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0 -or $capReport.status -ne 'completed' -or
+        $capReport.logs.removedByAge -ne 0 -or $capReport.logs.removedByCap -ne 1) {
+        throw 'Strict log cap pruning did not remove exactly the oldest tied row.'
+    }
+    $readCapResult = @'
+const { DatabaseSync } = require("node:sqlite");
+const path = require("node:path");
+const db = new DatabaseSync(path.join(process.argv[2], "logs_2.sqlite"), { readOnly: true });
+const rows = [...db.prepare("SELECT id, ts_nanos, estimated_bytes FROM logs ORDER BY ts DESC, ts_nanos DESC, id DESC").iterate()];
+console.log(JSON.stringify({ rows, estimated: rows.reduce((sum, row) => sum + Number(row.estimated_bytes ?? 0), 0) }));
+db.close();
+'@
+    $readCapResultPath = Join-Path $capRoot 'read-cap-result.js'
+    Set-Content -LiteralPath $readCapResultPath -Value $readCapResult -Encoding UTF8
+    $capRemaining = & $node --no-warnings $readCapResultPath $capRoot | ConvertFrom-Json
+    $capIds = @($capRemaining.rows | ForEach-Object { [int]$_.id })
+    if ($capRemaining.estimated -ne (81 * 1024 * 1024) -or
+        ($capIds -join ',') -ne '1,3,4') {
+        throw 'Native log cap fixture retained the wrong timestamp-tied rows.'
     }
 
     $largeFragmentFixture = Join-Path $testRoot 'large-fragment.js'
@@ -183,7 +231,7 @@ childProcess.spawnSync = function() {
 } finally {
     $temporary = [IO.Path]::GetFullPath($nodeTemp)
     if (Test-Path -LiteralPath $linkRoot) { Remove-Item -LiteralPath $linkRoot -Force }
-    foreach ($candidate in @($testRoot, $strictFailureRoot, $bestEffortFailureRoot, $lookalikeRoot)) {
+    foreach ($candidate in @($testRoot, $capRoot, $strictFailureRoot, $bestEffortFailureRoot, $lookalikeRoot)) {
         $resolved = [IO.Path]::GetFullPath($candidate)
         if ((Test-Path -LiteralPath $resolved) -and
             [IO.Path]::GetFullPath((Split-Path -Parent $resolved)) -eq $temporary -and

@@ -38,16 +38,15 @@ if (-not (Test-Path -LiteralPath $stableModule -PathType Leaf)) { throw "Stable 
 . $stableModule
 $runtimeRoot = Get-StableInstallRoot
 if (-not [string]::Equals($sourcePackageRoot, $runtimeRoot, [StringComparison]::OrdinalIgnoreCase)) {
-    if (-not (Test-StablePackage -Root $runtimeRoot)) {
-        $runtimeRoot = Ensure-StableInstallRoot -SourceRoot $sourcePackageRoot -StableRoot $runtimeRoot
-    }
+    # An extracted newer package must promote its controllers before this
+    # entrypoint passes switches that an older installed package cannot accept.
+    $runtimeRoot = Ensure-StableInstallRoot -SourceRoot $sourcePackageRoot -StableRoot $runtimeRoot
 }
 $stable = Join-Path $runtimeRoot 'CodexRemoteSimple\CodexRemoteSimple.ps1'
 $mobile = Join-Path $runtimeRoot 'CodexRemoteMobileProject\MobileProjectView.ps1'
 $desktopAppUpdater = Join-Path $runtimeRoot 'Update-ChatGPTDesktop.ps1'
 $updater = Join-Path $runtimeRoot 'Update-ChatGPTRemote.ps1'
 $updateSessionLauncher = Join-Path $runtimeRoot 'CodexRemoteMobileProject\UpdateSessionLauncher.ps1'
-$publisherHeartbeatHelper = Join-Path $runtimeRoot 'CodexRemoteMobileProject\publisher-heartbeat.js'
 $startupProgressHelper = Join-Path $runtimeRoot 'CodexRemoteMobileProject\StartupProgress.ps1'
 $proxyModule = Join-Path $runtimeRoot 'CodexRemoteMobileProject\ProxyConfiguration.psm1'
 if (-not (Test-Path -LiteralPath $startupProgressHelper -PathType Leaf)) { throw "Startup progress helper is missing: $startupProgressHelper" }
@@ -131,25 +130,10 @@ function Start-RemoteMobileBackgroundServices {
     param([Parameter(Mandatory)][string]$NodePath)
 
     try {
-        $stableStatePath = Join-Path $logRoot 'codexremote-simple-session.json'
-        $stableState = Get-Content -LiteralPath $stableStatePath -Raw | ConvertFrom-Json -ErrorAction Stop
-        $heartbeatPort = [int]$stableState.rendererPort
-        $heartbeatParent = [int]$stableState.launchProcessId
-        if ($heartbeatPort -lt 1 -or $heartbeatPort -gt 65535 -or $heartbeatParent -lt 1) {
-            throw 'The stable session did not report a valid heartbeat target.'
-        }
-        $heartbeatProcess = [Diagnostics.Process]::GetProcessById($heartbeatParent)
-        try {
-            $heartbeatStartToken = $heartbeatProcess.StartTime.ToUniversalTime().ToFileTimeUtc().ToString([Globalization.CultureInfo]::InvariantCulture)
-            $heartbeatExecutable = [IO.Path]::GetFullPath($heartbeatProcess.MainModule.FileName)
-        } finally { $heartbeatProcess.Dispose() }
-        if (-not [string]::Equals($heartbeatExecutable, [IO.Path]::GetFullPath([string]$stableState.executablePath), [StringComparison]::OrdinalIgnoreCase)) {
-            throw 'The stable session heartbeat process identity changed.'
-        }
-        $heartbeatLock = Join-Path $logRoot "publisher-heartbeat-$heartbeatPort.lock"
-        $heartbeatArguments = '--no-warnings "{0}" --port {1} --parent-pid {2} --parent-start-token "{3}" --lock-path "{4}"' -f $publisherHeartbeatHelper, $heartbeatPort, $heartbeatParent, $heartbeatStartToken, $heartbeatLock
-        Start-Process -FilePath $NodePath -ArgumentList $heartbeatArguments -WindowStyle Hidden | Out-Null
-        Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] publisher heartbeat started for the exact renderer session"
+        $publisherRepair = Join-Path $runtimeRoot 'CodexRemoteMobileProject\MobileProjectStartup.ps1'
+        $legacyPublisher = Join-Path $sourcePackageRoot 'CodexRemoteMobileProject\publisher-heartbeat.js'
+        & $publisherRepair -Action RepairPublisher -NodePath $NodePath -LegacyPublisherScriptPath $legacyPublisher
+        Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] publisher heartbeat repair/reuse completed for the exact renderer session"
     } catch {
         Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] publisher heartbeat unavailable: $($_.Exception.Message)"
     }
@@ -291,6 +275,20 @@ function Assert-DesktopAppNotRunning {
     }
 }
 
+function Test-DesktopAppPrelaunchRunningRefusal {
+    param([AllowNull()][string]$Message)
+    $direct = 'ChatGPT.exe is running. Finish active work and close it, then retry. The launch updater will not stop or kill the app.'
+    $updater = 'ChatGPT.exe is running. Finish active work and close it, then retry. This updater will not stop or kill the app.'
+    $normalized = [regex]::Replace([string]$Message, '\s+', ' ').Trim()
+    if ([string]::Equals($normalized, $direct, [StringComparison]::Ordinal)) { return $true }
+    # Windows PowerShell formats native stderr as several ErrorRecord strings
+    # (path, wrapped message, CategoryInfo and FullyQualifiedErrorId). Collapse
+    # only formatting whitespace, then require the complete updater refusal and
+    # its standard terminator. This keeps unrelated updater errors terminal.
+    $formattedRefusal = '(?:^|:\s*)' + [regex]::Escape($updater) + '(?=\s*(?:\+\s+(?:CategoryInfo|FullyQualifiedErrorId)\b|$))'
+    return $normalized -match $formattedRefusal
+}
+
 function Invoke-DesktopAppPrelaunchUpdate {
     param([string]$UpdaterPath, [scriptblock]$ProcessEnumerator, [switch]$UseProxy)
 
@@ -383,8 +381,25 @@ function Invoke-DesktopAppPrelaunchUpdate {
     return $result
 }
 
+function Test-RemoteScriptSupportsParameter {
+    param(
+        [Parameter(Mandatory)][string]$ScriptPath,
+        [Parameter(Mandatory)][string]$ParameterName
+    )
+
+    # Get-Command reads the script metadata without executing the updater or
+    # controller. This keeps startup compatible with an older installed
+    # package while the update transaction is still replacing files.
+    try {
+        $command = Get-Command -Name $ScriptPath -CommandType ExternalScript -ErrorAction Stop
+        return $null -ne $command.Parameters -and $command.Parameters.ContainsKey($ParameterName)
+    } catch {
+        return $false
+    }
+}
+
 function Invoke-UpdateRecovery {
-    param([string]$UpdaterPath, [string]$InstallRoot)
+    param([string]$UpdaterPath, [string]$InstallRoot, [switch]$RecoverPendingOnly)
 
     if (-not (Test-Path -LiteralPath $UpdaterPath -PathType Leaf)) {
         throw "The Remote Enabler updater is missing: $UpdaterPath"
@@ -393,7 +408,15 @@ function Invoke-UpdateRecovery {
     try {
         [Environment]::SetEnvironmentVariable('CHATGPT_REMOTE_LAUNCH_GUARD_HELD', '1', 'Process')
         $global:LASTEXITCODE = 0
-        $output = @(& $UpdaterPath -Action Recover -InstallRoot $InstallRoot -LaunchLockHeld 2>&1)
+        $recoveryArguments = @{
+            Action = 'Recover'
+            InstallRoot = $InstallRoot
+            LaunchLockHeld = $true
+        }
+        $usedRecoverPendingOnly = $RecoverPendingOnly -and
+            (Test-RemoteScriptSupportsParameter -ScriptPath $UpdaterPath -ParameterName 'RecoverPendingOnly')
+        if ($usedRecoverPendingOnly) { $recoveryArguments.RecoverPendingOnly = $true }
+        $output = @(& $UpdaterPath @recoveryArguments 2>&1)
         $exitCode = $global:LASTEXITCODE
     } finally {
         [Environment]::SetEnvironmentVariable('CHATGPT_REMOTE_LAUNCH_GUARD_HELD', $previousLaunchGuard, 'Process')
@@ -401,12 +424,28 @@ function Invoke-UpdateRecovery {
     foreach ($line in $output) { Write-RemoteLauncherLog ([string]$line) }
     if ($exitCode -ne 0) { throw 'Update recovery failed before launch.' }
     $recovery = Get-LastJsonResult -Output $output
-    if ($recovery.recovered -isnot [bool] -or $recovery.integrityValid -isnot [bool] -or -not $recovery.integrityValid -or
+    if ($usedRecoverPendingOnly -and $recovery.recoveryRequired -is [bool] -and -not $recovery.recoveryRequired) {
+        if ($recovery.recovered -isnot [bool] -or $recovery.recovered -or
+            $recovery.integrityValid -isnot [bool] -or $recovery.integrityValid -or
+            $recovery.cleanupDeferred -isnot [bool] -or -not $recovery.cleanupDeferred -or
+            [string]$recovery.version -notmatch '^v\d+\.\d+\.\d+$') {
+            throw 'Pending update recovery returned an incomplete no-journal proof.'
+        }
+    } elseif ($recovery.recovered -isnot [bool] -or $recovery.integrityValid -isnot [bool] -or -not $recovery.integrityValid -or
         [string]$recovery.version -notmatch '^v\d+\.\d+\.\d+$') {
         throw 'Update recovery did not prove installed-file integrity before launch.'
     }
     if ($recovery.recovered -and [string]$recovery.recoveryMode -notin @('complete-forward', 'rollback', 'unchanged')) {
         throw 'Update recovery returned an unsupported recovery mode.'
+    }
+    $migrationProperty = $recovery.PSObject.Properties['entryPointMigration']
+    if ($migrationProperty -and $null -ne $migrationProperty.Value) {
+        $validProperty = $migrationProperty.Value.PSObject.Properties['valid']
+        if (-not $validProperty -or $validProperty.Value -isnot [bool] -or -not $validProperty.Value) {
+            $message = 'Startup entry migration is incomplete. Automatic repair will retry at the next Remote Enabler launch; the current attachment can continue.'
+            Write-RemoteLauncherLog ("WARNING: " + $message)
+            Write-Warning -Message $message -WarningAction Continue
+        }
     }
     return $recovery
 }
@@ -576,7 +615,7 @@ function Start-UpdatedEntryPoint {
     $childArgumentString = ($childArguments | ForEach-Object { ConvertTo-ProcessArgument -Value ([string]$_) }) -join ' '
     # The continuation child waits for this process to exit while this process
     # still owns the launch mutex, removing the release-then-spawn race.
-    $child = Start-Process -FilePath $powerShell -ArgumentList $childArgumentString -WorkingDirectory (Split-Path -Parent $EntryPoint) -WindowStyle Hidden -PassThru
+    $child = Start-StartupBackgroundProcess -FilePath $powerShell -ArgumentList $childArgumentString -WorkingDirectory (Split-Path -Parent $EntryPoint)
     $child.Dispose()
     Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] reloading the validated on-disk entry point after update or recovery"
 }
@@ -640,9 +679,14 @@ try {
         }
         Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] launcher parent exited; continuing update and launch"
     }
+    # Existing sessions must never enter the update/relaunch path. The stable
+    # controller validates the exact process, endpoint and requested proxy mode.
+    $appProcesses = @(Get-StartupChatGPTMainProcesses)
+    $attachExistingSession = $appProcesses.Count -gt 0
+    if ($attachExistingSession -and $UpdateResume) { throw 'ChatGPT is already open. Update relaunch was cancelled without changing it.' }
     $recoverTimer = [Diagnostics.Stopwatch]::StartNew()
     Start-StartupProgress -Message 'Recovering any interrupted update...'
-    $recovery = Invoke-UpdateRecovery -UpdaterPath $updater -InstallRoot $runtimeRoot
+    $recovery = Invoke-UpdateRecovery -UpdaterPath $updater -InstallRoot $runtimeRoot -RecoverPendingOnly
     $recoverTimer.Stop()
     Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] stage=update-recovery durationMs=$($recoverTimer.ElapsedMilliseconds) recovered=$($recovery.recovered) mode=$($recovery.recoveryMode)"
     if ($recovery.recovered -and [string]$recovery.recoveryMode -cne 'rollback') {
@@ -672,7 +716,8 @@ try {
         Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] protected all-connections proxy configuration loaded"
     }
 
-    $skipRemotePrelaunch = [bool]$SkipPrelaunchUpdateOnce
+    $attachExistingSession = @(Get-StartupChatGPTMainProcesses).Count -gt 0
+    $skipRemotePrelaunch = [bool]$SkipPrelaunchUpdateOnce -or $attachExistingSession
     if (-not $SkipUpdate -and -not $SkipUpdateCheckOnce -and -not $UpdateResume -and -not $skipRemotePrelaunch) {
         Set-StartupProgress -Message 'Checking and updating Remote Enabler...'
         $prelaunchUpdate = Invoke-PrelaunchUpdate -UpdaterPath $updater -InstallRoot $runtimeRoot -UseProxy:$UseProxy
@@ -690,26 +735,69 @@ try {
         }
     }
 
-    if (-not $SkipDesktopAppUpdateOnce -and -not $UpdateResume) {
+    $attachExistingSession = @(Get-StartupChatGPTMainProcesses).Count -gt 0
+    $desktopUpdateAttachOnly = $false
+    if (-not $attachExistingSession -and -not $SkipDesktopAppUpdateOnce -and -not $UpdateResume) {
         Set-StartupProgress -Message 'Checking the installed ChatGPT app...'
-        [void](Invoke-DesktopAppPrelaunchUpdate -UpdaterPath $desktopAppUpdater -UseProxy:$UseProxy)
+        try {
+            [void](Invoke-DesktopAppPrelaunchUpdate -UpdaterPath $desktopAppUpdater -UseProxy:$UseProxy)
+        } catch {
+            $desktopUpdateError = [string]$_.Exception.Message
+            if (-not (Test-DesktopAppPrelaunchRunningRefusal -Message $desktopUpdateError) -or $UpdateResume) { throw }
+            $attachExistingSession = @(Get-StartupChatGPTMainProcesses).Count -gt 0
+            if (-not $attachExistingSession) { throw }
+            $desktopUpdateAttachOnly = $true
+            Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] desktop-app update observed the app opening during its final running-app check; continuing in refreshed attach mode"
+        }
     }
 
-    if ($UpdateResume -and @(Get-CimInstance Win32_Process -Filter "Name='ChatGPT.exe'" -ErrorAction SilentlyContinue).Count -gt 0) {
+    $attachExistingSession = if ($desktopUpdateAttachOnly) { $true } else { @(Get-StartupChatGPTMainProcesses).Count -gt 0 }
+    if ($UpdateResume -and $attachExistingSession) {
         throw 'Another ChatGPT/Codex process appeared during the update. The verified relaunch was aborted without closing or replacing it.'
     }
     if ($UseProxy) { Set-StartupProgress -Message 'Preparing the protected all-connections proxy bridge...' }
     $stableTimer = [Diagnostics.Stopwatch]::StartNew()
-    Set-StartupProgress -Message 'Launching ChatGPT with Remote enabled...'
-    $stableArguments = @{
-        Action = 'Enable'
-        UseProxy = [bool]$UseProxy
-        RefuseExistingApp = [bool]$UpdateResume
-        TimeoutSeconds = 45
-        Confirm = $false
+    Set-StartupProgress -Message $(if ($attachExistingSession) { 'Attaching to the running ChatGPT session...' } else { 'Launching ChatGPT with Remote enabled...' })
+    # The app can open after the final preflight but before the controller's
+    # replacement guard. Retry once only when that exact race is reported and
+    # a fresh probe now proves that attachment is possible. Update-resume
+    # continuations remain strict and never retry into an attach.
+    for ($stableAttempt = 1; $stableAttempt -le 2; $stableAttempt++) {
+        try {
+            $attachExistingSession = if ($desktopUpdateAttachOnly) { $true } else { @(Get-StartupChatGPTMainProcesses).Count -gt 0 }
+            if ($UpdateResume -and $attachExistingSession) {
+                throw 'Another ChatGPT/Codex process appeared during the update. The verified relaunch was aborted without closing or replacing it.'
+            }
+            $stableArguments = @{
+                Action = 'Enable'
+                UseProxy = [bool]$UseProxy
+                RefuseExistingApp = $true
+                TimeoutSeconds = 45
+                Confirm = $false
+            }
+            $supportsAttachOnly = Test-RemoteScriptSupportsParameter -ScriptPath $stable -ParameterName 'AttachOnly'
+            if ($supportsAttachOnly) {
+                $stableArguments.AttachOnly = [bool]$attachExistingSession
+            } elseif ($attachExistingSession) {
+                throw 'The installed Remote Enabler controller cannot safely attach to the running ChatGPT session; it does not support AttachOnly and the app was left running.'
+            }
+            if ($UseProxy) { $stableArguments.ProxyServer = $proxyServer }
+            & $stable @stableArguments
+            break
+        } catch {
+            $stableError = $_.Exception.Message
+            $raceError = $stableError -like 'ChatGPT/Codex appeared while the replacement session was preparing*'
+            if ($stableAttempt -ge 2 -or $UpdateResume -or -not $raceError) {
+                throw
+            }
+            $attachExistingSession = @(Get-StartupChatGPTMainProcesses).Count -gt 0
+            if (-not $attachExistingSession) {
+                throw
+            }
+            Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] stable bridge hit the existing-app race; retrying once in attach mode"
+            Start-Sleep -Seconds 2
+        }
     }
-    if ($UseProxy) { $stableArguments.ProxyServer = $proxyServer }
-    & $stable @stableArguments
     $stableTimer.Stop()
     Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] stage=stable-runtime durationMs=$($stableTimer.ElapsedMilliseconds)"
     if (-not $SkipMobileProjects) {

@@ -16,11 +16,15 @@ param(
     [ValidateRange(1, 600)]
     [int]$LockTimeoutSeconds = 120,
     [switch]$LaunchLockHeld,
+    [switch]$RecoverPendingOnly,
     [switch]$UseProxy,
     [switch]$AllowInsecureTransport
 )
 
 $ErrorActionPreference = 'Stop'
+if ($RecoverPendingOnly -and $Action -cne 'Recover') {
+    throw 'RecoverPendingOnly is valid only with -Action Recover.'
+}
 Add-Type -AssemblyName System.Net.Http
 $installRootWasExplicit = -not [string]::IsNullOrWhiteSpace($InstallRoot)
 if ([string]::IsNullOrWhiteSpace($InstallRoot)) { $InstallRoot = $PSScriptRoot }
@@ -886,6 +890,7 @@ if ($Action -eq 'Probe') {
 }
 $lockStream = $null
 $launchGuard = $null
+$recoveryCleanupDeferred = $false
 $callerOwnsLaunchGuard = $LaunchLockHeld -or $env:CHATGPT_REMOTE_LAUNCH_GUARD_HELD -eq '1'
 try {
     $readOnlyAction = $Action -in @('Check', 'Prepare')
@@ -899,7 +904,38 @@ try {
         }
         $recovery = [pscustomobject]@{ recovered = $false; integrityValid = $true }
     } else {
-        $recovery = Invoke-PendingRecovery
+        if ($RecoverPendingOnly -and
+            -not (Test-Path -LiteralPath $sourceJournalPath -PathType Leaf) -and
+            -not (Test-Path -LiteralPath $journalPath -PathType Leaf)) {
+            # Initial startup only needs to resume an interrupted transaction.
+            # Keep the normal Recover path's manifest verification intact for
+            # callers that need an integrity proof after a failed update.
+            $stablePackageValid = Test-StablePackage -Root $InstallRoot
+            if ($stablePackageValid) {
+                $entryPointMigration = $null
+                if ([string]::Equals($InstallRoot, $stableRoot, [StringComparison]::OrdinalIgnoreCase)) {
+                    # This is intentionally narrower than post-update cleanup: it
+                    # only migrates installed entry points, performs no hash walk,
+                    # and does not inspect or alter the running app.
+                    $entryPointMigration = Invoke-StableEntryPointMigration -StableRoot $InstallRoot
+                }
+                $recovery = [pscustomobject][ordered]@{
+                    recovered = $false
+                    recoveryRequired = $false
+                    integrityValid = $false
+                    cleanupDeferred = $true
+                    entryPointMigration = $entryPointMigration
+                    version = Get-LocalVersion
+                }
+                $recoveryCleanupDeferred = $true
+            } else {
+                # An incomplete package cannot use the no-journal shortcut:
+                # retain the normal transaction helper and cleanup policy.
+                $recovery = Invoke-PendingRecovery
+            }
+        } else {
+            $recovery = Invoke-PendingRecovery
+        }
     }
 
     if ($legacyInstallRoot) {
@@ -910,8 +946,10 @@ try {
     }
 
     if ($Action -eq 'Recover') {
-        $recoveryCleanup = Invoke-PostUpdateCleanup
-        $recovery | Add-Member -NotePropertyName legacyCleanup -NotePropertyValue $recoveryCleanup
+        if (-not $recoveryCleanupDeferred) {
+            $recoveryCleanup = Invoke-PostUpdateCleanup
+            $recovery | Add-Member -NotePropertyName legacyCleanup -NotePropertyValue $recoveryCleanup
+        }
         $recovery | ConvertTo-Json -Depth 4 -Compress
         return
     }

@@ -23,6 +23,38 @@ if ($ScreenshotPath) {
     try { $form.DrawToBitmap($bitmap, (New-Object Drawing.Rectangle(0,0,$form.Width,$form.Height))); $bitmap.Save($ScreenshotPath) }
     finally { $bitmap.Dispose() }
 }
+$script:StableShortcutBrokerFailure = 'fixture previous broker failure'
+$recheck.PerformClick()
+if (Get-Variable -Name StableShortcutBrokerFailure -Scope Script -ErrorAction SilentlyContinue) { throw 'Recheck retained a previous broker failure.' }
+$script:StableShortcutBrokerFailure = 'fixture previous broker failure'
+$apply.PerformClick()
+if (Get-Variable -Name StableShortcutBrokerFailure -Scope Script -ErrorAction SilentlyContinue) { throw 'Apply retained a previous broker failure.' }
+if ($report.Text -notlike 'The canonical stable installation is ready*') { throw $report.Text }
+$requiredMenu = Join-Path $StartMenuPath 'ChatGPT Remote Enabler.lnk'
+if (-not (Test-Path -LiteralPath $requiredMenu -PathType Leaf)) { throw 'Setup without optional choices did not repair the Start menu entry.' }
+Remove-Item -LiteralPath $requiredMenu -Force
+New-Item -ItemType Directory -Path $requiredMenu | Out-Null
+try {
+    $apply.PerformClick()
+    if ($report.Text -notlike 'Setup did not complete*' -or $report.Text -notlike '*Start menu shortcut*') { throw 'Setup falsely reported success after the required Start menu repair failed.' }
+} finally { Remove-Item -LiteralPath $requiredMenu -Force }
+$originalSetupProbe = ${function:Test-StableEntryPointsMigrated}
+try {
+    function Test-StableEntryPointsMigrated {
+        $script:StableShortcutBrokerFailure = 'fixture Explorer desktop unavailable'
+        return $false
+    }
+    foreach ($withDesktop in @($false, $true)) {
+        $desktop.Checked = $withDesktop
+        $apply.PerformClick()
+        if ($report.Text -notlike 'Setup did not complete*' -or
+            $report.Text -notlike '*fixture Explorer desktop unavailable*' -or
+            $report.Text -like '*Check that the current user can write*') { throw 'Setup discarded the actual broker error.' }
+    }
+} finally {
+    Set-Item -LiteralPath Function:\Test-StableEntryPointsMigrated -Value $originalSetupProbe
+    Remove-Variable -Name StableShortcutBrokerFailure -Scope Script -ErrorAction SilentlyContinue
+}
 $desktop.Checked = $true
 $startup.Checked = $true
 $apply.PerformClick()

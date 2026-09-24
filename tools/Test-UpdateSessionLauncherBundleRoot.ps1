@@ -36,6 +36,7 @@ try {
         'electron-attach.js' = 'CodexRemoteSimple\runtime\lib\electron-attach.js'
         'Update-ChatGPTRemote.ps1' = 'Update-ChatGPTRemote.ps1'
         'StableInstall.ps1' = 'StableInstall.ps1'
+        'UnvirtualizedShortcuts.ps1' = 'UnvirtualizedShortcuts.ps1'
         'update-transaction.js' = 'update-transaction.js'
         'git-release.js' = 'git-release.js'
         'git-checkout-update.js' = 'git-checkout-update.js'

@@ -63,6 +63,8 @@ $powershell = @(
     'windows\CodexRemoteMobileProject\MobileProjectStartup.ps1',
     'windows\CodexRemoteMobileProject\StartupProgress.ps1',
     'windows\StableInstall.ps1',
+    'windows\UnvirtualizedShortcuts.ps1',
+    'tools\Test-UnvirtualizedShortcuts.ps1',
     'windows\CodexRemoteMobileProject\ProxyConfiguration.ps1',
     'windows\CodexRemoteMobileProject\ProxyConfiguration.psm1',
     'windows\CodexRemoteSimple\runtime\PackageProcessLauncher.ps1',
@@ -269,6 +271,7 @@ $crossHostPowerShellTests = @(
     (Join-Path $root 'tools\Test-WindowsPrelaunchUpdate.ps1'),
     (Join-Path $root 'tools\Test-ExistingSessionAttach.ps1')
     (Join-Path $root 'tools\Test-WindowlessStartupTask.ps1')
+    (Join-Path $root 'tools\Test-UnvirtualizedShortcuts.ps1')
     (Join-Path $root 'tools\Test-PendingStartupRecovery.ps1')
 )
 foreach ($hostCommand in @('powershell.exe', 'pwsh.exe')) {

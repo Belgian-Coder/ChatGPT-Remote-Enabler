@@ -29,6 +29,15 @@ if (-not $DesktopPath) { $DesktopPath = [Environment]::GetFolderPath('Desktop') 
 if (-not $StartMenuPath) { $StartMenuPath = [Environment]::GetFolderPath('Programs') }
 $DesktopPath = [IO.Path]::GetFullPath($DesktopPath)
 $StartMenuPath = [IO.Path]::GetFullPath($StartMenuPath)
+$brokerArguments = @{
+    Action = $Action; DesktopPath = $DesktopPath; StartMenuPath = $StartMenuPath
+    StableRoot = $StableRoot; RollbackRoot = $rollbackRoot
+}
+if ($PSBoundParameters.ContainsKey('UseProxy')) { $brokerArguments.UseProxy = [bool]$UseProxy }
+if ($WhatIfPreference) { $brokerArguments.WhatIf = $true }
+if ($PSBoundParameters.ContainsKey('Confirm')) { $brokerArguments.Confirm = [bool]$PSBoundParameters.Confirm }
+$broker = Invoke-StableShortcutBroker -Operation DesktopShortcutOperation -Arguments $brokerArguments -Paths @($StartMenuPath) -ScriptPath (Join-Path $bundleRoot 'DesktopShortcut.ps1')
+if ($broker.handled) { $broker.output; return }
 $legacyShortcutTargets = @(
     [ordered]@{ kind = 'LegacyDesktop'; path = Join-Path $DesktopPath 'ChatGPT Custom.lnk'; launcher = $launcherPath },
     [ordered]@{ kind = 'LegacyStartMenu'; path = Join-Path $StartMenuPath 'ChatGPT Custom.lnk'; launcher = $launcherPath },

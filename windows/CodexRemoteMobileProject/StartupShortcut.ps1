@@ -24,6 +24,12 @@ if ([string]::IsNullOrWhiteSpace($RollbackRoot)) {
 $rollbackRoot = [IO.Path]::GetFullPath($RollbackRoot).TrimEnd('\')
 if (-not $StartupPath) { $StartupPath = [Environment]::GetFolderPath('Startup') }
 $StartupPath = [IO.Path]::GetFullPath($StartupPath)
+$brokerArguments = @{ Action = $Action; StartupPath = $StartupPath; StableRoot = $StableRoot; RollbackRoot = $rollbackRoot }
+if ($PSBoundParameters.ContainsKey('UseProxy')) { $brokerArguments.UseProxy = [bool]$UseProxy }
+if ($WhatIfPreference) { $brokerArguments.WhatIf = $true }
+if ($PSBoundParameters.ContainsKey('Confirm')) { $brokerArguments.Confirm = [bool]$PSBoundParameters.Confirm }
+$broker = Invoke-StableShortcutBroker -Operation StartupShortcutOperation -Arguments $brokerArguments -Paths @($StartupPath) -ScriptPath (Join-Path $bundleRoot 'StartupShortcut.ps1')
+if ($broker.handled) { $broker.output; return }
 $shortcutPath = Join-Path $StartupPath 'ChatGPT Remote Enabler Startup.lnk'
 $legacyDisabledPath = "$shortcutPath.disabled"
 $legacyStartupPaths = @(

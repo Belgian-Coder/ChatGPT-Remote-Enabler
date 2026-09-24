@@ -5,6 +5,55 @@
 # permanent and version-independent; update journals and rollback material
 # live in the per-user updater state instead.
 
+function Invoke-StableShortcutBroker {
+    param(
+        [Parameter(Mandatory)][string]$Operation,
+        [Parameter(Mandatory)][hashtable]$Arguments,
+        [string[]]$Paths = @(),
+        [string]$ScriptPath
+    )
+    $workerContext = Get-Variable -Name RemoteEnablerShortcutBrokerWorker -Scope Global -ErrorAction SilentlyContinue
+    if ($workerContext -and $workerContext.Value) { return [pscustomobject]@{ handled = $false } }
+    $programs = [IO.Path]::GetFullPath([Environment]::GetFolderPath('Programs')).TrimEnd('\')
+    $usesPrograms = @($Paths | Where-Object {
+        if (-not [string]::IsNullOrWhiteSpace($_)) {
+            $path = [IO.Path]::GetFullPath($_).TrimEnd('\')
+            [string]::Equals($path, $programs, [StringComparison]::OrdinalIgnoreCase) -or
+                $path.StartsWith($programs + '\', [StringComparison]::OrdinalIgnoreCase)
+        }
+    }).Count -gt 0
+    if (-not $usesPrograms) { return [pscustomobject]@{ handled = $false } }
+    $previousFailure = Get-Variable -Name StableShortcutBrokerFailure -Scope Script -ErrorAction SilentlyContinue
+    if ($previousFailure -and $previousFailure.Value) { throw $previousFailure.Value }
+
+    # Package identity APIs can report NO_PACKAGE while descendants still have
+    # redirected file writes. Use the interactive shell for actual user shell
+    # folders, including the first install before a redirected copy exists.
+    try {
+        . (Join-Path $PSScriptRoot 'UnvirtualizedShortcuts.ps1')
+        # A read-only preflight can stay local when the canonical entry and
+        # every visible requested shortcut resolve outside the private cache.
+        # Writes and missing/redirected entries still require the shell broker.
+        if ($Operation -eq 'TestEntryPoints' -and $Arguments.RequiredStartMenuPath) {
+            $canonical = Join-Path $Arguments.RequiredStartMenuPath 'ChatGPT Remote Enabler.lnk'
+            if (Test-Path -LiteralPath $canonical -PathType Leaf) {
+                try {
+                    $probePaths = @(@($Arguments.ShortcutPaths) + @($canonical) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) } | Select-Object -Unique)
+                    $redirected = @($probePaths | ForEach-Object { Get-UnvirtualizedShortcutPathIdentity -Path $_ } | Where-Object RedirectedToPackageCache)
+                    if ($redirected.Count -eq 0) { return [pscustomobject]@{ handled = $false } }
+                } catch { } # A failed native probe must use the verified worker.
+            }
+        }
+        if (-not $ScriptPath) { $ScriptPath = Join-Path $PSScriptRoot 'StableInstall.ps1' }
+        $result = Invoke-UnvirtualizedShortcutWorker -Operation $Operation -ScriptPath $ScriptPath -Arguments $Arguments -ProbePaths @($programs) -TimeoutMilliseconds 60000
+        return [pscustomobject]@{ handled = $true; output = @($result.Output) }
+    } catch {
+        # Avoid repeating a full timeout across recovery and cleanup in one run.
+        $script:StableShortcutBrokerFailure = $_.Exception.Message
+        throw
+    }
+}
+
 # Read-only launch preflight. Lifecycle ownership remains in the controller.
 function Get-StartupChatGPTMainProcesses {
     param(
@@ -532,9 +581,19 @@ function Test-StableEntryPointsMigrated {
         [Parameter(Mandatory)][string]$StableRoot,
         [string[]]$ShortcutPaths = @(),
         [string[]]$TaskNames = @(),
-        [string]$StartupPath = [Environment]::GetFolderPath([Environment+SpecialFolder]::Startup)
+        [string]$StartupPath = [Environment]::GetFolderPath([Environment+SpecialFolder]::Startup),
+        [string]$RequiredStartMenuPath
     )
     try {
+        $broker = Invoke-StableShortcutBroker -Operation TestEntryPoints -Arguments @{
+            StableRoot = $StableRoot; ShortcutPaths = $ShortcutPaths; TaskNames = $TaskNames
+            StartupPath = $StartupPath; RequiredStartMenuPath = $RequiredStartMenuPath
+        } -Paths @($ShortcutPaths + @($RequiredStartMenuPath))
+        if ($broker.handled) {
+            if (@($broker.output).Count -ne 1 -or $broker.output[0] -isnot [bool]) { return $false }
+            return [bool]$broker.output[0]
+        }
+        if ($RequiredStartMenuPath -and -not (Test-Path -LiteralPath (Join-Path $RequiredStartMenuPath 'ChatGPT Remote Enabler.lnk') -PathType Leaf)) { return $false }
         $StableRoot = [IO.Path]::GetFullPath($StableRoot).TrimEnd('\')
         $resolvedStartupPath = if ([string]::IsNullOrWhiteSpace($StartupPath)) { $null } else { [IO.Path]::GetFullPath($StartupPath).TrimEnd('\') }
         $rootLauncher = Join-Path $StableRoot 'ChatGPT Remote Enabler.exe'
@@ -793,6 +852,15 @@ function Invoke-StableShortcutMigration {
     if (-not (Test-Path -LiteralPath $rootLauncher -PathType Leaf) -or -not (Test-Path -LiteralPath $customLauncher -PathType Leaf)) {
         return @([pscustomobject][ordered]@{ migrated = $false; reason = 'stable-launcher-missing' })
     }
+    try {
+        $broker = Invoke-StableShortcutBroker -Operation MigrateShortcuts -Arguments @{
+            StableRoot = $StableRoot; DesktopPath = $DesktopPath; StartMenuPath = $StartMenuPath
+            StartupPath = $StartupPath; TaskPrimary = [bool]$TaskPrimary
+        } -Paths @($StartMenuPath, $StartupPath)
+    } catch {
+        return @([pscustomobject][ordered]@{ migrated = $false; reason = 'shortcut-broker-failed'; error = $_.Exception.Message })
+    }
+    if ($broker.handled) { return @($broker.output) }
     $results = [Collections.Generic.List[object]]::new()
     try { $shell = New-Object -ComObject WScript.Shell } catch { return @([pscustomobject][ordered]@{ migrated = $false; reason = 'shortcut-shell-unavailable' }) }
 
@@ -846,14 +914,20 @@ function Invoke-StableShortcutMigration {
             }
             continue
         }
-        if (-not $canonicalRecord -and $ownedAliases.Count -eq 0) { continue }
+        $missingStartMenu = -not $canonicalRecord -and $ownedAliases.Count -eq 0 -and
+            [string]::Equals([IO.Path]::GetDirectoryName($folder.canonical), $StartMenuPath.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)
+        if (-not $canonicalRecord -and $ownedAliases.Count -eq 0 -and -not $missingStartMenu) { continue }
         # The canonical entry keeps its existing mode. Preserve one legacy
         # alias only when it supplies the other mode; deleting that alias would
         # remove the user's only direct/proxy launch choice. Duplicate aliases
         # in the same mode are safe to consolidate.
-        $proxy = if ($canonicalRecord) { [bool]$canonicalRecord.proxyMode } else { [bool]$ownedAliases[0].proxyMode }
+        $proxy = if ($canonicalRecord) { [bool]$canonicalRecord.proxyMode } elseif ($ownedAliases.Count) { [bool]$ownedAliases[0].proxyMode } else {
+            $desktopRecord = Get-StableShortcutRecord -Shell $shell -Path (Join-Path $DesktopPath 'ChatGPT Remote Enabler.lnk') -StableRoot $StableRoot
+            [bool]($desktopRecord -and $desktopRecord.owned -and $desktopRecord.proxyMode)
+        }
         $alternateAlias = @($ownedAliases | Where-Object { [bool]$_.proxyMode -ne $proxy } | Select-Object -First 1)
         try {
+            if ($missingStartMenu) { New-Item -ItemType Directory -Path $StartMenuPath -Force | Out-Null }
             $shortcut = $shell.CreateShortcut($folder.canonical)
             $shortcut.TargetPath = $rootLauncher
             $shortcut.Arguments = if ($proxy) { '--proxy' } else { '' }
@@ -1096,7 +1170,7 @@ function Invoke-StableEntryPointMigration {
     }
 
     $known = Get-StableKnownEntryPoints -DesktopPath $DesktopPath -StartMenuPath $StartMenuPath -StartupPath $StartupPath
-    if (Test-StableEntryPointsMigrated -StableRoot $StableRoot -ShortcutPaths $known.ShortcutPaths -TaskNames $known.TaskNames -StartupPath $StartupPath) {
+    if (Test-StableEntryPointsMigrated -StableRoot $StableRoot -ShortcutPaths $known.ShortcutPaths -TaskNames $known.TaskNames -StartupPath $StartupPath -RequiredStartMenuPath $StartMenuPath) {
         return [pscustomobject][ordered]@{ migrated = $false; valid = $true; reason = 'already-migrated'; taskPrimary = $false; tasks = @(); shortcuts = @() }
     }
 
@@ -1111,7 +1185,7 @@ function Invoke-StableEntryPointMigration {
     $taskMigrations = @(Invoke-StableTaskMigration -StableRoot $StableRoot -StartupShortcutPaths $startupPaths)
     $taskPrimary = @($taskMigrations | Where-Object { $_.migrated -and $_.valid -and $_.enabled }).Count -eq 1
     $shortcutMigrations = @(Invoke-StableShortcutMigration -StableRoot $StableRoot -DesktopPath $DesktopPath -StartMenuPath $StartMenuPath -StartupPath $StartupPath -TaskPrimary:$taskPrimary)
-    $valid = Test-StableEntryPointsMigrated -StableRoot $StableRoot -ShortcutPaths $known.ShortcutPaths -TaskNames $known.TaskNames -StartupPath $StartupPath
+    $valid = Test-StableEntryPointsMigrated -StableRoot $StableRoot -ShortcutPaths $known.ShortcutPaths -TaskNames $known.TaskNames -StartupPath $StartupPath -RequiredStartMenuPath $StartMenuPath
     return [pscustomobject][ordered]@{
         migrated = @($taskMigrations + $shortcutMigrations | Where-Object migrated).Count -gt 0
         valid = [bool]$valid
@@ -1158,7 +1232,8 @@ function Invoke-StableLegacyCleanup {
         $ShortcutPaths = $known.ShortcutPaths
         $TaskNames = $known.TaskNames
     }
-    $entryPointsMigrated = -not $MigrateEntryPoints -or (Test-StableEntryPointsMigrated -StableRoot $StableRoot -ShortcutPaths $ShortcutPaths -TaskNames $TaskNames -StartupPath $StartupPath)
+    $requiredStartMenu = if ($isCanonicalStableRoot -or $PSBoundParameters.ContainsKey('StartMenuPath')) { $StartMenuPath } else { $null }
+    $entryPointsMigrated = -not $MigrateEntryPoints -or (Test-StableEntryPointsMigrated -StableRoot $StableRoot -ShortcutPaths $ShortcutPaths -TaskNames $TaskNames -StartupPath $StartupPath -RequiredStartMenuPath $requiredStartMenu)
     New-Item -ItemType Directory -Path $UpdaterStateRoot -Force | Out-Null
     if ($ApprovedLegacyParents.Count -eq 0) {
         $commonData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)

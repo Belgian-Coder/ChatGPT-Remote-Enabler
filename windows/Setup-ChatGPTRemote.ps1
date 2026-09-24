@@ -111,7 +111,7 @@ $report.AccessibleName = 'Setup checks and diagnostic preview'
 $report.Text = 'Choose Recheck to inspect this installation. No app will be restarted.'
 $form.Controls.Add($report)
 $desktop = New-Object Windows.Forms.CheckBox
-$desktop.Text = 'Create Desktop and Start menu shortcuts'
+$desktop.Text = 'Create Desktop shortcut'
 $desktop.Location = New-Object Drawing.Point(20,290); $desktop.Size = New-Object Drawing.Size(640,30)
 $form.Controls.Add($desktop)
 $startup = New-Object Windows.Forms.CheckBox
@@ -119,7 +119,7 @@ $startup.Text = 'Start at sign-in (60-second delay)'
 $startup.Location = New-Object Drawing.Point(20,325); $startup.Size = New-Object Drawing.Size(640,30)
 $form.Controls.Add($startup)
 $notice = New-Object Windows.Forms.Label
-$notice.Text = 'Apply consolidates duplicate helper shortcuts and moves existing logon entries to the windowless launcher. Connection and enabled settings are preserved; unchecked boxes create no new entries.'
+$notice.Text = 'Apply always registers or repairs the Start menu entry. Desktop and startup entries are optional. Existing connection modes and enabled settings are preserved.'
 $notice.Location = New-Object Drawing.Point(20,362); $notice.Size = New-Object Drawing.Size(640,48)
 $form.Controls.Add($notice)
 function Add-SetupButton {
@@ -130,6 +130,7 @@ function Add-SetupButton {
     return $button
 }
 $recheck = Add-SetupButton 'Recheck' 20 415 120 {
+    Remove-Variable -Name StableShortcutBrokerFailure -Scope Script -ErrorAction SilentlyContinue
     $form.UseWaitCursor = $true
     try { $report.Text = ((Get-SetupStatus -Root $packageRoot -CanonicalRoot $StableRoot).PSObject.Properties | ForEach-Object { "$($_.Name): $($_.Value)" }) -join "`r`n`r`n" }
     catch { $report.Text = 'The setup check failed. Open the installation guide and verify the complete package.' }
@@ -138,6 +139,7 @@ $recheck = Add-SetupButton 'Recheck' 20 415 120 {
 $guide = Add-SetupButton 'Open installation guide' 150 415 220 { Start-Process 'https://github.com/Belgian-Coder/ChatGPT-Remote-Enabler/blob/main/windows/README.md' }
 $copy = Add-SetupButton 'Copy diagnostic summary' 380 415 280 { [Windows.Forms.Clipboard]::SetText($report.Text) }
 $apply = Add-SetupButton 'Apply selected options' 20 462 250 {
+    Remove-Variable -Name StableShortcutBrokerFailure -Scope Script -ErrorAction SilentlyContinue
     $form.UseWaitCursor = $true
     try {
         $checks = Get-SetupStatus -Root $packageRoot -CanonicalRoot $StableRoot
@@ -165,6 +167,11 @@ $apply = Add-SetupButton 'Apply selected options' 20 462 250 {
         ) + $setupStartupPaths
         if (-not $desktop.Checked -and -not $startup.Checked) {
             $legacyCleanup = @(Invoke-StableLegacyCleanup -StableRoot $stableRootResolved -ShortcutPaths $setupShortcutPaths -TaskNames @('Codex Remote Mobile Features at Logon') -DesktopPath $DesktopPath -StartMenuPath $StartMenuPath -StartupPath $StartupPath -MigrateEntryPoints)
+            if (-not (Test-StableEntryPointsMigrated -StableRoot $stableRootResolved -ShortcutPaths @((Join-Path $StartMenuPath 'ChatGPT Remote Enabler.lnk')) -TaskNames @() -RequiredStartMenuPath $StartMenuPath)) {
+                $brokerFailure = Get-Variable -Name StableShortcutBrokerFailure -Scope Script -ErrorAction SilentlyContinue
+                if ($brokerFailure -and $brokerFailure.Value) { throw "The Start menu shortcut could not be registered: $($brokerFailure.Value)" }
+                throw 'The Start menu shortcut could not be registered. Check that the current user can write to the Start menu folder.'
+            }
             $report.Text = "The canonical stable installation is ready at $stableRootResolved. Existing aliases were migrated and obsolete version folders were checked for safe removal. No new shortcut choices were selected."
             return
         }
@@ -205,6 +212,11 @@ $apply = Add-SetupButton 'Apply selected options' 20 462 250 {
             & (Join-Path $stableRootResolved 'CodexRemoteMobileProject\StartupShortcut.ps1') @startupArguments | Out-Null
         }
         $legacyCleanup = @(Invoke-StableLegacyCleanup -StableRoot $stableRootResolved -ShortcutPaths $setupShortcutPaths -TaskNames @('Codex Remote Mobile Features at Logon') -DesktopPath $DesktopPath -StartMenuPath $StartMenuPath -StartupPath $StartupPath -MigrateEntryPoints)
+        if (-not (Test-StableEntryPointsMigrated -StableRoot $stableRootResolved -ShortcutPaths @((Join-Path $StartMenuPath 'ChatGPT Remote Enabler.lnk')) -TaskNames @() -RequiredStartMenuPath $StartMenuPath)) {
+            $brokerFailure = Get-Variable -Name StableShortcutBrokerFailure -Scope Script -ErrorAction SilentlyContinue
+            if ($brokerFailure -and $brokerFailure.Value) { throw "The Start menu shortcut could not be registered: $($brokerFailure.Value)" }
+            throw 'The Start menu shortcut could not be registered. Check that the current user can write to the Start menu folder.'
+        }
         $report.Text = "Selected options applied. Legacy aliases and existing logon entries now use the canonical stable installation at $stableRootResolved.`r`n`r`nOpen ChatGPT Remote Enabler; it can attach to a compatible ordinary app that is already running. Live integration readiness is checked during launch. Startup-only proxy or legacy settings are not applied automatically to the running app and may require a later explicit restart after active tasks are safe."
         $desktop.Checked = $false; $startup.Checked = $false
     } catch { $report.Text = "Setup did not complete. Some selected options may have succeeded; choose Recheck.`r`n`r`n" + $_.Exception.Message }

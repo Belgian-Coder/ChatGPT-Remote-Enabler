@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.5.101 - 2026-09-24
+
+- Register Windows shortcuts in the user's real Start menu when installation runs from a packaged app. Repair a missing Start menu entry during updates, preserving direct/proxy mode and foreign shortcuts without restarting ChatGPT.
+
 ## v1.5.100 — 2026-09-24
 
 - Recognize an exactly identified, direct Windows console-host child as console infrastructure during legacy updater recovery. Continue blocking actual child work or uncertain ownership; preserve the running ChatGPT session.

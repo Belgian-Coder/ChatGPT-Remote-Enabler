@@ -179,6 +179,27 @@ try {
         throw 'The consolidated manual entry points did not pass the idempotent preflight.'
     }
 
+    # A previous packaged installer can leave only a redirected copy of the
+    # Start menu link. The real folder is then empty, which must not qualify
+    # as already migrated. Repair that absence and inherit the owned desktop
+    # launch mode without creating another startup entry.
+    Remove-Item -LiteralPath $menuCanonical,$menuAlternateMode -Force
+    $desktopProxy = $shell.CreateShortcut($desktopCanonical)
+    $desktopProxy.Arguments = '--proxy'
+    $desktopProxy.Save()
+    if (Test-StableEntryPointsMigrated -StableRoot $fixtureStableRoot -ShortcutPaths $knownFixtureEntryPoints.ShortcutPaths -TaskNames $knownFixtureEntryPoints.TaskNames -StartupPath $startupFixture -RequiredStartMenuPath $fixtureMenu) {
+        throw 'A missing required Start menu entry was accepted as migrated.'
+    }
+    $missingMenuRepair = @(Invoke-StableShortcutMigration -StableRoot $fixtureStableRoot -DesktopPath $fixtureDesktop -StartMenuPath $fixtureMenu -StartupPath $startupFixture -TaskPrimary)
+    $repairedMenu = $shell.CreateShortcut($menuCanonical)
+    if (-not (Test-Path -LiteralPath $menuCanonical -PathType Leaf) -or $repairedMenu.Arguments -cne '--proxy' -or
+        -not [string]::Equals($repairedMenu.TargetPath, (Join-Path $fixtureStableRoot 'ChatGPT Remote Enabler.exe'), [StringComparison]::OrdinalIgnoreCase) -or
+        $script:registrations -ne 2) {
+        throw 'Missing Start menu repair failed to preserve the desktop mode or touched the scheduler.'
+    }
+    $desktopProxy.Arguments = ''
+    $desktopProxy.Save()
+
     # A foreign canonical shortcut owns its filename, but owned aliases beside
     # it must still stop targeting a retired installation. Preserve both alias
     # modes and their user metadata instead of consolidating or deleting them.

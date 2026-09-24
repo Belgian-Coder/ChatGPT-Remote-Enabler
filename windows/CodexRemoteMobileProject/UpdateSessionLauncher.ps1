@@ -104,6 +104,7 @@ function Copy-ImmutableUpdateSessionBundle {
         'electron-attach.js' = Join-Path $BundleRoot 'CodexRemoteSimple\runtime\lib\electron-attach.js'
         'Update-ChatGPTRemote.ps1' = Join-Path $BundleRoot 'Update-ChatGPTRemote.ps1'
         'StableInstall.ps1' = Join-Path $BundleRoot 'StableInstall.ps1'
+        'UnvirtualizedShortcuts.ps1' = Join-Path $BundleRoot 'UnvirtualizedShortcuts.ps1'
         'update-transaction.js' = Join-Path $BundleRoot 'update-transaction.js'
         'git-release.js' = Join-Path $BundleRoot 'git-release.js'
         'git-checkout-update.js' = Join-Path $BundleRoot 'git-checkout-update.js'

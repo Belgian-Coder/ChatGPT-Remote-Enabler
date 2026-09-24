@@ -346,7 +346,24 @@ try { [IO.File]::WriteAllText($SignalPath, 'locked'); Start-Sleep -Seconds 60 } 
 
     $invalidAlias = Join-Path $desktopPath 'ChatGPT Custom.lnk'
     [IO.File]::WriteAllText($invalidAlias, 'not-a-shortcut', [Text.UTF8Encoding]::new($false))
-    $migrationFailureResult = @(Invoke-StableLegacyCleanup -StableRoot $stableRoot -UpdaterStateRoot $stateRoot -LegacyRoots @($migrationFailureLegacyRoot) -ApprovedLegacyParents @($approvedReleaseParent) -ShortcutPaths @($invalidAlias) -ProcessEnumerator { @() } -MigrateEntryPoints)
+    $migrationFailureResult = @(& {
+        function Invoke-StableShortcutBroker {
+            param($Operation, $Arguments, $Paths, $ScriptPath)
+            foreach ($path in $Paths) {
+                if ($path -and $path.StartsWith([Environment]::GetFolderPath('Programs'), [StringComparison]::OrdinalIgnoreCase)) { throw 'Isolated cleanup consulted real Start menu paths.' }
+            }
+            return [pscustomobject]@{ handled = $false }
+        }
+        # Test-StableEntryPointsMigrated converts errors to false, so also
+        # assert the required path passed by the non-canonical cleanup caller.
+        $originalProbe = ${function:Test-StableEntryPointsMigrated}
+        function Test-StableEntryPointsMigrated {
+            param($StableRoot, $ShortcutPaths, $TaskNames, $StartupPath, $RequiredStartMenuPath)
+            if ($RequiredStartMenuPath) { throw 'Isolated cleanup required the real Start menu.' }
+            & $originalProbe -StableRoot $StableRoot -ShortcutPaths $ShortcutPaths -TaskNames $TaskNames -StartupPath $StartupPath
+        }
+        Invoke-StableLegacyCleanup -StableRoot $stableRoot -UpdaterStateRoot $stateRoot -LegacyRoots @($migrationFailureLegacyRoot) -ApprovedLegacyParents @($approvedReleaseParent) -ShortcutPaths @($invalidAlias) -ProcessEnumerator { @() } -MigrateEntryPoints
+    })
     Assert-Condition ((Test-Path -LiteralPath $migrationFailureLegacyRoot -PathType Container) -and $migrationFailureResult[0].reason -eq 'entrypoint-migration-failed' -and -not $migrationFailureResult[0].cleaned) 'Failed shortcut migration did not retain the referenced legacy root.'
 
     $reparseTarget = Join-Path $fixtureRoot 'reparse-target'

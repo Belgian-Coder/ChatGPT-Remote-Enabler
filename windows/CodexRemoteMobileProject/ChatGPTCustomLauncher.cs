@@ -11,8 +11,8 @@ using System.Threading;
 [assembly: AssemblyDescription("Starts ChatGPT with the capability-tested remote Mobile projects injection")]
 [assembly: AssemblyCompany("Community")]
 [assembly: AssemblyProduct("ChatGPT Custom")]
-[assembly: AssemblyVersion("1.5.100.0")]
-[assembly: AssemblyFileVersion("1.5.100.0")]
+[assembly: AssemblyVersion("1.5.101.0")]
+[assembly: AssemblyFileVersion("1.5.101.0")]
 
 internal static class ChatGPTCustomLauncher
 {

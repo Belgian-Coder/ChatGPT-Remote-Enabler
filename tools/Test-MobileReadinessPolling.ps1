@@ -45,7 +45,7 @@ foreach ($case in $cases) {
     $parseErrors = $null
     $ast = [Management.Automation.Language.Parser]::ParseFile($sourcePath, [ref]$tokens, [ref]$parseErrors)
     if ($parseErrors.Count) { throw "Controller parse failed: $($case.Path) - $($parseErrors[0].Message)" }
-    foreach ($functionName in @($case.GetFunction, $case.AssertFunction, $case.TimeoutFunction, $case.WaitFunction, $case.BackgroundFunction)) {
+    foreach ($functionName in @($case.GetFunction, $case.AssertFunction, $case.TimeoutFunction, $case.WaitFunction, $case.BackgroundFunction, 'Get-LastJsonResult')) {
         $definition = $ast.FindAll({
             param($node)
             $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $functionName
@@ -222,11 +222,22 @@ if ($Action -cne 'RepairPublisher' -or [string]::IsNullOrWhiteSpace($NodePath) -
             $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $case.BackgroundFunction
         }, $true) | Select-Object -First 1
         Invoke-Expression $definition.Extent.Text
-        & $case.BackgroundFunction -NodePath (Join-Path $fixtureRoot 'node.exe')
+        $started = & $case.BackgroundFunction -NodePath (Join-Path $fixtureRoot 'node.exe')
+        if ($started -isnot [bool] -or -not $started) { throw 'Successful background startup did not return true.' }
         $sequence = @(Get-Content -LiteralPath $sequencePath)
         if ($sequence.Count -ne 2 -or $sequence[0] -cne 'heartbeat' -or $sequence[1] -cne 'update') {
             throw "Background services were not attached heartbeat-first for $($case.Path): $($sequence -join ', ')"
         }
+        foreach ($failureResult in @('{"started":false,"reused":true,"reason":"active-coordinator-bridge-unhealthy"}', '{"started":"true"}', '{}', 'invalid-json')) {
+            [IO.File]::WriteAllText($sessionLauncher, $sessionSource.Replace('{"started":true}', $failureResult), [Text.UTF8Encoding]::new($false))
+            $retryLogs.Clear()
+            $started = & $case.BackgroundFunction -NodePath (Join-Path $fixtureRoot 'node.exe')
+            if ($started -isnot [bool] -or $started) { throw "Unavailable coordinator was reported healthy: $failureResult" }
+            if (-not @($retryLogs | Where-Object { $_ -like '*update-session launch unavailable:*' }).Count) {
+                throw 'Unavailable coordinator was not diagnosed.'
+            }
+        }
+        [IO.File]::WriteAllText($sessionLauncher, $sessionSource, [Text.UTF8Encoding]::new($false))
     }
 } finally {
     Remove-Item Function:\Start-StartupBackgroundProcess -ErrorAction SilentlyContinue

@@ -107,8 +107,15 @@ const context = vm.createContext({
   setTimeout: setFixtureTimeout,
 });
 context.globalThis = context;
+context.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__ = {
+  version: 95,
+  probe: () => ({ active: true, view: "native", filter: "local" }),
+  uninstall() {},
+};
 vm.runInContext(testSource, context, { filename: rendererPath });
 const reliability = context.__rendererReliabilityTest;
+assert.equal(reliability.state.view, "native", "a live update preserves the chosen sidebar view");
+assert.equal(reliability.state.filter, "local", "a live update preserves the chosen device filter");
 
 async function drainAsyncWork() {
   for (let turn = 0; turn < 20; turn += 1) {

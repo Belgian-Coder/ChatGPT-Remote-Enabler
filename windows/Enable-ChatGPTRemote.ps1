@@ -132,7 +132,7 @@ function Start-RemoteMobileBackgroundServices {
     try {
         $publisherRepair = Join-Path $runtimeRoot 'CodexRemoteMobileProject\MobileProjectStartup.ps1'
         $legacyPublisher = Join-Path $sourcePackageRoot 'CodexRemoteMobileProject\publisher-heartbeat.js'
-        & $publisherRepair -Action RepairPublisher -NodePath $NodePath -LegacyPublisherScriptPath $legacyPublisher
+        & $publisherRepair -Action RepairPublisher -NodePath $NodePath -LegacyPublisherScriptPath $legacyPublisher | ForEach-Object { Write-RemoteLauncherLog ([string]$_) }
         Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] publisher heartbeat repair/reuse completed for the exact renderer session"
     } catch {
         Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] publisher heartbeat unavailable: $($_.Exception.Message)"
@@ -148,11 +148,18 @@ function Start-RemoteMobileBackgroundServices {
             UseProxy = [bool]$UseProxy
             SkipInitialCheck = [bool]($SkipUpdate -or $SkipUpdateCheckOnce)
         }
-        & $updateSessionLauncher @sessionArguments | ForEach-Object { Write-RemoteLauncherLog ([string]$_) }
+        $sessionOutput = @(& $updateSessionLauncher @sessionArguments 2>&1)
+        $sessionOutput | ForEach-Object { Write-RemoteLauncherLog ([string]$_) }
+        $sessionResult = Get-LastJsonResult -Output $sessionOutput
+        if ($sessionResult.started -isnot [bool] -or -not $sessionResult.started) {
+            throw 'The update coordinator did not confirm that monitoring is active. The running app was preserved.'
+        }
         $sessionTimer.Stop()
         Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] stage=update-session durationMs=$($sessionTimer.ElapsedMilliseconds)"
+        return $true
     } catch {
         Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] update-session launch unavailable: $($_.Exception.Message)"
+        return $false
     }
 }
 
@@ -807,7 +814,7 @@ try {
         $enableOutput = @(& $mobile -Action Enable -TargetWaitMilliseconds 30000 -DeferUpdateSession -NodePath $node -Confirm:$false 2>&1)
         $enableOutput | ForEach-Object { Write-Host $_ }
         $report = Get-RemoteMobileReport -Output $enableOutput
-        Start-RemoteMobileBackgroundServices -NodePath $node
+        $monitorStarted = Start-RemoteMobileBackgroundServices -NodePath $node
         $report = Wait-RemoteMobileReadiness -Report $report -TimeoutSeconds 45 -Probe {
             $probeOutput = @(& $mobile -Action Probe -NodePath $node 2>&1)
             $probeOutput
@@ -815,7 +822,7 @@ try {
         $mobileTimer.Stop()
         Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] stage=mobile-readiness durationMs=$($mobileTimer.ElapsedMilliseconds) mounted=$($report.mounted) localRuntimeReady=$($report.localRuntimeReady) authoritativeInventoryReady=$($report.authoritativeInventoryReady) publisherReady=$($report.publisherReady) ready=$($report.ready)"
         Stop-StartupProgress
-        Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] interactive startup completed"
+        Write-RemoteLauncherLog "$(Get-Date -Format o) [$($env:COMPUTERNAME)] interactive startup completed; updateMonitoringConfirmed=$monitorStarted"
         Write-RemoteRelaunchHandoff
     }
 

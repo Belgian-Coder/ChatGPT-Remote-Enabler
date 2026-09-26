@@ -2,6 +2,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const crypto = require("node:crypto");
 const stableRoot = path.resolve(__dirname, "..", "CodexRemoteSimple");
 const { connectTarget, discoverTargets, evaluate } = require(path.join(stableRoot, "runtime", "lib", "cdp.js"));
 
@@ -12,6 +13,7 @@ const userStateRoot = process.env.LOCALAPPDATA
   || (process.env.HOME ? path.join(process.env.HOME, ".local", "state") : null)
   || __dirname;
 const STATE_PATH = path.join(userStateRoot, "CodexRemoteFeatures", "mobile-project-session.json");
+const INJECTION_SLOT = "__CODEX_REMOTE_MOBILE_INJECTION__";
 const PROBE_TIMEOUT_MS = 10000;
 const ENABLE_TARGET_WAIT_MS = 30000;
 const RETRYABLE_DISCOVERY_CODES = new Set([
@@ -67,6 +69,7 @@ function normalizeRegistration(value) {
     identifier: value.identifier,
     port: value.port,
     ...(Number.isSafeInteger(value.version) && value.version > 0 ? { version: value.version } : {}),
+    ...(typeof value.token === "string" && /^[a-f0-9]{32}$/u.test(value.token) ? { token: value.token } : {}),
   };
 }
 
@@ -286,6 +289,65 @@ async function disableRenderer(client, port, dependencies = {}) {
   return { report, stale: cleanup.stale };
 }
 
+async function enableRenderer(client, { port, payload, config }, dependencies = {}) {
+  const readState = dependencies.readSessionState ?? readSessionState;
+  const persistState = dependencies.persistSessionState ?? persistSessionState;
+  const remove = dependencies.removeRegistrations ?? removeRegistrations;
+  const evaluateCall = dependencies.evaluate ?? evaluate;
+  const configText = JSON.stringify(config);
+  const prior = readState();
+  const current = prior.filter((registration) => registration.port === port);
+  // The token and API object are created by the persistent script in this
+  // renderer. A saved registration cannot prove reuse after a port is recycled.
+  if (current.length === 1 && /^[a-f0-9]{32}$/u.test(current[0].token ?? "")) {
+    try {
+      const proof = await evaluateCall(client,
+        `(() => { const api = globalThis.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__; const marker = globalThis[${JSON.stringify(INJECTION_SLOT)}]; return { matches: marker?.token === ${JSON.stringify(current[0].token)} && marker?.api === api && marker?.sourceText === ${JSON.stringify(payload)} && marker?.configText === ${JSON.stringify(configText)}, report: api?.probe?.() ?? null }; })()`, PROBE_TIMEOUT_MS);
+      if (proof?.matches === true
+        && proof.report?.active === true
+        && proof.report?.readiness?.ready === true
+        && Number.isInteger(proof.report.version)
+        && proof.report.version === current[0].version) return proof.report;
+    } catch {} // An unproven view follows the normal replacement path.
+  }
+  const priorCleanup = await remove(client, prior, port);
+  persistState(priorCleanup.pending);
+  throwCleanupFailure(priorCleanup.failures);
+  const token = crypto.randomBytes(16).toString("hex");
+  const expression = payload.replace(/^\s*"use strict";\s*/u, "").trim();
+  if (!expression.startsWith("(() => {") || !expression.endsWith("})();")) {
+    throw new Error("The mobile renderer source is not a supported installation expression");
+  }
+  const source = `globalThis.__CODEX_REMOTE_MOBILE_CONFIG__ = Object.freeze(${configText});\n`
+    + `(() => { const report = ${expression}\n`
+    + `const api = globalThis.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__;\n`
+    + `return Promise.resolve(report).then((value) => {\n`
+    + `  if (value?.active === true && globalThis.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__ === api) {\n`
+    + `    globalThis[${JSON.stringify(INJECTION_SLOT)}] = Object.freeze({ token: ${JSON.stringify(token)}, sourceText: ${JSON.stringify(payload)}, configText: ${JSON.stringify(configText)}, api });\n`
+    + `  }\n`
+    + `  return value;\n`
+    + `}); })()`;
+  const persistent = await client.call("Page.addScriptToEvaluateOnNewDocument", { source }, 5000);
+  if (typeof persistent?.identifier !== "string" || !persistent.identifier) throw new Error("CDP did not return a persistent script identifier");
+  const registration = { identifier: persistent.identifier, port, token };
+  try {
+    persistState([...priorCleanup.pending, registration]);
+    const report = await evaluateCall(client, source, 10000);
+    const validCounts = [report?.hosts, report?.projects, report?.tasks]
+      .every((value) => Number.isInteger(value) && value >= 0);
+    if (report?.active !== true || !validCounts || !Number.isInteger(report?.version) || report.version < 1) throw new Error("Mobile project view did not return valid proof");
+    registration.version = report.version;
+    persistState([...priorCleanup.pending, registration]);
+    return report;
+  } catch (error) {
+    try { await evaluateCall(client, "globalThis.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__?.uninstall?.()", 5000); } catch {}
+    const rollback = await remove(client, [registration], port);
+    persistState([...priorCleanup.pending, ...rollback.pending]);
+    if (rollback.failures.length > 0) error.message = `${error.message}; persistent registration cleanup is pending`;
+    throw error;
+  }
+}
+
 async function main(argv = process.argv.slice(2)) {
   const options = parseArgs(argv);
   const client = await connectRendererTargetWithRetry(
@@ -294,10 +356,6 @@ async function main(argv = process.argv.slice(2)) {
   );
   try {
     if (options.action === "enable") {
-      const prior = readSessionState();
-      const priorCleanup = await removeRegistrations(client, prior, options.port);
-      persistSessionState(priorCleanup.pending);
-      throwCleanupFailure(priorCleanup.failures);
       const payload = fs.readFileSync(path.join(__dirname, "renderer-mobile-project-view.js"), "utf8");
       let hostDisplayNames = {};
       let singleRemoteDisplayName = options.singleRemoteName;
@@ -317,28 +375,10 @@ async function main(argv = process.argv.slice(2)) {
         const candidate = fs.readFileSync(path.join(__dirname, "..", "VERSION"), "utf8").trim();
         if (/^v\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/u.test(candidate) && candidate.length <= 64) helperVersion = candidate;
       } catch {}
-      const prefix = `globalThis.__CODEX_REMOTE_MOBILE_CONFIG__ = Object.freeze(${JSON.stringify({ hostDisplayNames, localDisplayName: options.localName, singleRemoteDisplayName, helperVersion })});\n`;
-      const source = prefix + payload;
-      const persistent = await client.call("Page.addScriptToEvaluateOnNewDocument", { source }, 5000);
-      if (typeof persistent?.identifier !== "string" || !persistent.identifier) throw new Error("CDP did not return a persistent script identifier");
-      const registration = { identifier: persistent.identifier, port: options.port };
-      try {
-        persistSessionState([...priorCleanup.pending, registration]);
-        const report = await evaluate(client, source, 10000);
-        const validCounts = [report?.hosts, report?.projects, report?.tasks]
-          .every((value) => Number.isInteger(value) && value >= 0);
-        if (report?.active !== true || !validCounts || !Number.isInteger(report?.version) || report.version < 1) throw new Error("Mobile project view did not return valid proof");
-        registration.version = report.version;
-        persistSessionState([...priorCleanup.pending, registration]);
-        process.stdout.write(`${JSON.stringify({ action: options.action, ok: true, report })}\n`);
-        return;
-      } catch (error) {
-        try { await evaluate(client, "globalThis.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__?.uninstall?.()", 5000); } catch {}
-        const rollback = await removeRegistrations(client, [registration], options.port);
-        persistSessionState([...priorCleanup.pending, ...rollback.pending]);
-        if (rollback.failures.length > 0) error.message = `${error.message}; persistent registration cleanup is pending`;
-        throw error;
-      }
+      const config = { hostDisplayNames, localDisplayName: options.localName, singleRemoteDisplayName, helperVersion };
+      const report = await enableRenderer(client, { port: options.port, payload, config });
+      process.stdout.write(`${JSON.stringify({ action: options.action, ok: true, report })}\n`);
+      return;
     }
     if (options.action === "disable") {
       const disabled = await disableRenderer(client, options.port);
@@ -408,4 +448,5 @@ module.exports = {
   rendererTargetWaitMilliseconds,
   requiredApiCall,
   disableRenderer,
+  enableRenderer,
 };

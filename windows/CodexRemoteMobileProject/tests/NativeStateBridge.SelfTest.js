@@ -20,6 +20,10 @@ function fixture() {
       { href: "https://untrusted.invalid/assets/app-initial-remote.js" },
       { href: "app://other/assets/app-initial-other.js" },
       { href: "app://-/assets/app-initial-fixture.js" },
+      ...Array.from({ length: 6 }, (_, index) => ({ href: `app://-/assets/index-chunk-${index}.js` })),
+      { href: "app://-/assets/app-shared-fixture.js" },
+      { href: "https://untrusted.invalid/assets/app-shared-remote.js" },
+      { href: "app://other/assets/app-shared-other.js" },
     ] : [], getElementById: () => null },
     localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
   });
@@ -28,7 +32,9 @@ function fixture() {
 }
 (async () => {
   const { context, f, storage } = fixture();
-  assert.deepEqual([...f.nativeStateModuleUrls()], ["app://-/assets/app-initial-fixture.js"]);
+  assert.equal(f.nativeStateModuleUrls().length, 6, "module discovery remains bounded");
+  assert.deepEqual([...f.nativeStateModuleUrls()].slice(0, 2), ["app://-/assets/app-initial-fixture.js", "app://-/assets/app-shared-fixture.js"], "shared modules must be considered before generic chunks consume the limit");
+  assert.ok(f.nativeStateModuleUrls().every(url => url.startsWith("app://-/assets/")), "foreign modules remain excluded");
   const requests = [];
   let imports = 0, releaseImport;
   const importGate = new Promise(resolve => { releaseImport = resolve; });
@@ -44,6 +50,18 @@ function fixture() {
     }
   }
   NativeClient.instance = new NativeClient();
+  const shared = fixture();
+  const sharedImports = [];
+  const sharedBridge = await shared.f.ensureLocalStateBridge(async url => {
+    sharedImports.push(url);
+    return url.includes("/app-shared-") ? { renamedExport: NativeClient } : {};
+  });
+  assert.equal(typeof sharedBridge, "function", "the bridge may move from the initial module to the shared module");
+  assert.deepEqual(sharedImports, ["app://-/assets/app-initial-fixture.js", "app://-/assets/app-shared-fixture.js"]);
+  assert.deepEqual(await sharedBridge("get-global-state", { params: { key: "pinned-thread-ids" } }), { value: [] });
+  assert.ok(requests.every(request => request.url.endsWith("get-global-state")), "discovery must remain read-only");
+  shared.f.state.disposed = true;
+  requests.length = 0;
   assert.equal(f.nativeStateClientClass(fakeProxy), false, "RPC proxies must not match native client descriptors");
   const load = async url => { imports++; assert.equal(url, "app://-/assets/app-initial-fixture.js"); await importGate; return { unknownProxy: fakeProxy, renamedExport: NativeClient }; };
   const first = f.ensureLocalStateBridge(load);

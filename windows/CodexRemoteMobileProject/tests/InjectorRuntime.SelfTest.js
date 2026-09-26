@@ -6,6 +6,106 @@ const os = require("node:os");
 const path = require("node:path");
 const vm = require("node:vm");
 const injector = require("../inject.js");
+const macInjector = require("../../../macos/inject.js");
+
+async function testHealthyEnableReuse(implementation) {
+  const port = 41001;
+  const payload = `"use strict";\n(() => {
+    globalThis.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__?.uninstall?.();
+    globalThis.forceInactive = false;
+    globalThis.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__ = {
+      probe: () => ({ active: !globalThis.forceInactive, version: 95, readiness: { ready: globalThis.ready }, hosts: 1, projects: 1, tasks: 1 }),
+      uninstall: () => { globalThis.uninstalls = (globalThis.uninstalls || 0) + 1; },
+    };
+    return globalThis.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__.probe();
+  })();`;
+  const config = { hostDisplayNames: { local: "Local" }, localDisplayName: "Local", singleRemoteDisplayName: null, helperVersion: "v1.5.101" };
+  let persisted = [];
+  let context = vm.createContext({ ready: true });
+  const events = [];
+  const registrations = new Set();
+  const client = {
+    call: async (method, args) => {
+      events.push(method);
+      if (method === "Page.addScriptToEvaluateOnNewDocument") {
+        const identifier = `registration-${events.length}`;
+        registrations.add(identifier);
+        return { identifier };
+      }
+      if (method === "Page.removeScriptToEvaluateOnNewDocument") {
+        if (!registrations.delete(args.identifier)) {
+          const error = new Error("No script with that identifier");
+          error.code = "CDP_PROTOCOL_ERROR";
+          throw error;
+        }
+      }
+    },
+  };
+  const dependencies = {
+    readSessionState: () => persisted,
+    persistSessionState: (value) => { persisted = structuredClone(value); },
+    evaluate: async (_client, expression, timeout) => {
+      if (expression.startsWith("(() => { const api")) assert.equal(timeout, 10000, "reuse health probes retain the full busy-renderer timeout");
+      events.push(expression.startsWith("(() => { const api") ? "probe" : "payload");
+      return vm.runInContext(expression, context);
+    },
+  };
+  const enable = (overrides = {}) => implementation.enableRenderer(client,
+    { port, payload, config, ...overrides }, dependencies);
+  await enable();
+  assert.equal(persisted.length, 1);
+  assert.match(persisted[0].token, /^[a-f0-9]{32}$/u);
+  assert.equal(context.uninstalls ?? 0, 0);
+
+  events.length = 0;
+  const reused = await enable();
+  assert.equal(reused.readiness.ready, true);
+  assert.deepEqual(events, ["probe"], "matching healthy enable must only probe, without replacement evaluation or CDP registration changes");
+  assert.equal(context.uninstalls ?? 0, 0, "reuse must preserve the current view");
+
+  for (const change of [
+    { config: { ...config, localDisplayName: "Renamed" } },
+    { payload: payload.replace("globalThis.forceInactive = false;", "globalThis.forceInactive = false; /* changed */") },
+  ]) {
+    events.length = 0;
+    await enable(change);
+    assert.ok(events.includes("Page.removeScriptToEvaluateOnNewDocument"));
+    assert.ok(events.includes("Page.addScriptToEvaluateOnNewDocument"));
+    assert.ok(events.includes("payload"));
+  }
+
+  // Bring source and config back to the base input, then prove failed health
+  // and missing ownership do not reuse an otherwise matching renderer.
+  await enable();
+  context.ready = false;
+  events.length = 0;
+  await enable();
+  assert.ok(events.includes("probe") && events.includes("payload"), "failed readiness must force replacement");
+  context.ready = true;
+  context.forceInactive = true;
+  events.length = 0;
+  await enable();
+  assert.ok(events.includes("probe") && events.includes("payload"), "inactive renderer must force replacement");
+  context.__CODEX_REMOTE_MOBILE_PROJECT_VIEW__ = {
+    probe: () => ({ active: true, version: 95, readiness: { ready: true }, hosts: 1, projects: 1, tasks: 1 }),
+    uninstall: () => {},
+  };
+  events.length = 0;
+  await enable();
+  assert.ok(events.includes("probe") && events.includes("payload"), "an independently replaced API must not inherit the old source marker");
+  persisted = [];
+  events.length = 0;
+  await enable();
+  assert.ok(events.includes("payload") && events.includes("Page.addScriptToEvaluateOnNewDocument"), "missing durable registration must force replacement");
+
+  // A new renderer can recycle the same port while the old registration file
+  // remains. Its missing per-renderer token must prevent stale reuse.
+  context = vm.createContext({ ready: true });
+  registrations.clear();
+  events.length = 0;
+  await enable();
+  assert.ok(events.includes("probe") && events.includes("payload"), "restarted renderer must force replacement");
+}
 
 function testActionSpecificTargetWait() {
   assert.equal(injector.rendererTargetWaitMilliseconds("enable", 0), 30000,
@@ -176,11 +276,13 @@ function testAtomicStateAndLegacyMigration() {
     assert.deepEqual(registrations, [{ identifier: "legacy", port: 41001, version: 1 }]);
     injector.persistSessionState([
       ...registrations,
-      { identifier: "current", port: 41002, version: 2 },
+      { identifier: "current", port: 41002, version: 2, token: "b".repeat(32) },
     ], statePath, legacyPath);
     const stored = JSON.parse(fs.readFileSync(statePath, "utf8"));
     assert.equal(stored.schemaVersion, 2);
     assert.deepEqual(stored.registrations.map((item) => item.identifier), ["legacy", "current"]);
+    assert.deepEqual(injector.readSessionState([statePath, legacyPath])[1],
+      { identifier: "current", port: 41002, version: 2, token: "b".repeat(32) });
     assert.equal(fs.existsSync(legacyPath), false);
     injector.persistSessionState([{ identifier: "replacement", port: 41003, version: 3 }], statePath, legacyPath);
     assert.deepEqual(JSON.parse(fs.readFileSync(statePath, "utf8")).registrations, [
@@ -206,6 +308,8 @@ function testInactiveMutationFails() {
 }
 
 async function main() {
+  await testHealthyEnableReuse(injector);
+  await testHealthyEnableReuse(macInjector);
   testActionSpecificTargetWait();
   await testTransientDiscoveryRetry();
   await testTransientConnectRetry();
@@ -213,7 +317,7 @@ async function main() {
   await testDisablePrunesDeadRegistrations();
   testAtomicStateAndLegacyMigration();
   testInactiveMutationFails();
-  process.stdout.write(`${JSON.stringify({ actionSpecificTargetWait: true, atomicState: true, cleanupRetention: true, disablePrunesDeadRegistrations: true, inactiveMutationFails: true, transientDiscoveryRetry: true, transientConnectRetry: true })}\n`);
+  process.stdout.write(`${JSON.stringify({ healthyEnableReuse: true, actionSpecificTargetWait: true, atomicState: true, cleanupRetention: true, disablePrunesDeadRegistrations: true, inactiveMutationFails: true, transientDiscoveryRetry: true, transientConnectRetry: true })}\n`);
 }
 
 main().catch((error) => {

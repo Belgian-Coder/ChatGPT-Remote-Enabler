@@ -80,7 +80,7 @@
     "unknown",
   ]);
   const PUBLISHER_VERSION = 54;
-  const VERSION = 95;
+  const VERSION = 96;
   // Keep outstanding writes locked across renderer reinjection until the underlying RPC settles.
   const peerWriteLocks = globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ instanceof Map
     ? globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ : (globalThis.__CODEX_REMOTE_PEER_WRITE_LOCKS__ = new Map());
@@ -168,7 +168,9 @@
     drag: null,
     dragJustEndedAt: 0,
     disposed: false,
-    filter: "all",
+    filter: typeof previousProbe?.filter === "string" ? previousProbe.filter : "all",
+    pendingFilter: typeof previousProbe?.pendingFilter === "string" ? previousProbe.pendingFilter
+      : typeof previousProbe?.filter === "string" && previousProbe.filter !== "all" ? previousProbe.filter : null,
     hostConnectivity: new Map(),
     inventoryHydrationPending: false,
     inventoryHydrationError: sharedThreadListRegistry.recoveryPending ? sharedThreadListRegistry.recoveryReason : null,
@@ -267,7 +269,7 @@
     }]] : []),
     threadManagers: new Map(),
     verifiedThreadIds: new Map(),
-    view: "mobile",
+    view: previousProbe?.view === "native" ? "native" : "mobile",
     updateStatus: null,
     settingsOpen: false,
     searchDraft: "",
@@ -390,9 +392,13 @@
       try {
         const url = new URL(source);
         return url.protocol === location.protocol && url.host === location.host
-          && /\/assets\/(?:app-initial|app-main|index|main)-[^/]+\.js$/u.test(url.pathname);
+          && /\/assets\/(?:app-initial|app-main|app-shared|index|main)-[^/]+\.js$/u.test(url.pathname);
       } catch { return false; }
-    }).sort((a, b) => Number(!a.includes("/app-initial-")) - Number(!b.includes("/app-initial-"))).slice(0, 6);
+    }).sort((a, b) => {
+      const priority = url => ["app-initial", "app-shared", "app-main", "main", "index"]
+        .indexOf(new URL(url).pathname.match(/\/assets\/(app-initial|app-shared|app-main|main|index)-/u)?.[1]);
+      return priority(a) - priority(b);
+    }).slice(0, 6);
   }
 
   function nativeStateClientClass(value) {
@@ -7794,7 +7800,7 @@
     }
     for (const container of state.nativeContainers) container.style.setProperty("display", "none", "important");
 
-    if (state.filter !== "all" && !model.hosts.some((host) => host.id === state.filter)) state.filter = "all";
+    reconcileDeviceFilter(model.hosts);
     const filters = document.createElement("div");
     filters.className = "crmp-filters";
     filters.setAttribute("role", "group");
@@ -7827,7 +7833,7 @@
         }
         chip.prepend(dot);
       }
-      chip.addEventListener("click", () => { state.filter = host.id; render(); });
+      chip.addEventListener("click", () => setFilter(host.id));
       filters.appendChild(chip);
     }
 
@@ -8023,6 +8029,7 @@
       autoSuppressedProjects: Object.keys(readRecords(AUTO_SUPPRESSED_KEY)).length,
       counters: { ...state.counters },
       filter: state.filter,
+      pendingFilter: state.pendingFilter,
       hosts: model.hosts.length,
       hostNames: model.hosts.map((host) => host.name),
       nativeConnectionState: nativeConnectionStatus(),
@@ -8148,7 +8155,16 @@
     });
   }
 
+  function reconcileDeviceFilter(hosts) {
+    if (state.pendingFilter && hosts.some(host => host.id === state.pendingFilter)) {
+      state.filter = state.pendingFilter;
+      state.pendingFilter = null;
+    }
+    if (state.filter !== "all" && !hosts.some(host => host.id === state.filter)) state.filter = "all";
+  }
+
   function setFilter(hostId) {
+    state.pendingFilter = null;
     state.filter = typeof hostId === "string" ? hostId : "all";
     return render();
   }

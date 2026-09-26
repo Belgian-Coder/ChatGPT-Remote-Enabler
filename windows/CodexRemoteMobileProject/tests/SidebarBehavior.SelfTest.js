@@ -115,7 +115,7 @@ const originalSource = fs.readFileSync(rendererPath, "utf8");
 const testSource = originalSource
   .replace("(() => {", "globalThis.__sidebarTest = (() => {")
   .replace("  return installWhenDocumentReady(api, state, install, probe);\n})();", `  return {
-    state, button, setFocusKey, nativeElementDisabled, invokeNativeElement, bindActivation,
+    state, button, setFilter, reconcileDeviceFilter, setFocusKey, nativeElementDisabled, invokeNativeElement, bindActivation,
     captureSidebarFocus, restoreSidebarFocus, restoreRenderedFocus,
     focusProjectOverlay, bindOverlayKeyboard, openProjectContextMenu,
     closeProjectOverlays, projectCard, projectContextMenu, bindReorder,
@@ -137,6 +137,20 @@ const context = vm.createContext({
 vm.runInContext(testSource, context, { filename: rendererPath });
 const sidebar = context.__sidebarTest;
 assert.ok(sidebar?.restoreRenderedFocus, "renderer startup must remain disabled in the test adapter");
+sidebar.state.filter = "delayed-remote";
+sidebar.state.pendingFilter = "delayed-remote";
+sidebar.reconcileDeviceFilter([{ id: "local" }]);
+assert.equal(sidebar.state.filter, "all", "missing hosts must not leave an unusable empty view");
+assert.equal(sidebar.state.pendingFilter, "delayed-remote", "the first render must retain the restored selection until inventory arrives");
+sidebar.reconcileDeviceFilter([{ id: "local" }, { id: "delayed-remote" }]);
+assert.equal(sidebar.state.filter, "delayed-remote");
+assert.equal(sidebar.state.pendingFilter, null);
+sidebar.state.pendingFilter = "another-remote";
+sidebar.setRender(() => ({}));
+sidebar.setFilter("local");
+sidebar.reconcileDeviceFilter([{ id: "local" }, { id: "another-remote" }]);
+assert.equal(sidebar.state.filter, "local", "a later inventory must not override an explicit selection");
+assert.equal(sidebar.state.pendingFilter, null);
 const panel = document.createElement("div");
 panel.id = "codex-remote-mobile-project-panel";
 document.body.appendChild(panel);

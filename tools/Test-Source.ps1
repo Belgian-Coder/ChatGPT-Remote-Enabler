@@ -150,7 +150,7 @@ foreach ($pair in @(
 }
 $renderer = Get-Content -LiteralPath $windowsRenderer -Raw
 $requiredContracts = @(
-    'const VERSION = 95;',
+    'const VERSION = 96;',
     'NATIVE_CONNECTION_CATALOG_REFRESH_MS',
     'refresh-remote-control-connections',
     'hostDisplayName: config.localDisplayName || null',
@@ -273,6 +273,7 @@ $crossHostPowerShellTests = @(
     (Join-Path $root 'tools\Test-WindowlessStartupTask.ps1')
     (Join-Path $root 'tools\Test-UnvirtualizedShortcuts.ps1')
     (Join-Path $root 'tools\Test-PendingStartupRecovery.ps1')
+    (Join-Path $root 'tools\Test-MobileReadinessPolling.ps1')
 )
 foreach ($hostCommand in @('powershell.exe', 'pwsh.exe')) {
     $hostPath = (Get-Command $hostCommand -ErrorAction SilentlyContinue).Source
@@ -358,9 +359,6 @@ if ($LASTEXITCODE -ne 0) { throw 'Legacy device-key compatibility self-test fail
 
 & (Join-Path $root 'tools\Test-LegacyDeviceKeyStartup.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Legacy device-key startup self-test failed.' }
-
-& (Join-Path $root 'tools\Test-MobileReadinessPolling.ps1')
-if ($LASTEXITCODE -ne 0) { throw 'Mobile readiness polling self-test failed.' }
 
 & (Join-Path $root 'tools\Test-ProxyRuntimePreparer.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Private proxy runtime preparer self-test failed.' }

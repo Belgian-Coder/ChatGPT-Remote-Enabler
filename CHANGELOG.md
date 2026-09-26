@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.5.102 - 2026-09-26
+
+- Discover the native local-state service when ChatGPT loads it from its shared app module. Restore pinned-chat protection and project-state access while retaining same-app module filtering and a read-only capability probe.
+- Reuse an already healthy sidebar on repeated Enable when its exact source, configuration and persistent registration still match. Changed or unhealthy renderers continue through normal replacement.
+- Preserve the selected sidebar view and device filter when a live helper update replaces the renderer.
+- Check the update coordinator's startup result and record unavailable monitoring explicitly while preserving a working ChatGPT session.
+
 ## v1.5.101 - 2026-09-24
 
 - Register Windows shortcuts in the user's real Start menu when installation runs from a packaged app. Repair a missing Start menu entry during updates, preserving direct/proxy mode and foreign shortcuts without restarting ChatGPT.

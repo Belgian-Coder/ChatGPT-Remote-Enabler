@@ -960,11 +960,18 @@ function Start-MobileBackgroundServices {
             ReplaceRunningApp = [bool]$ReplaceRunningApp
             SkipInitialCheck = [bool]$SkipUpdateCheckOnce
         }
-        Write-CommandOutput @(& $updateSessionLauncher @sessionArguments 2>&1)
+        $sessionOutput = @(& $updateSessionLauncher @sessionArguments 2>&1)
+        Write-CommandOutput $sessionOutput
+        $sessionResult = Get-LastJsonResult -Output $sessionOutput
+        if ($sessionResult.started -isnot [bool] -or -not $sessionResult.started) {
+            throw 'The update coordinator did not confirm that monitoring is active. The running app was preserved.'
+        }
         $sessionTimer.Stop()
         Write-StartupLog "$(Get-Date -Format o) [$computerName] stage=update-session durationMs=$($sessionTimer.ElapsedMilliseconds)"
+        return $true
     } catch {
         Write-StartupLog "$(Get-Date -Format o) [$computerName] update-session launch unavailable: $($_.Exception.Message)"
+        return $false
     }
 }
 
@@ -1309,7 +1316,7 @@ switch ($Action) {
                 $enableOutput = @(& $mobileController -Action Enable -NodePath $node -TargetWaitMilliseconds $targetWaitMilliseconds -DeferUpdateSession -Confirm:$false 2>&1)
                 Write-CommandOutput $enableOutput
                 $report = Get-MobileReport -Output $enableOutput
-                Start-MobileBackgroundServices -NodePath $node
+                $monitorStarted = Start-MobileBackgroundServices -NodePath $node
                 $report = Wait-MobileReadiness -Report $report -TimeoutSeconds $MobileReadyTimeoutSeconds -Probe {
                     $probeOutput = @(& $mobileController -Action Probe -NodePath $node 2>&1)
                     Write-CommandOutput $probeOutput
@@ -1318,7 +1325,7 @@ switch ($Action) {
                 $mobileTimer.Stop()
                 Write-StartupLog "$(Get-Date -Format o) [$computerName] stage=mobile-readiness durationMs=$($mobileTimer.ElapsedMilliseconds) mounted=$($report.mounted) localRuntimeReady=$($report.localRuntimeReady) authoritativeInventoryReady=$($report.authoritativeInventoryReady) publisherReady=$($report.publisherReady) ready=$($report.ready)"
                 Stop-StartupProgress
-                Write-StartupLog "$(Get-Date -Format o) [$computerName] interactive startup completed"
+                Write-StartupLog "$(Get-Date -Format o) [$computerName] interactive startup completed; updateMonitoringConfirmed=$monitorStarted"
                 Write-RelaunchHandoff
                 Write-StartupLog "$(Get-Date -Format o) [$computerName] startup run completed"
             } catch {
